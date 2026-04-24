@@ -1,0 +1,36 @@
+{
+  "name": "hardness-tester",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron + React 19 + Node.js hardness tester app",
+  "main": "electron/main.js",
+  "scripts": {
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "dev": "concurrently -k -n BE,FE,EL \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:backend": "dotenv -e .env -e backend/.env -- npm run dev --prefix backend",
+    "dev:frontend": "dotenv -e .env -e frontend/.env -- npm run dev --prefix frontend",
+    "dev:electron": "wait-on tcp:5173 && dotenv -e .env -- electron .",
+    "build": "npm run build --prefix frontend",
+    "build:prod": "dotenv -e .env.prod -e backend/.env.prod -e frontend/.env.prod -- npm run build",
+    "start:prod": "dotenv -e .env.prod -e backend/.env.prod -e frontend/.env.prod -- electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.5.0",
+    "@electron-forge/maker-base": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.5.0",
+    "@electron-forge/maker-rpm": "^7.5.0",
+    "@electron-forge/maker-zip": "^7.5.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.5.0",
+    "concurrently": "^9.1.0",
+    "dotenv-cli": "^7.4.4",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.8.1",
+    "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
+}
