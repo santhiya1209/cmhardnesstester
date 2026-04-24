@@ -14,7 +14,7 @@ import TouchAppIcon from '@mui/icons-material/TouchApp';
 import NearMeIcon from '@mui/icons-material/NearMe';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import ChangeHistoryIcon from '@mui/icons-material/ChangeHistory';
-import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
+import BackspaceIcon from '@mui/icons-material/Backspace';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import AddIcon from '@mui/icons-material/Add';
@@ -39,11 +39,11 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'tools:pointer', label: 'Pointer', icon: NearMeIcon },
   { action: 'tools:measureLength', label: 'Measure Length', icon: StraightenIcon },
   { action: 'tools:measureAngle', label: 'Measure Angle', icon: ChangeHistoryIcon },
-  { action: 'tools:autoSearchEdge', label: 'Auto Search Edge', icon: RadioButtonCheckedIcon, groupEnd: true },
+  { action: 'tools:eraser', label: 'Eraser', icon: BackspaceIcon, groupEnd: true },
 
   { action: 'tools:zoomIn', label: 'Zoom In', icon: ZoomInIcon },
   { action: 'tools:zoomOut', label: 'Zoom Out', icon: ZoomOutIcon },
-  { action: 'tools:add', label: 'Add', icon: AddIcon },
+  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon },
 ];
 
 const BAR_SX: SxProps<Theme> = {
