@@ -10,7 +10,7 @@ import SaveIcon from '@mui/icons-material/Save';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import PauseIcon from '@mui/icons-material/Pause';
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
-import GridOnIcon from '@mui/icons-material/GridOn';
+import TouchAppIcon from '@mui/icons-material/TouchApp';
 import NearMeIcon from '@mui/icons-material/NearMe';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import ChangeHistoryIcon from '@mui/icons-material/ChangeHistory';
@@ -34,7 +34,7 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'device:closeCamera', label: 'Close Camera', icon: PauseIcon, groupEnd: true },
 
   { action: 'tools:autoMeasure', label: 'Auto Measure', icon: CenterFocusStrongIcon },
-  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: GridOnIcon, groupEnd: true },
+  { action: 'tools:manualMeasure', label: 'Manual Measure', icon: TouchAppIcon, groupEnd: true },
 
   { action: 'tools:pointer', label: 'Pointer', icon: NearMeIcon },
   { action: 'tools:measureLength', label: 'Measure Length', icon: StraightenIcon },

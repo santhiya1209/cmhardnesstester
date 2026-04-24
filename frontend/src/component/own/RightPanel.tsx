@@ -193,7 +193,20 @@ const CONVERT_TYPE_OPTIONS = [
   'HR45T',
 ];
 const PATTERN_OPTIONS = ['Line', 'Rectangle', 'Circle', 'Custom'];
-const HORIZONTAL_MODE_OPTIONS = ['HorizontalMode', 'VerticalMode', 'DiagonalMode'];
+const HORIZONTAL_MODE_OPTIONS = [
+  'Horizontal Mode',
+  'Vertical Mode',
+  'Case Depth Mode',
+  'Free Mode',
+  'Matrix Mode',
+  'Circle Mode',
+  'Midpoint Mode',
+  'Equidistant Multipoint Mode',
+  'Equidistant Three Point Mode',
+  'Equidistant Triangle Mode',
+  'Multiline Composite Pattern',
+  'Vertical Line Free Points Mode',
+];
 
 // Multipoint tab styles
 const MP_SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25 };
@@ -377,7 +390,7 @@ function RightPanelImpl() {
 
   // Multipoint tab state
   const [pattern, setPattern] = useState('Line');
-  const [horizontalMode, setHorizontalMode] = useState('HorizontalMode');
+  const [horizontalMode, setHorizontalMode] = useState('Horizontal Mode');
   const [refX, setRefX] = useState('');
   const [refY, setRefY] = useState('');
   const [interval, setInterval] = useState('');
