@@ -1,28 +1,51 @@
 @import "tailwindcss";
 
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-  font-synthesis: none;
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family:
+    'Segoe UI Variable Text',
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  background: #F0F9FF;
+  color: #0C1E2B;
+
+  /* Industrial polish: tabular numerals, OpenType stylistic sets,
+     subpixel smoothing, and clean kerning. */
+  font-feature-settings: 'ss01', 'cv01', 'cv11', 'tnum';
+  font-variant-numeric: tabular-nums;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
+code,
+kbd,
+samp,
+pre,
+.mono {
+  font-family:
+    'Cascadia Mono',
+    'Cascadia Code',
+    Consolas,
+    'JetBrains Mono',
+    'Roboto Mono',
+    ui-monospace,
+    SFMono-Regular,
+    monospace;
+  font-variant-numeric: tabular-nums;
 }

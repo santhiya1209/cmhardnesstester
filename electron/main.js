@@ -1,5 +1,5 @@
 const path = require('path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 
 if (app.isPackaged) {
   const dotenv = require('dotenv');
@@ -19,7 +19,7 @@ let mainWindow = null;
 let backendServer = null;
 
 async function startEmbeddedBackend() {
-  const { start } = require(path.join(__dirname, '..', 'backend', 'src', 'index.js'));
+  const { start } = require(path.join(__dirname, '..', 'backend', 'dist', 'index.js'));
   const { server, port } = await start();
   backendServer = server;
   return `http://localhost:${port}`;
@@ -50,6 +50,7 @@ async function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Menu.setApplicationMenu(null);
   registerIpc();
   createWindow();
 });

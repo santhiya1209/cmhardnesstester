@@ -27,5 +27,5 @@ export interface ElectronApi {
     payload?: IpcInvokeMap[C]['request']
   ): Promise<IpcInvokeMap[C]['response']>;
   on(channel: IpcEventChannel, listener: (...args: unknown[]) => void): () => void;
-  platform: NodeJS.Platform;
+  platform: 'aix' | 'darwin' | 'freebsd' | 'linux' | 'openbsd' | 'sunos' | 'win32';
 }

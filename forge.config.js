@@ -18,6 +18,8 @@ module.exports = {
       /^\/frontend\/vite\.config\.ts$/,
       /^\/frontend\/tsconfig\.json$/,
       /^\/frontend\/package(-lock)?\.json$/,
+      /^\/backend\/src($|\/)/,
+      /^\/backend\/tsconfig\.json$/,
     ],
   },
   rebuildConfig: {},
