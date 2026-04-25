@@ -5,6 +5,8 @@ import Tooltip from '@mui/material/Tooltip';
 import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { colors } from '@/theme/theme';
+
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import SaveIcon from '@mui/icons-material/Save';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -52,18 +54,18 @@ const BAR_SX: SxProps<Theme> = {
   gap: 0.25,
   px: 0.5,
   py: 0.5,
-  bgcolor: '#E0F2FE',
+  bgcolor: colors.headingPrimary,
   borderBottom: 1,
-  borderColor: 'divider',
+  borderColor: colors.border,
 };
 
 const SPACER_SX: SxProps<Theme> = { width: 8 };
 
 const ICON_BUTTON_SX: SxProps<Theme> = {
   borderRadius: 0.5,
-  color: 'text.primary',
+  color: '#FFFFFF',
   p: 0.5,
-  '&:hover': { bgcolor: 'action.hover' },
+  '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.12)' },
 };
 
 type ToolbarButtonProps = {

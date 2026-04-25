@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog';
-import CalibrationSettingsDialog from '@/component/own/CalibrationSettingsDialog';
+import CalibrationDialog from '@/component/own/CalibrationDialog';
+import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
+import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
+import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
 import Toolbar from '@/component/own/Toolbar';
 import LeftPanel from '@/component/own/LeftPanel';
@@ -31,7 +34,7 @@ const WORKSPACE_SX: SxProps<Theme> = {
   minWidth: 0,
 };
 
-type DialogKey = 'autoMeasure' | 'calibration' | 'testRecords' | null;
+type DialogKey = 'autoMeasure' | 'calibration' | 'lineColor' | 'testRecords' | null;
 
 function App() {
   const [activeDialog, setActiveDialog] = useState<DialogKey>(null);
@@ -50,6 +53,7 @@ function App() {
     refetch: refetchToolbarState,
   } = useToolbarState();
   const { saveToolbarState } = useSaveToolbarState();
+  const { data: lineColorSetting, refetch: refetchLineColor } = useLineColorSetting();
   const restoredToolbarActionRef = useRef(false);
 
   const testRecordMeasurementIds = useMemo(() => {
@@ -74,6 +78,10 @@ function App() {
       case 'config:calibration':
         setActiveDialog('calibration');
         setStatusMessage('System Status: Calibration opened');
+        return;
+      case 'config:lineColor':
+        setActiveDialog('lineColor');
+        setStatusMessage('System Status: Line Color Setting opened');
         return;
       case 'data:sampleInfo':
         setInitialTestRecordMeasurementIds([]);
@@ -102,6 +110,11 @@ function App() {
     },
     [refetchToolbarState, saveToolbarState, toolbarState?.id]
   );
+
+  useEffect(() => {
+    const hex = LINE_COLOR_HEX[lineColorSetting?.lineColor ?? DEFAULT_LINE_COLOR];
+    document.documentElement.style.setProperty('--line-color', hex);
+  }, [lineColorSetting?.lineColor]);
 
   useEffect(() => {
     if (toolbarStateLoading || restoredToolbarActionRef.current) {
@@ -149,10 +162,18 @@ function App() {
         onClose={closeDialog}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
       />
-      <CalibrationSettingsDialog
+      <CalibrationDialog
         open={activeDialog === 'calibration'}
         onClose={closeDialog}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+      />
+      <LineColorSettingDialog
+        open={activeDialog === 'lineColor'}
+        onClose={closeDialog}
+        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onSaved={() => {
+          void refetchLineColor();
+        }}
       />
       <TestRecordsDialog
         open={activeDialog === 'testRecords'}

@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { AlbumItemModel } from './album-item';
 import { AutoMeasureSettingsModel } from './auto-measure-settings';
+import { CalibrationModel } from './calibration';
 import { CalibrationSettingsModel } from './calibration-settings';
+import { LineColorSettingModel } from './line-color-setting';
 import { DepthImageSettingModel } from './depth-image-setting';
 import { IsoDateTimeSchema } from './common';
 import { MachineSettingsModel } from './machine-settings';
@@ -22,6 +24,8 @@ export const DatabaseSchema = z.object({
   measurements: z.array(MeasurementModel).default([]),
   autoMeasureSettings: z.array(AutoMeasureSettingsModel).default([]),
   calibrationSettings: z.array(CalibrationSettingsModel).default([]),
+  calibrations: z.array(CalibrationModel).default([]),
+  lineColorSettings: z.array(LineColorSettingModel).default([]),
   testRecords: z.array(TestRecordModel).default([]),
   xyzPlatformStates: z.array(XYZPlatformStateModel).default([]),
   patternPrograms: z.array(PatternProgramModel).default([]),
@@ -37,6 +41,8 @@ export const COLLECTION_NAMES = [
   'measurements',
   'autoMeasureSettings',
   'calibrationSettings',
+  'calibrations',
+  'lineColorSettings',
   'testRecords',
   'xyzPlatformStates',
   'patternPrograms',
@@ -57,6 +63,8 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     measurements: [],
     autoMeasureSettings: [],
     calibrationSettings: [],
+    calibrations: [],
+    lineColorSettings: [],
     testRecords: [],
     xyzPlatformStates: [],
     patternPrograms: [],

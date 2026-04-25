@@ -11,8 +11,6 @@ const SANS_STACK = [
   'sans-serif',
 ].join(',');
 
-const HEADING_COLOR = '#082F49';
-
 const MONO_STACK = [
   '"Cascadia Mono"',
   '"Cascadia Code"',
@@ -23,6 +21,26 @@ const MONO_STACK = [
   'SFMono-Regular',
   'monospace',
 ].join(',');
+
+// Industrial color tokens — single source of truth for the whole app.
+export const colors = {
+  headingPrimary: '#1E3A5F',
+  headingSecondary: '#0F6E56',
+  background: '#F5F7FA',
+  panel: '#FFFFFF',
+  border: '#D0D7DE',
+  textPrimary: '#1F2937',
+  textMuted: '#6B7280',
+  buttonPrimary: '#1E3A5F',
+  success: '#0F6E56',
+  warning: '#F59E0B',
+  error: '#D32F2F',
+  // Measurement overlay colors — drawn on the camera/canvas.
+  autoMeasureLine: '#FFFF00',
+  d1d2MeasureLine: '#800080',
+  // Back-compat alias.
+  heading: '#1E3A5F',
+} as const;
 
 export const theme = createTheme({
   cssVariables: true,
@@ -36,12 +54,12 @@ export const theme = createTheme({
     fontWeightRegular: 400,
     fontWeightMedium: 500,
     fontWeightBold: 600,
-    h1: { fontFamily: SANS_STACK, fontWeight: 700, fontSize: 22, letterSpacing: -0.2, lineHeight: 1.2, color: HEADING_COLOR },
-    h2: { fontFamily: SANS_STACK, fontWeight: 700, fontSize: 19, letterSpacing: -0.15, lineHeight: 1.25, color: HEADING_COLOR },
-    h3: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 16, lineHeight: 1.3, color: HEADING_COLOR },
-    h4: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 14, lineHeight: 1.3, color: HEADING_COLOR },
-    h5: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 13, lineHeight: 1.3, color: HEADING_COLOR },
-    h6: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 12, lineHeight: 1.3, letterSpacing: 0.2, textTransform: 'uppercase', color: HEADING_COLOR },
+    h1: { fontFamily: SANS_STACK, fontWeight: 700, fontSize: 22, letterSpacing: -0.2, lineHeight: 1.2, color: colors.headingPrimary },
+    h2: { fontFamily: SANS_STACK, fontWeight: 700, fontSize: 19, letterSpacing: -0.15, lineHeight: 1.25, color: colors.headingPrimary },
+    h3: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 16, lineHeight: 1.3, color: colors.headingPrimary },
+    h4: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 14, lineHeight: 1.3, color: colors.headingSecondary },
+    h5: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 13, lineHeight: 1.3, color: colors.headingSecondary },
+    h6: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 12, lineHeight: 1.3, letterSpacing: 0.2, textTransform: 'uppercase', color: colors.headingSecondary },
     subtitle1: { fontFamily: SANS_STACK, fontWeight: 500, fontSize: 13, lineHeight: 1.4 },
     subtitle2: { fontFamily: SANS_STACK, fontWeight: 600, fontSize: 12, lineHeight: 1.4, color: 'inherit' },
     body1: { fontFamily: SANS_STACK, fontWeight: 400, fontSize: 13, lineHeight: 1.45 },
@@ -53,26 +71,39 @@ export const theme = createTheme({
   palette: {
     mode: 'light',
     primary: {
-      main: '#0284C7',
-      light: '#38BDF8',
-      dark: '#075985',
-      contrastText: '#ffffff',
+      main: colors.buttonPrimary,
+      light: '#3A5A85',
+      dark: '#13243D',
+      contrastText: '#FFFFFF',
     },
     secondary: {
-      main: '#0EA5E9',
+      main: colors.headingSecondary,
+      contrastText: '#FFFFFF',
+    },
+    success: {
+      main: colors.success,
+      contrastText: '#FFFFFF',
+    },
+    warning: {
+      main: colors.warning,
+      contrastText: '#1F2937',
+    },
+    error: {
+      main: colors.error,
+      contrastText: '#FFFFFF',
     },
     background: {
-      default: '#F0F9FF',
-      paper: '#FFFFFF',
+      default: colors.background,
+      paper: colors.panel,
     },
-    divider: '#BAE6FD',
+    divider: colors.border,
     text: {
-      primary: '#0C1E2B',
-      secondary: '#395B73',
+      primary: colors.textPrimary,
+      secondary: colors.textMuted,
     },
     action: {
-      hover: 'rgba(2, 132, 199, 0.08)',
-      selected: 'rgba(2, 132, 199, 0.16)',
+      hover: 'rgba(30, 58, 95, 0.08)',
+      selected: 'rgba(30, 58, 95, 0.16)',
     },
   },
   components: {
@@ -148,14 +179,25 @@ export const theme = createTheme({
         },
       },
     },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          backgroundColor: colors.panel,
+        },
+      },
+    },
+    MuiAppBar: {
+      styleOverrides: {
+        root: {
+          backgroundColor: colors.headingPrimary,
+          color: '#FFFFFF',
+        },
+      },
+    },
   },
 });
 
 export const fonts = {
   sans: SANS_STACK,
   mono: MONO_STACK,
-};
-
-export const colors = {
-  heading: HEADING_COLOR,
 };

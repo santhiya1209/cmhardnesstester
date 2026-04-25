@@ -3,22 +3,24 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { colors } from '@/theme/theme';
+
 const ROOT_SX: SxProps<Theme> = {
   flex: 1,
   display: 'flex',
   flexDirection: 'column',
   minWidth: 0,
   minHeight: 0,
-  bgcolor: '#E0F2FE',
+  bgcolor: colors.background,
 };
 
 const VIEW_SX: SxProps<Theme> = {
   flex: 1,
   position: 'relative',
   overflow: 'hidden',
-  bgcolor: '#FFFFFF',
+  bgcolor: colors.panel,
   border: 1,
-  borderColor: '#7DD3FC',
+  borderColor: colors.border,
   m: 1,
 };
 
@@ -28,10 +30,10 @@ const COORD_BAR_SX: SxProps<Theme> = {
   gap: 4,
   px: 2,
   py: 0.25,
-  bgcolor: '#E0F2FE',
+  bgcolor: colors.panel,
   fontSize: 12,
   borderTop: 1,
-  borderColor: '#7DD3FC',
+  borderColor: colors.border,
 };
 
 const COORD_VALUE_SX: SxProps<Theme> = {
@@ -39,7 +41,7 @@ const COORD_VALUE_SX: SxProps<Theme> = {
     "'Cascadia Mono', 'Cascadia Code', Consolas, 'JetBrains Mono', ui-monospace, monospace",
   fontVariantNumeric: 'tabular-nums',
   fontSize: 12,
-  color: 'text.primary',
+  color: colors.textPrimary,
   letterSpacing: 0.2,
 };
 

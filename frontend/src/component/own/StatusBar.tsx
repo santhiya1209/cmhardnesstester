@@ -3,21 +3,23 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { colors } from '@/theme/theme';
+
 const BAR_SX: SxProps<Theme> = {
   display: 'flex',
   alignItems: 'center',
   height: 24,
   px: 1.5,
-  bgcolor: '#BAE6FD',
+  bgcolor: colors.headingPrimary,
   borderTop: 1,
-  borderColor: '#38BDF8',
+  borderColor: colors.border,
   fontSize: 12,
   gap: 2,
 };
 
 const MESSAGE_SX: SxProps<Theme> = {
   fontSize: 12,
-  color: '#0C1E2B',
+  color: '#FFFFFF',
 };
 
 type Props = {
