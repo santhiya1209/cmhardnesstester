@@ -1,7 +1,8 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
+import type { Measurement } from '@/types/measurement';
 
 const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 2, display: 'flex', flexDirection: 'column', gap: 1 };
 const GRID_SX: SxProps<Theme> = {
@@ -24,27 +25,67 @@ const CELL_SX: SxProps<Theme> = {
 const LABEL_SX: SxProps<Theme> = { ...CELL_SX, fontWeight: 500 };
 const VALUE_SX: SxProps<Theme> = { ...CELL_SX, minHeight: 30, color: 'text.secondary' };
 
-function StatisticsInfoTabImpl() {
+type Props = {
+  measurements?: Measurement[];
+};
+
+function formatNumber(value: number | null): string {
+  if (value === null) {
+    return '-';
+  }
+
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function StatisticsInfoTabImpl({ measurements = [] }: Props) {
+  const stats = useMemo(() => {
+    if (measurements.length === 0) {
+      return {
+        count: 0,
+        min: null,
+        max: null,
+        average: null,
+        variance: null,
+        stdDev: null,
+      };
+    }
+
+    const hardnessValues = measurements.map((measurement) => measurement.hv);
+    const count = hardnessValues.length;
+    const average = hardnessValues.reduce((sum, value) => sum + value, 0) / count;
+    const variance =
+      hardnessValues.reduce((sum, value) => sum + (value - average) ** 2, 0) / count;
+
+    return {
+      count,
+      min: Math.min(...hardnessValues),
+      max: Math.max(...hardnessValues),
+      average,
+      variance,
+      stdDev: Math.sqrt(variance),
+    };
+  }, [measurements]);
+
   return (
     <Box sx={SECTION_SX}>
       <Box sx={GRID_SX}>
         <Typography sx={LABEL_SX}>Number</Typography>
-        <Typography sx={VALUE_SX}>&nbsp;</Typography>
+        <Typography sx={VALUE_SX}>{stats.count === 0 ? '-' : stats.count}</Typography>
         <Typography sx={LABEL_SX}>Variance</Typography>
-        <Typography sx={VALUE_SX}>&nbsp;</Typography>
+        <Typography sx={VALUE_SX}>{formatNumber(stats.variance)}</Typography>
 
         <Typography sx={LABEL_SX}>Min</Typography>
-        <Typography sx={VALUE_SX}>&nbsp;</Typography>
+        <Typography sx={VALUE_SX}>{formatNumber(stats.min)}</Typography>
         <Typography sx={LABEL_SX}>StdDev</Typography>
-        <Typography sx={VALUE_SX}>&nbsp;</Typography>
+        <Typography sx={VALUE_SX}>{formatNumber(stats.stdDev)}</Typography>
 
         <Typography sx={LABEL_SX}>Max</Typography>
-        <Typography sx={VALUE_SX}>&nbsp;</Typography>
+        <Typography sx={VALUE_SX}>{formatNumber(stats.max)}</Typography>
         <Box />
         <Box />
 
         <Typography sx={LABEL_SX}>Average</Typography>
-        <Typography sx={VALUE_SX}>&nbsp;</Typography>
+        <Typography sx={VALUE_SX}>{formatNumber(stats.average)}</Typography>
         <Box />
         <Box />
       </Box>
