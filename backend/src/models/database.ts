@@ -4,6 +4,9 @@ import { AutoMeasureSettingsModel } from './auto-measure-settings';
 import { CalibrationModel } from './calibration';
 import { CalibrationSettingsModel } from './calibration-settings';
 import { LineColorSettingModel } from './line-color-setting';
+import { GenericSettingModel } from './generic-setting';
+import { OtherSettingModel } from './other-setting';
+import { SerialPortSettingModel } from './serial-port-setting';
 import { DepthImageSettingModel } from './depth-image-setting';
 import { IsoDateTimeSchema } from './common';
 import { MachineSettingsModel } from './machine-settings';
@@ -26,6 +29,9 @@ export const DatabaseSchema = z.object({
   calibrationSettings: z.array(CalibrationSettingsModel).default([]),
   calibrations: z.array(CalibrationModel).default([]),
   lineColorSettings: z.array(LineColorSettingModel).default([]),
+  serialPortSettings: z.array(SerialPortSettingModel).default([]),
+  genericSettings: z.array(GenericSettingModel).default([]),
+  otherSettings: z.array(OtherSettingModel).default([]),
   testRecords: z.array(TestRecordModel).default([]),
   xyzPlatformStates: z.array(XYZPlatformStateModel).default([]),
   patternPrograms: z.array(PatternProgramModel).default([]),
@@ -43,6 +49,9 @@ export const COLLECTION_NAMES = [
   'calibrationSettings',
   'calibrations',
   'lineColorSettings',
+  'serialPortSettings',
+  'genericSettings',
+  'otherSettings',
   'testRecords',
   'xyzPlatformStates',
   'patternPrograms',
@@ -65,6 +74,9 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     calibrationSettings: [],
     calibrations: [],
     lineColorSettings: [],
+    serialPortSettings: [],
+    genericSettings: [],
+    otherSettings: [],
     testRecords: [],
     xyzPlatformStates: [],
     patternPrograms: [],

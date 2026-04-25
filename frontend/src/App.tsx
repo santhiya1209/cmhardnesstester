@@ -4,6 +4,10 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog';
 import CalibrationDialog from '@/component/own/CalibrationDialog';
 import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
+import GenericSettingDialog from '@/component/own/GenericSettingDialog';
+import OtherSettingDialog from '@/component/own/OtherSettingDialog';
+import RestoreFactoryDialog from '@/component/own/RestoreFactoryDialog';
+import SerialPortSettingDialog from '@/component/own/SerialPortSettingDialog';
 import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
 import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
@@ -34,7 +38,16 @@ const WORKSPACE_SX: SxProps<Theme> = {
   minWidth: 0,
 };
 
-type DialogKey = 'autoMeasure' | 'calibration' | 'lineColor' | 'testRecords' | null;
+type DialogKey =
+  | 'autoMeasure'
+  | 'calibration'
+  | 'generic'
+  | 'lineColor'
+  | 'other'
+  | 'restoreFactory'
+  | 'serialPort'
+  | 'testRecords'
+  | null;
 
 function App() {
   const [activeDialog, setActiveDialog] = useState<DialogKey>(null);
@@ -82,6 +95,22 @@ function App() {
       case 'config:lineColor':
         setActiveDialog('lineColor');
         setStatusMessage('System Status: Line Color Setting opened');
+        return;
+      case 'config:serialPort':
+        setActiveDialog('serialPort');
+        setStatusMessage('System Status: Serial Port Setting opened');
+        return;
+      case 'config:generic':
+        setActiveDialog('generic');
+        setStatusMessage('System Status: Generic Setting opened');
+        return;
+      case 'config:other':
+        setActiveDialog('other');
+        setStatusMessage('System Status: Other Setting opened');
+        return;
+      case 'config:restoreFactory':
+        setActiveDialog('restoreFactory');
+        setStatusMessage('System Status: Restore Factory Settings');
         return;
       case 'data:sampleInfo':
         setInitialTestRecordMeasurementIds([]);
@@ -173,6 +202,31 @@ function App() {
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
         onSaved={() => {
           void refetchLineColor();
+        }}
+      />
+      <SerialPortSettingDialog
+        open={activeDialog === 'serialPort'}
+        onClose={closeDialog}
+        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+      />
+      <GenericSettingDialog
+        open={activeDialog === 'generic'}
+        onClose={closeDialog}
+        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+      />
+      <OtherSettingDialog
+        open={activeDialog === 'other'}
+        onClose={closeDialog}
+        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+      />
+      <RestoreFactoryDialog
+        open={activeDialog === 'restoreFactory'}
+        onClose={closeDialog}
+        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onRestored={() => {
+          void refetchLineColor();
+          void refetchMeasurements();
+          void refetchToolbarState();
         }}
       />
       <TestRecordsDialog
