@@ -2,6 +2,7 @@ import path from 'node:path';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import { env, isProd } from './lib/env';
+import { errorHandler } from './lib/http';
 import apiRouter from './routes';
 
 export function createApp(): Express {
@@ -21,6 +22,8 @@ export function createApp(): Express {
       res.sendFile(path.join(frontendDist, 'index.html'));
     });
   }
+
+  app.use(errorHandler);
 
   return app;
 }

@@ -145,3 +145,6 @@ vite.config.ts.timestamp-*
 out/
 .claude/
 CLAUDE.md
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3

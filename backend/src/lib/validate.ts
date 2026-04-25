@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { ZodError, type ZodTypeAny, type z } from 'zod';
 
-type Source = 'body' | 'query' | 'params';
+export type Source = 'body' | 'query' | 'params';
 
 export function validate<S extends ZodTypeAny>(schema: S, source: Source = 'body'): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -13,13 +13,20 @@ export function validate<S extends ZodTypeAny>(schema: S, source: Source = 'body
       });
       return;
     }
-    (req as Request & { validated?: Record<Source, unknown> }).validated = {
-      ...(req as Request & { validated?: Record<Source, unknown> }).validated,
+    req.validated = {
+      ...req.validated,
       [source]: result.data,
-    } as Record<Source, unknown>;
+    };
     next();
   };
 }
 
 export type Validated<S extends ZodTypeAny> = z.infer<S>;
+export type ValidatedRequest<TBody = unknown, TParams = unknown, TQuery = unknown> = Request & {
+  validated: {
+    body?: TBody;
+    params?: TParams;
+    query?: TQuery;
+  };
+};
 export { ZodError };
