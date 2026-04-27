@@ -1,6 +1,18 @@
 const path = require('path');
 const { app, BrowserWindow, Menu } = require('electron');
 
+// NODE_OPTIONS=--force-node-api-uncaught-exceptions-policy=true is set by
+// scripts/dev-electron.js so throws inside native callbacks become real
+// uncaughtException events instead of the silent DEP0168 warning.
+process.on('uncaughtException', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('[main] uncaughtException:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  // eslint-disable-next-line no-console
+  console.error('[main] unhandledRejection:', reason);
+});
+
 if (app.isPackaged) {
   const dotenv = require('dotenv');
   const resources = process.resourcesPath;
@@ -11,6 +23,7 @@ if (app.isPackaged) {
 }
 
 const { registerIpc } = require('./ipc');
+const { cameraService } = require('./cameraService');
 
 const isDev = !app.isPackaged;
 const DEV_URL = process.env.VITE_DEV_URL || 'http://localhost:5173';
@@ -37,14 +50,23 @@ async function createWindow() {
     },
   });
 
-  if (isDev) {
-    await mainWindow.loadURL(DEV_URL);
-  } else {
-    const url = await startEmbeddedBackend();
-    await mainWindow.loadURL(url);
+  const targetUrl = isDev ? DEV_URL : await startEmbeddedBackend();
+  // Vite/dev server can briefly refuse connections right after wait-on returns.
+  // Retry a few times so we don't crash the renderer in the dev race window.
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    try {
+      await mainWindow.loadURL(targetUrl);
+      break;
+    } catch (err) {
+      if (attempt === 8) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
   }
 
+  cameraService.attach(mainWindow.webContents);
+
   mainWindow.on('closed', () => {
+    cameraService.detach(mainWindow ? mainWindow.webContents : null);
     mainWindow = null;
   });
 }
@@ -60,7 +82,12 @@ app.on('window-all-closed', () => {
     backendServer.close();
     backendServer = null;
   }
+  void cameraService.shutdown();
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  void cameraService.shutdown();
 });
 
 app.on('activate', () => {

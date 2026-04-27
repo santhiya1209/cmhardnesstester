@@ -1,7 +1,20 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const ALLOWED_INVOKE = new Set(['app:getInfo', 'app:ping']);
-const ALLOWED_EVENTS = new Set(['app:status']);
+const ALLOWED_INVOKE = new Set([
+  'app:getInfo',
+  'app:ping',
+  'camera:open',
+  'camera:close',
+  'camera:start-stream',
+  'camera:stop-stream',
+  'camera:get-frame',
+  'camera:get-status',
+  'camera:set-exposure',
+  'camera:set-gain',
+  'camera:set-trigger-mode',
+]);
+
+const ALLOWED_EVENTS = new Set(['app:status', 'camera:frame', 'camera:status']);
 
 contextBridge.exposeInMainWorld('api', {
   invoke: (channel, payload) => {

@@ -1,0 +1,17 @@
+{
+  "name": "hardness-addon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native N-API addon: Do3Think DVP2 camera (runtime-linked to DVPCamera64.dll).",
+  "main": "build/Release/hardness_addon.node",
+  "gypfile": true,
+  "scripts": {
+    "install": "node-gyp rebuild"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^10.2.0"
+  }
+}

@@ -8,6 +8,7 @@ import { usePatternPrograms } from '@/hooks/queries/usePatternPrograms';
 import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
+import { colors } from '@/theme/theme';
 
 import MeasurementsWorkspace from './MeasurementsWorkspace';
 import MachineControlTab from './MachineControlTab';
@@ -43,12 +44,36 @@ const TABS_SX: SxProps<Theme> = {
   minHeight: 32,
   borderBottom: 1,
   borderColor: 'divider',
+  bgcolor: colors.headingPrimary,
+  '& .MuiTabs-indicator': {
+    backgroundColor: '#FFFFFF',
+    height: 2,
+  },
   '& .MuiTab-root': {
     minHeight: 32,
     py: 0.5,
-    px: 1,
+    px: 1.5,
     fontSize: 12,
     textTransform: 'none',
+    color: 'rgba(255, 255, 255, 0.75)',
+    borderBottom: '2px solid transparent',
+    transition:
+      'background-color 150ms ease, color 150ms ease, border-color 150ms ease',
+    '&:hover': {
+      backgroundColor: '#475569',
+      color: '#FFFFFF',
+      borderBottomColor: '#FFFFFF',
+    },
+    '&.Mui-selected': {
+      color: '#FFFFFF',
+      fontWeight: 600,
+    },
+  },
+  '& .MuiTabs-scrollButtons': {
+    color: '#FFFFFF',
+    '&.Mui-disabled': {
+      opacity: 0.35,
+    },
   },
 };
 

@@ -7,6 +7,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
+import { colors } from '@/theme/theme';
 
 const COLUMNS = [
   '#',
@@ -35,10 +36,20 @@ const TABLE_WRAP_SX: SxProps<Theme> = {
 const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
   fontSize: 11,
   fontWeight: 600,
-  color: 'text.secondary',
+  color: '#FFFFFF',
+  bgcolor: colors.headingPrimary,
   py: 0.5,
   px: 1,
   whiteSpace: 'nowrap',
+  cursor: 'default',
+  borderBottom: `2px solid ${colors.headingPrimary}`,
+  transition:
+    'background-color 150ms ease, color 150ms ease, border-color 150ms ease',
+  '&:hover': {
+    bgcolor: '#475569',
+    color: '#FFFFFF',
+    borderBottomColor: '#FFFFFF',
+  },
 };
 const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.5, px: 1 };
 const EMPTY_CELL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.disabled', textAlign: 'center', py: 4 };

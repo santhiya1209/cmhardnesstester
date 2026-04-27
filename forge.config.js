@@ -7,6 +7,7 @@ module.exports = {
       '.env.prod',
       'backend/.env.prod',
       'frontend/.env.prod',
+      'backend/native',
     ],
     ignore: [
       /^\/release($|\/)/,

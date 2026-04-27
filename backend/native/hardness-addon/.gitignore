@@ -1,0 +1,10 @@
+node_modules/
+build/
+*.node
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.lib
+*.exp
