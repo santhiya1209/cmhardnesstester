@@ -1,7 +1,9 @@
-import { memo } from 'react';
+import { forwardRef, memo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
-import CameraWindow from '@/component/own/CameraWindow';
+import CameraWindow, { type CameraWindowHandle } from '@/component/own/CameraWindow';
+import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
 
 const PANEL_SX: SxProps<Theme> = {
   flex: 2.0,
@@ -14,12 +16,39 @@ const PANEL_SX: SxProps<Theme> = {
   overflow: 'hidden',
 };
 
-function LeftPanelImpl() {
+type Props = {
+  activeTool: ToolId;
+  overlayShapes: OverlayShape[];
+  crossLineVisible: boolean;
+  onAddShape: (shape: OverlayShapeInput) => void;
+  manualMeasureResetKey: number;
+  onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+};
+
+function LeftPanelImpl(
+  {
+    activeTool,
+    overlayShapes,
+    crossLineVisible,
+    onAddShape,
+    manualMeasureResetKey,
+    onManualMeasurementUpdated,
+  }: Props,
+  ref: React.Ref<CameraWindowHandle>
+) {
   return (
     <Box sx={PANEL_SX}>
-      <CameraWindow />
+      <CameraWindow
+        ref={ref}
+        activeTool={activeTool}
+        overlayShapes={overlayShapes}
+        crossLineVisible={crossLineVisible}
+        onAddShape={onAddShape}
+        manualMeasureResetKey={manualMeasureResetKey}
+        onManualMeasurementUpdated={onManualMeasurementUpdated}
+      />
     </Box>
   );
 }
 
-export default memo(LeftPanelImpl);
+export default memo(forwardRef<CameraWindowHandle, Props>(LeftPanelImpl));

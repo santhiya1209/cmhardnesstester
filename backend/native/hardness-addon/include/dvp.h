@@ -128,6 +128,22 @@ typedef struct dvpFrame {
   dvpUint32           reserved[24];
 } dvpFrame;
 
+typedef struct dvpDoubleDescr {
+  double      fStep;
+  double      fMin;
+  double      fMax;
+  double      fDefault;
+  dvpReserved reserved;
+} dvpDoubleDescr;
+
+typedef struct dvpFloatDescr {
+  float       fStep;
+  float       fMin;
+  float       fMax;
+  float       fDefault;
+  dvpReserved reserved;
+} dvpFloatDescr;
+
 typedef struct dvpCameraInfo {
   dvpString64  Vendor;
   dvpString64  Manufacturer;
@@ -158,8 +174,10 @@ typedef dvpStatus (*pfn_dvpStop)(dvpHandle handle);
 typedef dvpStatus (*pfn_dvpGetFrame)(dvpHandle handle, dvpFrame *pFrame, void **pBuffer, dvpUint32 timeout);
 typedef dvpStatus (*pfn_dvpGetExposure)(dvpHandle handle, double *pExposure);
 typedef dvpStatus (*pfn_dvpSetExposure)(dvpHandle handle, double Exposure);
+typedef dvpStatus (*pfn_dvpGetExposureDescr)(dvpHandle handle, dvpDoubleDescr *pExposureDescr);
 typedef dvpStatus (*pfn_dvpGetAnalogGain)(dvpHandle handle, float *pAnalogGain);
 typedef dvpStatus (*pfn_dvpSetAnalogGain)(dvpHandle handle, float AnalogGain);
+typedef dvpStatus (*pfn_dvpGetAnalogGainDescr)(dvpHandle handle, dvpFloatDescr *pAnalogGainDescr);
 typedef dvpStatus (*pfn_dvpGetTriggerState)(dvpHandle handle, bool *pTriggerState);
 typedef dvpStatus (*pfn_dvpSetTriggerState)(dvpHandle handle, bool TriggerState);
 typedef dvpStatus (*pfn_dvpSetAeOperation)(dvpHandle handle, dvpAeOperation AeOperation);

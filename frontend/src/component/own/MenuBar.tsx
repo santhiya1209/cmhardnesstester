@@ -9,12 +9,13 @@ import ListItemText from '@mui/material/ListItemText';
 import Divider from '@mui/material/Divider';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
+import type { MenuActionId } from '@/types/menu';
 
 const BAR_HEIGHT = 24;
 
 type MenuItemDef = {
   label: string;
-  action: string;
+  action: MenuActionId;
   dividerBefore?: boolean;
   shortcut?: string;
 };
@@ -158,7 +159,7 @@ type MenuButtonProps = {
   anyOpen: boolean;
   onOpen: (id: string) => void;
   onClose: () => void;
-  onSelect: (action: string) => void;
+  onSelect: (action: MenuActionId) => void;
 };
 
 const MenuButton = memo(function MenuButton({
@@ -230,7 +231,7 @@ const MenuButton = memo(function MenuButton({
 });
 
 type Props = {
-  onSelect?: (action: string) => void;
+  onSelect?: (action: MenuActionId) => void;
 };
 
 function MenuBarImpl({ onSelect }: Props) {
@@ -239,7 +240,9 @@ function MenuBarImpl({ onSelect }: Props) {
   const handleOpen = useCallback((id: string) => setOpenId(id), []);
   const handleClose = useCallback(() => setOpenId(null), []);
   const handleSelect = useCallback(
-    (action: string) => {
+    (action: MenuActionId) => {
+      // eslint-disable-next-line no-console
+      console.log('[menu] item clicked', action);
       onSelect?.(action);
     },
     [onSelect]

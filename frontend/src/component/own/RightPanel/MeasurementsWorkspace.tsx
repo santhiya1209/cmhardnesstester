@@ -14,6 +14,7 @@ import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import type { Measurement, MeasurementSavePayload } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
+import MicrometerDisplay from '@/component/own/MicrometerDisplay';
 
 const CONVERT_TYPE_OPTIONS = [
   'HV',
@@ -68,7 +69,7 @@ const HV_DISPLAY_SX: SxProps<Theme> = {
   display: 'flex',
   alignItems: 'center',
 };
-const MICROMETER_FIELD_SX: SxProps<Theme> = { width: 96 };
+const MICROMETER_FIELD_SX: SxProps<Theme> = { width: 130 };
 const ACTION_ROW_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'repeat(5, 1fr)',
@@ -136,7 +137,7 @@ function toPayload(formState: MeasurementFormState): MeasurementSavePayload | nu
     return null;
   }
 
-  return { d1, d2, hv };
+  return { d1, d2, hv, method: 'Manual' };
 }
 
 function isFormBlank(formState: MeasurementFormState): boolean {
@@ -298,12 +299,7 @@ function MeasurementsWorkspaceImpl({
             </Select>
           </FormControl>
           <Typography sx={LABEL_SX}>Micrometer</Typography>
-          <TextField
-            size="small"
-            value={formatNumber(displayedMeasurement?.average)}
-            disabled
-            sx={MICROMETER_FIELD_SX}
-          />
+          <MicrometerDisplay sx={MICROMETER_FIELD_SX} />
         </Box>
 
         <Box sx={INPUT_ROW_SX}>

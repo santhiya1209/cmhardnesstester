@@ -24,6 +24,7 @@ if (app.isPackaged) {
 
 const { registerIpc } = require('./ipc');
 const { cameraService } = require('./cameraService');
+const { micrometerService } = require('./micrometerService');
 
 const isDev = !app.isPackaged;
 const DEV_URL = process.env.VITE_DEV_URL || 'http://localhost:5173';
@@ -64,9 +65,12 @@ async function createWindow() {
   }
 
   cameraService.attach(mainWindow.webContents);
+  micrometerService.attach(mainWindow.webContents);
 
+  const wcRef = mainWindow.webContents;
   mainWindow.on('closed', () => {
-    cameraService.detach(mainWindow ? mainWindow.webContents : null);
+    try { cameraService.detach(wcRef); } catch { /* ignore */ }
+    try { micrometerService.detach(wcRef); } catch { /* ignore */ }
     mainWindow = null;
   });
 }
@@ -83,11 +87,13 @@ app.on('window-all-closed', () => {
     backendServer = null;
   }
   void cameraService.shutdown();
+  void micrometerService.shutdown();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   void cameraService.shutdown();
+  void micrometerService.shutdown();
 });
 
 app.on('activate', () => {

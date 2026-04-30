@@ -79,8 +79,10 @@ bool DvpDll_Load(DvpDll& dll, const std::wstring& searchDir) {
   LOAD_PFN(GetFrame,        dvpGetFrame);
   LOAD_PFN(GetExposure,     dvpGetExposure);
   LOAD_PFN(SetExposure,     dvpSetExposure);
+  LOAD_PFN(GetExposureDescr, dvpGetExposureDescr);
   LOAD_PFN(GetAnalogGain,   dvpGetAnalogGain);
   LOAD_PFN(SetAnalogGain,   dvpSetAnalogGain);
+  LOAD_PFN(GetAnalogGainDescr, dvpGetAnalogGainDescr);
   LOAD_PFN(GetTriggerState, dvpGetTriggerState);
   LOAD_PFN(SetTriggerState, dvpSetTriggerState);
   LOAD_PFN(SetAeOperation,  dvpSetAeOperation);
@@ -104,8 +106,10 @@ void DvpDll_Unload(DvpDll& dll) {
   dll.GetFrame = nullptr;
   dll.GetExposure = nullptr;
   dll.SetExposure = nullptr;
+  dll.GetExposureDescr = nullptr;
   dll.GetAnalogGain = nullptr;
   dll.SetAnalogGain = nullptr;
+  dll.GetAnalogGainDescr = nullptr;
   dll.GetTriggerState = nullptr;
   dll.SetTriggerState = nullptr;
   dll.SetAeOperation = nullptr;

@@ -75,6 +75,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onStatusChange?: (message: string) => void;
+  onChanged?: () => void;
 };
 
 function nonNeg(value: string): number | null {
@@ -134,7 +135,7 @@ const MICRON_ADORNMENT = {
 };
 const NUMBER_SLOT_PROPS = { htmlInput: { min: 0, step: 'any' } } as const;
 
-function CalibrationDialogImpl({ open, onClose, onStatusChange }: Props) {
+function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Props) {
   const { data: items, error: loadError, loading, refetch } = useCalibrations();
   const { saveCalibration, saving } = useCreateCalibration();
   const { removeCalibration, deleting } = useDeleteCalibration();
@@ -204,11 +205,12 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange }: Props) {
     try {
       await saveCalibration(payload);
       await refetch();
+      onChanged?.();
       onStatusChange?.('Calibration added.');
     } catch (e) {
       setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
     }
-  }, [form, onStatusChange, refetch, saveCalibration, tab]);
+  }, [form, onChanged, onStatusChange, refetch, saveCalibration, tab]);
 
   const handleManual = useCallback(() => {
     onStatusChange?.('Manual measurement (UI placeholder).');
@@ -236,11 +238,12 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange }: Props) {
       }
       setSelectedIds([]);
       await refetch();
+      onChanged?.();
       onStatusChange?.('Calibration(s) deleted.');
     } catch (e) {
       setActionError(getApiErrorMessage(e, 'Failed to delete calibration.'));
     }
-  }, [onStatusChange, refetch, removeCalibration, selectedIds]);
+  }, [onChanged, onStatusChange, refetch, removeCalibration, selectedIds]);
 
   const handleClearRequest = useCallback(() => {
     if (items.length === 0) return;
@@ -254,11 +257,12 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange }: Props) {
       await clearAll();
       setSelectedIds([]);
       await refetch();
+      onChanged?.();
       onStatusChange?.('Calibration list cleared.');
     } catch (e) {
       setActionError(getApiErrorMessage(e, 'Failed to clear calibrations.'));
     }
-  }, [clearAll, onStatusChange, refetch]);
+  }, [clearAll, onChanged, onStatusChange, refetch]);
 
   const handleExport = useCallback(async () => {
     setActionError(null);
@@ -314,12 +318,13 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange }: Props) {
         });
         await importItems({ items: importedItems });
         await refetch();
+        onChanged?.();
         onStatusChange?.(`Imported ${importedItems.length} calibration(s).`);
       } catch (e) {
         setActionError(getApiErrorMessage(e, 'Failed to import calibrations.'));
       }
     },
-    [importItems, onStatusChange, refetch]
+    [importItems, onChanged, onStatusChange, refetch]
   );
 
   const tableRows = useMemo(() => items, [items]);

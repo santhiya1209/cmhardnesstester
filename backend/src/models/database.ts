@@ -3,6 +3,7 @@ import { AlbumItemModel } from './album-item';
 import { AutoMeasureSettingsModel } from './auto-measure-settings';
 import { CalibrationModel } from './calibration';
 import { CalibrationSettingsModel } from './calibration-settings';
+import { CameraSettingModel } from './camera-setting';
 import { LineColorSettingModel } from './line-color-setting';
 import { GenericSettingModel } from './generic-setting';
 import { OtherSettingModel } from './other-setting';
@@ -30,6 +31,7 @@ export const DatabaseSchema = z.object({
   calibrations: z.array(CalibrationModel).default([]),
   lineColorSettings: z.array(LineColorSettingModel).default([]),
   serialPortSettings: z.array(SerialPortSettingModel).default([]),
+  cameraSettings: z.array(CameraSettingModel).default([]),
   genericSettings: z.array(GenericSettingModel).default([]),
   otherSettings: z.array(OtherSettingModel).default([]),
   testRecords: z.array(TestRecordModel).default([]),
@@ -50,6 +52,7 @@ export const COLLECTION_NAMES = [
   'calibrations',
   'lineColorSettings',
   'serialPortSettings',
+  'cameraSettings',
   'genericSettings',
   'otherSettings',
   'testRecords',
@@ -75,6 +78,7 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     calibrations: [],
     lineColorSettings: [],
     serialPortSettings: [],
+    cameraSettings: [],
     genericSettings: [],
     otherSettings: [],
     testRecords: [],

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import CameraStreamWorker from '@/workers/cameraStream.worker.ts?worker';
+import { getCameraFrame } from '@/api/getCameraFrame';
 import type { CameraFrameMeta } from '@/types/camera';
 
 /**
@@ -25,6 +26,9 @@ type AttachedRef = { el: HTMLCanvasElement; fallbackCtx: CanvasRenderingContext2
 let attached: AttachedRef | null = null;
 let ipcSubscribed = false;
 let mainThreadPaintHandlerInstalled = false;
+let lastFrameAt = 0;
+let fallbackTimer: number | null = null;
+let fallbackInFlight = false;
 
 function getWorker(): Worker {
   if (!sharedWorker) sharedWorker = new CameraStreamWorker();
@@ -53,6 +57,7 @@ function subscribeIpcOnce() {
   ipcSubscribed = true;
   let loggedFirst = false;
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
+    lastFrameAt = Date.now();
     if (!loggedFirst) {
       loggedFirst = true;
       // eslint-disable-next-line no-console
@@ -64,26 +69,74 @@ function subscribeIpcOnce() {
         byteLength: (body as { byteLength?: number }).byteLength,
       });
     }
-    const worker = getWorker();
-    let ab: ArrayBuffer;
-    if (body instanceof ArrayBuffer) {
-      ab = body;
-    } else {
-      const u8 = body as unknown as Uint8Array;
-      ab = u8.slice().buffer as ArrayBuffer;
-    }
-    worker.postMessage(
-      {
-        type: 'frame',
-        buffer: ab,
-        width: meta.width,
-        height: meta.height,
-        pixelFormat: meta.pixelFormat,
-        bits: meta.bits,
-      },
-      [ab]
-    );
+    postFrameToWorker(meta, body);
   });
+}
+
+function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
+  if (body instanceof ArrayBuffer) return body;
+  const u8 = body as unknown as Uint8Array;
+  return u8.slice().buffer as ArrayBuffer;
+}
+
+function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike) {
+  const worker = getWorker();
+  const ab = toArrayBuffer(body);
+  worker.postMessage(
+    {
+      type: 'frame',
+      buffer: ab,
+      width: meta.width,
+      height: meta.height,
+      pixelFormat: meta.pixelFormat,
+      bits: meta.bits,
+    },
+    [ab]
+  );
+}
+
+function startSnapshotFallback() {
+  if (fallbackTimer !== null) return;
+  fallbackTimer = window.setInterval(() => {
+    if (!attached || fallbackInFlight) return;
+    if (Date.now() - lastFrameAt < 1500) return;
+    fallbackInFlight = true;
+    void getCameraFrame(1000)
+      .then((reply) => {
+        if (
+          !reply.ok ||
+          !reply.data ||
+          typeof reply.width !== 'number' ||
+          typeof reply.height !== 'number' ||
+          !reply.pixelFormat ||
+          (reply.bits !== 8 && reply.bits !== 16) ||
+          typeof reply.timestamp !== 'number' ||
+          typeof reply.seq !== 'number' ||
+          typeof reply.bytes !== 'number'
+        ) {
+          return;
+        }
+        lastFrameAt = Date.now();
+        postFrameToWorker(
+          {
+            width: reply.width,
+            height: reply.height,
+            pixelFormat: reply.pixelFormat,
+            bits: reply.bits,
+            timestamp: reply.timestamp,
+            seq: reply.seq,
+            bytes: reply.bytes,
+          },
+          reply.data
+        );
+      })
+      .catch(() => {
+        // Live stream events may resume; keep the fallback quiet.
+      })
+      .finally(() => {
+        fallbackInFlight = false;
+      });
+  }, 1000);
 }
 
 export function useCameraStream() {
@@ -121,6 +174,7 @@ export function useCameraStream() {
       worker.postMessage({ type: 'init-2d' });
       attached = { el, fallbackCtx: el.getContext('2d') };
     }
+    startSnapshotFallback();
   }, []);
 
   useEffect(() => {

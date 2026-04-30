@@ -6,6 +6,7 @@ import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { colors } from '@/theme/theme';
+import { TOOL_ACTION_TO_TOOL, type ToolId, type ToolbarActionId } from '@/types/tool';
 
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import SaveIcon from '@mui/icons-material/Save';
@@ -17,12 +18,17 @@ import NearMeIcon from '@mui/icons-material/NearMe';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import ChangeHistoryIcon from '@mui/icons-material/ChangeHistory';
 import BackspaceIcon from '@mui/icons-material/Backspace';
+import ContentCutIcon from '@mui/icons-material/ContentCut';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
+import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import FindInPageIcon from '@mui/icons-material/FindInPage';
+import PanoramaIcon from '@mui/icons-material/Panorama';
 
 type ToolbarItemDef = {
-  action: string;
+  action: ToolbarActionId;
   label: string;
   icon: ComponentType<SvgIconProps>;
   groupEnd?: boolean;
@@ -32,8 +38,8 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'file:open', label: 'Open Image', icon: FolderOpenIcon },
   { action: 'file:save', label: 'Save Image', icon: SaveIcon, groupEnd: true },
 
-  { action: 'device:openCamera', label: 'Open Camera', icon: PlayArrowIcon },
-  { action: 'device:closeCamera', label: 'Close Camera', icon: PauseIcon, groupEnd: true },
+  { action: 'device:openCamera', label: 'Open Device', icon: PlayArrowIcon },
+  { action: 'device:closeCamera', label: 'Close Device', icon: PauseIcon, groupEnd: true },
 
   { action: 'tools:autoMeasure', label: 'Auto Measure', icon: CenterFocusStrongIcon },
   { action: 'tools:manualMeasure', label: 'Manual Measure', icon: TouchAppIcon, groupEnd: true },
@@ -41,11 +47,19 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'tools:pointer', label: 'Pointer', icon: NearMeIcon },
   { action: 'tools:measureLength', label: 'Measure Length', icon: StraightenIcon },
   { action: 'tools:measureAngle', label: 'Measure Angle', icon: ChangeHistoryIcon },
-  { action: 'tools:eraser', label: 'Eraser', icon: BackspaceIcon, groupEnd: true },
+  { action: 'tools:magnifier', label: 'Magnifier', icon: SearchIcon, groupEnd: true },
+
+  { action: 'tools:resumeImage', label: 'Resume Image', icon: RestartAltIcon },
+  { action: 'tools:clearGraphics', label: 'Clear Graphics', icon: BackspaceIcon },
+  { action: 'tools:trimMeasure', label: 'Trim Measure', icon: ContentCutIcon, groupEnd: true },
+
+  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon, groupEnd: true },
+
+  { action: 'tools:autoSearchEdge', label: 'Auto Search Edge', icon: FindInPageIcon },
+  { action: 'tools:panoramicScan', label: 'Panoramic Scan', icon: PanoramaIcon, groupEnd: true },
 
   { action: 'tools:zoomIn', label: 'Zoom In', icon: ZoomInIcon },
   { action: 'tools:zoomOut', label: 'Zoom Out', icon: ZoomOutIcon },
-  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon },
 ];
 
 const BAR_SX: SxProps<Theme> = {
@@ -57,6 +71,7 @@ const BAR_SX: SxProps<Theme> = {
   bgcolor: colors.headingPrimary,
   borderBottom: 1,
   borderColor: colors.border,
+  flexWrap: 'wrap',
 };
 
 const SPACER_SX: SxProps<Theme> = { width: 8 };
@@ -68,12 +83,20 @@ const ICON_BUTTON_SX: SxProps<Theme> = {
   '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.12)' },
 };
 
-type ToolbarButtonProps = {
-  item: ToolbarItemDef;
-  onSelect: (action: string) => void;
+const ICON_BUTTON_ACTIVE_SX: SxProps<Theme> = {
+  ...ICON_BUTTON_SX,
+  bgcolor: 'rgba(255, 255, 255, 0.22)',
+  outline: '1px solid rgba(255,255,255,0.6)',
+  '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.28)' },
 };
 
-const ToolbarButton = memo(function ToolbarButton({ item, onSelect }: ToolbarButtonProps) {
+type ToolbarButtonProps = {
+  item: ToolbarItemDef;
+  active: boolean;
+  onSelect: (action: ToolbarActionId) => void;
+};
+
+const ToolbarButton = memo(function ToolbarButton({ item, active, onSelect }: ToolbarButtonProps) {
   const Icon = item.icon;
 
   const handleClick = useCallback(() => {
@@ -82,7 +105,13 @@ const ToolbarButton = memo(function ToolbarButton({ item, onSelect }: ToolbarBut
 
   return (
     <Tooltip title={item.label} arrow placement="bottom" enterDelay={300} disableInteractive>
-      <IconButton size="small" onClick={handleClick} aria-label={item.label} sx={ICON_BUTTON_SX}>
+      <IconButton
+        size="small"
+        onClick={handleClick}
+        aria-label={item.label}
+        aria-pressed={active}
+        sx={active ? ICON_BUTTON_ACTIVE_SX : ICON_BUTTON_SX}
+      >
         <Icon fontSize="small" />
       </IconButton>
     </Tooltip>
@@ -90,18 +119,23 @@ const ToolbarButton = memo(function ToolbarButton({ item, onSelect }: ToolbarBut
 });
 
 type Props = {
-  onSelect: (action: string) => void;
+  activeTool: ToolId;
+  onSelect: (action: ToolbarActionId) => void;
 };
 
-function ToolbarImpl({ onSelect }: Props) {
+function ToolbarImpl({ activeTool, onSelect }: Props) {
   return (
     <Box sx={BAR_SX}>
-      {TOOLBAR_ITEMS.map((item) => (
-        <Fragment key={item.action}>
-          <ToolbarButton item={item} onSelect={onSelect} />
-          {item.groupEnd && <Box sx={SPACER_SX} />}
-        </Fragment>
-      ))}
+      {TOOLBAR_ITEMS.map((item) => {
+        const mappedTool = TOOL_ACTION_TO_TOOL[item.action];
+        const active = mappedTool !== undefined && mappedTool === activeTool;
+        return (
+          <Fragment key={item.action}>
+            <ToolbarButton item={item} active={active} onSelect={onSelect} />
+            {item.groupEnd && <Box sx={SPACER_SX} />}
+          </Fragment>
+        );
+      })}
     </Box>
   );
 }

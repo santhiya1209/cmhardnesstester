@@ -5,8 +5,12 @@
   "description": "Electron + React 19 + Node.js hardness tester app",
   "main": "electron/main.js",
   "scripts": {
-    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../backend/native/hardness-addon && npm install",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../backend/native/hardness-addon && npm install && cd ../../.. && npm run rebuild-native",
     "rebuild-addon": "electron-rebuild -f -w hardness-addon -m backend/native/hardness-addon",
+    "rebuild-serialport": "electron-rebuild -f -w serialport && electron-rebuild -f -w serialport -m backend",
+    "rebuild-serial-addon": "cd native/serial-addon && node ../../node_modules/node-gyp/bin/node-gyp.js rebuild",
+    "rebuild-native": "npm run rebuild-serialport && npm run rebuild-addon && npm run rebuild-serial-addon",
+    "predev": "node scripts/free-dev-ports.js",
     "dev": "concurrently -k -n BE,FE,EL \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
     "dev:backend": "dotenv -e .env -e backend/.env -- npm run dev --prefix backend",
     "dev:frontend": "dotenv -e .env -e frontend/.env -- npm run dev --prefix frontend",
@@ -35,6 +39,7 @@
     "wait-on": "^8.0.1"
   },
   "dependencies": {
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "serialport": "^13.0.0"
   }
 }

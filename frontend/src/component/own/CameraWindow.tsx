@@ -1,17 +1,17 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { closeCamera } from '@/api/closeCamera';
-import { openCamera } from '@/api/openCamera';
-import { startCameraStream } from '@/api/startCameraStream';
-import { stopCameraStream } from '@/api/stopCameraStream';
 import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
 import { useCameraStream } from '@/hooks/useCameraStream';
 import { colors } from '@/theme/theme';
+import ImageOverlay from '@/component/own/ImageOverlay';
+import MagnifierLens from '@/component/own/MagnifierLens';
+import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
+import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
 
 const ROOT_SX: SxProps<Theme> = {
   flex: 1,
@@ -30,14 +30,6 @@ const VIEW_SX: SxProps<Theme> = {
   border: 1,
   borderColor: colors.border,
   m: 1,
-};
-
-const TOOLBAR_SX: SxProps<Theme> = {
-  px: 1,
-  py: 0.5,
-  bgcolor: colors.panel,
-  borderBottom: 1,
-  borderColor: colors.border,
 };
 
 const COORD_BAR_SX: SxProps<Theme> = {
@@ -70,9 +62,27 @@ const CANVAS_STYLE: React.CSSProperties = {
 };
 
 type Props = {
-  x?: number;
-  y?: number;
+  activeTool: ToolId;
+  overlayShapes: OverlayShape[];
+  crossLineVisible: boolean;
+  onAddShape: (shape: OverlayShapeInput) => void;
+  manualMeasureResetKey: number;
+  onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
 };
+
+export type CameraWindowHandle = {
+  toggleFreeze: () => boolean;
+  zoomIn: () => number;
+  zoomOut: () => number;
+  loadImageFromBuffer: (buffer: ArrayBufferLike) => Promise<{ ok: boolean; error?: string }>;
+  exportImageBlob: (mimeType?: string) => Promise<Blob | null>;
+  refetchStatus: () => Promise<void>;
+  clearLiveCanvas: () => void;
+};
+
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 4;
+const ZOOM_STEP = 1.25;
 
 function statusLabel(o: { sdkLoaded: boolean; open: boolean; streaming: boolean }) {
   if (!o.sdkLoaded) return { label: 'SDK not loaded', color: 'warning' as const };
@@ -81,115 +91,308 @@ function statusLabel(o: { sdkLoaded: boolean; open: boolean; streaming: boolean 
   return { label: 'Idle', color: 'default' as const };
 }
 
-function CameraWindowImpl({ x = 570, y = 339 }: Props) {
+function CameraWindowImpl(
+  {
+    activeTool,
+    overlayShapes,
+    crossLineVisible,
+    onAddShape,
+    manualMeasureResetKey,
+    onManualMeasurementUpdated,
+  }: Props,
+  ref: React.Ref<CameraWindowHandle>
+) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const freezeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const { attachCanvas } = useCameraStream();
-  const { status, refetch } = useCameraStatus();
-  const [busy, setBusy] = useState<null | 'open' | 'close' | 'start' | 'stop'>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { status, refetch: refetchStatus } = useCameraStatus();
+  const [cursor, setCursor] = useState<Point | null>(null);
+  const [frozen, setFrozen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+
+  const toggleFreeze = useCallback(() => {
+    const live = canvasRef.current;
+    const snap = freezeCanvasRef.current;
+    if (!live || !snap) return false;
+    if (frozen) {
+      const ctx = snap.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
+      setFrozen(false);
+      setImageSize(
+        live.width > 0 && live.height > 0
+          ? { width: live.width, height: live.height }
+          : null
+      );
+      return false;
+    }
+    if (live.width === 0 || live.height === 0) return false;
+    snap.width = live.width;
+    snap.height = live.height;
+    const ctx = snap.getContext('2d');
+    if (!ctx) return false;
+    ctx.drawImage(live, 0, 0);
+    setImageSize({ width: live.width, height: live.height });
+    setFrozen(true);
+    return true;
+  }, [frozen]);
+
+  const zoomIn = useCallback(() => {
+    let next = 1;
+    setZoom((z) => {
+      next = Math.min(ZOOM_MAX, +(z * ZOOM_STEP).toFixed(3));
+      return next;
+    });
+    return next;
+  }, []);
+  const zoomOut = useCallback(() => {
+    let next = 1;
+    setZoom((z) => {
+      next = Math.max(ZOOM_MIN, +(z / ZOOM_STEP).toFixed(3));
+      return next;
+    });
+    return next;
+  }, []);
+
+  const loadImageFromBuffer = useCallback(
+    async (buffer: ArrayBufferLike): Promise<{ ok: boolean; error?: string }> => {
+      const snap = freezeCanvasRef.current;
+      if (!snap) return { ok: false, error: 'no-canvas' };
+      try {
+        const u8 = new Uint8Array(buffer as ArrayBuffer).slice();
+        const blob = new Blob([u8]);
+        const bitmap = await createImageBitmap(blob);
+        snap.width = bitmap.width;
+        snap.height = bitmap.height;
+        setImageSize({ width: bitmap.width, height: bitmap.height });
+        const ctx = snap.getContext('2d');
+        if (!ctx) {
+          bitmap.close();
+          return { ok: false, error: 'no-2d-context' };
+        }
+        ctx.clearRect(0, 0, snap.width, snap.height);
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        setFrozen(true);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+    []
+  );
+
+  const exportImageBlob = useCallback(
+    (mimeType: string = 'image/png'): Promise<Blob | null> => {
+      const live = canvasRef.current;
+      const snap = freezeCanvasRef.current;
+      const source = frozen && snap && snap.width > 0 ? snap : live;
+      if (!source || source.width === 0 || source.height === 0) {
+        return Promise.resolve(null);
+      }
+      // Compose source + overlay shapes onto a fresh canvas matching source pixels.
+      const out = document.createElement('canvas');
+      out.width = source.width;
+      out.height = source.height;
+      const ctx = out.getContext('2d');
+      if (!ctx) return Promise.resolve(null);
+      ctx.drawImage(source, 0, 0);
+      return new Promise((resolve) => {
+        out.toBlob((blob) => resolve(blob), mimeType);
+      });
+    },
+    [frozen]
+  );
+
+  const clearLiveCanvas = useCallback(() => {
+    const live = canvasRef.current;
+    if (!live) return;
+    const ctx = live.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, live.width, live.height);
+    if (!frozen) {
+      setImageSize(null);
+    }
+  }, [frozen]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      toggleFreeze,
+      zoomIn,
+      zoomOut,
+      loadImageFromBuffer,
+      exportImageBlob,
+      refetchStatus,
+      clearLiveCanvas,
+    }),
+    [
+      toggleFreeze,
+      zoomIn,
+      zoomOut,
+      loadImageFromBuffer,
+      exportImageBlob,
+      refetchStatus,
+      clearLiveCanvas,
+    ]
+  );
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const apply = () => {
+      const rect = el.getBoundingClientRect();
+      setViewportSize({ w: rect.width, h: rect.height });
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Attach the canvas to the worker exactly once when the element mounts.
   useEffect(() => {
     if (canvasRef.current) attachCanvas(canvasRef.current);
   }, [attachCanvas]);
 
-  const handle = useCallback(
-    async (
-      key: 'open' | 'close' | 'start' | 'stop',
-      fn: () => Promise<{ ok: boolean; error?: string; message?: string }>
-    ) => {
-      setBusy(key);
-      setError(null);
-      try {
-        const reply = await fn();
-        if (!reply.ok) {
-          setError(reply.error ? `${reply.error}: ${reply.message ?? ''}`.trim() : reply.message ?? 'Failed');
-        }
-        await refetch();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy(null);
-      }
-    },
-    [refetch]
-  );
+  useEffect(() => {
+    if (frozen) {
+      return;
+    }
+
+    if (status.width > 0 && status.height > 0) {
+      setImageSize({ width: status.width, height: status.height });
+    }
+  }, [frozen, status.height, status.width]);
 
   const tag = statusLabel(status);
 
   return (
     <Box sx={ROOT_SX}>
-      <Box sx={{ ...(TOOLBAR_SX as object), display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Button
-          size="small"
-          variant="contained"
-          onClick={() => void handle('open', () => openCamera(0))}
-          disabled={busy !== null || status.open}
-        >
-          Open Device
-        </Button>
-        <Button
-          size="small"
-          variant="outlined"
-          onClick={() => void handle('close', closeCamera)}
-          disabled={busy !== null || !status.open}
-        >
-          Close
-        </Button>
-        <Button
-          size="small"
-          variant="contained"
-          color="success"
-          onClick={() => void handle('start', startCameraStream)}
-          disabled={busy !== null || !status.open || status.streaming}
-        >
-          Start Stream
-        </Button>
-        <Button
-          size="small"
-          variant="outlined"
-          color="warning"
-          onClick={() => void handle('stop', stopCameraStream)}
-          disabled={busy !== null || !status.streaming}
-        >
-          Stop Stream
-        </Button>
-        <Box sx={{ flex: 1 }} />
-        <Chip size="small" label={tag.label} color={tag.color} variant="outlined" />
-        {status.width > 0 ? (
-          <Typography variant="caption" sx={{ color: colors.textMuted }}>
-            {status.width}×{status.height}
-          </Typography>
-        ) : null}
-      </Box>
-
       <Box sx={VIEW_SX}>
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            zIndex: 2,
+            pointerEvents: 'none',
+          }}
+        >
+          <Chip size="small" label={tag.label} color={tag.color} variant="filled" />
+          {status.width > 0 ? (
+            <Typography
+              variant="caption"
+              sx={{ color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}
+            >
+              {status.width}×{status.height}
+            </Typography>
+          ) : null}
+        </Box>
+        <Box
+          ref={viewportRef}
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            transform: `scale(${zoom})`,
+            transformOrigin: 'center center',
+            transition: 'transform 120ms ease-out',
+          }}
+        >
         <canvas ref={canvasRef} style={CANVAS_STYLE} />
-        {error ? (
+        <canvas
+          ref={freezeCanvasRef}
+          style={{
+            ...CANVAS_STYLE,
+            position: 'absolute',
+            inset: 0,
+            display: frozen ? 'block' : 'none',
+            pointerEvents: 'none',
+          }}
+        />
+        <ImageOverlay
+          activeTool={activeTool}
+          shapes={overlayShapes}
+          crossLineVisible={crossLineVisible}
+          onAddShape={onAddShape}
+          onCursor={setCursor}
+        />
+        <ManualMeasureOverlay
+          active={activeTool === 'manualMeasure'}
+          imageSize={imageSize}
+          resetKey={manualMeasureResetKey}
+          onCursor={setCursor}
+          onMeasurementUpdated={onManualMeasurementUpdated}
+        />
+        {activeTool === 'magnifier' ? (
+          <MagnifierLens
+            source={frozen ? freezeCanvasRef.current : canvasRef.current}
+            cursor={cursor}
+            containerWidth={viewportSize.w}
+            containerHeight={viewportSize.h}
+          />
+        ) : null}
+        </Box>
+        {frozen ? (
           <Box
             sx={{
               position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              p: 2,
-              color: '#fff',
+              top: 8,
+              left: 8,
+              px: 1,
+              py: 0.25,
               bgcolor: 'rgba(0,0,0,0.55)',
-              textAlign: 'center',
+              color: '#FFEB3B',
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: 0.4,
+              borderRadius: 0.5,
+              pointerEvents: 'none',
             }}
           >
-            <Typography variant="body2">{error}</Typography>
+            FROZEN
+          </Box>
+        ) : null}
+        {zoom !== 1 ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              px: 1,
+              py: 0.25,
+              bgcolor: 'rgba(0,0,0,0.55)',
+              color: '#FFFFFF',
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: 0.4,
+              borderRadius: 0.5,
+              pointerEvents: 'none',
+            }}
+          >
+            {`${Math.round(zoom * 100)}%`}
           </Box>
         ) : null}
       </Box>
 
       <Box sx={COORD_BAR_SX}>
-        <Typography component="span" sx={COORD_VALUE_SX}>X: {x}</Typography>
-        <Typography component="span" sx={COORD_VALUE_SX}>Y: {y}</Typography>
+        <Typography component="span" sx={COORD_VALUE_SX}>
+          X: {cursor ? Math.round(cursor.x) : '—'}
+        </Typography>
+        <Typography component="span" sx={COORD_VALUE_SX}>
+          Y: {cursor ? Math.round(cursor.y) : '—'}
+        </Typography>
       </Box>
     </Box>
   );
 }
 
-export default memo(CameraWindowImpl);
+export default memo(forwardRef<CameraWindowHandle, Props>(CameraWindowImpl));

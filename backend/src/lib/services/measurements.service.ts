@@ -31,6 +31,7 @@ export const measurementsService = createCrudService<
       d2: input.d2,
       average,
       hv: input.hv,
+      method: input.method ?? 'Manual',
       timestamp,
       createdAt: now,
       updatedAt: now,

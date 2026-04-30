@@ -29,13 +29,34 @@ class CameraService {
 
   attach(webContents) {
     this.webContents = webContents;
+    this.rendererReady = !webContents.isLoading();
+    const onStartLoading = () => { this.rendererReady = false; };
+    const onFinishLoad = () => { this.rendererReady = true; };
+    const onGone = () => { this.rendererReady = false; this.webContents = null; };
+    webContents.on('did-start-loading', onStartLoading);
+    webContents.on('did-finish-load', onFinishLoad);
+    webContents.on('render-process-gone', onGone);
+    webContents.on('destroyed', onGone);
     // Lazy-load on first attach so a missing native build doesn't crash
     // window creation.
     this._tryLoad();
   }
 
   detach(webContents) {
-    if (this.webContents === webContents) this.webContents = null;
+    if (this.webContents === webContents) {
+      this.webContents = null;
+      this.rendererReady = false;
+    }
+  }
+
+  _canSend() {
+    const wc = this.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    if (!this.rendererReady) return false;
+    try {
+      if (!wc.mainFrame) return false;
+    } catch { return false; }
+    return true;
   }
 
   /* ------------------------------------------------------------------ */
@@ -75,11 +96,25 @@ class CameraService {
       return Promise.resolve({ ok: false, error: 'STATUS_FAILED', message: err.message });
     }
   }
-  setExposure(valueUs) {
-    return this._call('cameraSetExposure', { valueUs });
+  setExposure(valueMs) {
+    // eslint-disable-next-line no-console
+    console.log('[cameraService] setExposure ms=', valueMs);
+    return this._call('cameraSetExposure', { valueMs });
   }
   setGain(value) {
+    // eslint-disable-next-line no-console
+    console.log('[cameraService] setGain value=', value);
     return this._call('cameraSetGain', { value });
+  }
+  getExposureRange() {
+    // eslint-disable-next-line no-console
+    console.log('[cameraService] getExposureRange');
+    return this._call('cameraGetExposureRange');
+  }
+  getGainRange() {
+    // eslint-disable-next-line no-console
+    console.log('[cameraService] getGainRange');
+    return this._call('cameraGetGainRange');
   }
   setTriggerMode(value) {
     return this._call('cameraSetTriggerMode', { value: !!value });
@@ -195,7 +230,7 @@ class CameraService {
   }
 
   _broadcastFrame(meta, data) {
-    if (!this.webContents || this.webContents.isDestroyed()) return;
+    if (!this._canSend()) return;
     // The native addon hands us an EXTERNAL buffer (zero-copy view over the
     // SDK's pixel memory). Electron's structured-clone IPC refuses external
     // buffers ("External buffers are not allowed"), so we must hand it a
@@ -208,17 +243,17 @@ class CameraService {
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
     } catch (_e) {
-      /* webContents went away */
+      this.rendererReady = false;
     }
   }
 
   _broadcastStatus(payload) {
     this.lastStatus = { ...this.lastStatus, ...payload };
-    if (!this.webContents || this.webContents.isDestroyed()) return;
+    if (!this._canSend()) return;
     try {
       this.webContents.send('camera:status', payload);
     } catch (_e) {
-      /* ignore */
+      this.rendererReady = false;
     }
   }
 }

@@ -18,8 +18,10 @@ struct DvpDll {
   pfn_dvpGetFrame        GetFrame        = nullptr;
   pfn_dvpGetExposure     GetExposure     = nullptr;
   pfn_dvpSetExposure     SetExposure     = nullptr;
+  pfn_dvpGetExposureDescr GetExposureDescr = nullptr;
   pfn_dvpGetAnalogGain   GetAnalogGain   = nullptr;
   pfn_dvpSetAnalogGain   SetAnalogGain   = nullptr;
+  pfn_dvpGetAnalogGainDescr GetAnalogGainDescr = nullptr;
   pfn_dvpGetTriggerState GetTriggerState = nullptr;
   pfn_dvpSetTriggerState SetTriggerState = nullptr;
   pfn_dvpSetAeOperation  SetAeOperation  = nullptr;

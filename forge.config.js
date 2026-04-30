@@ -8,6 +8,7 @@ module.exports = {
       'backend/.env.prod',
       'frontend/.env.prod',
       'backend/native',
+      'native/serial-addon',
     ],
     ignore: [
       /^\/release($|\/)/,

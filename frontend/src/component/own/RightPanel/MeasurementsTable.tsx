@@ -15,6 +15,7 @@ const COLUMNS = [
   'Y(mm)',
   'Hardness',
   'Hardness Type',
+  'Method',
   'Qualified',
   'D1(um)',
   'D2(um)',
@@ -121,6 +122,7 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                 <TableCell sx={BODY_CELL_SX}>-</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>HV</TableCell>
+                <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>-</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.d1)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.d2)}</TableCell>

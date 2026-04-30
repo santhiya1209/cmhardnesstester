@@ -206,6 +206,13 @@ Napi::Value CameraOpen(const Napi::CallbackInfo& info) {
   // Default to continuous streaming mode (trigger off).
   s.dll.SetTriggerState(h, false);
 
+  // Disable auto-exposure so manual exposure/gain settings actually stick.
+  // Without this, the SDK's continuous AE loop overrides every value we set
+  // a few frames later, and the user sees the slider have no effect.
+  s.dll.SetAeOperation(h, AE_OP_OFF);
+  fprintf(stderr, "[dvp] cameraOpen ok handle=%u, AE forced OFF\n", h);
+  fflush(stderr);
+
   auto r = MakeReply(env, true);
   r.Set("count", Napi::Number::New(env, count));
   r.Set("index", Napi::Number::New(env, deviceIndex));
@@ -432,21 +439,64 @@ Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   auto& s = S();
   if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
-  if (info.Length() < 1 || !info[0].IsObject()) return MakeError(env, "BAD_ARGS", "expected { valueUs }");
+  if (info.Length() < 1 || !info[0].IsObject()) return MakeError(env, "BAD_ARGS", "expected { valueMs }");
   auto opts = info[0].As<Napi::Object>();
-  if (!opts.Has("valueUs") || !opts.Get("valueUs").IsNumber()) {
-    return MakeError(env, "BAD_ARGS", "expected numeric valueUs");
+  double ms = 0.0;
+  if (opts.Has("valueMs") && opts.Get("valueMs").IsNumber()) {
+    ms = opts.Get("valueMs").As<Napi::Number>().DoubleValue();
+  } else if (opts.Has("valueUs") && opts.Get("valueUs").IsNumber()) {
+    ms = opts.Get("valueUs").As<Napi::Number>().DoubleValue() / 1000.0;
+  } else {
+    return MakeError(env, "BAD_ARGS", "expected numeric valueMs");
   }
-  double us = opts.Get("valueUs").As<Napi::Number>().DoubleValue();
-  s.dll.SetAeOperation(s.handle, AE_OP_OFF);
-  dvpStatus rs = s.dll.SetExposure(s.handle, us);
+  // Clamp against SDK descriptor range so out-of-bound values don't fail.
+  if (s.dll.GetExposureDescr) {
+    dvpDoubleDescr d{};
+    if (s.dll.GetExposureDescr(s.handle, &d) == DVP_STATUS_OK) {
+      if (ms < d.fMin) ms = d.fMin;
+      if (ms > d.fMax) ms = d.fMax;
+    }
+  }
+  fprintf(stderr, "[native] set exposure value: %.3f\n", ms);
+  fflush(stderr);
+  dvpStatus aeRs = s.dll.SetAeOperation(s.handle, AE_OP_OFF);
+  dvpStatus rs = s.dll.SetExposure(s.handle, ms);
+  fprintf(stderr, "[native] set exposure result: %d (ae=%d)\n", rs, aeRs);
+  fflush(stderr);
   if (rs != DVP_STATUS_OK) {
     return MakeError(env, "SET_EXPOSURE_FAILED", "dvpSetExposure status=" + std::to_string(rs));
   }
-  double cur = us;
+  double cur = ms;
   s.dll.GetExposure(s.handle, &cur);
   auto r = MakeReply(env, true);
-  r.Set("exposureUs", Napi::Number::New(env, cur));
+  r.Set("exposureMs", Napi::Number::New(env, cur));
+  return r;
+}
+
+Napi::Value CameraGetExposureRange(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  auto& s = S();
+  if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
+  if (!s.dll.GetExposureDescr) {
+    return MakeError(env, "NO_DESCR", "dvpGetExposureDescr not loaded");
+  }
+  dvpDoubleDescr d{};
+  dvpStatus rs = s.dll.GetExposureDescr(s.handle, &d);
+  fprintf(stderr, "[native] GetExposureDescr result: %d min=%.3f max=%.3f step=%.3f def=%.3f\n",
+          rs, d.fMin, d.fMax, d.fStep, d.fDefault);
+  fflush(stderr);
+  if (rs != DVP_STATUS_OK) {
+    return MakeError(env, "GET_EXP_RANGE_FAILED",
+                     "dvpGetExposureDescr status=" + std::to_string(rs));
+  }
+  double cur = d.fDefault;
+  if (s.dll.GetExposure) s.dll.GetExposure(s.handle, &cur);
+  auto r = MakeReply(env, true);
+  r.Set("min", Napi::Number::New(env, d.fMin));
+  r.Set("max", Napi::Number::New(env, d.fMax));
+  r.Set("step", Napi::Number::New(env, d.fStep));
+  r.Set("default", Napi::Number::New(env, d.fDefault));
+  r.Set("current", Napi::Number::New(env, cur));
   return r;
 }
 
@@ -460,7 +510,19 @@ Napi::Value CameraSetGain(const Napi::CallbackInfo& info) {
     return MakeError(env, "BAD_ARGS", "expected numeric value");
   }
   float gain = opts.Get("value").As<Napi::Number>().FloatValue();
+  if (s.dll.GetAnalogGainDescr) {
+    dvpFloatDescr d{};
+    if (s.dll.GetAnalogGainDescr(s.handle, &d) == DVP_STATUS_OK) {
+      if (gain < d.fMin) gain = d.fMin;
+      if (gain > d.fMax) gain = d.fMax;
+    }
+  }
+  fprintf(stderr, "[native] set gain value: %.3f\n", gain);
+  fflush(stderr);
+  dvpStatus aeRs = s.dll.SetAeOperation(s.handle, AE_OP_OFF);
   dvpStatus rs = s.dll.SetAnalogGain(s.handle, gain);
+  fprintf(stderr, "[native] set gain result: %d (ae=%d)\n", rs, aeRs);
+  fflush(stderr);
   if (rs != DVP_STATUS_OK) {
     return MakeError(env, "SET_GAIN_FAILED", "dvpSetAnalogGain status=" + std::to_string(rs));
   }
@@ -468,6 +530,33 @@ Napi::Value CameraSetGain(const Napi::CallbackInfo& info) {
   s.dll.GetAnalogGain(s.handle, &cur);
   auto r = MakeReply(env, true);
   r.Set("gain", Napi::Number::New(env, cur));
+  return r;
+}
+
+Napi::Value CameraGetGainRange(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  auto& s = S();
+  if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
+  if (!s.dll.GetAnalogGainDescr) {
+    return MakeError(env, "NO_DESCR", "dvpGetAnalogGainDescr not loaded");
+  }
+  dvpFloatDescr d{};
+  dvpStatus rs = s.dll.GetAnalogGainDescr(s.handle, &d);
+  fprintf(stderr, "[native] GetAnalogGainDescr result: %d min=%.3f max=%.3f step=%.3f def=%.3f\n",
+          rs, d.fMin, d.fMax, d.fStep, d.fDefault);
+  fflush(stderr);
+  if (rs != DVP_STATUS_OK) {
+    return MakeError(env, "GET_GAIN_RANGE_FAILED",
+                     "dvpGetAnalogGainDescr status=" + std::to_string(rs));
+  }
+  float cur = d.fDefault;
+  if (s.dll.GetAnalogGain) s.dll.GetAnalogGain(s.handle, &cur);
+  auto r = MakeReply(env, true);
+  r.Set("min", Napi::Number::New(env, d.fMin));
+  r.Set("max", Napi::Number::New(env, d.fMax));
+  r.Set("step", Napi::Number::New(env, d.fStep));
+  r.Set("default", Napi::Number::New(env, d.fDefault));
+  r.Set("current", Napi::Number::New(env, cur));
   return r;
 }
 
@@ -518,7 +607,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   cam.Set("cameraGetFrame",     Napi::Function::New(env, CameraGetFrame));
   cam.Set("cameraGetStatus",    Napi::Function::New(env, CameraGetStatus));
   cam.Set("cameraSetExposure",  Napi::Function::New(env, CameraSetExposure));
+  cam.Set("cameraGetExposureRange", Napi::Function::New(env, CameraGetExposureRange));
   cam.Set("cameraSetGain",      Napi::Function::New(env, CameraSetGain));
+  cam.Set("cameraGetGainRange", Napi::Function::New(env, CameraGetGainRange));
   cam.Set("cameraSetTriggerMode", Napi::Function::New(env, CameraSetTriggerMode));
   cam.Set("shutdown",           Napi::Function::New(env, Shutdown));
   exports.Set("camera", cam);

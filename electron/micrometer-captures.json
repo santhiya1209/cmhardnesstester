@@ -1,0 +1,7 @@
+{
+  "_comment": "Add LCD/hex pairs as you capture them. Each \"hex\" must be a 10-byte frame as logged by [micrometer][frame-complete]. Decoder activates with 2+ pairs and only if it can reproduce every pair exactly. To add a pair, run the app, watch the Electron terminal for [micrometer][frame-complete] hex= ..., and paste the line below with the LCD reading at that exact moment.",
+  "pairs": [
+    { "lcd": 27.791, "hex": "00 00 20 27 0c 26 30 21 09 00" },
+    { "lcd": 28.160, "hex": "00 00 20 30 0c 20 24 20 08 00" }
+  ]
+}
