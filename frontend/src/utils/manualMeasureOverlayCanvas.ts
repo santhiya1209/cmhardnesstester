@@ -1,8 +1,10 @@
-import type { ManualMeasurePoints } from '@/types/manualMeasure';
+import type {
+  ManualGuideLineKey,
+  ManualGuideLines,
+} from '@/types/manualMeasure';
 import type { Point } from '@/types/tool';
 import {
   displayToImage,
-  distancePx,
   getImagePlacement,
   imageToDisplay,
 } from '@/utils/manualMeasure';
@@ -17,20 +19,16 @@ type DrawArgs = {
   wrap: HTMLDivElement;
   active: boolean;
   imageSize: ManualMeasureImageSize | null;
-  markers: ManualMeasurePoints | null;
-  hoverIndex: number | null;
-  dragIndex: number | null;
+  guides: ManualGuideLines | null;
+  hoverGuide: ManualGuideLineKey | null;
+  dragGuide: ManualGuideLineKey | null;
 };
 
 const HANDLE_RADIUS = 6;
-const HIT_RADIUS = 14;
+const HIT_DISTANCE = 10;
 const YELLOW = '#FFFF00';
 const LABEL_BG = 'rgba(0,0,0,0.58)';
 const FONT = '12px Consolas, ui-monospace, monospace';
-
-function midpoint(a: Point, b: Point): Point {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-}
 
 function drawLabel(ctx: CanvasRenderingContext2D, text: string, at: Point) {
   ctx.font = FONT;
@@ -72,40 +70,57 @@ export function pointerToImagePoint(
   return displayToImage(displayPoint, placement, imageSize);
 }
 
-export function hitTestManualMarker(
-  event: { clientX: number; clientY: number },
+export function getDisplayGuidePositions(
+  guides: ManualGuideLines,
   wrap: HTMLDivElement,
-  imageSize: ManualMeasureImageSize,
-  markers: ManualMeasurePoints
-): number | null {
-  const displayPoint = pointerToDisplayPoint(event, wrap);
+  imageSize: ManualMeasureImageSize
+): ManualGuideLines | null {
   const placement = getImagePlacement(wrap.clientWidth, wrap.clientHeight, imageSize);
-
-  if (!displayPoint || !placement) {
+  if (!placement) {
     return null;
   }
 
-  let bestIndex: number | null = null;
-  let bestDistance = HIT_RADIUS;
-  markers.forEach((point, index) => {
-    const displayMarker = imageToDisplay(point, placement);
-    const distance = distancePx(displayPoint, displayMarker);
-    if (distance <= bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
-    }
-  });
+  return {
+    leftX: imageToDisplay({ x: guides.leftX, y: 0 }, placement).x,
+    rightX: imageToDisplay({ x: guides.rightX, y: 0 }, placement).x,
+    topY: imageToDisplay({ x: 0, y: guides.topY }, placement).y,
+    bottomY: imageToDisplay({ x: 0, y: guides.bottomY }, placement).y,
+  };
+}
 
-  return bestIndex;
+export function hitTestManualGuideLine(
+  event: { clientX: number; clientY: number },
+  wrap: HTMLDivElement,
+  imageSize: ManualMeasureImageSize,
+  guides: ManualGuideLines
+): ManualGuideLineKey | null {
+  const displayPoint = pointerToDisplayPoint(event, wrap);
+  const displayGuides = getDisplayGuidePositions(guides, wrap, imageSize);
+
+  if (!displayPoint || !displayGuides) {
+    return null;
+  }
+
+  const distances: Array<{ key: ManualGuideLineKey; distance: number }> = [
+    { key: 'left', distance: Math.abs(displayPoint.x - displayGuides.leftX) },
+    { key: 'right', distance: Math.abs(displayPoint.x - displayGuides.rightX) },
+    { key: 'top', distance: Math.abs(displayPoint.y - displayGuides.topY) },
+    { key: 'bottom', distance: Math.abs(displayPoint.y - displayGuides.bottomY) },
+  ];
+  const nearest = distances.reduce((best, item) =>
+    item.distance < best.distance ? item : best
+  );
+
+  return nearest.distance <= HIT_DISTANCE ? nearest.key : null;
 }
 
 export function drawManualMeasureOverlay({
   active,
   canvas,
-  dragIndex,
-  hoverIndex,
+  dragGuide,
+  guides,
+  hoverGuide,
   imageSize,
-  markers,
   wrap,
 }: DrawArgs) {
   const ctx = canvas.getContext('2d');
@@ -127,47 +142,74 @@ export function drawManualMeasureOverlay({
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  if (!active || !imageSize || !markers) {
+  if (!active || !imageSize || !guides) {
     return;
   }
 
-  const placement = getImagePlacement(width, height, imageSize);
-  if (!placement) {
+  const displayGuides = getDisplayGuidePositions(guides, wrap, imageSize);
+  if (!displayGuides) {
     return;
   }
 
-  const displayPoints = markers.map((point) =>
-    imageToDisplay(point, placement)
-  ) as ManualMeasurePoints;
+  const centerX = (displayGuides.leftX + displayGuides.rightX) / 2;
+  const centerY = (displayGuides.topY + displayGuides.bottomY) / 2;
+  const handles: Record<ManualGuideLineKey, Point> = {
+    left: { x: displayGuides.leftX, y: centerY },
+    right: { x: displayGuides.rightX, y: centerY },
+    top: { x: centerX, y: displayGuides.topY },
+    bottom: { x: centerX, y: displayGuides.bottomY },
+  };
 
   ctx.strokeStyle = YELLOW;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
+
+  const lineWidth = (key: ManualGuideLineKey) =>
+    key === hoverGuide || key === dragGuide ? 2.5 : 1.5;
+
   ctx.beginPath();
-  ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-  ctx.lineTo(displayPoints[1].x, displayPoints[1].y);
-  ctx.lineTo(displayPoints[2].x, displayPoints[2].y);
-  ctx.lineTo(displayPoints[3].x, displayPoints[3].y);
-  ctx.closePath();
+  ctx.lineWidth = lineWidth('left');
+  ctx.moveTo(displayGuides.leftX, 0);
+  ctx.lineTo(displayGuides.leftX, height);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.lineWidth = lineWidth('right');
+  ctx.moveTo(displayGuides.rightX, 0);
+  ctx.lineTo(displayGuides.rightX, height);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.lineWidth = lineWidth('top');
+  ctx.moveTo(0, displayGuides.topY);
+  ctx.lineTo(width, displayGuides.topY);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.lineWidth = lineWidth('bottom');
+  ctx.moveTo(0, displayGuides.bottomY);
+  ctx.lineTo(width, displayGuides.bottomY);
   ctx.stroke();
 
   ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-  ctx.lineTo(displayPoints[2].x, displayPoints[2].y);
-  ctx.moveTo(displayPoints[1].x, displayPoints[1].y);
-  ctx.lineTo(displayPoints[3].x, displayPoints[3].y);
+  ctx.moveTo(displayGuides.leftX, centerY);
+  ctx.lineTo(displayGuides.rightX, centerY);
+  ctx.moveTo(centerX, displayGuides.topY);
+  ctx.lineTo(centerX, displayGuides.bottomY);
   ctx.stroke();
   ctx.setLineDash([]);
 
-  drawLabel(ctx, 'D1', midpoint(displayPoints[0], displayPoints[2]));
-  drawLabel(ctx, 'D2', midpoint(displayPoints[1], displayPoints[3]));
+  drawLabel(ctx, 'D1', { x: centerX, y: centerY });
+  drawLabel(ctx, 'D2', { x: centerX, y: (displayGuides.topY + centerY) / 2 });
 
-  displayPoints.forEach((point, index) => {
+  (Object.keys(handles) as ManualGuideLineKey[]).forEach((key) => {
+    const point = handles[key];
     ctx.beginPath();
     ctx.arc(point.x, point.y, HANDLE_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = YELLOW;
     ctx.fill();
-    ctx.lineWidth = index === hoverIndex || index === dragIndex ? 2 : 1;
+    ctx.lineWidth = key === hoverGuide || key === dragGuide ? 2 : 1;
     ctx.strokeStyle = '#111111';
     ctx.stroke();
   });

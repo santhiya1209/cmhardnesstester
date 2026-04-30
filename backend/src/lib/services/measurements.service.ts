@@ -30,8 +30,10 @@ export const measurementsService = createCrudService<
       d1: input.d1,
       d2: input.d2,
       average,
-      hv: input.hv,
+      hv: input.hv ?? null,
+      depthMm: input.depthMm ?? null,
       method: input.method ?? 'Manual',
+      unit: input.unit ?? 'um',
       timestamp,
       createdAt: now,
       updatedAt: now,
@@ -40,6 +42,8 @@ export const measurementsService = createCrudService<
   updateEntity: (current, input, { now }) => {
     const d1 = input.d1 ?? current.d1;
     const d2 = input.d2 ?? current.d2;
+    const hv = input.hv === undefined ? current.hv : input.hv;
+    const depthMm = input.depthMm === undefined ? current.depthMm ?? null : input.depthMm;
 
     return {
       ...current,
@@ -47,6 +51,9 @@ export const measurementsService = createCrudService<
       d1,
       d2,
       average: computeAverage(d1, d2),
+      hv,
+      depthMm,
+      unit: input.unit ?? current.unit,
       timestamp: input.timestamp ?? current.timestamp,
       updatedAt: now,
     };

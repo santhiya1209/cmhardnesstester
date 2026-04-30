@@ -12,6 +12,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
+import { getLatestMicrometerReading } from '@/api/getLatestMicrometerReading';
 import type { Measurement, MeasurementSavePayload } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
@@ -108,8 +109,8 @@ function parsePositiveNumber(value: string): number | null {
   return parsed;
 }
 
-function formatNumber(value: number | undefined): string {
-  if (value === undefined) {
+function formatNumber(value: number | null | undefined): string {
+  if (value === undefined || value === null) {
     return '';
   }
 
@@ -124,7 +125,7 @@ function toFormState(measurement: Measurement | null): MeasurementFormState {
   return {
     d1: String(measurement.d1),
     d2: String(measurement.d2),
-    hv: String(measurement.hv),
+    hv: measurement.hv === null ? '' : String(measurement.hv),
   };
 }
 
@@ -137,11 +138,21 @@ function toPayload(formState: MeasurementFormState): MeasurementSavePayload | nu
     return null;
   }
 
-  return { d1, d2, hv, method: 'Manual' };
+  return { d1, d2, hv, method: 'Manual', unit: 'um' };
 }
 
 function isFormBlank(formState: MeasurementFormState): boolean {
   return !formState.d1.trim() && !formState.d2.trim() && !formState.hv.trim();
+}
+
+async function readLatestMicrometerDepthMm(): Promise<number | null> {
+  try {
+    const reply = await getLatestMicrometerReading();
+    const value = reply.reading?.value ?? null;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function MeasurementsWorkspaceImpl({
@@ -245,9 +256,14 @@ function MeasurementsWorkspaceImpl({
       return;
     }
 
+    const values =
+      editingMeasurementId === null
+        ? { ...payload, depthMm: await readLatestMicrometerDepthMm() }
+        : payload;
+
     const savedMeasurement = await saveMeasurement({
       id: editingMeasurementId ?? undefined,
-      values: payload,
+      values,
     });
 
     await refetch();

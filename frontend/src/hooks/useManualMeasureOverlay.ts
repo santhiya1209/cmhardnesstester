@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  ManualGuideLineKey,
+  ManualGuideLines,
   ManualMeasureDragResult,
-  ManualMeasurePoints,
 } from '@/types/manualMeasure';
 import type { Point } from '@/types/tool';
 import {
-  createDefaultManualMeasurePoints,
+  createDefaultManualGuideLines,
   distancePx,
+  guideLinesToPoints,
 } from '@/utils/manualMeasure';
 import {
   drawManualMeasureOverlay,
-  hitTestManualMarker,
+  hitTestManualGuideLine,
   pointerToImagePoint,
   type ManualMeasureImageSize,
 } from '@/utils/manualMeasureOverlayCanvas';
@@ -23,6 +25,39 @@ type Args = {
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
 };
 
+function normalizeGuides(
+  guides: ManualGuideLines,
+  imageSize: ManualMeasureImageSize
+): ManualGuideLines {
+  const leftX = Math.max(0, Math.min(imageSize.width, guides.leftX));
+  const rightX = Math.max(0, Math.min(imageSize.width, guides.rightX));
+  const topY = Math.max(0, Math.min(imageSize.height, guides.topY));
+  const bottomY = Math.max(0, Math.min(imageSize.height, guides.bottomY));
+
+  return {
+    leftX: Math.min(leftX, rightX),
+    rightX: Math.max(leftX, rightX),
+    topY: Math.min(topY, bottomY),
+    bottomY: Math.max(topY, bottomY),
+  };
+}
+
+function updateGuide(
+  guides: ManualGuideLines,
+  key: ManualGuideLineKey,
+  imagePoint: Point,
+  imageSize: ManualMeasureImageSize
+): ManualGuideLines {
+  const next = { ...guides };
+
+  if (key === 'left') next.leftX = imagePoint.x;
+  if (key === 'right') next.rightX = imagePoint.x;
+  if (key === 'top') next.topY = imagePoint.y;
+  if (key === 'bottom') next.bottomY = imagePoint.y;
+
+  return normalizeGuides(next, imageSize);
+}
+
 export function useManualMeasureOverlay({
   active,
   imageSize,
@@ -33,34 +68,34 @@ export function useManualMeasureOverlay({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
-  const markersRef = useRef<ManualMeasurePoints | null>(null);
-  const dragIndexRef = useRef<number | null>(null);
+  const guidesRef = useRef<ManualGuideLines | null>(null);
+  const dragGuideRef = useRef<ManualGuideLineKey | null>(null);
   const dragMovedRef = useRef(false);
-  const [markers, setMarkers] = useState<ManualMeasurePoints | null>(null);
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [guides, setGuides] = useState<ManualGuideLines | null>(null);
+  const [hoverGuide, setHoverGuide] = useState<ManualGuideLineKey | null>(null);
+  const [dragGuide, setDragGuide] = useState<ManualGuideLineKey | null>(null);
 
   useEffect(() => {
-    markersRef.current = markers;
-  }, [markers]);
+    guidesRef.current = guides;
+  }, [guides]);
 
   useEffect(() => {
-    setMarkers(null);
-    markersRef.current = null;
-    setHoverIndex(null);
-    setDragIndex(null);
-    dragIndexRef.current = null;
+    setGuides(null);
+    guidesRef.current = null;
+    setHoverGuide(null);
+    setDragGuide(null);
+    dragGuideRef.current = null;
     dragMovedRef.current = false;
   }, [resetKey]);
 
   useEffect(() => {
-    if (!active || !imageSize || markersRef.current) {
+    if (!active || !imageSize || guidesRef.current) {
       return;
     }
 
-    const initialMarkers = createDefaultManualMeasurePoints(imageSize);
-    markersRef.current = initialMarkers;
-    setMarkers(initialMarkers);
+    const initialGuides = createDefaultManualGuideLines(imageSize);
+    guidesRef.current = initialGuides;
+    setGuides(initialGuides);
   }, [active, imageSize]);
 
   const scheduleDraw = useCallback(() => {
@@ -79,14 +114,14 @@ export function useManualMeasureOverlay({
       drawManualMeasureOverlay({
         active,
         canvas,
-        dragIndex,
-        hoverIndex,
+        dragGuide,
+        guides: guidesRef.current,
+        hoverGuide,
         imageSize,
-        markers: markersRef.current,
         wrap,
       });
     });
-  }, [active, dragIndex, hoverIndex, imageSize]);
+  }, [active, dragGuide, hoverGuide, imageSize]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -109,30 +144,31 @@ export function useManualMeasureOverlay({
 
   useEffect(() => {
     scheduleDraw();
-  }, [markers, scheduleDraw]);
+  }, [guides, scheduleDraw]);
 
   const emitMeasurement = useCallback(() => {
-    const current = markersRef.current;
+    const current = guidesRef.current;
     if (!current) {
       return;
     }
 
-    const d1Px = distancePx(current[0], current[2]);
-    const d2Px = distancePx(current[1], current[3]);
+    const points = guideLinesToPoints(current);
+    const d1Px = distancePx(points[1], points[3]);
+    const d2Px = distancePx(points[0], points[2]);
     // eslint-disable-next-line no-console
-    console.log('[manual-measure] markers updated', { points: current });
-    onMeasurementUpdated({ points: current, d1Px, d2Px });
+    console.log('[manual-measure] markers updated', { guides: current });
+    onMeasurementUpdated({ points, d1Px, d2Px });
   }, [onMeasurementUpdated]);
 
   const hitTest = useCallback(
-    (event: React.PointerEvent): number | null => {
+    (event: React.PointerEvent): ManualGuideLineKey | null => {
       const wrap = wrapRef.current;
-      const current = markersRef.current;
+      const current = guidesRef.current;
       if (!wrap || !imageSize || !current) {
         return null;
       }
 
-      return hitTestManualMarker(event, wrap, imageSize, current);
+      return hitTestManualGuideLine(event, wrap, imageSize, current);
     },
     [imageSize]
   );
@@ -143,15 +179,15 @@ export function useManualMeasureOverlay({
         return;
       }
 
-      const nextDragIndex = hitTest(event);
-      if (nextDragIndex === null) {
+      const nextDragGuide = hitTest(event);
+      if (nextDragGuide === null) {
         return;
       }
 
       event.currentTarget.setPointerCapture(event.pointerId);
-      dragIndexRef.current = nextDragIndex;
+      dragGuideRef.current = nextDragGuide;
       dragMovedRef.current = false;
-      setDragIndex(nextDragIndex);
+      setDragGuide(nextDragGuide);
       event.preventDefault();
     },
     [active, hitTest, imageSize]
@@ -170,28 +206,30 @@ export function useManualMeasureOverlay({
       }
 
       onCursor?.(imagePoint);
-      setHoverIndex(hitTest(event));
+      setHoverGuide(hitTest(event));
 
-      const currentDragIndex = dragIndexRef.current;
-      if (currentDragIndex === null) {
+      const currentDragGuide = dragGuideRef.current;
+      if (currentDragGuide === null) {
         return;
       }
 
-      setMarkers((current) => {
+      setGuides((current) => {
         if (!current) {
           return current;
         }
 
-        const currentPoint = current[currentDragIndex];
-        if (distancePx(currentPoint, imagePoint) < 0.5) {
+        const next = updateGuide(current, currentDragGuide, imagePoint, imageSize);
+        if (
+          Math.abs(next.leftX - current.leftX) < 0.5 &&
+          Math.abs(next.rightX - current.rightX) < 0.5 &&
+          Math.abs(next.topY - current.topY) < 0.5 &&
+          Math.abs(next.bottomY - current.bottomY) < 0.5
+        ) {
           return current;
         }
 
         dragMovedRef.current = true;
-        const next = current.map((point, index) =>
-          index === currentDragIndex ? imagePoint : point
-        ) as ManualMeasurePoints;
-        markersRef.current = next;
+        guidesRef.current = next;
         return next;
       });
     },
@@ -200,9 +238,9 @@ export function useManualMeasureOverlay({
 
   const handlePointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (dragIndexRef.current !== null) {
-        dragIndexRef.current = null;
-        setDragIndex(null);
+      if (dragGuideRef.current !== null) {
+        dragGuideRef.current = null;
+        setDragGuide(null);
         if (dragMovedRef.current) {
           emitMeasurement();
         }
@@ -217,15 +255,15 @@ export function useManualMeasureOverlay({
   );
 
   const handlePointerLeave = useCallback(() => {
-    if (dragIndexRef.current === null) {
-      setHoverIndex(null);
+    if (dragGuideRef.current === null) {
+      setHoverGuide(null);
       onCursor?.(null);
     }
   }, [onCursor]);
 
   return {
     canvasRef,
-    cursor: dragIndex !== null ? 'grabbing' : hoverIndex !== null ? 'grab' : 'crosshair',
+    cursor: dragGuide !== null ? 'grabbing' : hoverGuide !== null ? 'grab' : 'crosshair',
     handlePointerDown,
     handlePointerLeave,
     handlePointerMove,

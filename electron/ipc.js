@@ -105,6 +105,10 @@ function registerIpc() {
     ok: true,
     state: micrometerService.getState(),
   }));
+  ipcMain.handle('micrometer:get-latest-reading', () => ({
+    ok: true,
+    reading: micrometerService.getLatestReading(),
+  }));
 
   /* ------------------ device channels ------------------ */
   // "Open Device" — opens camera, starts stream, and opens the micrometer

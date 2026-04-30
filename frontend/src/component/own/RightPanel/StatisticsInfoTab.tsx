@@ -39,7 +39,11 @@ function formatNumber(value: number | null): string {
 
 function StatisticsInfoTabImpl({ measurements = [] }: Props) {
   const stats = useMemo(() => {
-    if (measurements.length === 0) {
+    const hardnessValues = measurements
+      .map((measurement) => measurement.hv)
+      .filter((value): value is number => value !== null);
+
+    if (hardnessValues.length === 0) {
       return {
         count: 0,
         min: null,
@@ -50,7 +54,6 @@ function StatisticsInfoTabImpl({ measurements = [] }: Props) {
       };
     }
 
-    const hardnessValues = measurements.map((measurement) => measurement.hv);
     const count = hardnessValues.length;
     const average = hardnessValues.reduce((sum, value) => sum + value, 0) / count;
     const variance =

@@ -21,6 +21,7 @@ const ALLOWED_INVOKE = new Set([
   'micrometer:open',
   'micrometer:close',
   'micrometer:get-state',
+  'micrometer:get-latest-reading',
   'app:exit',
 ]);
 

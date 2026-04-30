@@ -16,6 +16,13 @@ export interface MicrometerState {
   lockedBaudRate?: number | null;
 }
 
+export interface MicrometerReading {
+  value: number | null;
+  raw: string;
+  unit: 'mm';
+  timestamp: number;
+}
+
 export interface MicrometerOpenResult {
   ok: boolean;
   alreadyOpen?: boolean;
@@ -34,4 +41,9 @@ export interface MicrometerCloseResult {
 export interface MicrometerGetStateResult {
   ok: true;
   state: MicrometerState;
+}
+
+export interface MicrometerGetLatestReadingResult {
+  ok: true;
+  reading: MicrometerReading | null;
 }

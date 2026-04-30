@@ -28,7 +28,7 @@ assert.strictEqual(bufferToHex(positive29686), '00 00 20 20 0c 29 26 28 26 00');
   const decoded = parseBinaryMicrometerFrame(positive29686);
   assert.ok(decoded);
   assert.strictEqual(decoded.value, 29.686);
-  assert.strictEqual(decoded.displayValue, '29.686 mm');
+  assert.strictEqual(decoded.displayValue, '+29.686 mm');
   assert.deepStrictEqual(decoded.digits, [2, 9, 6, 8, 6]);
 }
 
@@ -46,8 +46,8 @@ assert.strictEqual(bufferToHex(positive29686), '00 00 20 20 0c 29 26 28 26 00');
   assert.strictEqual(parseBinaryMicrometerFrame(noisy2400Frame), null);
 }
 
-assert.strictEqual(formatDisplayValue(0), '0.000 mm');
-assert.strictEqual(formatDisplayValue(1.2), '1.200 mm');
+assert.strictEqual(formatDisplayValue(0), '+0.000 mm');
+assert.strictEqual(formatDisplayValue(1.2), '+1.200 mm');
 assert.strictEqual(formatDisplayValue(-1.2), '-1.200 mm');
 
 for (const [label, hex, reason] of [

@@ -7,6 +7,7 @@ import type {
 import type { OpenImageResult, SaveImageRequest, SaveImageResult } from './dialog';
 import type {
   MicrometerCloseResult,
+  MicrometerGetLatestReadingResult,
   MicrometerGetStateResult,
   MicrometerOpenResult,
   MicrometerState,
@@ -87,7 +88,8 @@ export type IpcInvokeChannel =
   | 'dialog:saveImage'
   | 'micrometer:open'
   | 'micrometer:close'
-  | 'micrometer:get-state';
+  | 'micrometer:get-state'
+  | 'micrometer:get-latest-reading';
 
 export type IpcEventChannel =
   | 'app:status'
@@ -141,6 +143,7 @@ export type IpcInvokeMap = {
   'micrometer:open': { request: { port?: string } | void; response: MicrometerOpenResult };
   'micrometer:close': { request: void; response: MicrometerCloseResult };
   'micrometer:get-state': { request: void; response: MicrometerGetStateResult };
+  'micrometer:get-latest-reading': { request: void; response: MicrometerGetLatestReadingResult };
 };
 
 export type IpcEventPayloadMap = {

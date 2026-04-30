@@ -2,6 +2,8 @@ import type { Calibration } from '@/types/calibration';
 import type { CalibrationSettings } from '@/types/calibrationSettings';
 import type { MachineState } from '@/types/machine';
 import type {
+  ManualDiagonalValues,
+  ManualGuideLines,
   ManualMeasurementValues,
   ManualMeasurePoints,
 } from '@/types/manualMeasure';
@@ -102,6 +104,31 @@ export function createDefaultManualMeasurePoints(
   ];
 }
 
+export function createDefaultManualGuideLines(imageSize: ImageSize): ManualGuideLines {
+  const centerX = imageSize.width / 2;
+  const centerY = imageSize.height / 2;
+  const radius = Math.max(12, Math.min(imageSize.width, imageSize.height) * 0.12);
+
+  return {
+    leftX: Math.max(0, centerX - radius),
+    rightX: Math.min(imageSize.width, centerX + radius),
+    topY: Math.max(0, centerY - radius),
+    bottomY: Math.min(imageSize.height, centerY + radius),
+  };
+}
+
+export function guideLinesToPoints(guides: ManualGuideLines): ManualMeasurePoints {
+  const centerX = (guides.leftX + guides.rightX) / 2;
+  const centerY = (guides.topY + guides.bottomY) / 2;
+
+  return [
+    { x: centerX, y: guides.topY },
+    { x: guides.rightX, y: centerY },
+    { x: centerX, y: guides.bottomY },
+    { x: guides.leftX, y: centerY },
+  ];
+}
+
 export function parseForceKgf(value: string | number | null | undefined): number | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) && value > 0 ? value : null;
@@ -162,23 +189,49 @@ export function calculateManualMeasurement(
   micronsPerPixel: number,
   forceKgf: number
 ): ManualMeasurementValues | null {
-  if (micronsPerPixel <= 0 || forceKgf <= 0) {
+  const d1Px = distancePx(points[1], points[3]);
+  const d2Px = distancePx(points[0], points[2]);
+  const diagonals = calculateManualDiagonalsFromPixels(d1Px, d2Px, micronsPerPixel);
+  if (!diagonals || forceKgf <= 0) {
     return null;
   }
 
-  const d1 = distancePx(points[0], points[2]) * micronsPerPixel;
-  const d2 = distancePx(points[1], points[3]) * micronsPerPixel;
-  const average = (d1 + d2) / 2;
-  const averageMm = average / 1000;
+  const averageMm = diagonals.average / 1000;
 
   if (averageMm <= 0) {
     return null;
   }
 
   return {
+    ...diagonals,
+    hv: round(VICKERS_CONSTANT * forceKgf / (averageMm * averageMm), 2),
+  };
+}
+
+export function calculateManualDiagonals(
+  points: ManualMeasurePoints,
+  unitPerPixel: number
+): ManualDiagonalValues | null {
+  const d1Px = distancePx(points[1], points[3]);
+  const d2Px = distancePx(points[0], points[2]);
+  return calculateManualDiagonalsFromPixels(d1Px, d2Px, unitPerPixel);
+}
+
+export function calculateManualDiagonalsFromPixels(
+  d1Px: number,
+  d2Px: number,
+  unitPerPixel: number
+): ManualDiagonalValues | null {
+  if (unitPerPixel <= 0 || d1Px <= 0 || d2Px <= 0) {
+    return null;
+  }
+
+  const d1 = d1Px * unitPerPixel;
+  const d2 = d2Px * unitPerPixel;
+
+  return {
     d1: round(d1, 4),
     d2: round(d2, 4),
-    average: round(average, 4),
-    hv: round(VICKERS_CONSTANT * forceKgf / (averageMm * averageMm), 2),
+    average: round((d1 + d2) / 2, 4),
   };
 }

@@ -77,6 +77,11 @@ function formatTimestamp(value: string): string {
   }).format(new Date(value));
 }
 
+function formatMeasurementLabel(measurement: Measurement): string {
+  const hv = measurement.hv === null ? '-' : measurement.hv;
+  return `HV ${hv} | D1 ${measurement.d1} ${measurement.unit} | D2 ${measurement.d2} ${measurement.unit}`;
+}
+
 function TestRecordsDialogImpl({
   open,
   onClose,
@@ -243,7 +248,7 @@ function TestRecordsDialogImpl({
                         onChange={() => handleMeasurementToggle(measurement.id)}
                       />
                     }
-                    label={`HV ${measurement.hv} | D1 ${measurement.d1} | D2 ${measurement.d2}`}
+                    label={formatMeasurementLabel(measurement)}
                   />
                 ))
               )}

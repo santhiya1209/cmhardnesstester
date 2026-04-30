@@ -21,7 +21,7 @@ function bufferToByteTable(buffer) {
 }
 
 function formatDisplayValue(value) {
-  const sign = value < 0 ? '-' : '';
+  const sign = value < 0 ? '-' : '+';
   return `${sign}${Math.abs(value).toFixed(DEFAULT_DECIMAL_PLACES)} mm`;
 }
 

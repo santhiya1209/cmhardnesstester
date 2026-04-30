@@ -4,7 +4,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { colors } from '@/theme/theme';
-import { useMicrometer } from '@/hooks/useMicrometer';
+import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 
 const BAR_SX: SxProps<Theme> = {
   display: 'flex',
@@ -47,7 +47,7 @@ type Props = {
 };
 
 function MicrometerReadoutImpl() {
-  const { connected, displayValue, updatedAt } = useMicrometer();
+  const { connected, displayText, updatedAt } = useMicrometerReading();
   const title = updatedAt ? new Date(updatedAt).toLocaleTimeString() : undefined;
 
   return (
@@ -56,7 +56,7 @@ function MicrometerReadoutImpl() {
         Micrometer:
       </Typography>
       <Typography component="span" sx={VALUE_SX} title={title}>
-        {displayValue}
+        {displayText}
       </Typography>
       <Typography component="span" sx={CONNECTION_SX}>
         {connected ? 'Connected' : 'Disconnected'}

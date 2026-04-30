@@ -8,6 +8,7 @@ import TableRow from '@mui/material/TableRow';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { colors } from '@/theme/theme';
+import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
 
 const COLUMNS = [
   '#',
@@ -16,10 +17,11 @@ const COLUMNS = [
   'Hardness',
   'Hardness Type',
   'Method',
+  'Unit',
   'Qualified',
-  'D1(um)',
-  'D2(um)',
-  'Davg(um)',
+  'D1',
+  'D2',
+  'Davg',
   'Convert Type',
   'Convert Value',
   'Depth',
@@ -71,8 +73,16 @@ type Props = {
   onSelect: (measurementId: string) => void;
 };
 
-function formatNumber(value: number): string {
+function formatNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return '-';
+  }
+
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatDepth(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : formatMicrometerValue(value);
 }
 
 function formatTimestamp(value: string): string {
@@ -123,13 +133,14 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>HV</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
+                <TableCell sx={BODY_CELL_SX}>{measurement.unit}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>-</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.d1)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.d2)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.average)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>HV</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>-</TableCell>
+                <TableCell sx={BODY_CELL_SX}>{formatDepth(measurement.depthMm)}</TableCell>
                 <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
               </TableRow>
             ))
