@@ -3,6 +3,8 @@ import { EntityIdSchema, IsoDateTimeSchema, PositiveNumberSchema } from './commo
 
 export const MeasurementMethodSchema = z.enum(['Manual', 'Auto']);
 export const MeasurementUnitSchema = z.enum(['um', 'px']);
+const NullablePositiveNumberSchema = PositiveNumberSchema.nullable().default(null);
+const NullableTextSchema = z.string().trim().nullable().default(null);
 
 export const MeasurementPayloadSchema = z.object({
   d1: PositiveNumberSchema,
@@ -11,6 +13,16 @@ export const MeasurementPayloadSchema = z.object({
   depthMm: z.number().finite().nullable().default(null),
   method: MeasurementMethodSchema.default('Manual'),
   unit: MeasurementUnitSchema.default('um'),
+  d1Px: NullablePositiveNumberSchema,
+  d2Px: NullablePositiveNumberSchema,
+  d1Um: NullablePositiveNumberSchema,
+  d2Um: NullablePositiveNumberSchema,
+  averageUm: NullablePositiveNumberSchema,
+  averageMm: NullablePositiveNumberSchema,
+  micronPerPixel: NullablePositiveNumberSchema,
+  calibrationName: NullableTextSchema,
+  objective: NullableTextSchema,
+  testForceKgf: NullablePositiveNumberSchema,
   timestamp: IsoDateTimeSchema,
 });
 

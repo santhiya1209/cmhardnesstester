@@ -27,3 +27,19 @@ export type ManualMeasurementValues = {
 };
 
 export type ManualDiagonalValues = Omit<ManualMeasurementValues, 'hv'>;
+
+export type ManualCalibrationInfo = {
+  micronPerPixel: number;
+  calibrationName: string | null;
+  objective: string | null;
+};
+
+export type ManualCalibratedValues = {
+  d1Px: number;
+  d2Px: number;
+  d1Um: number;
+  d2Um: number;
+  averageUm: number;
+  averageMm: number;
+  hv: number | null;
+};

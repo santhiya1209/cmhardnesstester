@@ -14,16 +14,16 @@ const COLUMNS = [
   '#',
   'X(mm)',
   'Y(mm)',
-  'Hardness',
-  'Hardness Type',
   'Method',
-  'Unit',
-  'Qualified',
-  'D1',
-  'D2',
-  'Davg',
-  'Convert Type',
-  'Convert Value',
+  'D1 px',
+  'D2 px',
+  'D1 µm',
+  'D2 µm',
+  'Avg µm',
+  'Avg mm',
+  'HV',
+  'Force',
+  'Calibration',
   'Depth',
   'Measure Time',
 ] as const;
@@ -73,12 +73,12 @@ type Props = {
   onSelect: (measurementId: string) => void;
 };
 
-function formatNumber(value: number | null | undefined): string {
+function formatNumber(value: number | null | undefined, digits = 2): string {
   if (value === null || value === undefined) {
     return '-';
   }
 
-  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  return Number.isInteger(value) ? String(value) : value.toFixed(digits);
 }
 
 function formatDepth(value: number | null | undefined): string {
@@ -119,31 +119,40 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
               </TableCell>
             </TableRow>
           ) : (
-            measurements.map((measurement, index) => (
-              <TableRow
-                key={measurement.id}
-                hover
-                selected={measurement.id === selectedMeasurementId}
-                sx={SELECTED_ROW_SX}
-                onClick={() => onSelect(measurement.id)}
-              >
-                <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>-</TableCell>
-                <TableCell sx={BODY_CELL_SX}>-</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>HV</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{measurement.unit}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>-</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.d1)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.d2)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.average)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>HV</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatDepth(measurement.depthMm)}</TableCell>
-                <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
-              </TableRow>
-            ))
+            measurements.map((measurement, index) => {
+              const d1Px = measurement.d1Px ?? (measurement.unit === 'px' ? measurement.d1 : null);
+              const d2Px = measurement.d2Px ?? (measurement.unit === 'px' ? measurement.d2 : null);
+              const d1Um = measurement.d1Um ?? (measurement.unit === 'um' ? measurement.d1 : null);
+              const d2Um = measurement.d2Um ?? (measurement.unit === 'um' ? measurement.d2 : null);
+              const averageUm =
+                measurement.averageUm ?? (measurement.unit === 'um' ? measurement.average : null);
+
+              return (
+                <TableRow
+                  key={measurement.id}
+                  hover
+                  selected={measurement.id === selectedMeasurementId}
+                  sx={SELECTED_ROW_SX}
+                  onClick={() => onSelect(measurement.id)}
+                >
+                  <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>-</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>-</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Px)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d2Px)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Um, 3)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d2Um, 3)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(averageUm, 3)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.averageMm, 6)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.testForceKgf, 3)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{measurement.calibrationName ?? '-'}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatDepth(measurement.depthMm)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
+                </TableRow>
+              );
+            })
           )}
         </TableBody>
       </Table>

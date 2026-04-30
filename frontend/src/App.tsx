@@ -40,10 +40,10 @@ import type { ToolbarActionId } from '@/types/tool';
 import type { ConfigDialogId, MenuActionId } from '@/types/menu';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import {
-  calculateManualDiagonals,
-  calculateManualMeasurement,
+  calculateManualCalibratedValuesFromPixels,
+  calculateManualDiagonalsFromPixels,
   parseForceKgf,
-  resolveMicronsPerPixel,
+  resolveManualCalibration,
 } from '@/utils/manualMeasure';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -142,66 +142,43 @@ function App() {
           const depthPayload = isNewManualMeasurement
             ? { depthMm: await readLatestMicrometerDepthMm() }
             : {};
-          const micronsPerPixel = resolveMicronsPerPixel({
+          const pixelValues = calculateManualDiagonalsFromPixels(
+            result.d1Px,
+            result.d2Px,
+            1
+          );
+
+          if (!pixelValues) {
+            setUnavailableMsg('Manual Measure requires valid D1/D2 values greater than 0.');
+            return;
+          }
+
+          const calibration = resolveManualCalibration({
             calibrationSettings,
             calibrations,
             machineState,
           });
 
-          if (!micronsPerPixel) {
-            const pixelValues = calculateManualDiagonals(result.points, 1);
-            if (pixelValues) {
-              const saved = await saveManualMeasurement({
-                id: manualMeasurementIdRef.current ?? undefined,
-                values: {
-                  d1: pixelValues.d1,
-                  d2: pixelValues.d2,
-                  hv: null,
-                  ...depthPayload,
-                  method: 'Manual',
-                  unit: 'px',
-                  timestamp,
-                },
-              });
-
-              manualMeasurementIdRef.current = saved.id;
-              await refetchMeasurements();
-              // eslint-disable-next-line no-console
-              console.log('[manual-measure] D1/D2 calculated', {
-                d1Px: result.d1Px,
-                d2Px: result.d2Px,
-                unit: 'px',
-              });
-              // eslint-disable-next-line no-console
-              console.log('[manual-measure] table row updated', {
-                id: saved.id,
-                method: saved.method,
-              });
-            }
-            setUnavailableMsg(
-              'Manual Measure saved D1/D2 in pixels. Add calibration to calculate um and HV.'
-            );
-            return;
-          }
-
-          const forceKgf = parseForceKgf(machineState?.force);
-          const calibratedDiagonals = calculateManualDiagonals(result.points, micronsPerPixel);
-
-          if (!calibratedDiagonals) {
-            setUnavailableMsg('Manual Measure could not calculate D1/D2 from these markers.');
-            return;
-          }
-
-          if (!forceKgf) {
+          if (!calibration) {
             const saved = await saveManualMeasurement({
               id: manualMeasurementIdRef.current ?? undefined,
               values: {
-                d1: calibratedDiagonals.d1,
-                d2: calibratedDiagonals.d2,
+                d1: pixelValues.d1,
+                d2: pixelValues.d2,
+                d1Px: pixelValues.d1,
+                d2Px: pixelValues.d2,
+                d1Um: null,
+                d2Um: null,
+                averageUm: null,
+                averageMm: null,
                 hv: null,
+                micronPerPixel: null,
+                calibrationName: null,
+                objective: machineState?.objective ?? null,
+                testForceKgf: null,
                 ...depthPayload,
                 method: 'Manual',
-                unit: 'um',
+                unit: 'px',
                 timestamp,
               },
             });
@@ -210,50 +187,60 @@ function App() {
             await refetchMeasurements();
             // eslint-disable-next-line no-console
             console.log('[manual-measure] D1/D2 calculated', {
-              d1Px: result.d1Px,
-              d2Px: result.d2Px,
-              d1: calibratedDiagonals.d1,
-              d2: calibratedDiagonals.d2,
-              average: calibratedDiagonals.average,
+              d1Px: pixelValues.d1,
+              d2Px: pixelValues.d2,
+              unit: 'px',
             });
             // eslint-disable-next-line no-console
             console.log('[manual-measure] table row updated', {
               id: saved.id,
               method: saved.method,
             });
-            setUnavailableMsg(
-              'Manual Measure saved D1/D2. Set a valid force/load value to calculate HV.'
-            );
+            setUnavailableMsg('Calibration required to calculate µm and HV');
             return;
           }
 
-          const values = calculateManualMeasurement(
-            result.points,
-            micronsPerPixel,
+          const forceKgf = parseForceKgf(machineState?.force);
+          const values = calculateManualCalibratedValuesFromPixels(
+            result.d1Px,
+            result.d2Px,
+            calibration.micronPerPixel,
             forceKgf
           );
 
           if (!values) {
-            setUnavailableMsg('Manual Measure could not calculate D1/D2 from these markers.');
+            setUnavailableMsg('Manual Measure requires valid calibration and D1/D2 values.');
             return;
           }
 
           // eslint-disable-next-line no-console
           console.log('[manual-measure] D1/D2 calculated', {
-            d1Px: result.d1Px,
-            d2Px: result.d2Px,
-            d1: values.d1,
-            d2: values.d2,
-            average: values.average,
+            d1Px: values.d1Px,
+            d2Px: values.d2Px,
+            d1Um: values.d1Um,
+            d2Um: values.d2Um,
+            averageUm: values.averageUm,
+            averageMm: values.averageMm,
             hv: values.hv,
+            micronPerPixel: calibration.micronPerPixel,
           });
 
           const saved = await saveManualMeasurement({
             id: manualMeasurementIdRef.current ?? undefined,
             values: {
-              d1: values.d1,
-              d2: values.d2,
+              d1: values.d1Um,
+              d2: values.d2Um,
+              d1Px: values.d1Px,
+              d2Px: values.d2Px,
+              d1Um: values.d1Um,
+              d2Um: values.d2Um,
+              averageUm: values.averageUm,
+              averageMm: values.averageMm,
               hv: values.hv,
+              micronPerPixel: calibration.micronPerPixel,
+              calibrationName: calibration.calibrationName,
+              objective: calibration.objective ?? machineState?.objective ?? null,
+              testForceKgf: forceKgf,
               ...depthPayload,
               method: 'Manual',
               unit: 'um',
@@ -268,6 +255,13 @@ function App() {
             id: saved.id,
             method: saved.method,
           });
+          if (!forceKgf) {
+            setUnavailableMsg(
+              'Manual Measure saved µm values. Set a valid force/load value to calculate HV.'
+            );
+            return;
+          }
+
           setStatusMessage(`System Status: Manual measurement updated: HV ${values.hv}`);
         } catch (err) {
           setUnavailableMsg(

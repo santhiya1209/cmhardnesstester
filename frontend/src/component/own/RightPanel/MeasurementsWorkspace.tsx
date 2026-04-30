@@ -138,7 +138,19 @@ function toPayload(formState: MeasurementFormState): MeasurementSavePayload | nu
     return null;
   }
 
-  return { d1, d2, hv, method: 'Manual', unit: 'um' };
+  const averageUm = Number(((d1 + d2) / 2).toFixed(3));
+
+  return {
+    d1,
+    d2,
+    d1Um: Number(d1.toFixed(3)),
+    d2Um: Number(d2.toFixed(3)),
+    averageUm,
+    averageMm: Number((averageUm / 1000).toFixed(6)),
+    hv,
+    method: 'Manual',
+    unit: 'um',
+  };
 }
 
 function isFormBlank(formState: MeasurementFormState): boolean {

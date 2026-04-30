@@ -7,6 +7,16 @@ export type MeasurementPayload = {
   depthMm: number | null;
   method: ManualMeasureMethod;
   unit: ManualMeasureUnit;
+  d1Px: number | null;
+  d2Px: number | null;
+  d1Um: number | null;
+  d2Um: number | null;
+  averageUm: number | null;
+  averageMm: number | null;
+  micronPerPixel: number | null;
+  calibrationName: string | null;
+  objective: string | null;
+  testForceKgf: number | null;
   timestamp: string;
 };
 
@@ -17,6 +27,16 @@ export type MeasurementSavePayload = {
   depthMm?: number | null;
   method?: ManualMeasureMethod;
   unit?: ManualMeasureUnit;
+  d1Px?: number | null;
+  d2Px?: number | null;
+  d1Um?: number | null;
+  d2Um?: number | null;
+  averageUm?: number | null;
+  averageMm?: number | null;
+  micronPerPixel?: number | null;
+  calibrationName?: string | null;
+  objective?: string | null;
+  testForceKgf?: number | null;
   timestamp?: string;
 };
 

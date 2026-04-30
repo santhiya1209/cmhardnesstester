@@ -79,7 +79,13 @@ function formatTimestamp(value: string): string {
 
 function formatMeasurementLabel(measurement: Measurement): string {
   const hv = measurement.hv === null ? '-' : measurement.hv;
-  return `HV ${hv} | D1 ${measurement.d1} ${measurement.unit} | D2 ${measurement.d2} ${measurement.unit}`;
+  const d1Px = measurement.d1Px ?? (measurement.unit === 'px' ? measurement.d1 : null);
+  const d2Px = measurement.d2Px ?? (measurement.unit === 'px' ? measurement.d2 : null);
+  const d1Um = measurement.d1Um ?? (measurement.unit === 'um' ? measurement.d1 : null);
+  const d2Um = measurement.d2Um ?? (measurement.unit === 'um' ? measurement.d2 : null);
+  const pxText = d1Px !== null && d2Px !== null ? ` | D1 ${d1Px} px | D2 ${d2Px} px` : '';
+  const umText = d1Um !== null && d2Um !== null ? ` | D1 ${d1Um} µm | D2 ${d2Um} µm` : '';
+  return `HV ${hv}${pxText}${umText}`;
 }
 
 function TestRecordsDialogImpl({

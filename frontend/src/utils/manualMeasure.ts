@@ -2,6 +2,8 @@ import type { Calibration } from '@/types/calibration';
 import type { CalibrationSettings } from '@/types/calibrationSettings';
 import type { MachineState } from '@/types/machine';
 import type {
+  ManualCalibratedValues,
+  ManualCalibrationInfo,
   ManualDiagonalValues,
   ManualGuideLines,
   ManualMeasurementValues,
@@ -148,8 +150,24 @@ export function resolveMicronsPerPixel({
   calibrations,
   machineState,
 }: ResolveMicronsPerPixelArgs): number | null {
+  return resolveManualCalibration({
+    calibrationSettings,
+    calibrations,
+    machineState,
+  })?.micronPerPixel ?? null;
+}
+
+export function resolveManualCalibration({
+  calibrationSettings,
+  calibrations,
+  machineState,
+}: ResolveMicronsPerPixelArgs): ManualCalibrationInfo | null {
   if (calibrationSettings?.pixelToMicron && calibrationSettings.pixelToMicron > 0) {
-    return calibrationSettings.pixelToMicron;
+    return {
+      micronPerPixel: calibrationSettings.pixelToMicron,
+      calibrationName: calibrationSettings.objective,
+      objective: calibrationSettings.objective,
+    };
   }
 
   const candidates = calibrations
@@ -163,7 +181,7 @@ export function resolveMicronsPerPixel({
 
     return (
       item.zoomTime === machineState.objective &&
-      item.force === String(machineState.force) &&
+      parseForceKgf(item.force) === parseForceKgf(machineState.force) &&
       item.hardnessLevel === machineState.hardnessLevel
     );
   });
@@ -181,7 +199,12 @@ export function resolveMicronsPerPixel({
     return null;
   }
 
-  return axes.reduce((sum, value) => sum + value, 0) / axes.length;
+  const micronPerPixel = axes.reduce((sum, value) => sum + value, 0) / axes.length;
+  return {
+    micronPerPixel,
+    calibrationName: `${selected.zoomTime} ${selected.force} ${selected.hardnessLevel}`,
+    objective: selected.zoomTime,
+  };
 }
 
 export function calculateManualMeasurement(
@@ -191,20 +214,21 @@ export function calculateManualMeasurement(
 ): ManualMeasurementValues | null {
   const d1Px = distancePx(points[1], points[3]);
   const d2Px = distancePx(points[0], points[2]);
-  const diagonals = calculateManualDiagonalsFromPixels(d1Px, d2Px, micronsPerPixel);
-  if (!diagonals || forceKgf <= 0) {
-    return null;
-  }
-
-  const averageMm = diagonals.average / 1000;
-
-  if (averageMm <= 0) {
+  const values = calculateManualCalibratedValuesFromPixels(
+    d1Px,
+    d2Px,
+    micronsPerPixel,
+    forceKgf
+  );
+  if (!values || values.hv === null) {
     return null;
   }
 
   return {
-    ...diagonals,
-    hv: round(VICKERS_CONSTANT * forceKgf / (averageMm * averageMm), 2),
+    d1: values.d1Um,
+    d2: values.d2Um,
+    average: values.averageUm,
+    hv: values.hv,
   };
 }
 
@@ -233,5 +257,35 @@ export function calculateManualDiagonalsFromPixels(
     d1: round(d1, 4),
     d2: round(d2, 4),
     average: round((d1 + d2) / 2, 4),
+  };
+}
+
+export function calculateManualCalibratedValuesFromPixels(
+  d1Px: number,
+  d2Px: number,
+  micronPerPixel: number,
+  forceKgf?: number | null
+): ManualCalibratedValues | null {
+  if (d1Px <= 0 || d2Px <= 0 || micronPerPixel <= 0) {
+    return null;
+  }
+
+  const d1Um = d1Px * micronPerPixel;
+  const d2Um = d2Px * micronPerPixel;
+  const averageUm = (d1Um + d2Um) / 2;
+  const averageMm = averageUm / 1000;
+  const hv =
+    forceKgf && forceKgf > 0 && averageMm > 0
+      ? round(VICKERS_CONSTANT * forceKgf / (averageMm * averageMm), 2)
+      : null;
+
+  return {
+    d1Px: round(d1Px, 2),
+    d2Px: round(d2Px, 2),
+    d1Um: round(d1Um, 3),
+    d2Um: round(d2Um, 3),
+    averageUm: round(averageUm, 3),
+    averageMm: round(averageMm, 6),
+    hv,
   };
 }
