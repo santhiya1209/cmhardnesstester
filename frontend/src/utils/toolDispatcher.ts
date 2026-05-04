@@ -12,6 +12,7 @@ export type ToolDispatchContext = {
   clearGraphics?: () => void;
   trimLastMeasurement?: () => void;
   toggleCenterCrossLine?: () => void;
+  autoMeasure?: () => void;
   resumeImage?: () => void;
   zoomIn?: () => void;
   zoomOut?: () => void;
@@ -97,6 +98,14 @@ export function dispatchToolbarAction(
       ctx.toggleCenterCrossLine?.();
       ctx.setStatus(`${label} toggled`);
       return;
+    case 'tools:autoMeasure':
+      if (ctx.autoMeasure) {
+        ctx.autoMeasure();
+        ctx.setStatus(`${label} requested`);
+      } else {
+        ctx.notifyUnavailable(label);
+      }
+      return;
     case 'tools:resumeImage':
       ctx.resumeImage?.();
       ctx.setStatus(label);
@@ -110,7 +119,6 @@ export function dispatchToolbarAction(
       ctx.setStatus(label);
       return;
 
-    case 'tools:autoMeasure':
     case 'tools:autoSearchEdge':
     case 'tools:panoramicScan':
       ctx.notifyUnavailable(label);

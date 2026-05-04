@@ -8,8 +8,10 @@ import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
 import { useCameraStream } from '@/hooks/useCameraStream';
 import { colors } from '@/theme/theme';
 import ImageOverlay from '@/component/own/ImageOverlay';
+import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
 import MagnifierLens from '@/component/own/MagnifierLens';
 import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
+import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
 
@@ -64,6 +66,7 @@ const CANVAS_STYLE: React.CSSProperties = {
 type Props = {
   activeTool: ToolId;
   overlayShapes: OverlayShape[];
+  autoMeasureGraphics: AutoMeasureGraphics | null;
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
@@ -74,6 +77,15 @@ export type CameraWindowHandle = {
   toggleFreeze: () => boolean;
   zoomIn: () => number;
   zoomOut: () => number;
+  captureDisplayedFrame: () => {
+    ok: true;
+    buffer: ArrayBuffer;
+    width: number;
+    height: number;
+    pixelFormat: 'rgb32';
+    bits: 8;
+    source: 'live-camera' | 'uploaded-image';
+  } | { ok: false; error: string };
   loadImageFromBuffer: (buffer: ArrayBufferLike) => Promise<{ ok: boolean; error?: string }>;
   exportImageBlob: (mimeType?: string) => Promise<Blob | null>;
   refetchStatus: () => Promise<void>;
@@ -95,6 +107,7 @@ function CameraWindowImpl(
   {
     activeTool,
     overlayShapes,
+    autoMeasureGraphics,
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
@@ -112,6 +125,7 @@ function CameraWindowImpl(
   const [zoom, setZoom] = useState(1);
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+  const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
 
   const toggleFreeze = useCallback(() => {
     const live = canvasRef.current;
@@ -120,6 +134,7 @@ function CameraWindowImpl(
     if (frozen) {
       const ctx = snap.getContext('2d');
       if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
+      imageSourceRef.current = 'live-camera';
       setFrozen(false);
       setImageSize(
         live.width > 0 && live.height > 0
@@ -134,6 +149,7 @@ function CameraWindowImpl(
     const ctx = snap.getContext('2d');
     if (!ctx) return false;
     ctx.drawImage(live, 0, 0);
+    imageSourceRef.current = 'live-camera';
     setImageSize({ width: live.width, height: live.height });
     setFrozen(true);
     return true;
@@ -156,6 +172,54 @@ function CameraWindowImpl(
     return next;
   }, []);
 
+  const captureDisplayedFrame = useCallback<CameraWindowHandle['captureDisplayedFrame']>(() => {
+    const live = canvasRef.current;
+    const snap = freezeCanvasRef.current;
+    const source = frozen && snap && snap.width > 0 && snap.height > 0 ? snap : live;
+    if (!source || source.width <= 0 || source.height <= 0) {
+      return { ok: false, error: 'no displayed image' };
+    }
+
+    const ctx = source.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      return { ok: false, error: 'no 2d context' };
+    }
+
+    try {
+      const imageData = ctx.getImageData(0, 0, source.width, source.height);
+      const data = imageData.data;
+      const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      const sourceType = frozen ? imageSourceRef.current : 'live-camera';
+
+      if (!frozen && source === live && snap) {
+        snap.width = source.width;
+        snap.height = source.height;
+        const snapCtx = snap.getContext('2d');
+        if (snapCtx) {
+          snapCtx.putImageData(imageData, 0, 0);
+          imageSourceRef.current = 'live-camera';
+          setImageSize({ width: source.width, height: source.height });
+          setFrozen(true);
+        }
+      }
+
+      return {
+        ok: true,
+        buffer,
+        width: source.width,
+        height: source.height,
+        pixelFormat: 'rgb32',
+        bits: 8,
+        source: sourceType,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }, [frozen]);
+
   const loadImageFromBuffer = useCallback(
     async (buffer: ArrayBufferLike): Promise<{ ok: boolean; error?: string }> => {
       const snap = freezeCanvasRef.current;
@@ -175,6 +239,7 @@ function CameraWindowImpl(
         ctx.clearRect(0, 0, snap.width, snap.height);
         ctx.drawImage(bitmap, 0, 0);
         bitmap.close();
+        imageSourceRef.current = 'uploaded-image';
         setFrozen(true);
         return { ok: true };
       } catch (err) {
@@ -226,6 +291,7 @@ function CameraWindowImpl(
       toggleFreeze,
       zoomIn,
       zoomOut,
+      captureDisplayedFrame,
       loadImageFromBuffer,
       exportImageBlob,
       refetchStatus,
@@ -235,6 +301,7 @@ function CameraWindowImpl(
       toggleFreeze,
       zoomIn,
       zoomOut,
+      captureDisplayedFrame,
       loadImageFromBuffer,
       exportImageBlob,
       refetchStatus,
@@ -324,6 +391,10 @@ function CameraWindowImpl(
           crossLineVisible={crossLineVisible}
           onAddShape={onAddShape}
           onCursor={setCursor}
+        />
+        <AutoMeasureOverlay
+          graphics={autoMeasureGraphics}
+          imageSize={imageSize}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}

@@ -13,11 +13,18 @@ import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
 import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
+import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot';
 import { useConnectMachine } from '@/hooks/mutations/useConnectMachine';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { getLatestMicrometerReading } from '@/api/getLatestMicrometerReading';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import { measureVickersAuto } from '@/api/measureVickersAuto';
+import {
+  DEFAULT_AUTO_MEASURE_SETTINGS,
+  normalizeAutoMeasureSettings,
+  type AutoMeasureSettingsPayload,
+} from '@/types/autoMeasureSettings';
 import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
 import Toolbar from '@/component/own/Toolbar';
@@ -38,6 +45,7 @@ import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDis
 import { dispatchMenuAction } from '@/utils/menuDispatcher';
 import type { ToolbarActionId } from '@/types/tool';
 import type { ConfigDialogId, MenuActionId } from '@/types/menu';
+import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import {
   calculateManualCalibratedValuesFromPixels,
@@ -114,6 +122,7 @@ function App() {
   const { data: lineColorSetting, refetch: refetchLineColor } = useLineColorSetting();
   const { data: calibrationSettings } = useCalibrationSettings();
   const { data: calibrations, refetch: refetchCalibrations } = useCalibrations();
+  const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
   const { data: serialPortSetting } = useSerialPortSetting();
   const { connect: connectMachineFn, disconnect: disconnectMachineFn } = useConnectMachine();
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
@@ -123,9 +132,16 @@ function App() {
   const { activeTool, setActiveTool } = useActiveTool('pointer');
   const overlay = useImageOverlay();
   const cameraRef = useRef<CameraWindowHandle | null>(null);
+  const autoMeasureInFlightRef = useRef(false);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
+  const [autoMeasureGraphics, setAutoMeasureGraphics] = useState<AutoMeasureGraphics | null>(null);
+  const [autoMeasuring, setAutoMeasuring] = useState(false);
+  const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
+    useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
+  const [autoMeasureSettingsRevision, setAutoMeasureSettingsRevision] = useState(0);
+  const autoMeasurementIdRef = useRef<string | null>(null);
 
   const resetManualMeasure = useCallback(() => {
     manualMeasurementIdRef.current = null;
@@ -279,6 +295,215 @@ function App() {
     ]
   );
 
+  useEffect(() => {
+    setAutoMeasurePreviewSettings(normalizeAutoMeasureSettings(autoMeasureSettings));
+  }, [autoMeasureSettings]);
+
+  const handleAutoMeasureSettingsPreviewChange = useCallback((settings: AutoMeasureSettingsPayload) => {
+    setAutoMeasurePreviewSettings(normalizeAutoMeasureSettings(settings));
+    setAutoMeasureSettingsRevision((current) => current + 1);
+  }, []);
+
+  const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false) => {
+    if (autoMeasuring || autoMeasureInFlightRef.current) {
+      return;
+    }
+
+    void (async () => {
+      const settings = normalizeAutoMeasureSettings(settingsInput);
+      if (!preview) {
+        autoMeasurementIdRef.current = null;
+      }
+
+      autoMeasureInFlightRef.current = true;
+      setAutoMeasuring(true);
+      setStatusMessage(preview ? 'System Status: Auto Measure preview running' : 'System Status: Auto Measure running');
+
+      try {
+        const machineState = await getMachineStateSnapshot();
+        const machineStateForAuto = machineState
+          ? { ...machineState, objective: settings.objectiveForMeasure }
+          : null;
+        const calibration = resolveManualCalibration({
+          calibrationSettings,
+          calibrations,
+          machineState: machineStateForAuto,
+        });
+        const forceKgf = parseForceKgf(machineState?.force);
+        const minConfidence =
+          settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
+        const displayedFrame = cameraRef.current?.captureDisplayedFrame();
+
+        if (!displayedFrame?.ok) {
+          if (preview) {
+            return;
+          }
+          setAutoMeasureGraphics(null);
+          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+          setStatusMessage(`System Status: Auto Measure rejected: ${displayedFrame?.error ?? 'no displayed image'}`);
+          return;
+        }
+
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure] selected settings', settings);
+
+        const result = await measureVickersAuto({
+          ...settings,
+          frameBuffer: displayedFrame.buffer,
+          width: displayedFrame.width,
+          height: displayedFrame.height,
+          pixelFormat: displayedFrame.pixelFormat,
+          bits: displayedFrame.bits,
+          source: displayedFrame.source,
+          micronPerPixel: calibration?.micronPerPixel ?? null,
+          pxPerMm: calibration ? 1000 / calibration.micronPerPixel : null,
+          testForceKgf: forceKgf,
+          minConfidence,
+          timeoutMs: 4000,
+          maxFrameAgeMs: 1200,
+        });
+
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure] result', result);
+
+        if (!result.ok || result.confidence < minConfidence || result.lines.length !== 4) {
+          setAutoMeasureGraphics(null);
+          setStatusMessage(
+            `System Status: Auto Measure rejected: ${result.ok ? 'low confidence' : result.reason}`
+          );
+          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+          return;
+        }
+
+        setAutoMeasureGraphics({
+          corners: result.corners,
+          lines: result.lines,
+        });
+
+        const timestamp = new Date().toISOString();
+        const depthMm = await readLatestMicrometerDepthMm();
+
+        if (!calibration) {
+          const pixelValues = calculateManualDiagonalsFromPixels(
+            result.d1Pixels,
+            result.d2Pixels,
+            1
+          );
+          if (!pixelValues) {
+            setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+            return;
+          }
+
+          const saved = await saveManualMeasurement({
+            id: autoMeasurementIdRef.current ?? undefined,
+            values: {
+              d1: pixelValues.d1,
+              d2: pixelValues.d2,
+              d1Px: pixelValues.d1,
+              d2Px: pixelValues.d2,
+              d1Um: null,
+              d2Um: null,
+              averageUm: null,
+              averageMm: null,
+              hv: null,
+              micronPerPixel: null,
+              calibrationName: null,
+              objective: settings.objectiveForMeasure,
+              testForceKgf: null,
+              depthMm,
+              method: 'Auto',
+              unit: 'px',
+              timestamp,
+            },
+          });
+
+          autoMeasurementIdRef.current = saved.id;
+          await refetchMeasurements();
+          setUnavailableMsg('Calibration required to calculate µm and HV');
+          setStatusMessage(`System Status: Auto measurement ${preview ? 'updated' : 'added'}: ${saved.d1Px} px / ${saved.d2Px} px`);
+          return;
+        }
+
+        const values = calculateManualCalibratedValuesFromPixels(
+          result.d1Pixels,
+          result.d2Pixels,
+          calibration.micronPerPixel,
+          forceKgf
+        );
+
+        if (!values) {
+          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+          return;
+        }
+
+        const saved = await saveManualMeasurement({
+          id: autoMeasurementIdRef.current ?? undefined,
+          values: {
+            d1: values.d1Um,
+            d2: values.d2Um,
+            d1Px: values.d1Px,
+            d2Px: values.d2Px,
+            d1Um: values.d1Um,
+            d2Um: values.d2Um,
+            averageUm: values.averageUm,
+            averageMm: values.averageMm,
+            hv: values.hv,
+            micronPerPixel: calibration.micronPerPixel,
+            calibrationName: calibration.calibrationName,
+            objective: calibration.objective ?? settings.objectiveForMeasure,
+            testForceKgf: forceKgf,
+            depthMm,
+            method: 'Auto',
+            unit: 'um',
+            timestamp,
+          },
+        });
+
+        autoMeasurementIdRef.current = saved.id;
+        await refetchMeasurements();
+        if (!forceKgf) {
+          setUnavailableMsg('Auto Measure saved µm values. Set a valid force/load value to calculate HV.');
+        }
+        setStatusMessage(
+          saved.hv
+            ? `System Status: Auto measurement ${preview ? 'updated' : 'added'}: HV ${saved.hv}`
+            : `System Status: Auto measurement ${preview ? 'updated' : 'added'}: ${values.d1Um} µm / ${values.d2Um} µm`
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[auto-measure] failed:', err);
+        setAutoMeasureGraphics(null);
+        setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+      } finally {
+        autoMeasureInFlightRef.current = false;
+        setAutoMeasuring(false);
+      }
+    })();
+  }, [
+    autoMeasuring,
+    calibrationSettings,
+    calibrations,
+    getMachineStateSnapshot,
+    refetchMeasurements,
+    saveManualMeasurement,
+  ]);
+
+  const handleAutoMeasure = useCallback(() => {
+    runAutoMeasure(autoMeasurePreviewSettings, false);
+  }, [autoMeasurePreviewSettings, runAutoMeasure]);
+
+  useEffect(() => {
+    if (activeDialog !== 'autoMeasure' || autoMeasureSettingsRevision === 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      runAutoMeasure(autoMeasurePreviewSettings, true);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [activeDialog, autoMeasurePreviewSettings, autoMeasureSettingsRevision, runAutoMeasure]);
+
   const buildSharedCtx = useCallback(
     (): ToolDispatchContext => ({
       setActiveTool,
@@ -287,8 +512,11 @@ function App() {
         setUnavailableMsg(`${label} is not available yet.`),
       clearGraphics: () => {
         overlay.clearAll();
+        setAutoMeasureGraphics(null);
+        autoMeasurementIdRef.current = null;
         resetManualMeasure();
       },
+      autoMeasure: handleAutoMeasure,
       trimLastMeasurement: overlay.trimLast,
       toggleCenterCrossLine: overlay.toggleCrossLine,
       resumeImage: () => {
@@ -322,6 +550,8 @@ function App() {
             const loaded = await cameraRef.current?.loadImageFromBuffer(reply.buffer);
             if (loaded?.ok) {
               resetManualMeasure();
+              setAutoMeasureGraphics(null);
+              autoMeasurementIdRef.current = null;
               setStatusMessage(`System Status: Loaded ${reply.fileName}`);
             } else {
               setUnavailableMsg(
@@ -444,6 +674,8 @@ function App() {
             // sees the camera is actually closed.
             await cameraRef.current?.refetchStatus();
             cameraRef.current?.clearLiveCanvas();
+            setAutoMeasureGraphics(null);
+            autoMeasurementIdRef.current = null;
             resetManualMeasure();
             setStatusMessage('System Status: Device closed');
             void reply;
@@ -468,6 +700,7 @@ function App() {
       overlay.trimLast,
       overlay.toggleCrossLine,
       resetManualMeasure,
+      handleAutoMeasure,
       setActiveTool,
       serialPortSetting,
       connectMachineFn,
@@ -576,6 +809,7 @@ function App() {
           ref={cameraRef}
           activeTool={activeTool}
           overlayShapes={overlay.shapes}
+          autoMeasureGraphics={autoMeasureGraphics}
           crossLineVisible={overlay.crossLineVisible}
           onAddShape={overlay.addShape}
           manualMeasureResetKey={manualMeasureResetKey}
@@ -595,6 +829,10 @@ function App() {
       <AutoMeasureSettingsDialog
         open={activeDialog === 'autoMeasure'}
         onClose={closeDialog}
+        onPreviewChange={handleAutoMeasureSettingsPreviewChange}
+        onSaved={() => {
+          void refetchAutoMeasureSettings();
+        }}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
       />
       <CalibrationDialog

@@ -21,30 +21,26 @@ import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
   IMAGE_TYPE_OPTIONS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
+  THRESHOLD_MODE_OPTIONS,
+  normalizeAutoMeasureSettings,
   type AutoMeasureSettings,
   type AutoMeasureSettingsPayload,
   type ImageType,
   type ObjectiveForMeasure,
+  type ThresholdMode,
 } from '@/types/autoMeasureSettings';
 import { colors } from '@/theme/theme';
 
 type Props = {
   open: boolean;
   onClose: () => void;
+  onPreviewChange?: (settings: AutoMeasureSettingsPayload) => void;
+  onSaved?: () => void;
   onStatusChange?: (message: string) => void;
 };
 
 function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsPayload {
-  if (!settings) return DEFAULT_AUTO_MEASURE_SETTINGS;
-  return {
-    imageType: settings.imageType,
-    erosion: settings.erosion,
-    dilation: settings.dilation,
-    factor: settings.factor,
-    turretAfterImpress: settings.turretAfterImpress,
-    measureAfterImpress: settings.measureAfterImpress,
-    objectiveForMeasure: settings.objectiveForMeasure,
-  };
+  return normalizeAutoMeasureSettings(settings);
 }
 
 const TITLE_SX = { bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 };
@@ -56,7 +52,25 @@ const SLIDER_VALUE_SX = {
   fontVariantNumeric: 'tabular-nums',
 };
 
-function AutoMeasureSettingsDialogImpl({ open, onClose, onStatusChange }: Props) {
+type SliderField =
+  | 'erosionIterations'
+  | 'dilationIterations'
+  | 'morphologyKernelSize'
+  | 'manualThreshold'
+  | 'edgeFactor'
+  | 'minContourArea'
+  | 'maxContourArea'
+  | 'centerBias'
+  | 'sideFitRoiWidth'
+  | 'gradientStrengthFactor';
+
+function AutoMeasureSettingsDialogImpl({
+  open,
+  onClose,
+  onPreviewChange,
+  onSaved,
+  onStatusChange,
+}: Props) {
   const { data, error: loadError, loading, refetch } = useAutoMeasureSettings();
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
   const [form, setForm] = useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
@@ -76,47 +90,94 @@ function AutoMeasureSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
     }
   }, [data, loading, open]);
 
+  const updateForm = useCallback(
+    (updater: (current: AutoMeasureSettingsPayload) => AutoMeasureSettingsPayload) => {
+      setForm((current) => {
+        const next = updater(current);
+        onPreviewChange?.(next);
+        return next;
+      });
+    },
+    [onPreviewChange]
+  );
+
   const handleImageTypeChange = useCallback((event: SelectChangeEvent) => {
-    setForm((current) => ({ ...current, imageType: event.target.value as ImageType }));
-  }, []);
+    updateForm((current) => ({ ...current, imageType: event.target.value as ImageType }));
+  }, [updateForm]);
 
   const handleObjectiveChange = useCallback((event: SelectChangeEvent) => {
-    setForm((current) => ({
+    updateForm((current) => ({
       ...current,
       objectiveForMeasure: event.target.value as ObjectiveForMeasure,
     }));
-  }, []);
+  }, [updateForm]);
+
+  const handleThresholdModeChange = useCallback((event: SelectChangeEvent) => {
+    updateForm((current) => ({
+      ...current,
+      thresholdMode: event.target.value as ThresholdMode,
+    }));
+  }, [updateForm]);
 
   const handleSliderChange = useCallback(
-    (field: 'erosion' | 'dilation' | 'factor') => (_e: Event, value: number | number[]) => {
+    (field: SliderField) => (_e: Event, value: number | number[]) => {
       const next = Array.isArray(value) ? value[0] : value;
-      setForm((current) => ({ ...current, [field]: next }));
+      updateForm((current) => ({ ...current, [field]: next }));
     },
-    []
+    [updateForm]
   );
 
   const handleCheckboxChange = useCallback(
     (field: 'turretAfterImpress' | 'measureAfterImpress') =>
       (event: React.ChangeEvent<HTMLInputElement>) => {
         const checked = event.target.checked;
-        setForm((current) => ({ ...current, [field]: checked }));
+        updateForm((current) => ({ ...current, [field]: checked }));
       },
-    []
+    [updateForm]
   );
 
   const handleDefault = useCallback(() => {
     setForm(DEFAULT_AUTO_MEASURE_SETTINGS);
-  }, []);
+    onPreviewChange?.(DEFAULT_AUTO_MEASURE_SETTINGS);
+  }, [onPreviewChange]);
 
   const handleSave = useCallback(async () => {
     try {
       await saveAutoMeasureSettings({ id: data?.id, values: form });
+      onSaved?.();
       onStatusChange?.('Auto measure settings saved.');
       onClose();
     } catch {
       // surfaced via saveError
     }
-  }, [data?.id, form, onClose, onStatusChange, saveAutoMeasureSettings]);
+  }, [data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
+
+  const sliderRow = (
+    label: string,
+    field: SliderField,
+    min: number,
+    max: number,
+    step = 1,
+    valueLabel?: string
+  ) => (
+    <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
+      <Typography variant="body2" sx={ROW_LABEL_SX}>
+        {label}
+      </Typography>
+      <Slider
+        value={form[field]}
+        min={min}
+        max={max}
+        step={step}
+        onChange={handleSliderChange(field)}
+        disabled={busy}
+        sx={{ flex: 1 }}
+      />
+      <Typography variant="body2" sx={SLIDER_VALUE_SX}>
+        {valueLabel ?? form[field]}
+      </Typography>
+    </Stack>
+  );
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
@@ -143,54 +204,33 @@ function AutoMeasureSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
 
         <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
           <Typography variant="body2" sx={ROW_LABEL_SX}>
-            Erosion
+            Threshold
           </Typography>
-          <Slider
-            value={form.erosion}
-            min={0}
-            max={100}
-            onChange={handleSliderChange('erosion')}
-            disabled={busy}
-            sx={{ flex: 1 }}
-          />
-          <Typography variant="body2" sx={SLIDER_VALUE_SX}>
-            {form.erosion}
-          </Typography>
+          <FormControl size="small" sx={{ flex: 1 }}>
+            <Select
+              value={form.thresholdMode}
+              onChange={handleThresholdModeChange}
+              disabled={busy}
+            >
+              {THRESHOLD_MODE_OPTIONS.map((opt) => (
+                <MenuItem key={opt} value={opt}>
+                  {opt.toUpperCase()}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Stack>
 
-        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
-          <Typography variant="body2" sx={ROW_LABEL_SX}>
-            Dilation
-          </Typography>
-          <Slider
-            value={form.dilation}
-            min={0}
-            max={100}
-            onChange={handleSliderChange('dilation')}
-            disabled={busy}
-            sx={{ flex: 1 }}
-          />
-          <Typography variant="body2" sx={SLIDER_VALUE_SX}>
-            {form.dilation}
-          </Typography>
-        </Stack>
-
-        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 2 }}>
-          <Typography variant="body2" sx={ROW_LABEL_SX}>
-            Factor
-          </Typography>
-          <Slider
-            value={form.factor}
-            min={0}
-            max={100}
-            onChange={handleSliderChange('factor')}
-            disabled={busy}
-            sx={{ flex: 1 }}
-          />
-          <Typography variant="body2" sx={SLIDER_VALUE_SX}>
-            {form.factor}
-          </Typography>
-        </Stack>
+        {sliderRow('Manual Threshold', 'manualThreshold', 0, 255)}
+        {sliderRow('Erosion Iter.', 'erosionIterations', 0, 8)}
+        {sliderRow('Dilation Iter.', 'dilationIterations', 0, 8)}
+        {sliderRow('Morph Kernel', 'morphologyKernelSize', 1, 41, 2)}
+        {sliderRow('Edge Factor', 'edgeFactor', 0, 100)}
+        {sliderRow('Gradient Factor', 'gradientStrengthFactor', 0, 100)}
+        {sliderRow('Side Fit ROI', 'sideFitRoiWidth', 4, 90)}
+        {sliderRow('Min Area %', 'minContourArea', 0.001, 10, 0.001, form.minContourArea.toFixed(3))}
+        {sliderRow('Max Area %', 'maxContourArea', 0.01, 70, 0.01, form.maxContourArea.toFixed(2))}
+        {sliderRow('Center Bias', 'centerBias', 0, 100)}
 
         <Typography variant="subtitle2" sx={SECTION_HEADING_SX}>
           Auto Measure

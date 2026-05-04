@@ -4,6 +4,10 @@ import type {
   CameraReply,
   CameraStatus,
 } from './camera';
+import type {
+  VickersAutoMeasureParameters,
+  VickersAutoMeasureResult,
+} from './autoMeasure';
 import type { OpenImageResult, SaveImageRequest, SaveImageResult } from './dialog';
 import type {
   MicrometerCloseResult,
@@ -82,6 +86,7 @@ export type IpcInvokeChannel =
   | 'camera:get-exposure-range'
   | 'camera:get-gain-range'
   | 'camera:set-trigger-mode'
+  | 'camera:measure-vickers-auto'
   | 'device:open'
   | 'device:close'
   | 'dialog:openImage'
@@ -124,6 +129,10 @@ export type IpcInvokeMap = {
   'camera:set-trigger-mode': {
     request: { value: boolean };
     response: CameraReply<{ triggerState: boolean }>;
+  };
+  'camera:measure-vickers-auto': {
+    request: VickersAutoMeasureParameters;
+    response: VickersAutoMeasureResult;
   };
   'camera:get-exposure-range': {
     request: void;

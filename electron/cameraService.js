@@ -15,9 +15,11 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 const { app } = require('electron');
 
 const ADDON_RELATIVE = path.join('build', 'Release', 'hardness_addon.node');
+const DEFAULT_OPENCV_DIR = 'C:\\Users\\SANTHIYA\\opencv\\build';
 
 class CameraService {
   constructor() {
@@ -25,6 +27,7 @@ class CameraService {
     this.addon = null;
     this.loadError = null;
     this.lastStatus = { sdkLoaded: false, open: false, streaming: false };
+    this.latestFrame = null;
   }
 
   attach(webContents) {
@@ -67,7 +70,9 @@ class CameraService {
     return this._call('cameraOpen', payload || {});
   }
   close() {
-    return this._call('cameraClose');
+    return this._call('cameraClose').finally(() => {
+      this.latestFrame = null;
+    });
   }
   startStream() {
     return this._call('cameraStartStream');
@@ -119,6 +124,105 @@ class CameraService {
   setTriggerMode(value) {
     return this._call('cameraSetTriggerMode', { value: !!value });
   }
+  async measureVickersAuto(parameters = {}) {
+    this._tryLoad();
+    if (!this.addon) {
+      return {
+        ok: false,
+        source: parameters && parameters.source === 'uploaded-image' ? 'uploaded-image' : 'live-camera',
+        confidence: 0,
+        reason: this.loadError
+          ? this.loadError.message
+          : 'native addon not loaded; run `npm run rebuild-addon`',
+        debug: { rejectionReason: 'ADDON_NOT_BUILT' },
+      };
+    }
+
+    const fn = this.addon.camera && this.addon.camera.measureVickersAuto;
+    if (typeof fn !== 'function') {
+      return {
+        ok: false,
+        source: parameters && parameters.source === 'uploaded-image' ? 'uploaded-image' : 'live-camera',
+        confidence: 0,
+        reason: 'native measureVickersAuto function is missing',
+        debug: { rejectionReason: 'NO_METHOD' },
+      };
+    }
+
+    const frame = parameters && parameters.frameBuffer
+      ? this._getProvidedFrameForAutoMeasure(parameters)
+      : await this._getFrameForAutoMeasure(parameters);
+    if (!frame.ok) {
+      return {
+        ok: false,
+        source: parameters && parameters.source === 'uploaded-image' ? 'uploaded-image' : 'live-camera',
+        confidence: 0,
+        reason: frame.message || frame.error || 'unable to capture camera frame',
+        debug: { rejectionReason: frame.error || 'FRAME_CAPTURE_FAILED' },
+      };
+    }
+
+    const nativeParams = {
+      ...(parameters && typeof parameters === 'object' ? parameters : {}),
+      width: frame.meta.width,
+      height: frame.meta.height,
+      pixelFormat: frame.meta.pixelFormat,
+      bits: frame.meta.bits,
+      source: frame.meta.source || parameters.source || 'live-camera',
+      bytes: frame.meta.bytes,
+      timestamp: frame.meta.timestamp,
+      seq: frame.meta.seq,
+    };
+    delete nativeParams.frameBuffer;
+
+    try {
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure] native measureVickersAuto →', {
+        width: nativeParams.width,
+        height: nativeParams.height,
+        pixelFormat: nativeParams.pixelFormat,
+        bits: nativeParams.bits,
+        source: nativeParams.source,
+        thresholdMode: nativeParams.thresholdMode,
+        erosionIterations: nativeParams.erosionIterations,
+        dilationIterations: nativeParams.dilationIterations,
+        morphologyKernelSize: nativeParams.morphologyKernelSize,
+        manualThreshold: nativeParams.manualThreshold,
+        edgeFactor: nativeParams.edgeFactor,
+        minContourArea: nativeParams.minContourArea,
+        maxContourArea: nativeParams.maxContourArea,
+        centerBias: nativeParams.centerBias,
+        sideFitRoiWidth: nativeParams.sideFitRoiWidth,
+        gradientStrengthFactor: nativeParams.gradientStrengthFactor,
+        bytes: frame.data.byteLength,
+      });
+      const result = fn(
+        frame.data,
+        nativeParams.width,
+        nativeParams.height,
+        nativeParams.pixelFormat,
+        nativeParams
+      );
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure] native measureVickersAuto ←', {
+        ok: !!(result && result.ok),
+        reason: result && result.reason,
+        confidence: result && result.confidence,
+        d1Pixels: result && result.d1Pixels,
+        d2Pixels: result && result.d2Pixels,
+        debug: result && result.debug,
+      });
+      return result;
+    } catch (err) {
+      return {
+        ok: false,
+        source: nativeParams.source,
+        confidence: 0,
+        reason: err && err.message ? err.message : String(err),
+        debug: { rejectionReason: 'NATIVE_THREW' },
+      };
+    }
+  }
 
   async shutdown() {
     if (!this.addon) return;
@@ -145,6 +249,7 @@ class CameraService {
   _tryLoad() {
     if (this.addon || this.loadError) return;
     try {
+      this._prepareNativeDllSearchPath();
       // eslint-disable-next-line import/no-dynamic-require, global-require
       this.addon = require(this._addonPath());
     } catch (err) {
@@ -206,6 +311,116 @@ class CameraService {
     }
   }
 
+  _prepareNativeDllSearchPath() {
+    const opencvDir = process.env.OPENCV_DIR || DEFAULT_OPENCV_DIR;
+    const candidates = [
+      process.env.OPENCV_BIN_DIR,
+      path.join(opencvDir, 'x64', 'vc16', 'bin'),
+      app && app.isPackaged
+        ? path.join(process.resourcesPath, 'native', 'hardness-addon', 'opencv', 'bin')
+        : null,
+    ].filter(Boolean);
+
+    const currentPath = process.env.PATH || '';
+    for (const dir of candidates) {
+      if (!fs.existsSync(dir)) continue;
+      const alreadyPresent = currentPath
+        .split(path.delimiter)
+        .some((entry) => entry.toLowerCase() === dir.toLowerCase());
+      if (!alreadyPresent) {
+        process.env.PATH = `${dir}${path.delimiter}${process.env.PATH || ''}`;
+      }
+    }
+  }
+
+  async _getFrameForAutoMeasure(parameters) {
+    const maxAgeMs = Number.isFinite(Number(parameters && parameters.maxFrameAgeMs))
+      ? Number(parameters.maxFrameAgeMs)
+      : 1200;
+    const now = Date.now();
+    if (
+      this.latestFrame &&
+      this.latestFrame.data &&
+      now - this.latestFrame.capturedAt <= maxAgeMs
+    ) {
+      return {
+        ok: true,
+        meta: { ...this.latestFrame.meta, source: 'live-camera' },
+        data: this.latestFrame.data,
+      };
+    }
+
+    const timeoutMs = Number.isFinite(Number(parameters && parameters.timeoutMs))
+      ? Number(parameters.timeoutMs)
+      : 4000;
+    const reply = await this._call('cameraGetFrame', { timeoutMs });
+    if (!reply || !reply.ok) {
+      return {
+        ok: false,
+        error: reply && reply.error ? reply.error : 'GET_FRAME_FAILED',
+        message: reply && reply.message ? reply.message : 'camera frame capture failed',
+      };
+    }
+
+    const data = toOwnedBuffer(reply.data);
+    const meta = sanitizeMeta({
+      width: reply.width,
+      height: reply.height,
+      pixelFormat: reply.pixelFormat,
+      bits: reply.bits,
+      timestamp: reply.timestamp,
+      seq: reply.seq,
+      bytes: reply.bytes,
+      source: 'live-camera',
+    });
+
+    this.latestFrame = {
+      meta,
+      data,
+      capturedAt: Date.now(),
+    };
+
+    return { ok: true, meta, data };
+  }
+
+  _getProvidedFrameForAutoMeasure(parameters) {
+    const width = Number(parameters && parameters.width);
+    const height = Number(parameters && parameters.height);
+    const bits = Number(parameters && parameters.bits) === 16 ? 16 : 8;
+    const pixelFormat =
+      typeof parameters.pixelFormat === 'string' && parameters.pixelFormat.trim()
+        ? parameters.pixelFormat.trim()
+        : 'rgb32';
+    const source =
+      parameters.source === 'uploaded-image' || parameters.source === 'live-camera'
+        ? parameters.source
+        : 'uploaded-image';
+
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+      return { ok: false, error: 'BAD_FRAME', message: 'displayed frame width/height are invalid' };
+    }
+
+    const data = toOwnedBuffer(parameters.frameBuffer);
+    if (!data || !Number.isFinite(data.byteLength) || data.byteLength <= 0) {
+      return { ok: false, error: 'BAD_FRAME', message: 'displayed frame buffer is empty' };
+    }
+
+    return {
+      ok: true,
+      meta: {
+        width,
+        height,
+        pixelFormat,
+        bits,
+        source,
+        timestamp: Date.now(),
+        seq: 0,
+        bytes: data.byteLength,
+      },
+      data,
+    };
+  }
+
   _call(method, payload) {
     this._tryLoad();
     if (!this.addon) {
@@ -240,6 +455,11 @@ class CameraService {
     // some Node versions. Allocate + .set forces a real byte copy.
     const payload = toOwnedBuffer(data);
     const safeMeta = sanitizeMeta(meta);
+    this.latestFrame = {
+      meta: safeMeta,
+      data: payload,
+      capturedAt: Date.now(),
+    };
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
     } catch (_e) {

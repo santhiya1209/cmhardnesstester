@@ -14,6 +14,7 @@ const ALLOWED_INVOKE = new Set([
   'camera:get-exposure-range',
   'camera:get-gain-range',
   'camera:set-trigger-mode',
+  'camera:measure-vickers-auto',
   'device:open',
   'device:close',
   'dialog:openImage',

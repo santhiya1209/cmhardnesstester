@@ -8,29 +8,37 @@ const {
 } = require('./micrometerDecoder');
 
 const DEFAULT_PORT = 'COM3';
-const BAUD_RATES = [2300];
+const BAUD_RATES = [2300, 2400, 4800, 9600];
 const DATA_BITS = 8;
 const PARITY = 'none';
 const STOP_BITS = 1;
 const MAX_BUFFER_BYTES = 4096;
 const MAX_ASCII_BUFFER_BYTES = 1024;
-const NO_VALID_FRAME_TIMEOUT_MS = 10000;
-const PULSE_GRACE_MS = 3000;
-const PULSE_PERIOD_MS = 500;
-const PULSE_WIDTH_MS = 120;
+const NO_VALID_FRAME_TIMEOUT_MS = 5000;
+const PULSE_GRACE_MS = 300;
+const PULSE_PERIOD_MS = 350;
+const PULSE_WIDTH_MS = 80;
 const STABLE_SAMPLE_COUNT = 2;
-const DEFAULT_PULSE_MODE = 'alternate-high';
+const PULSE_MODES = ['alternate-high', 'rts-high', 'dtr-high', 'rts-low', 'dtr-low', 'none'];
 const ASCII_LINE_TERMINATORS = new Set([0x08, 0x0a, 0x0c, 0x0d]);
 
 function buildScanCandidates(portName) {
-  return BAUD_RATES.map((baudRate) => ({
-    path: portName,
-    baudRate,
-    dataBits: DATA_BITS,
-    parity: PARITY,
-    stopBits: STOP_BITS,
-    pulseMode: DEFAULT_PULSE_MODE,
-  }));
+  const candidates = [];
+
+  for (const baudRate of BAUD_RATES) {
+    for (const pulseMode of PULSE_MODES) {
+      candidates.push({
+        path: portName,
+        baudRate,
+        dataBits: DATA_BITS,
+        parity: PARITY,
+        stopBits: STOP_BITS,
+        pulseMode,
+      });
+    }
+  }
+
+  return candidates;
 }
 
 function describeConfig(config) {
@@ -49,6 +57,8 @@ function pulseModeDescription(mode) {
       return 'RTS high->low pulse with DTR held low';
     case 'dtr-low':
       return 'DTR high->low pulse with RTS held low';
+    case 'none':
+      return 'listen without request pulse';
     default:
       return mode;
   }
@@ -78,7 +88,7 @@ function hasBinaryNoise(buffer) {
 
 function findAsciiReading(buffer) {
   const text = Array.from(buffer.values()).map(byteToSearchChar).join('');
-  const match = /[+-]?\d+[.,]\d{3,}(?=[ \t]*\n)/.exec(text);
+  const match = /[+-]?\d+(?:[.,]\d+)?(?=[ \t]*(?:mm|MM)?[ \t]*\n)/.exec(text);
 
   if (!match || match.index === undefined) {
     return null;
@@ -91,7 +101,13 @@ function findAsciiReading(buffer) {
   }
 
   const startIndex = match.index;
-  const endIndex = startIndex + match[0].length;
+  let endIndex = startIndex + match[0].length;
+  while (endIndex < text.length && (text[endIndex] === ' ' || text[endIndex] === '\t')) {
+    endIndex += 1;
+  }
+  if (text.slice(endIndex, endIndex + 2).toLowerCase() === 'mm') {
+    endIndex += 2;
+  }
 
   return {
     ascii,
@@ -287,7 +303,11 @@ class MicrometerService {
     this._resetRollingState();
     this.currentOpenConfig = config;
 
-    console.log('[micrometer] trying baud', config.baudRate);
+    console.log(
+      '[micrometer] trying candidate',
+      `${this.scanCandidateIndex + 1}/${this.scanCandidates.length}`,
+      describeConfig(config)
+    );
     console.log('[micrometer] serial open config', {
       path: config.path,
       baudRate: config.baudRate,
@@ -398,6 +418,10 @@ class MicrometerService {
   }
 
   _primeControlLines(mode) {
+    if (mode === 'none') {
+      return;
+    }
+
     const initialState =
       mode === 'rts-low' || mode === 'dtr-low'
         ? { dtr: false, rts: false }
@@ -408,6 +432,12 @@ class MicrometerService {
 
   _scheduleRequestPulse(mode) {
     this._stopRequestPulse();
+
+    if (mode === 'none') {
+      console.log(`[micrometer] ${pulseModeDescription(mode)}`);
+      return;
+    }
+
     this.pulseStartTimer = setTimeout(() => {
       this.pulseStartTimer = null;
       if (!this.portOpen || !this.port || !this.port.isOpen) {

@@ -2,6 +2,7 @@ import { forwardRef, memo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import CameraWindow, { type CameraWindowHandle } from '@/component/own/CameraWindow';
+import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
 
@@ -19,6 +20,7 @@ const PANEL_SX: SxProps<Theme> = {
 type Props = {
   activeTool: ToolId;
   overlayShapes: OverlayShape[];
+  autoMeasureGraphics: AutoMeasureGraphics | null;
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
@@ -29,6 +31,7 @@ function LeftPanelImpl(
   {
     activeTool,
     overlayShapes,
+    autoMeasureGraphics,
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
@@ -42,6 +45,7 @@ function LeftPanelImpl(
         ref={ref}
         activeTool={activeTool}
         overlayShapes={overlayShapes}
+        autoMeasureGraphics={autoMeasureGraphics}
         crossLineVisible={crossLineVisible}
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}

@@ -20,6 +20,64 @@ function num(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function optionalFiniteNumber(payload, key) {
+  if (!payload || !Object.prototype.hasOwnProperty.call(payload, key)) return undefined;
+  const value = Number(payload[key]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function validateAutoMeasurePayload(payload) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const out = {};
+  const numericKeys = [
+    'width',
+    'height',
+    'bits',
+    'erosion',
+    'dilation',
+    'factor',
+    'erosionIterations',
+    'dilationIterations',
+    'morphologyKernelSize',
+    'manualThreshold',
+    'edgeFactor',
+    'minContourArea',
+    'maxContourArea',
+    'centerBias',
+    'sideFitRoiWidth',
+    'gradientStrengthFactor',
+    'micronPerPixel',
+    'pxPerMm',
+    'testForceKgf',
+    'minConfidence',
+    'minAreaRatio',
+    'maxAreaRatio',
+    'maxCenterDistanceRatio',
+    'minDiagonalRatio',
+    'maxDiagonalRatio',
+    'maxSideLengthRatio',
+    'angleToleranceDeg',
+    'minLinePoints',
+    'timeoutMs',
+    'maxFrameAgeMs',
+  ];
+
+  for (const key of numericKeys) {
+    const value = optionalFiniteNumber(source, key);
+    if (value !== undefined) out[key] = value;
+  }
+
+  if (typeof source.imageType === 'string') out.imageType = source.imageType;
+  if (typeof source.objectiveForMeasure === 'string') out.objectiveForMeasure = source.objectiveForMeasure;
+  if (typeof source.thresholdMode === 'string') out.thresholdMode = source.thresholdMode;
+  if (typeof source.pixelFormat === 'string') out.pixelFormat = source.pixelFormat;
+  if (source.source === 'uploaded-image' || source.source === 'live-camera') out.source = source.source;
+  if (source.frameBuffer instanceof ArrayBuffer || ArrayBuffer.isView(source.frameBuffer)) {
+    out.frameBuffer = source.frameBuffer;
+  }
+  return out;
+}
+
 function registerIpc() {
   ipcMain.handle('app:getInfo', () => ({
     name: app.getName(),
@@ -85,6 +143,12 @@ function registerIpc() {
   ipcMain.handle('camera:set-trigger-mode', (_e, payload) =>
     cameraService.setTriggerMode(!!(payload && payload.value))
   );
+  ipcMain.handle('camera:measure-vickers-auto', (_e, payload) => {
+    const safePayload = validateAutoMeasurePayload(payload);
+    // eslint-disable-next-line no-console
+    console.log('[ipc] camera:measure-vickers-auto payload=', safePayload);
+    return cameraService.measureVickersAuto(safePayload);
+  });
 
   /* ------------------ micrometer channels ------------------ */
   ipcMain.handle('micrometer:open', async (_e, payload) => {

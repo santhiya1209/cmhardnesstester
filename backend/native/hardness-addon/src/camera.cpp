@@ -12,9 +12,11 @@
 
 #include "camera.h"
 #include "dvp_dll.h"
+#include "vickers_auto_measure.h"
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -78,6 +80,24 @@ Napi::Object MakeError(Napi::Env env, const char* code, const std::string& msg) 
   o.Set("error", Napi::String::New(env, code));
   o.Set("message", Napi::String::New(env, msg));
   return o;
+}
+
+double SnapDoubleToStep(double value, double min, double max, double step) {
+  if (step > 0.0 && std::isfinite(step)) {
+    value = min + std::round((value - min) / step) * step;
+  }
+  if (value < min) value = min;
+  if (value > max) value = max;
+  return value;
+}
+
+float SnapFloatToStep(float value, float min, float max, float step) {
+  if (step > 0.0f && std::isfinite(step)) {
+    value = min + std::round((value - min) / step) * step;
+  }
+  if (value < min) value = min;
+  if (value > max) value = max;
+  return value;
 }
 
 bool EnsureLoaded(Napi::Env env, Napi::Object& outErr) {
@@ -438,7 +458,6 @@ Napi::Value CameraGetStatus(const Napi::CallbackInfo& info) {
 Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   auto& s = S();
-  if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
   if (info.Length() < 1 || !info[0].IsObject()) return MakeError(env, "BAD_ARGS", "expected { valueMs }");
   auto opts = info[0].As<Napi::Object>();
   double ms = 0.0;
@@ -449,22 +468,44 @@ Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
   } else {
     return MakeError(env, "BAD_ARGS", "expected numeric valueMs");
   }
+
+  std::lock_guard<std::mutex> lk(s.mu);
+  if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
+
   // Clamp against SDK descriptor range so out-of-bound values don't fail.
   if (s.dll.GetExposureDescr) {
     dvpDoubleDescr d{};
     if (s.dll.GetExposureDescr(s.handle, &d) == DVP_STATUS_OK) {
-      if (ms < d.fMin) ms = d.fMin;
-      if (ms > d.fMax) ms = d.fMax;
+      ms = SnapDoubleToStep(ms, d.fMin, d.fMax, d.fStep);
     }
   }
   fprintf(stderr, "[native] set exposure value: %.3f\n", ms);
   fflush(stderr);
+
+  const bool restartStreaming = s.isStreaming.load();
+  if (restartStreaming) StopStreamLocked();
+
   dvpStatus aeRs = s.dll.SetAeOperation(s.handle, AE_OP_OFF);
   dvpStatus rs = s.dll.SetExposure(s.handle, ms);
   fprintf(stderr, "[native] set exposure result: %d (ae=%d)\n", rs, aeRs);
   fflush(stderr);
+
+  dvpStatus restartRs = DVP_STATUS_OK;
+  if (restartStreaming && s.isOpen.load()) {
+    restartRs = s.dll.Start(s.handle);
+    if (restartRs == DVP_STATUS_OK) {
+      s.stopRequested.store(false);
+      s.isStreaming.store(true);
+      s.streamThread = std::thread(StreamLoop);
+      EmitStatus("event", "streaming");
+    }
+  }
+
   if (rs != DVP_STATUS_OK) {
     return MakeError(env, "SET_EXPOSURE_FAILED", "dvpSetExposure status=" + std::to_string(rs));
+  }
+  if (restartRs != DVP_STATUS_OK) {
+    return MakeError(env, "RESTART_STREAM_FAILED", "dvpStart status=" + std::to_string(restartRs));
   }
   double cur = ms;
   s.dll.GetExposure(s.handle, &cur);
@@ -503,28 +544,49 @@ Napi::Value CameraGetExposureRange(const Napi::CallbackInfo& info) {
 Napi::Value CameraSetGain(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   auto& s = S();
-  if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
   if (info.Length() < 1 || !info[0].IsObject()) return MakeError(env, "BAD_ARGS", "expected { value }");
   auto opts = info[0].As<Napi::Object>();
   if (!opts.Has("value") || !opts.Get("value").IsNumber()) {
     return MakeError(env, "BAD_ARGS", "expected numeric value");
   }
   float gain = opts.Get("value").As<Napi::Number>().FloatValue();
+
+  std::lock_guard<std::mutex> lk(s.mu);
+  if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
+
   if (s.dll.GetAnalogGainDescr) {
     dvpFloatDescr d{};
     if (s.dll.GetAnalogGainDescr(s.handle, &d) == DVP_STATUS_OK) {
-      if (gain < d.fMin) gain = d.fMin;
-      if (gain > d.fMax) gain = d.fMax;
+      gain = SnapFloatToStep(gain, d.fMin, d.fMax, d.fStep);
     }
   }
   fprintf(stderr, "[native] set gain value: %.3f\n", gain);
   fflush(stderr);
+
+  const bool restartStreaming = s.isStreaming.load();
+  if (restartStreaming) StopStreamLocked();
+
   dvpStatus aeRs = s.dll.SetAeOperation(s.handle, AE_OP_OFF);
   dvpStatus rs = s.dll.SetAnalogGain(s.handle, gain);
   fprintf(stderr, "[native] set gain result: %d (ae=%d)\n", rs, aeRs);
   fflush(stderr);
+
+  dvpStatus restartRs = DVP_STATUS_OK;
+  if (restartStreaming && s.isOpen.load()) {
+    restartRs = s.dll.Start(s.handle);
+    if (restartRs == DVP_STATUS_OK) {
+      s.stopRequested.store(false);
+      s.isStreaming.store(true);
+      s.streamThread = std::thread(StreamLoop);
+      EmitStatus("event", "streaming");
+    }
+  }
+
   if (rs != DVP_STATUS_OK) {
     return MakeError(env, "SET_GAIN_FAILED", "dvpSetAnalogGain status=" + std::to_string(rs));
+  }
+  if (restartRs != DVP_STATUS_OK) {
+    return MakeError(env, "RESTART_STREAM_FAILED", "dvpStart status=" + std::to_string(restartRs));
   }
   float cur = gain;
   s.dll.GetAnalogGain(s.handle, &cur);
@@ -611,6 +673,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   cam.Set("cameraSetGain",      Napi::Function::New(env, CameraSetGain));
   cam.Set("cameraGetGainRange", Napi::Function::New(env, CameraGetGainRange));
   cam.Set("cameraSetTriggerMode", Napi::Function::New(env, CameraSetTriggerMode));
+  cam.Set("measureVickersAuto",  Napi::Function::New(env, hardness_vickers::MeasureVickersAuto));
   cam.Set("shutdown",           Napi::Function::New(env, Shutdown));
   exports.Set("camera", cam);
   return exports;

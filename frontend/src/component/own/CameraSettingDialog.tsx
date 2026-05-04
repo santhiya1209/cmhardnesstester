@@ -141,6 +141,9 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           console.error('[camera-settings][frontend] setGain failed:', reply);
           setLiveApplyError(reply.message ?? reply.error ?? 'Failed to apply gain.');
         } else {
+          if (typeof reply.gain === 'number' && Number.isFinite(reply.gain)) {
+            setAnalogGain(reply.gain);
+          }
           setLiveApplyError(null);
         }
       } catch (err) {
@@ -166,6 +169,9 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           console.error('[camera-settings][frontend] setExposure failed:', reply);
           setLiveApplyError(reply.message ?? reply.error ?? 'Failed to apply exposure.');
         } else {
+          if (typeof reply.exposureMs === 'number' && Number.isFinite(reply.exposureMs)) {
+            setExposureMs(reply.exposureMs);
+          }
           setLiveApplyError(null);
         }
       } catch (err) {

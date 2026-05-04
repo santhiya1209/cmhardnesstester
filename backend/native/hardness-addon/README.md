@@ -1,6 +1,7 @@
 # hardness-addon
 
-Native N-API addon that talks to the Do3Think DVP2 camera.
+Native N-API addon that talks to the Do3Think DVP2 camera and performs Vickers
+auto-measurement with OpenCV.
 
 - Runtime-links `DVPCamera64.dll` from `C:\Program Files (x86)\Do3think\DVP2 x64\` via `LoadLibraryW` + `GetProcAddress`. No SDK `.lib` needed at compile time.
 - Vendor function prototypes are bundled in `include/dvp.h` (extracted from the official `DVPCamera.chm` Doxygen output, kept minimal — only the calls the addon uses).
@@ -12,6 +13,10 @@ Native N-API addon that talks to the Do3Think DVP2 camera.
 1. **Visual Studio Build Tools 2022** with the *Desktop development with C++* workload (MSVC v143, Windows 11 SDK).
 2. **Python 3.x** on `PATH` (node-gyp).
 3. **Node.js** matching the version Electron expects (run from the repo root).
+4. **OpenCV 4.x for MSVC x64**. By default the build looks in
+   `C:\Users\SANTHIYA\opencv\build`; override with `OPENCV_DIR`,
+   `OPENCV_INCLUDE_DIR`, `OPENCV_WORLD_LIB`, `OPENCV_LIB_DIR`, or
+   `OPENCV_LIB_NAME` if OpenCV moves.
 
 ## Build
 
@@ -58,7 +63,13 @@ camera.cameraGetStatus()
 camera.cameraSetExposure({ valueUs })
 camera.cameraSetGain({ value })
 camera.cameraSetTriggerMode({ value })
+camera.measureVickersAuto(frameBuffer, parameters)
 camera.shutdown()
 ```
 
 All entries return `{ ok: boolean, ... }`. Errors carry `{ error: 'CODE', message: '...' }`. There are no mock fallbacks: when the DLL is missing or the camera is unplugged, every call returns `ok:false` with a real error code.
+
+`measureVickersAuto(frameBuffer, parameters)` returns either a typed Vickers
+result with four corners, four fitted edge lines, D1/D2 pixels, calibrated mm
+values when calibration is supplied, confidence, and debug diagnostics, or
+`{ ok:false, reason, debug }` with a clear rejection reason.
