@@ -120,9 +120,18 @@ function MeasurementsWorkspaceImpl({
     await refetch();
   }, [refetch, removeMeasurement, selectedMeasurement]);
 
-  const handleClear = useCallback(() => {
+  const handleClear = useCallback(async () => {
+    if (measurements.length === 0) {
+      setSelectedMeasurementId(null);
+      return;
+    }
+
+    for (const measurement of measurements) {
+      await removeMeasurement(measurement.id);
+    }
     setSelectedMeasurementId(null);
-  }, []);
+    await refetch();
+  }, [measurements, refetch, removeMeasurement]);
 
   const statusMessage = useMemo(() => {
     if (deleting) {
@@ -188,7 +197,15 @@ function MeasurementsWorkspaceImpl({
         >
           Delete
         </Button>
-        <Button variant="outlined" size="small" sx={ACTION_BTN_SX} disabled={busy} onClick={handleClear}>
+        <Button
+          variant="outlined"
+          size="small"
+          sx={ACTION_BTN_SX}
+          disabled={busy || measurements.length === 0}
+          onClick={() => {
+            void handleClear();
+          }}
+        >
           Clear
         </Button>
         <Button variant="outlined" size="small" sx={ACTION_BTN_SX} disabled={busy} onClick={onOpenStatisticsTab}>

@@ -41,8 +41,8 @@ struct Params {
   std::string thresholdMode = "otsu";
   int manualThreshold = 118;
   double edgeFactor = 38.0;
-  double minContourArea = 0.004;
-  double maxContourArea = 24.0;
+  double minContourArea = 1.2;
+  double maxContourArea = 35.0;
   double centerBias = 40.0;
   int sideFitRoiWidth = 28;
   double gradientStrengthFactor = 36.0;
@@ -125,6 +125,9 @@ struct DebugInfo {
   std::string sourceType = "live-camera";
   std::string thresholdMode;
   std::string requestedThresholdMode;
+  int erosion = 0;
+  int dilation = 0;
+  int factor = 0;
   int erosionIterations = 0;
   int dilationIterations = 0;
   int morphologyKernelSize = 0;
@@ -291,33 +294,45 @@ bool ReadParamsObject(const Napi::Object& object, Params& params, std::string& r
     params.sourceType = "live-camera";
   }
 
-  params.erosionIterations = std::clamp(
-    IntFromObject(object, "erosionIterations", IntFromObject(object, "erosion", params.erosionIterations)),
-    0,
-    8
-  );
-  params.dilationIterations = std::clamp(
-    IntFromObject(object, "dilationIterations", IntFromObject(object, "dilation", params.dilationIterations)),
-    0,
-    8
-  );
-  params.morphologyKernelSize = std::clamp(IntFromObject(object, "morphologyKernelSize", params.morphologyKernelSize), 1, 41);
+  auto sliderToIterations = [](int value) {
+    return std::clamp(static_cast<int>(std::lround(std::clamp(value, 0, 100) / 12.5)), 0, 8);
+  };
+  auto sliderToOddKernel = [](int value) {
+    int kernel = std::clamp(static_cast<int>(std::lround(3.0 + (std::clamp(value, 0, 100) / 100.0) * 12.0)), 3, 15);
+    if (kernel % 2 == 0) ++kernel;
+    return kernel;
+  };
+
+  params.erosion = std::clamp(IntFromObject(object, "erosion", params.erosion), 0, 100);
+  params.dilation = std::clamp(IntFromObject(object, "dilation", params.dilation), 0, 100);
+  params.factor = std::clamp(IntFromObject(object, "factor", params.factor), 0, 100);
+  params.erosionIterations = object.Has("erosionIterations")
+    ? std::clamp(IntFromObject(object, "erosionIterations", sliderToIterations(params.erosion)), 0, 8)
+    : sliderToIterations(params.erosion);
+  params.dilationIterations = object.Has("dilationIterations")
+    ? std::clamp(IntFromObject(object, "dilationIterations", sliderToIterations(params.dilation)), 0, 8)
+    : sliderToIterations(params.dilation);
+  params.morphologyKernelSize = object.Has("morphologyKernelSize")
+    ? std::clamp(IntFromObject(object, "morphologyKernelSize", params.morphologyKernelSize), 1, 41)
+    : sliderToOddKernel(std::max(params.erosion, params.dilation));
   if (params.morphologyKernelSize % 2 == 0) ++params.morphologyKernelSize;
   params.thresholdMode = Lower(StringFromObject(object, "thresholdMode", params.thresholdMode));
   if (params.thresholdMode != "otsu" && params.thresholdMode != "adaptive" && params.thresholdMode != "manual") {
     params.thresholdMode = "otsu";
   }
   params.manualThreshold = std::clamp(IntFromObject(object, "manualThreshold", params.manualThreshold), 0, 255);
-  params.edgeFactor = std::clamp(NumberFromObject(object, "edgeFactor", NumberFromObject(object, "factor", params.edgeFactor)), 0.0, 100.0);
+  params.edgeFactor = object.Has("edgeFactor")
+    ? std::clamp(NumberFromObject(object, "edgeFactor", static_cast<double>(params.factor)), 0.0, 100.0)
+    : static_cast<double>(params.factor);
   params.minContourArea = std::clamp(NumberFromObject(object, "minContourArea", params.minContourArea), 0.001, 10.0);
   params.maxContourArea = std::clamp(NumberFromObject(object, "maxContourArea", params.maxContourArea), 0.01, 70.0);
   params.centerBias = std::clamp(NumberFromObject(object, "centerBias", params.centerBias), 0.0, 100.0);
-  params.sideFitRoiWidth = std::clamp(IntFromObject(object, "sideFitRoiWidth", params.sideFitRoiWidth), 4, 90);
-  params.gradientStrengthFactor = std::clamp(NumberFromObject(object, "gradientStrengthFactor", params.gradientStrengthFactor), 0.0, 100.0);
-
-  params.erosion = static_cast<int>(std::lround(params.erosionIterations * 12.5));
-  params.dilation = static_cast<int>(std::lround(params.dilationIterations * 12.5));
-  params.factor = static_cast<int>(std::lround(params.edgeFactor));
+  params.sideFitRoiWidth = object.Has("sideFitRoiWidth")
+    ? std::clamp(IntFromObject(object, "sideFitRoiWidth", params.sideFitRoiWidth), 4, 90)
+    : std::clamp(static_cast<int>(std::lround(14.0 + params.factor * 0.45)), 8, 70);
+  params.gradientStrengthFactor = object.Has("gradientStrengthFactor")
+    ? std::clamp(NumberFromObject(object, "gradientStrengthFactor", static_cast<double>(params.factor)), 0.0, 100.0)
+    : static_cast<double>(params.factor);
   params.imageType = StringFromObject(object, "imageType", params.imageType);
   params.objectiveForMeasure = StringFromObject(object, "objectiveForMeasure", params.objectiveForMeasure);
 
@@ -718,6 +733,17 @@ double RatioScore(double ratio, double maxRatio) {
   return Clamp01(1.0 - (ratio - 1.0) / std::max(0.01, maxRatio - 1.0));
 }
 
+double MinIndentationAreaPixels(const Params& params) {
+  const double imageArea = static_cast<double>(params.width) * params.height;
+  return std::max(120.0, imageArea * params.minAreaRatio);
+}
+
+double MinIndentationDiagonalPixels(const Params& params) {
+  const double minDim = std::min(params.width, params.height);
+  const double areaDiagonal = std::sqrt(std::max(1.0, MinIndentationAreaPixels(params) * 2.0));
+  return std::max(minDim * 0.10, areaDiagonal);
+}
+
 std::optional<Candidate> SelectBestContour(
   const cv::Mat& mask,
   const std::string& thresholdMode,
@@ -729,7 +755,7 @@ std::optional<Candidate> SelectBestContour(
   debug.contourCount = std::max(debug.contourCount, static_cast<int>(contours.size()));
 
   const double imageArea = static_cast<double>(params.width) * params.height;
-  const double minArea = std::max(80.0, imageArea * params.minAreaRatio);
+  const double minArea = MinIndentationAreaPixels(params);
   const double maxArea = std::max(minArea * 2.0, imageArea * params.maxAreaRatio);
   debug.minArea = minArea;
   debug.maxArea = maxArea;
@@ -778,20 +804,20 @@ std::optional<Candidate> SelectBestContour(
     }
     if (maxAngleError > params.angleToleranceDeg + 16.0) continue;
 
-    const double areaScore = Clamp01(validationArea / (imageArea * 0.018));
+    const double areaScore = Clamp01(validationArea / (imageArea * 0.055));
     const double centerScore = Clamp01(1.0 - centerDistance / std::max(1.0, maxCenterDistance));
     const double sideScore = RatioScore(metrics.sideRatio, params.maxSideLengthRatio);
     const double diagScore = RatioScore(metrics.diagonalRatio, params.maxDiagonalRatio);
     const double angleScore = Clamp01(1.0 - maxAngleError / std::max(1.0, params.angleToleranceDeg + 16.0));
     const double shapeScore = approxPointCount == 4 ? 1.0 : 0.70;
     const double score =
-      0.24 * areaScore +
-      0.25 * centerScore +
-      0.16 * sideScore +
-      0.16 * diagScore +
-      0.10 * angleScore +
-      0.05 * Clamp01((solidity - (edgeMaskMode ? 0.02 : 0.5)) / (edgeMaskMode ? 0.20 : 0.45)) +
-      0.04 * shapeScore;
+      0.42 * areaScore +
+      0.20 * centerScore +
+      0.12 * sideScore +
+      0.12 * diagScore +
+      0.07 * angleScore +
+      0.04 * Clamp01((solidity - (edgeMaskMode ? 0.02 : 0.5)) / (edgeMaskMode ? 0.20 : 0.45)) +
+      0.03 * shapeScore;
 
     Candidate candidate;
     candidate.contourArea = area;
@@ -1207,6 +1233,7 @@ std::optional<HoughDiamondResult> TryDarkBodyFallback(
   const double imageArea = static_cast<double>(params.width) * params.height;
   const cv::Point2f imageCenter(params.width * 0.5f, params.height * 0.5f);
   const double maxCenterDistance = std::max(params.width, params.height) * 0.36;
+  const double minAreaRatio = std::max(0.0012, params.minAreaRatio * 0.65);
   const int border = std::max(4, static_cast<int>(std::round(std::min(params.width, params.height) * 0.012)));
 
   struct ComponentChoice {
@@ -1228,7 +1255,7 @@ std::optional<HoughDiamondResult> TryDarkBodyFallback(
     if (x <= border || y <= border || x + w >= params.width - border || y + h >= params.height - border) continue;
 
     const double areaRatio = area / imageArea;
-    if (areaRatio < 0.00025 || areaRatio > 0.20) continue;
+    if (areaRatio < minAreaRatio || areaRatio > 0.24) continue;
 
     const cv::Point2f centroid(
       static_cast<float>(centroids.at<double>(label, 0)),
@@ -1328,8 +1355,10 @@ std::optional<HoughDiamondResult> TryDarkBodyFallback(
   }
 
   ShapeMetrics metrics = ComputeShapeMetrics(corners);
-  if (metrics.d1 < std::min(params.width, params.height) * 0.04 ||
-      metrics.d2 < std::min(params.width, params.height) * 0.04) {
+  const double minAcceptedDiagonal = MinIndentationDiagonalPixels(params);
+  if (metrics.area < MinIndentationAreaPixels(params) * 0.72 ||
+      metrics.d1 < minAcceptedDiagonal ||
+      metrics.d2 < minAcceptedDiagonal) {
     return std::nullopt;
   }
   if (metrics.d1 > std::min(params.width, params.height) * 0.78 ||
@@ -1627,6 +1656,9 @@ Napi::Object DebugObject(Napi::Env env, const DebugInfo& debug) {
   object.Set("settings", [&]() {
     auto settings = Napi::Object::New(env);
     settings.Set("thresholdMode", Napi::String::New(env, debug.requestedThresholdMode));
+    settings.Set("erosion", Napi::Number::New(env, debug.erosion));
+    settings.Set("dilation", Napi::Number::New(env, debug.dilation));
+    settings.Set("factor", Napi::Number::New(env, debug.factor));
     settings.Set("erosionIterations", Napi::Number::New(env, debug.erosionIterations));
     settings.Set("dilationIterations", Napi::Number::New(env, debug.dilationIterations));
     settings.Set("morphologyKernelSize", Napi::Number::New(env, debug.morphologyKernelSize));
@@ -1695,8 +1727,9 @@ Napi::Object Failure(Napi::Env env, const std::string& reason, DebugInfo debug) 
   object.Set("confidence", Napi::Number::New(env, 0.0));
   object.Set("debug", DebugObject(env, debug));
 
-  std::fprintf(stderr, "[auto-measure] rejected settings threshold=%s erosionIterations=%d dilationIterations=%d morphologyKernel=%d manualThreshold=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
-               debug.requestedThresholdMode.c_str(), debug.erosionIterations, debug.dilationIterations,
+  std::fprintf(stderr, "[auto-measure] rejected settings threshold=%s erosion=%d dilation=%d factor=%d erosionIterations=%d dilationIterations=%d morphologyKernel=%d manualThreshold=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
+               debug.requestedThresholdMode.c_str(), debug.erosion, debug.dilation, debug.factor,
+               debug.erosionIterations, debug.dilationIterations,
                debug.morphologyKernelSize, debug.manualThreshold, debug.edgeFactor, debug.minContourArea,
                debug.maxContourArea, debug.centerBias, debug.sideFitRoiWidth, debug.gradientStrengthFactor);
   std::fprintf(stderr, "[auto-measure] rejected source=%s reason=%s confidence=%.3f contourArea=%.2f hullArea=%.2f validationArea=%.2f centerDistance=%.2f\n",
@@ -1736,8 +1769,9 @@ Napi::Object Success(Napi::Env env, const Params& params, const OrderedCorners& 
   object.Set("hv", hv > 0.0 ? Napi::Number::New(env, hv) : env.Null());
   object.Set("debug", DebugObject(env, debug));
 
-  std::fprintf(stderr, "[auto-measure] settings threshold=%s erosionIterations=%d dilationIterations=%d morphologyKernel=%d manualThreshold=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
-               debug.requestedThresholdMode.c_str(), debug.erosionIterations, debug.dilationIterations,
+  std::fprintf(stderr, "[auto-measure] settings threshold=%s erosion=%d dilation=%d factor=%d erosionIterations=%d dilationIterations=%d morphologyKernel=%d manualThreshold=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
+               debug.requestedThresholdMode.c_str(), debug.erosion, debug.dilation, debug.factor,
+               debug.erosionIterations, debug.dilationIterations,
                debug.morphologyKernelSize, debug.manualThreshold, debug.edgeFactor, debug.minContourArea,
                debug.maxContourArea, debug.centerBias, debug.sideFitRoiWidth, debug.gradientStrengthFactor);
   std::fprintf(
@@ -1816,6 +1850,9 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.imageType = params.imageType;
     debug.objectiveForMeasure = params.objectiveForMeasure;
     debug.requestedThresholdMode = params.thresholdMode;
+    debug.erosion = params.erosion;
+    debug.dilation = params.dilation;
+    debug.factor = params.factor;
     debug.erosionIterations = params.erosionIterations;
     debug.dilationIterations = params.dilationIterations;
     debug.morphologyKernelSize = params.morphologyKernelSize;
@@ -1864,8 +1901,9 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
 
         const bool strongSplitFacetVickers =
           darkBody->confidence >= std::max(0.42, params.minConfidence * 0.86) &&
-          darkMetrics.d1 >= minDim * 0.08 &&
-          darkMetrics.d2 >= minDim * 0.08 &&
+          darkMetrics.area >= MinIndentationAreaPixels(params) * 0.72 &&
+          darkMetrics.d1 >= MinIndentationDiagonalPixels(params) &&
+          darkMetrics.d2 >= MinIndentationDiagonalPixels(params) &&
           darkMetrics.d1 <= minDim * 0.78 &&
           darkMetrics.d2 <= minDim * 0.78 &&
           darkMetrics.diagonalRatio <= params.maxDiagonalRatio &&
@@ -1978,6 +2016,16 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
         return returnHoughFallback(debug, *hough);
       }
       return Failure(env, "final diamond area is outside valid range", debug);
+    }
+    if (finalMetrics.d1 < MinIndentationDiagonalPixels(params) ||
+        finalMetrics.d2 < MinIndentationDiagonalPixels(params)) {
+      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
+        return returnHoughFallback(debug, *darkBody);
+      }
+      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
+        return returnHoughFallback(debug, *hough);
+      }
+      return Failure(env, "selected shape is too small to be indentation", debug);
     }
     if (finalMetrics.sideRatio > params.maxSideLengthRatio) {
       if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {

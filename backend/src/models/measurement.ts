@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { EntityIdSchema, IsoDateTimeSchema, PositiveNumberSchema } from './common';
 
-export const MeasurementMethodSchema = z.enum(['Manual', 'Auto']);
+export const MeasurementMethodSchema = z.enum(['Manual', 'Auto', 'Auto (Adjusted)']);
 export const MeasurementUnitSchema = z.enum(['um', 'px']);
 const NullablePositiveNumberSchema = PositiveNumberSchema.nullable().default(null);
 const NullableTextSchema = z.string().trim().nullable().default(null);

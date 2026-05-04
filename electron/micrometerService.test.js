@@ -3,17 +3,15 @@ const { buildScanCandidates, findAsciiReading } = require('./micrometerService')
 
 const candidates = buildScanCandidates('COM3');
 
-assert.ok(candidates.length > 1);
+assert.strictEqual(candidates.length, 1);
 assert.deepStrictEqual(candidates[0], {
   path: 'COM3',
   baudRate: 2300,
   dataBits: 8,
   parity: 'none',
   stopBits: 1,
-  pulseMode: 'alternate-high',
+  pulseMode: 'rts-low',
 });
-assert.ok(candidates.some((candidate) => candidate.baudRate === 2300 && candidate.pulseMode === 'rts-high'));
-assert.ok(candidates.some((candidate) => candidate.baudRate === 9600 && candidate.pulseMode === 'none'));
 
 for (const candidate of candidates) {
   assert.strictEqual(candidate.path, 'COM3');

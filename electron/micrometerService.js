@@ -8,7 +8,7 @@ const {
 } = require('./micrometerDecoder');
 
 const DEFAULT_PORT = 'COM3';
-const BAUD_RATES = [2300, 2400, 4800, 9600];
+const BAUD_RATES = [2300];
 const DATA_BITS = 8;
 const PARITY = 'none';
 const STOP_BITS = 1;
@@ -19,7 +19,9 @@ const PULSE_GRACE_MS = 300;
 const PULSE_PERIOD_MS = 350;
 const PULSE_WIDTH_MS = 80;
 const STABLE_SAMPLE_COUNT = 2;
-const PULSE_MODES = ['alternate-high', 'rts-high', 'dtr-high', 'rts-low', 'dtr-low', 'none'];
+const PULSE_MODES = ['rts-low'];
+const ENABLE_AUTOMATIC_REQUEST_PULSE = false;
+const STALE_READING_TIMEOUT_MS = 2000;
 const ASCII_LINE_TERMINATORS = new Set([0x08, 0x0a, 0x0c, 0x0d]);
 
 function buildScanCandidates(portName) {
@@ -141,6 +143,7 @@ class MicrometerService {
     this.currentOpenConfig = null;
     this.lockedBaudRate = null;
     this.noValidFrameTimer = null;
+    this.staleReadingTimer = null;
     this.pulseStartTimer = null;
     this.requestPulseTimer = null;
     this.pulseLineFlip = false;
@@ -289,6 +292,38 @@ class MicrometerService {
     this.totalBytesReceived = 0;
   }
 
+  _clearStaleReadingTimer() {
+    if (this.staleReadingTimer) {
+      clearTimeout(this.staleReadingTimer);
+      this.staleReadingTimer = null;
+    }
+  }
+
+  _scheduleStaleReadingTimeout(publishedAt) {
+    this._clearStaleReadingTimer();
+    this.staleReadingTimer = setTimeout(() => {
+      this.staleReadingTimer = null;
+
+      if (!this.portOpen || !this.latestReading || this.latestReading.timestamp !== publishedAt) {
+        return;
+      }
+
+      console.warn('[micrometer] latest serial value is stale; waiting for next DATA line');
+      this.latestReading = null;
+      this._setState({
+        connected: true,
+        portName: this.currentOpenConfig ? this.currentOpenConfig.path : this.state.portName,
+        value: null,
+        displayValue: 'Waiting for data...',
+        raw: null,
+        rawAscii: null,
+        rawHex: '',
+        lastError: null,
+        lockedBaudRate: this.lockedBaudRate,
+      });
+    }, STALE_READING_TIMEOUT_MS);
+  }
+
   async _openCurrentCandidate() {
     const config = this.scanCandidates[this.scanCandidateIndex];
     if (!config) {
@@ -433,6 +468,11 @@ class MicrometerService {
   _scheduleRequestPulse(mode) {
     this._stopRequestPulse();
 
+    if (!ENABLE_AUTOMATIC_REQUEST_PULSE) {
+      console.log('[micrometer] automatic REQUEST pulse disabled - waiting for manual DATA/SEND');
+      return;
+    }
+
     if (mode === 'none') {
       console.log(`[micrometer] ${pulseModeDescription(mode)}`);
       return;
@@ -517,6 +557,12 @@ class MicrometerService {
       if (this.lockedBaudRate) {
         return;
       }
+
+      if (this.scanCandidateIndex + 1 >= this.scanCandidates.length) {
+        console.warn('[micrometer] no value yet; keeping COM3 open and waiting for DATA');
+        return;
+      }
+
       this._tryNextCandidate('No valid binary micrometer frame within timeout');
     }, NO_VALID_FRAME_TIMEOUT_MS);
   }
@@ -531,6 +577,7 @@ class MicrometerService {
   _closeSerialPort(emitDisconnected = true) {
     this._clearNoValidFrameTimeout();
     this._stopRequestPulse();
+    this._clearStaleReadingTimer();
 
     if (this.port) {
       const portToClose = this.port;
@@ -796,6 +843,7 @@ class MicrometerService {
       timestamp,
       lockedBaudRate: this.lockedBaudRate,
     });
+    this._scheduleStaleReadingTimeout(timestamp);
   }
 }
 

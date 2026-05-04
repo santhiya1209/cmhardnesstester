@@ -2,8 +2,11 @@ import { Router } from 'express';
 import {
   createCalibrationSettings,
   deleteCalibrationSettings,
+  getActiveCalibrationSettings,
   getCalibrationSettings,
   getCalibrationSettingsById,
+  getCalibrationSettingsByObjective,
+  setActiveCalibrationSettings,
   updateCalibrationSettings,
 } from '../controllers/calibration-settings';
 import { validate } from '../lib/validate';
@@ -17,7 +20,10 @@ const router = Router();
 
 router.get('/', getCalibrationSettings);
 router.post('/', validate(CreateCalibrationSettingsSchema), createCalibrationSettings);
+router.get('/active', getActiveCalibrationSettings);
+router.get('/objective/:objective', getCalibrationSettingsByObjective);
 router.get('/:id', validate(IdParamsSchema, 'params'), getCalibrationSettingsById);
+router.put('/:id/active', validate(IdParamsSchema, 'params'), setActiveCalibrationSettings);
 router.put(
   '/:id',
   validate(IdParamsSchema, 'params'),

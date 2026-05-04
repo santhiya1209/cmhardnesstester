@@ -8,7 +8,11 @@ import {
 
 export const CalibrationSettingsPayloadSchema = z.object({
   objective: NonEmptyStringSchema,
+  normalizedObjective: NonEmptyStringSchema.optional(),
   pixelToMicron: PositiveNumberSchema,
+  umPerPixel: PositiveNumberSchema.optional(),
+  pixelPerMm: PositiveNumberSchema.optional(),
+  active: z.boolean().optional().default(false),
   calibrationDate: IsoDateTimeSchema,
 });
 

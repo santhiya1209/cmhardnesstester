@@ -14,6 +14,7 @@ import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
+import { displayToImage, getImagePlacement } from '@/utils/manualMeasure';
 
 const ROOT_SX: SxProps<Theme> = {
   flex: 1,
@@ -71,6 +72,7 @@ type Props = {
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
 };
 
 export type CameraWindowHandle = {
@@ -95,6 +97,7 @@ export type CameraWindowHandle = {
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 4;
 const ZOOM_STEP = 1.25;
+const COORDINATE_SCALE = 1024;
 
 function statusLabel(o: { sdkLoaded: boolean; open: boolean; streaming: boolean }) {
   if (!o.sdkLoaded) return { label: 'SDK not loaded', color: 'warning' as const };
@@ -112,6 +115,7 @@ function CameraWindowImpl(
     onAddShape,
     manualMeasureResetKey,
     onManualMeasurementUpdated,
+    onAutoMeasureAdjusted,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -120,7 +124,8 @@ function CameraWindowImpl(
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const { attachCanvas } = useCameraStream();
   const { status, refetch: refetchStatus } = useCameraStatus();
-  const [cursor, setCursor] = useState<Point | null>(null);
+  const [cursorCoordinate, setCursorCoordinate] = useState<Point | null>(null);
+  const [cursorDisplay, setCursorDisplay] = useState<Point | null>(null);
   const [frozen, setFrozen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -337,6 +342,60 @@ function CameraWindowImpl(
     }
   }, [frozen, status.height, status.width]);
 
+  const updateCursorFromPointer = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const viewport = viewportRef.current;
+      if (!viewport || !imageSize) {
+        setCursorCoordinate(null);
+        setCursorDisplay(null);
+        return;
+      }
+
+      const rect = viewport.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        setCursorCoordinate(null);
+        setCursorDisplay(null);
+        return;
+      }
+
+      const displayPoint: Point = {
+        x: ((event.clientX - rect.left) / rect.width) * viewport.clientWidth,
+        y: ((event.clientY - rect.top) / rect.height) * viewport.clientHeight,
+      };
+      const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
+      if (
+        !placement ||
+        displayPoint.x < placement.offsetX ||
+        displayPoint.x > placement.offsetX + placement.width ||
+        displayPoint.y < placement.offsetY ||
+        displayPoint.y > placement.offsetY + placement.height
+      ) {
+        setCursorCoordinate(null);
+        setCursorDisplay(null);
+        return;
+      }
+
+      setCursorDisplay(displayPoint);
+      const imagePoint = displayToImage(displayPoint, placement, imageSize);
+      setCursorCoordinate({
+        x: Math.max(
+          0,
+          Math.min(COORDINATE_SCALE, (imagePoint.x / imageSize.width) * COORDINATE_SCALE)
+        ),
+        y: Math.max(
+          0,
+          Math.min(COORDINATE_SCALE, (imagePoint.y / imageSize.height) * COORDINATE_SCALE)
+        ),
+      });
+    },
+    [imageSize]
+  );
+
+  const clearCursor = useCallback(() => {
+    setCursorCoordinate(null);
+    setCursorDisplay(null);
+  }, []);
+
   const tag = statusLabel(status);
 
   return (
@@ -373,6 +432,8 @@ function CameraWindowImpl(
             transformOrigin: 'center center',
             transition: 'transform 120ms ease-out',
           }}
+          onPointerMoveCapture={updateCursorFromPointer}
+          onPointerLeave={clearCursor}
         >
         <canvas ref={canvasRef} style={CANVAS_STYLE} />
         <canvas
@@ -390,23 +451,23 @@ function CameraWindowImpl(
           shapes={overlayShapes}
           crossLineVisible={crossLineVisible}
           onAddShape={onAddShape}
-          onCursor={setCursor}
         />
         <AutoMeasureOverlay
           graphics={autoMeasureGraphics}
           imageSize={imageSize}
+          interactive={activeTool === 'pointer'}
+          onAdjusted={onAutoMeasureAdjusted}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}
           imageSize={imageSize}
           resetKey={manualMeasureResetKey}
-          onCursor={setCursor}
           onMeasurementUpdated={onManualMeasurementUpdated}
         />
         {activeTool === 'magnifier' ? (
           <MagnifierLens
             source={frozen ? freezeCanvasRef.current : canvasRef.current}
-            cursor={cursor}
+            cursor={cursorDisplay}
             containerWidth={viewportSize.w}
             containerHeight={viewportSize.h}
           />
@@ -456,10 +517,10 @@ function CameraWindowImpl(
 
       <Box sx={COORD_BAR_SX}>
         <Typography component="span" sx={COORD_VALUE_SX}>
-          X: {cursor ? Math.round(cursor.x) : '—'}
+          X: {cursorCoordinate ? Math.round(cursorCoordinate.x) : '—'}
         </Typography>
         <Typography component="span" sx={COORD_VALUE_SX}>
-          Y: {cursor ? Math.round(cursor.y) : '—'}
+          Y: {cursorCoordinate ? Math.round(cursorCoordinate.y) : '—'}
         </Typography>
       </Box>
     </Box>

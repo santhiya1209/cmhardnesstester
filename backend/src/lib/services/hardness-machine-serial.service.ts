@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import {
   buildCommandForKey,
   buildStartIndentCommand,
-  parseMachineMessage,
+  tryParseOneFrame,
   type MachineControlKey,
 } from './hardness-machine-protocol';
 
@@ -186,55 +186,104 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   private handleIncoming(chunk: Buffer): void {
+    // [RX] hex + ascii — verbatim so the user can match against the manual.
     // eslint-disable-next-line no-console
-    console.log('[machine-service] rx hex=', chunk.toString('hex'));
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] rx ascii=', chunk.toString('ascii'));
+    console.log('[machine-service] [RX] hex=', chunk.toString('hex'), 'ascii=', JSON.stringify(chunk.toString('ascii')));
     this.rxBuffer = Buffer.concat([this.rxBuffer, chunk]);
 
-    // TODO(protocol): replace this naive frame extraction with real framing
-    // (length-prefixed / delimited / etc.) once protocol is known. For now we
-    // pass each chunk to parser and clear the buffer — parser returns
-    // 'unknown' so no state mutation happens.
-    const parsed = parseMachineMessage(this.rxBuffer);
-    this.rxBuffer = Buffer.alloc(0);
+    // Drain as many complete frames as the streaming parser can extract from
+    // the rolling buffer. The parser tells us how many bytes it consumed; we
+    // keep the unconsumed tail for the next chunk.
+    let safety = 32;
+    while (safety > 0) {
+      safety -= 1;
+      const { frame, consumed } = tryParseOneFrame(this.rxBuffer);
+      if (consumed === 0) break;
+      this.rxBuffer = this.rxBuffer.slice(consumed);
 
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] parsed state=', parsed.kind);
+      // eslint-disable-next-line no-console
+      console.log('[machine-service] [PARSED] kind=', frame.kind);
 
-    switch (parsed.kind) {
-      case 'state-update':
-        this.setState({ [parsed.key]: parsed.value } as Partial<MachineState>, 'machine');
-        break;
-      case 'indent-status':
-        // eslint-disable-next-line no-console
-        console.log('[machine-service] indent status=', parsed.status);
-        this.setState(
-          {
-            indentStatus: parsed.status,
-            lastError: parsed.status === 'error' ? parsed.message : undefined,
-          },
-          'machine'
-        );
-        break;
-      case 'nak':
-        this.setState({ lastError: parsed.message ?? 'machine NAK' }, 'machine');
-        break;
-      case 'ack':
-      case 'unknown':
-      default:
-        break;
+      switch (frame.kind) {
+        case 'state-update':
+          // eslint-disable-next-line no-console
+          console.log('[machine-service] [SYNC] machine pushed', frame.key, '=', frame.value);
+          this.setState({ [frame.key]: frame.value } as Partial<MachineState>, 'machine');
+          break;
+        case 'indent-status':
+          // eslint-disable-next-line no-console
+          console.log('[machine-service] [SYNC] indent status=', frame.status);
+          this.setState(
+            {
+              indentStatus: frame.status,
+              lastError: frame.status === 'error' ? frame.message : undefined,
+            },
+            'machine'
+          );
+          break;
+        case 'ack':
+          this.emit('ack');
+          break;
+        case 'nak':
+          this.emit('nak', frame.message ?? 'machine NAK');
+          this.setState({ lastError: frame.message ?? 'machine NAK' }, 'machine');
+          break;
+        case 'unknown':
+        default:
+          break;
+      }
+      if (frame.kind === 'unknown') break;
+    }
+
+    // Hard-cap the rx buffer to avoid unbounded growth if the protocol is
+    // misconfigured and nothing is parseable.
+    if (this.rxBuffer.length > 4096) {
+      // eslint-disable-next-line no-console
+      console.warn('[machine-service] rx buffer overflow, discarding', this.rxBuffer.length, 'bytes');
+      this.rxBuffer = Buffer.alloc(0);
     }
   }
 
-  private async transmit(frame: Buffer): Promise<void> {
+  /**
+   * Wait for the next 'ack' (resolves) or 'nak' (rejects) event from the
+   * machine, with a timeout. Used by transmit() when callers need the UI to
+   * commit only after the machine confirms.
+   */
+  private waitForAck(timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off('ack', onAck);
+        this.off('nak', onNak);
+      };
+      const onAck = () => {
+        cleanup();
+        resolve();
+      };
+      const onNak = (message: string) => {
+        cleanup();
+        reject(new Error(message));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('ack timeout'));
+      }, timeoutMs);
+      this.once('ack', onAck);
+      this.once('nak', onNak);
+    });
+  }
+
+  private async transmit(frame: Buffer, opts: { awaitAck?: boolean } = {}): Promise<void> {
     if (!this.port || !this.state.connected) {
       throw new Error('machine not connected');
     }
+    // [TX] hex + ascii — full frame logged for protocol verification.
     // eslint-disable-next-line no-console
-    console.log('[machine-service] tx hex=', frame.toString('hex'));
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] tx ascii=', frame.toString('ascii'));
+    console.log('[machine-service] [TX] hex=', frame.toString('hex'), 'ascii=', JSON.stringify(frame.toString('ascii')));
+
+    // Pre-arm ack listener BEFORE the write completes — some machines reply
+    // before the write callback fires.
+    const ackPromise = opts.awaitAck ? this.waitForAck(TX_TIMEOUT_MS) : null;
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -249,6 +298,10 @@ class HardnessMachineSerialService extends EventEmitter {
         resolve();
       });
     });
+
+    if (ackPromise) {
+      await ackPromise;
+    }
   }
 
   async setControlValue(key: MachineControlKey, value: string | number): Promise<MachineState> {
@@ -310,7 +363,9 @@ class HardnessMachineSerialService extends EventEmitter {
     }
     this.setState({ indentStatus: 'started', lastError: undefined }, 'pc');
     try {
-      await this.transmit(frame);
+      // Indent triggers physical motion — wait for the machine's ACK before
+      // the UI commits to "running". A NAK or timeout flips status to error.
+      await this.transmit(frame, { awaitAck: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setState({ indentStatus: 'error', lastError: message }, 'system');

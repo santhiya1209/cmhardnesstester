@@ -17,6 +17,7 @@ function selectCurrentCalibrationSettings(items: CalibrationSettings[]): Calibra
 
 export function useCalibrationSettings() {
   const [data, setData] = useState<CalibrationSettings | null>(null);
+  const [items, setItems] = useState<CalibrationSettings[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
@@ -29,13 +30,14 @@ export function useCalibrationSettings() {
     setError(null);
 
     try {
-      const items = await getCalibrationSettings();
+      const fetched = await getCalibrationSettings();
 
       if (requestIdRef.current !== requestId) {
         return;
       }
 
-      setData(selectCurrentCalibrationSettings(items));
+      setItems(fetched);
+      setData(selectCurrentCalibrationSettings(fetched));
     } catch (requestError) {
       if (requestIdRef.current !== requestId) {
         return;
@@ -55,6 +57,7 @@ export function useCalibrationSettings() {
 
   return {
     data,
+    items,
     loading,
     error,
     refetch,

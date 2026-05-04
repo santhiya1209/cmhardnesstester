@@ -28,7 +28,91 @@ type ResolveMicronsPerPixelArgs = {
   calibrationSettings: CalibrationSettings | null;
   calibrations: Calibration[];
   machineState?: MachineState | null;
+  /**
+   * When provided, resolution prefers a calibration record whose objective
+   * matches this value. If no exact match exists, returns null instead of
+   * silently falling back to a different objective's calibration.
+   */
+  targetObjective?: string | null;
+  calibrationSettingsList?: CalibrationSettings[];
 };
+
+export const VALID_OBJECTIVE_NAMES = ['2.5X', '5X', '10X', '20X', '40X', '50X'] as const;
+export const INVALID_OBJECTIVE_MESSAGE =
+  'Invalid objective selected. Please select 2.5X, 5X, 10X, 20X, 40X, or 50X.';
+
+export type ValidObjectiveName = (typeof VALID_OBJECTIVE_NAMES)[number];
+
+export type VickersFromPixelsValue = {
+  objective: string;
+  normalizedObjective: ValidObjectiveName;
+  d1Px: number;
+  d2Px: number;
+  d1Um: number;
+  d2Um: number;
+  d1Mm: number;
+  d2Mm: number;
+  avgDUm: number;
+  avgDMm: number;
+  forceKgf: number;
+  hv: number;
+  calibrationId: string;
+  calibrationName: string | null;
+  umPerPixel: number;
+  pixelPerMm: number;
+};
+
+export type VickersFromPixelsResult =
+  | { ok: true; value: VickersFromPixelsValue }
+  | { ok: false; reason: string; normalizedObjective?: string };
+
+type CalculateVickersFromPixelsArgs = ResolveMicronsPerPixelArgs & {
+  d1Px: number;
+  d2Px: number;
+  forceKgf: number | null | undefined;
+  objective: string | null | undefined;
+};
+
+export function normalizeObjectiveName(objective: string | null | undefined): string {
+  const compact = String(objective ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/^OBJECTIVE\s*/, '')
+    .replace(/\s+/g, '');
+  const match = compact.match(/^(2\.5|5|10|20|40|50)X$/);
+  return match ? `${match[1]}X` : compact;
+}
+
+export function isValidObjectiveName(objective: string | null | undefined): objective is ValidObjectiveName {
+  return VALID_OBJECTIVE_NAMES.includes(normalizeObjectiveName(objective) as ValidObjectiveName);
+}
+
+function readUmPerPixel(calibration: CalibrationSettings): number {
+  const value = calibration.umPerPixel ?? calibration.pixelToMicron;
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function findCalibrationForObjective(
+  list: CalibrationSettings[],
+  objective: string | null | undefined
+): CalibrationSettings | null {
+  const target = normalizeObjectiveName(objective);
+  if (!isValidObjectiveName(target)) {
+    return null;
+  }
+  const matches = list.filter(
+    (item) =>
+      (normalizeObjectiveName(item.normalizedObjective) === target ||
+        normalizeObjectiveName(item.objective) === target) &&
+      readUmPerPixel(item) > 0
+  );
+  if (matches.length === 0) {
+    return null;
+  }
+  return [...matches].sort(
+    (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+  )[0];
+}
 
 const VICKERS_CONSTANT = 1.8544;
 
@@ -161,12 +245,57 @@ export function resolveManualCalibration({
   calibrationSettings,
   calibrations,
   machineState,
+  targetObjective,
+  calibrationSettingsList,
 }: ResolveMicronsPerPixelArgs): ManualCalibrationInfo | null {
-  if (calibrationSettings?.pixelToMicron && calibrationSettings.pixelToMicron > 0) {
+  // Per-objective lookup takes priority. If a target objective is provided we
+  // MUST match it exactly — never silently fall back to another objective's
+  // calibration value.
+  const target = normalizeObjectiveName(targetObjective);
+  if (target) {
+    const list = calibrationSettingsList ?? (calibrationSettings ? [calibrationSettings] : []);
+    const match = findCalibrationForObjective(list, target);
+    if (match) {
+      const micronPerPixel = readUmPerPixel(match);
+      return {
+        micronPerPixel,
+        calibrationName: match.objective,
+        objective: match.normalizedObjective ?? normalizeObjectiveName(match.objective),
+      };
+    }
+    // No matching per-objective calibration. Try legacy `calibrations` list
+    // filtered to the same objective only — never cross objectives.
+    const legacyForObjective = calibrations
+      .filter(
+        (item) =>
+          normalizeObjectiveName(item.zoomTime) === target &&
+          (item.pixelLengthX > 0 || item.pixelLengthY > 0)
+      )
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    const legacy = legacyForObjective[0];
+    if (!legacy) {
+      return null;
+    }
+    const axes = [legacy.pixelLengthX, legacy.pixelLengthY].filter(
+      (value) => Number.isFinite(value) && value > 0
+    );
+    if (axes.length === 0) {
+      return null;
+    }
+    const micronPerPixel = axes.reduce((sum, value) => sum + value, 0) / axes.length;
     return {
-      micronPerPixel: calibrationSettings.pixelToMicron,
+      micronPerPixel,
+      calibrationName: `${legacy.zoomTime} ${legacy.force} ${legacy.hardnessLevel}`,
+      objective: legacy.zoomTime,
+    };
+  }
+
+  if (calibrationSettings && readUmPerPixel(calibrationSettings) > 0) {
+    const micronPerPixel = readUmPerPixel(calibrationSettings);
+    return {
+      micronPerPixel,
       calibrationName: calibrationSettings.objective,
-      objective: calibrationSettings.objective,
+      objective: calibrationSettings.normalizedObjective ?? normalizeObjectiveName(calibrationSettings.objective),
     };
   }
 
@@ -180,7 +309,7 @@ export function resolveManualCalibration({
     }
 
     return (
-      item.zoomTime === machineState.objective &&
+      normalizeObjectiveName(item.zoomTime) === normalizeObjectiveName(machineState.objective) &&
       parseForceKgf(item.force) === parseForceKgf(machineState.force) &&
       item.hardnessLevel === machineState.hardnessLevel
     );
@@ -204,6 +333,98 @@ export function resolveManualCalibration({
     micronPerPixel,
     calibrationName: `${selected.zoomTime} ${selected.force} ${selected.hardnessLevel}`,
     objective: selected.zoomTime,
+  };
+}
+
+export function calculateVickersFromPixels({
+  calibrationSettings,
+  calibrationSettingsList,
+  calibrations,
+  d1Px,
+  d2Px,
+  forceKgf,
+  machineState,
+  objective,
+}: CalculateVickersFromPixelsArgs): VickersFromPixelsResult {
+  const normalizedObjective = normalizeObjectiveName(objective);
+
+  if (!normalizedObjective) {
+    return { ok: false, reason: 'Calibration required to calculate µm and HV' };
+  }
+
+  if (!isValidObjectiveName(normalizedObjective)) {
+    return { ok: false, reason: INVALID_OBJECTIVE_MESSAGE, normalizedObjective };
+  }
+
+  if (!Number.isFinite(d1Px) || !Number.isFinite(d2Px) || d1Px <= 0 || d2Px <= 0) {
+    return { ok: false, reason: 'D1/D2 pixel values are invalid.', normalizedObjective };
+  }
+
+  if (!forceKgf || !Number.isFinite(forceKgf) || forceKgf <= 0) {
+    return {
+      ok: false,
+      reason: 'Force/load required to calculate HV.',
+      normalizedObjective,
+    };
+  }
+
+  const calibration = findCalibrationForObjective(
+    calibrationSettingsList ?? (calibrationSettings ? [calibrationSettings] : []),
+    normalizedObjective
+  );
+  const legacyCalibration = calibration
+    ? null
+    : resolveManualCalibration({
+        calibrationSettings,
+        calibrationSettingsList,
+        calibrations,
+        machineState,
+        targetObjective: normalizedObjective,
+      });
+  const umPerPixel = calibration ? readUmPerPixel(calibration) : legacyCalibration?.micronPerPixel ?? 0;
+
+  if (umPerPixel <= 0) {
+    return {
+      ok: false,
+      reason: `Calibration not found for ${normalizedObjective}. Please calibrate this objective before measurement.`,
+      normalizedObjective,
+    };
+  }
+
+  const d1Um = d1Px * umPerPixel;
+  const d2Um = d2Px * umPerPixel;
+  const d1Mm = d1Um / 1000;
+  const d2Mm = d2Um / 1000;
+  const avgDUm = (d1Um + d2Um) / 2;
+  const avgDMm = avgDUm / 1000;
+
+  if (avgDMm <= 0) {
+    return { ok: false, reason: 'Average diagonal is zero.', normalizedObjective };
+  }
+
+  const hv = VICKERS_CONSTANT * forceKgf / (avgDMm * avgDMm);
+  const calibrationId = calibration?.id ?? '';
+
+  return {
+    ok: true,
+    value: {
+      objective: normalizedObjective,
+      normalizedObjective,
+      d1Px: round(d1Px, 2),
+      d2Px: round(d2Px, 2),
+      d1Um: round(d1Um, 3),
+      d2Um: round(d2Um, 3),
+      d1Mm: round(d1Mm, 6),
+      d2Mm: round(d2Mm, 6),
+      avgDUm: round(avgDUm, 3),
+      avgDMm: round(avgDMm, 6),
+      forceKgf,
+      hv: round(hv, 2),
+      calibrationId,
+      calibrationName: calibration?.objective ?? legacyCalibration?.calibrationName ?? normalizedObjective,
+      umPerPixel,
+      pixelPerMm: round(1000 / umPerPixel, 6),
+    },
   };
 }
 

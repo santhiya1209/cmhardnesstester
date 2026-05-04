@@ -1,6 +1,6 @@
 import type { Point } from './tool';
 
-export type ManualMeasureMethod = 'Manual' | 'Auto';
+export type ManualMeasureMethod = 'Manual' | 'Auto' | 'Auto (Adjusted)';
 export type ManualMeasureUnit = 'um' | 'px';
 
 export type ManualMeasurePoints = [Point, Point, Point, Point];

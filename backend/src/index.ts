@@ -3,7 +3,15 @@ import express, { type Express } from 'express';
 import cors from 'cors';
 import { env, isProd } from './lib/env';
 import { errorHandler } from './lib/http';
+import { mutateDatabase } from './lib/db';
 import apiRouter from './routes';
+
+async function clearMeasurementsOnStartup(): Promise<void> {
+  await mutateDatabase((database) => ({
+    database: { ...database, measurements: [] },
+    result: undefined,
+  }));
+}
 
 export function createApp(): Express {
   const app = express();
@@ -35,12 +43,16 @@ export interface StartResult {
 }
 
 export function start(): Promise<StartResult> {
-  return new Promise((resolve) => {
-    const app = createApp();
-    const server = app.listen(env.PORT, () => {
-      console.log(`[backend] listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
-      resolve({ app, server, port: env.PORT });
-    });
+  return new Promise((resolve, reject) => {
+    clearMeasurementsOnStartup()
+      .then(() => {
+        const app = createApp();
+        const server = app.listen(env.PORT, () => {
+          console.log(`[backend] listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
+          resolve({ app, server, port: env.PORT });
+        });
+      })
+      .catch(reject);
   });
 }
 

@@ -15,6 +15,7 @@ const COLUMNS = [
   'X(mm)',
   'Y(mm)',
   'Method',
+  'Objective',
   'D1 px',
   'D2 px',
   'D1 µm',
@@ -139,6 +140,7 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   <TableCell sx={BODY_CELL_SX}>-</TableCell>
                   <TableCell sx={BODY_CELL_SX}>-</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Px)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatNumber(d2Px)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Um, 3)}</TableCell>

@@ -139,6 +139,7 @@ function renderTab(
         <DepthImageTab
           albumItemCount={albumItems.length}
           onAlbumChanged={refetchAlbumItems}
+          measurements={measurements}
         />
       );
     default: return null;

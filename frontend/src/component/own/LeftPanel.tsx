@@ -2,7 +2,7 @@ import { forwardRef, memo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import CameraWindow, { type CameraWindowHandle } from '@/component/own/CameraWindow';
-import type { AutoMeasureGraphics } from '@/types/autoMeasure';
+import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
 
@@ -25,6 +25,7 @@ type Props = {
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  onAutoMeasureAdjusted?: (corners: AutoMeasureCorners) => void;
 };
 
 function LeftPanelImpl(
@@ -36,6 +37,7 @@ function LeftPanelImpl(
     onAddShape,
     manualMeasureResetKey,
     onManualMeasurementUpdated,
+    onAutoMeasureAdjusted,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -50,6 +52,7 @@ function LeftPanelImpl(
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}
         onManualMeasurementUpdated={onManualMeasurementUpdated}
+        onAutoMeasureAdjusted={onAutoMeasureAdjusted}
       />
     </Box>
   );

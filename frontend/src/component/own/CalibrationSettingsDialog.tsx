@@ -13,6 +13,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { useSaveCalibrationSettings } from '@/hooks/mutations/useSaveCalibrationSettings';
 import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
+import { findCalibrationForObjective, normalizeObjectiveName } from '@/utils/manualMeasure';
 import type {
   CalibrationSettings,
   CalibrationSettingsSavePayload,
@@ -36,9 +37,9 @@ const DEFAULT_FORM_STATE: FormState = {
   pixelToMicron: '1',
 };
 
-function toFormState(settings: CalibrationSettings | null): FormState {
+function toFormState(settings: CalibrationSettings | null, fallbackObjective: string): FormState {
   if (!settings) {
-    return DEFAULT_FORM_STATE;
+    return { objective: fallbackObjective, pixelToMicron: '' };
   }
 
   return {
@@ -55,18 +56,25 @@ function toPayload(formState: FormState): CalibrationSettingsSavePayload | null 
   }
 
   return {
-    objective: formState.objective,
+    objective: normalizeObjectiveName(formState.objective),
     pixelToMicron,
+    umPerPixel: pixelToMicron,
+    pixelPerMm: 1000 / pixelToMicron,
+    active: true,
   };
 }
 
 function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props) {
-  const { data, error: loadError, loading, refetch } = useCalibrationSettings();
+  const { items, error: loadError, loading, refetch } = useCalibrationSettings();
   const { error: saveError, saveCalibrationSettings, saving } = useSaveCalibrationSettings();
   const [formState, setFormState] = useState<FormState>(DEFAULT_FORM_STATE);
   const [showValidationError, setShowValidationError] = useState(false);
 
-  const persistedFormState = useMemo(() => toFormState(data), [data]);
+  const recordForObjective = useMemo(
+    () => findCalibrationForObjective(items, formState.objective),
+    [items, formState.objective]
+  );
+
   const payload = useMemo(() => toPayload(formState), [formState]);
   const validationError =
     showValidationError && payload === null
@@ -83,19 +91,28 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
 
   useEffect(() => {
     if (open && !loading) {
-      setFormState(persistedFormState);
+      // When dialog opens, prefer the most-recently-edited record's objective
+      // so the user lands on whatever they last calibrated.
+      const last = [...items].sort(
+        (l, r) => Date.parse(r.updatedAt) - Date.parse(l.updatedAt)
+      )[0] ?? null;
+      setFormState(toFormState(last, DEFAULT_FORM_STATE.objective));
       setShowValidationError(false);
     }
-  }, [loading, open, persistedFormState]);
+  }, [items, loading, open]);
 
-  const handleObjectiveChange = useCallback((event: SelectChangeEvent) => {
-    const value = event.target.value;
-    setShowValidationError(false);
-    setFormState((current) => ({
-      ...current,
-      objective: value,
-    }));
-  }, []);
+  const handleObjectiveChange = useCallback(
+    (event: SelectChangeEvent) => {
+      const value = event.target.value;
+      setShowValidationError(false);
+      const existing = findCalibrationForObjective(items, value);
+      setFormState({
+        objective: value,
+        pixelToMicron: existing ? String(existing.pixelToMicron) : '',
+      });
+    },
+    [items]
+  );
 
   const handlePixelToMicronChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
@@ -112,14 +129,17 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
       return;
     }
 
+    // Update the existing record FOR THIS OBJECTIVE only — never touch another
+    // objective's record. If none exists, create a fresh one.
     await saveCalibrationSettings({
-      id: data?.id,
+      id: recordForObjective?.id,
       values: payload,
     });
 
-    onStatusChange?.('Calibration settings saved.');
+    onStatusChange?.(`Calibration saved for ${payload.objective}.`);
+    await refetch();
     onClose();
-  }, [data?.id, onClose, onStatusChange, payload, saveCalibrationSettings]);
+  }, [onClose, onStatusChange, payload, recordForObjective?.id, refetch, saveCalibrationSettings]);
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
@@ -139,7 +159,7 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
             </FormControl>
           </Grid>
           <Grid size={{ xs: 6 }}>
-            <Typography variant="caption">Pixel To Micron</Typography>
+            <Typography variant="caption">Microns Per Pixel</Typography>
             <TextField
               fullWidth
               size="small"
@@ -152,16 +172,20 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
           </Grid>
         </Grid>
 
-        {data?.calibrationDate ? (
+        {recordForObjective?.calibrationDate ? (
           <Typography variant="caption" sx={{ display: 'block', mt: 2, color: 'text.secondary' }}>
-            Last calibrated on{' '}
+            {recordForObjective.objective} last calibrated on{' '}
             {new Intl.DateTimeFormat('en-IN', {
               dateStyle: 'medium',
               timeStyle: 'short',
-            }).format(new Date(data.calibrationDate))}
+            }).format(new Date(recordForObjective.calibrationDate))}
             .
           </Typography>
-        ) : null}
+        ) : (
+          <Typography variant="caption" sx={{ display: 'block', mt: 2, color: 'warning.main' }}>
+            No calibration saved yet for {formState.objective}.
+          </Typography>
+        )}
 
         {errorMessage ? (
           <Alert severity="error" sx={{ mt: 2 }}>

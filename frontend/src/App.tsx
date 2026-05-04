@@ -45,11 +45,12 @@ import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDis
 import { dispatchMenuAction } from '@/utils/menuDispatcher';
 import type { ToolbarActionId } from '@/types/tool';
 import type { ConfigDialogId, MenuActionId } from '@/types/menu';
-import type { AutoMeasureGraphics } from '@/types/autoMeasure';
+import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import {
-  calculateManualCalibratedValuesFromPixels,
+  calculateVickersFromPixels,
   calculateManualDiagonalsFromPixels,
+  normalizeObjectiveName,
   parseForceKgf,
   resolveManualCalibration,
 } from '@/utils/manualMeasure';
@@ -120,7 +121,7 @@ function App() {
   } = useToolbarState();
   const { saveToolbarState } = useSaveToolbarState();
   const { data: lineColorSetting, refetch: refetchLineColor } = useLineColorSetting();
-  const { data: calibrationSettings } = useCalibrationSettings();
+  const { data: calibrationSettings, items: calibrationSettingsList } = useCalibrationSettings();
   const { data: calibrations, refetch: refetchCalibrations } = useCalibrations();
   const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
   const { data: serialPortSetting } = useSerialPortSetting();
@@ -142,6 +143,18 @@ function App() {
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const [autoMeasureSettingsRevision, setAutoMeasureSettingsRevision] = useState(0);
   const autoMeasurementIdRef = useRef<string | null>(null);
+
+  // Index loaded calibrations by normalized objective so any debugging /
+  // future O(1) lookup paths see the same canonical map the lookup helpers
+  // use. Logged once per change so stale state is visible in devtools.
+  useEffect(() => {
+    const map: Record<string, number> = {};
+    for (const item of calibrationSettingsList) {
+      map[String(item.objective).trim().toUpperCase()] = item.pixelToMicron;
+    }
+    // eslint-disable-next-line no-console
+    console.log('[calibration] loaded map', map);
+  }, [calibrationSettingsList]);
 
   const resetManualMeasure = useCallback(() => {
     manualMeasurementIdRef.current = null;
@@ -169,76 +182,50 @@ function App() {
             return;
           }
 
-          const calibration = resolveManualCalibration({
+          const targetObjective = machineState?.objective ?? null;
+          const forceKgf = parseForceKgf(machineState?.force);
+          const conversion = calculateVickersFromPixels({
             calibrationSettings,
             calibrations,
             machineState,
+            d1Px: result.d1Px,
+            d2Px: result.d2Px,
+            forceKgf,
+            objective: targetObjective,
+            targetObjective,
+            calibrationSettingsList,
           });
 
-          if (!calibration) {
-            const saved = await saveManualMeasurement({
-              id: manualMeasurementIdRef.current ?? undefined,
-              values: {
-                d1: pixelValues.d1,
-                d2: pixelValues.d2,
-                d1Px: pixelValues.d1,
-                d2Px: pixelValues.d2,
-                d1Um: null,
-                d2Um: null,
-                averageUm: null,
-                averageMm: null,
-                hv: null,
-                micronPerPixel: null,
-                calibrationName: null,
-                objective: machineState?.objective ?? null,
-                testForceKgf: null,
-                ...depthPayload,
-                method: 'Manual',
-                unit: 'px',
-                timestamp,
-              },
-            });
+          // eslint-disable-next-line no-console
+          console.log('[manual-measure][calibration] activeCalibrationLoaded', {
+            objective: targetObjective,
+            normalizedObjective: normalizeObjectiveName(targetObjective),
+            found: conversion.ok,
+            umPerPixel: conversion.ok ? conversion.value.umPerPixel : null,
+            reason: conversion.ok ? null : conversion.reason,
+          });
 
-            manualMeasurementIdRef.current = saved.id;
-            await refetchMeasurements();
-            // eslint-disable-next-line no-console
-            console.log('[manual-measure] D1/D2 calculated', {
-              d1Px: pixelValues.d1,
-              d2Px: pixelValues.d2,
-              unit: 'px',
-            });
-            // eslint-disable-next-line no-console
-            console.log('[manual-measure] table row updated', {
-              id: saved.id,
-              method: saved.method,
-            });
-            setUnavailableMsg('Calibration required to calculate µm and HV');
+          if (!conversion.ok) {
+            setUnavailableMsg(conversion.reason);
+            setStatusMessage(`System Status: Manual Measure blocked: ${conversion.reason}`);
             return;
           }
 
-          const forceKgf = parseForceKgf(machineState?.force);
-          const values = calculateManualCalibratedValuesFromPixels(
-            result.d1Px,
-            result.d2Px,
-            calibration.micronPerPixel,
-            forceKgf
-          );
-
-          if (!values) {
-            setUnavailableMsg('Manual Measure requires valid calibration and D1/D2 values.');
-            return;
-          }
+          const values = conversion.value;
 
           // eslint-disable-next-line no-console
-          console.log('[manual-measure] D1/D2 calculated', {
+          console.log('[manual-measure][converted]', {
+            objective: values.objective,
+            normalizedObjective: values.normalizedObjective,
+            umPerPixel: values.umPerPixel,
             d1Px: values.d1Px,
             d2Px: values.d2Px,
             d1Um: values.d1Um,
             d2Um: values.d2Um,
-            averageUm: values.averageUm,
-            averageMm: values.averageMm,
+            averageUm: values.avgDUm,
+            averageMm: values.avgDMm,
+            forceKgf: values.forceKgf,
             hv: values.hv,
-            micronPerPixel: calibration.micronPerPixel,
           });
 
           const saved = await saveManualMeasurement({
@@ -250,13 +237,13 @@ function App() {
               d2Px: values.d2Px,
               d1Um: values.d1Um,
               d2Um: values.d2Um,
-              averageUm: values.averageUm,
-              averageMm: values.averageMm,
+              averageUm: values.avgDUm,
+              averageMm: values.avgDMm,
               hv: values.hv,
-              micronPerPixel: calibration.micronPerPixel,
-              calibrationName: calibration.calibrationName,
-              objective: calibration.objective ?? machineState?.objective ?? null,
-              testForceKgf: forceKgf,
+              micronPerPixel: values.umPerPixel,
+              calibrationName: values.calibrationName,
+              objective: values.normalizedObjective,
+              testForceKgf: values.forceKgf,
               ...depthPayload,
               method: 'Manual',
               unit: 'um',
@@ -271,13 +258,6 @@ function App() {
             id: saved.id,
             method: saved.method,
           });
-          if (!forceKgf) {
-            setUnavailableMsg(
-              'Manual Measure saved µm values. Set a valid force/load value to calculate HV.'
-            );
-            return;
-          }
-
           setStatusMessage(`System Status: Manual measurement updated: HV ${values.hv}`);
         } catch (err) {
           setUnavailableMsg(
@@ -288,6 +268,7 @@ function App() {
     },
     [
       calibrationSettings,
+      calibrationSettingsList,
       calibrations,
       getMachineStateSnapshot,
       refetchMeasurements,
@@ -321,15 +302,35 @@ function App() {
 
       try {
         const machineState = await getMachineStateSnapshot();
+        // Prefer the live Machine Control objective toggle (10X/40X/etc.) over
+        // the static AutoMeasureSettings dialog value — the panel is what the
+        // user clicks to switch magnification, so calibration MUST follow it.
+        const objectiveForCalibration =
+          machineState?.objective?.trim() ? machineState.objective : settings.objectiveForMeasure;
         const machineStateForAuto = machineState
-          ? { ...machineState, objective: settings.objectiveForMeasure }
+          ? { ...machineState, objective: objectiveForCalibration }
           : null;
         const calibration = resolveManualCalibration({
           calibrationSettings,
           calibrations,
           machineState: machineStateForAuto,
+          targetObjective: objectiveForCalibration,
+          calibrationSettingsList,
         });
         const forceKgf = parseForceKgf(machineState?.force);
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure] calibration lookup', {
+          machineObjective: machineState?.objective ?? null,
+          dialogObjective: settings.objectiveForMeasure,
+          resolvedObjective: objectiveForCalibration,
+          micronPerPixel: calibration?.micronPerPixel ?? null,
+          calibrationName: calibration?.calibrationName ?? null,
+          forceKgf,
+          availableCalibrations: calibrationSettingsList.map((c) => ({
+            objective: c.objective,
+            pixelToMicron: c.pixelToMicron,
+          })),
+        });
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         const displayedFrame = cameraRef.current?.captureDisplayedFrame();
@@ -383,58 +384,54 @@ function App() {
         const timestamp = new Date().toISOString();
         const depthMm = await readLatestMicrometerDepthMm();
 
-        if (!calibration) {
-          const pixelValues = calculateManualDiagonalsFromPixels(
-            result.d1Pixels,
-            result.d2Pixels,
-            1
-          );
-          if (!pixelValues) {
-            setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
-            return;
-          }
+        const conversion = calculateVickersFromPixels({
+          calibrationSettings,
+          calibrationSettingsList,
+          calibrations,
+          d1Px: result.d1Pixels,
+          d2Px: result.d2Pixels,
+          forceKgf,
+          machineState: machineStateForAuto,
+          objective: objectiveForCalibration,
+          targetObjective: objectiveForCalibration,
+        });
 
-          const saved = await saveManualMeasurement({
-            id: autoMeasurementIdRef.current ?? undefined,
-            values: {
-              d1: pixelValues.d1,
-              d2: pixelValues.d2,
-              d1Px: pixelValues.d1,
-              d2Px: pixelValues.d2,
-              d1Um: null,
-              d2Um: null,
-              averageUm: null,
-              averageMm: null,
-              hv: null,
-              micronPerPixel: null,
-              calibrationName: null,
-              objective: settings.objectiveForMeasure,
-              testForceKgf: null,
-              depthMm,
-              method: 'Auto',
-              unit: 'px',
-              timestamp,
-            },
-          });
-
-          autoMeasurementIdRef.current = saved.id;
-          await refetchMeasurements();
-          setUnavailableMsg('Calibration required to calculate µm and HV');
-          setStatusMessage(`System Status: Auto measurement ${preview ? 'updated' : 'added'}: ${saved.d1Px} px / ${saved.d2Px} px`);
-          return;
-        }
-
-        const values = calculateManualCalibratedValuesFromPixels(
-          result.d1Pixels,
-          result.d2Pixels,
-          calibration.micronPerPixel,
-          forceKgf
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][calibration] activeObjective=${objectiveForCalibration} normalized=${normalizeObjectiveName(objectiveForCalibration)}`
         );
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure][calibration]', {
+          found: conversion.ok,
+          umPerPixel: conversion.ok ? conversion.value.umPerPixel : null,
+          reason: conversion.ok ? null : conversion.reason,
+        });
 
-        if (!values) {
-          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+        if (!conversion.ok) {
+          setUnavailableMsg(conversion.reason);
+          setStatusMessage(`System Status: Auto Measure blocked: ${conversion.reason}`);
           return;
         }
+
+        const values = conversion.value;
+
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure][diagonal]', { d1Px: values.d1Px, d2Px: values.d2Px });
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure][converted]', {
+          d1Um: values.d1Um,
+          d2Um: values.d2Um,
+          d1Mm: values.d1Mm,
+          d2Mm: values.d2Mm,
+          avgDUm: values.avgDUm,
+          avgDMm: values.avgDMm,
+        });
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure][hv]', {
+          forceKgf: values.forceKgf,
+          avgDmm: values.avgDMm,
+          hv: values.hv,
+        });
 
         const saved = await saveManualMeasurement({
           id: autoMeasurementIdRef.current ?? undefined,
@@ -445,13 +442,13 @@ function App() {
             d2Px: values.d2Px,
             d1Um: values.d1Um,
             d2Um: values.d2Um,
-            averageUm: values.averageUm,
-            averageMm: values.averageMm,
+            averageUm: values.avgDUm,
+            averageMm: values.avgDMm,
             hv: values.hv,
-            micronPerPixel: calibration.micronPerPixel,
-            calibrationName: calibration.calibrationName,
-            objective: calibration.objective ?? settings.objectiveForMeasure,
-            testForceKgf: forceKgf,
+            micronPerPixel: values.umPerPixel,
+            calibrationName: values.calibrationName,
+            objective: values.normalizedObjective,
+            testForceKgf: values.forceKgf,
             depthMm,
             method: 'Auto',
             unit: 'um',
@@ -461,9 +458,6 @@ function App() {
 
         autoMeasurementIdRef.current = saved.id;
         await refetchMeasurements();
-        if (!forceKgf) {
-          setUnavailableMsg('Auto Measure saved µm values. Set a valid force/load value to calculate HV.');
-        }
         setStatusMessage(
           saved.hv
             ? `System Status: Auto measurement ${preview ? 'updated' : 'added'}: HV ${saved.hv}`
@@ -482,6 +476,7 @@ function App() {
   }, [
     autoMeasuring,
     calibrationSettings,
+    calibrationSettingsList,
     calibrations,
     getMachineStateSnapshot,
     refetchMeasurements,
@@ -492,14 +487,165 @@ function App() {
     runAutoMeasure(autoMeasurePreviewSettings, false);
   }, [autoMeasurePreviewSettings, runAutoMeasure]);
 
+  // Live recompute when the user drags edges/corners on the auto-measure
+  // overlay. We coalesce rapid drag events with a 90ms trailing debounce so
+  // the DB save and refetch don't fire 60×/sec while we still update the
+  // overlay/graphics in real time on every move.
+  const adjustSaveTimerRef = useRef<number | null>(null);
+  const lastAdjustedCornersRef = useRef<AutoMeasureCorners | null>(null);
+  const handleAutoMeasureAdjusted = useCallback(
+    (newCorners: AutoMeasureCorners) => {
+      lastAdjustedCornersRef.current = newCorners;
+      // Update graphics immediately so the overlay & any downstream readers
+      // see the new corners on the next frame.
+      setAutoMeasureGraphics((current) =>
+        current ? { ...current, corners: newCorners } : current
+      );
+
+      if (adjustSaveTimerRef.current !== null) {
+        window.clearTimeout(adjustSaveTimerRef.current);
+      }
+      adjustSaveTimerRef.current = window.setTimeout(() => {
+        adjustSaveTimerRef.current = null;
+        const corners = lastAdjustedCornersRef.current;
+        if (!corners) return;
+        void (async () => {
+          try {
+            const settings = normalizeAutoMeasureSettings(autoMeasureSettings);
+            const machineState = await getMachineStateSnapshot();
+            const objectiveForCalibration =
+              machineState?.objective?.trim() ? machineState.objective : settings.objectiveForMeasure;
+            const machineStateForAuto = machineState
+              ? { ...machineState, objective: objectiveForCalibration }
+              : null;
+            const forceKgf = parseForceKgf(machineState?.force);
+
+            const d1Px = Math.hypot(
+              corners.right.x - corners.left.x,
+              corners.right.y - corners.left.y
+            );
+            const d2Px = Math.hypot(
+              corners.bottom.x - corners.top.x,
+              corners.bottom.y - corners.top.y
+            );
+
+            const targetId = autoMeasurementIdRef.current ?? undefined;
+            const timestamp = new Date().toISOString();
+
+            const conversion = calculateVickersFromPixels({
+              calibrationSettings,
+              calibrationSettingsList,
+              calibrations,
+              d1Px,
+              d2Px,
+              forceKgf,
+              machineState: machineStateForAuto,
+              objective: objectiveForCalibration,
+              targetObjective: objectiveForCalibration,
+            });
+            if (!conversion.ok) {
+              setUnavailableMsg(conversion.reason);
+              setStatusMessage(`System Status: Auto (Adjusted) blocked: ${conversion.reason}`);
+              return;
+            }
+            const values = conversion.value;
+
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure] adjusted recompute', {
+              machineObjective: machineState?.objective ?? null,
+              dialogObjective: settings.objectiveForMeasure,
+              resolvedObjective: objectiveForCalibration,
+              micronPerPixel: values.umPerPixel,
+              d1Px: values.d1Px,
+              d2Px: values.d2Px,
+              d1Um: values.d1Um,
+              d2Um: values.d2Um,
+              averageUm: values.avgDUm,
+              averageMm: values.avgDMm,
+              forceKgf: values.forceKgf,
+              hv: values.hv,
+              corners,
+            });
+
+            const saved = await saveManualMeasurement({
+              id: targetId,
+              values: {
+                d1: values.d1Um,
+                d2: values.d2Um,
+                d1Px: values.d1Px,
+                d2Px: values.d2Px,
+                d1Um: values.d1Um,
+                d2Um: values.d2Um,
+                averageUm: values.avgDUm,
+                averageMm: values.avgDMm,
+                hv: values.hv,
+                micronPerPixel: values.umPerPixel,
+                calibrationName: values.calibrationName,
+                objective: values.normalizedObjective,
+                testForceKgf: values.forceKgf,
+                method: 'Auto (Adjusted)',
+                unit: 'um',
+                timestamp,
+              },
+            });
+            autoMeasurementIdRef.current = saved.id;
+            await refetchMeasurements();
+            setStatusMessage(
+              saved.hv
+                ? `System Status: Auto (Adjusted) updated: HV ${saved.hv}`
+                : `System Status: Auto (Adjusted) updated: ${values.d1Um} µm / ${values.d2Um} µm`
+            );
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('[auto-measure] adjust save failed:', err);
+          }
+        })();
+      }, 90);
+    },
+    [
+      autoMeasureSettings,
+      calibrationSettings,
+      calibrationSettingsList,
+      calibrations,
+      getMachineStateSnapshot,
+      refetchMeasurements,
+      saveManualMeasurement,
+    ]
+  );
+
   useEffect(() => {
-    if (activeDialog !== 'autoMeasure' || autoMeasureSettingsRevision === 0) {
+    return () => {
+      if (adjustSaveTimerRef.current !== null) {
+        window.clearTimeout(adjustSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Auto Measure Settings dialog drives a live re-fit of the yellow lines on
+  // the camera image. ANY change to image type / erosion / dilation / factor /
+  // objective triggers a fresh detection so the user can dial in the sliders
+  // until the lines snap to the true diamond corners.
+  useEffect(() => {
+    if (activeDialog !== 'autoMeasure') {
       return;
     }
 
+    // Fire an immediate preview when the dialog opens (revision === 0) and
+    // again after every settings change (revision bumps), with a short debounce
+    // so dragging a slider doesn't fire 60×/sec.
+    const delay = autoMeasureSettingsRevision === 0 ? 0 : 250;
     const timer = window.setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure] settings preview re-fit', {
+        revision: autoMeasureSettingsRevision,
+        imageType: autoMeasurePreviewSettings.imageType,
+        erosion: autoMeasurePreviewSettings.erosion,
+        dilation: autoMeasurePreviewSettings.dilation,
+        factor: autoMeasurePreviewSettings.factor,
+        objectiveForMeasure: autoMeasurePreviewSettings.objectiveForMeasure,
+      });
       runAutoMeasure(autoMeasurePreviewSettings, true);
-    }, 300);
+    }, delay);
 
     return () => window.clearTimeout(timer);
   }, [activeDialog, autoMeasurePreviewSettings, autoMeasureSettingsRevision, runAutoMeasure]);
@@ -814,6 +960,7 @@ function App() {
           onAddShape={overlay.addShape}
           manualMeasureResetKey={manualMeasureResetKey}
           onManualMeasurementUpdated={handleManualMeasurementUpdated}
+          onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
         />
         <RightPanel
           measurements={measurements}
@@ -914,7 +1061,7 @@ function App() {
 
       <Snackbar
         open={unavailableMsg !== null}
-        autoHideDuration={3000}
+        autoHideDuration={unavailableMsg?.startsWith('Calibration not found') ? null : 3000}
         onClose={() => setUnavailableMsg(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
@@ -922,6 +1069,20 @@ function App() {
           severity="warning"
           variant="filled"
           onClose={() => setUnavailableMsg(null)}
+          action={
+            unavailableMsg?.startsWith('Calibration not found') ? (
+              <MuiButton
+                color="inherit"
+                size="small"
+                onClick={() => {
+                  setUnavailableMsg(null);
+                  setActiveDialog('calibration');
+                }}
+              >
+                Go to Calibration
+              </MuiButton>
+            ) : undefined
+          }
           sx={{ width: '100%' }}
         >
           {unavailableMsg}

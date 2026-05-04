@@ -14,6 +14,7 @@ import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Slider from '@mui/material/Slider';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useSaveAutoMeasureSettings } from '@/hooks/mutations/useSaveAutoMeasureSettings';
@@ -21,13 +22,11 @@ import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
   IMAGE_TYPE_OPTIONS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
-  THRESHOLD_MODE_OPTIONS,
   normalizeAutoMeasureSettings,
   type AutoMeasureSettings,
   type AutoMeasureSettingsPayload,
   type ImageType,
   type ObjectiveForMeasure,
-  type ThresholdMode,
 } from '@/types/autoMeasureSettings';
 import { colors } from '@/theme/theme';
 
@@ -51,18 +50,16 @@ const SLIDER_VALUE_SX = {
   textAlign: 'right' as const,
   fontVariantNumeric: 'tabular-nums',
 };
+const RIGHT_PANEL_DIALOG_PAPER_SX: SxProps<Theme> = {
+  position: 'fixed',
+  top: 11,
+  right: 2,
+  m: 0,
+  width: 560,
+  maxWidth: 'calc(100vw - 32px)',
+};
 
-type SliderField =
-  | 'erosionIterations'
-  | 'dilationIterations'
-  | 'morphologyKernelSize'
-  | 'manualThreshold'
-  | 'edgeFactor'
-  | 'minContourArea'
-  | 'maxContourArea'
-  | 'centerBias'
-  | 'sideFitRoiWidth'
-  | 'gradientStrengthFactor';
+type SliderField = 'erosion' | 'dilation' | 'factor';
 
 function AutoMeasureSettingsDialogImpl({
   open,
@@ -93,7 +90,7 @@ function AutoMeasureSettingsDialogImpl({
   const updateForm = useCallback(
     (updater: (current: AutoMeasureSettingsPayload) => AutoMeasureSettingsPayload) => {
       setForm((current) => {
-        const next = updater(current);
+        const next = normalizeAutoMeasureSettings(updater(current));
         onPreviewChange?.(next);
         return next;
       });
@@ -109,13 +106,6 @@ function AutoMeasureSettingsDialogImpl({
     updateForm((current) => ({
       ...current,
       objectiveForMeasure: event.target.value as ObjectiveForMeasure,
-    }));
-  }, [updateForm]);
-
-  const handleThresholdModeChange = useCallback((event: SelectChangeEvent) => {
-    updateForm((current) => ({
-      ...current,
-      thresholdMode: event.target.value as ThresholdMode,
     }));
   }, [updateForm]);
 
@@ -143,7 +133,7 @@ function AutoMeasureSettingsDialogImpl({
 
   const handleSave = useCallback(async () => {
     try {
-      await saveAutoMeasureSettings({ id: data?.id, values: form });
+      await saveAutoMeasureSettings({ id: data?.id, values: normalizeAutoMeasureSettings(form) });
       onSaved?.();
       onStatusChange?.('Auto measure settings saved.');
       onClose();
@@ -152,35 +142,33 @@ function AutoMeasureSettingsDialogImpl({
     }
   }, [data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
-  const sliderRow = (
-    label: string,
-    field: SliderField,
-    min: number,
-    max: number,
-    step = 1,
-    valueLabel?: string
-  ) => (
+  const sliderRow = (label: string, field: SliderField) => (
     <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
       <Typography variant="body2" sx={ROW_LABEL_SX}>
         {label}
       </Typography>
       <Slider
         value={form[field]}
-        min={min}
-        max={max}
-        step={step}
+        min={0}
+        max={100}
+        step={1}
         onChange={handleSliderChange(field)}
         disabled={busy}
         sx={{ flex: 1 }}
       />
       <Typography variant="body2" sx={SLIDER_VALUE_SX}>
-        {valueLabel ?? form[field]}
+        {form[field]}
       </Typography>
     </Stack>
   );
 
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
+    <Dialog
+      open={open}
+      onClose={busy ? undefined : onClose}
+      maxWidth={false}
+      slotProps={{ paper: { sx: RIGHT_PANEL_DIALOG_PAPER_SX } }}
+    >
       <DialogTitle sx={TITLE_SX}>Auto Measure Setting</DialogTitle>
       <DialogContent dividers>
         <Typography variant="h6" sx={{ color: colors.headingPrimary, mb: 1.5 }}>
@@ -202,40 +190,14 @@ function AutoMeasureSettingsDialogImpl({
           </FormControl>
         </Stack>
 
-        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
-          <Typography variant="body2" sx={ROW_LABEL_SX}>
-            Threshold
-          </Typography>
-          <FormControl size="small" sx={{ flex: 1 }}>
-            <Select
-              value={form.thresholdMode}
-              onChange={handleThresholdModeChange}
-              disabled={busy}
-            >
-              {THRESHOLD_MODE_OPTIONS.map((opt) => (
-                <MenuItem key={opt} value={opt}>
-                  {opt.toUpperCase()}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        </Stack>
-
-        {sliderRow('Manual Threshold', 'manualThreshold', 0, 255)}
-        {sliderRow('Erosion Iter.', 'erosionIterations', 0, 8)}
-        {sliderRow('Dilation Iter.', 'dilationIterations', 0, 8)}
-        {sliderRow('Morph Kernel', 'morphologyKernelSize', 1, 41, 2)}
-        {sliderRow('Edge Factor', 'edgeFactor', 0, 100)}
-        {sliderRow('Gradient Factor', 'gradientStrengthFactor', 0, 100)}
-        {sliderRow('Side Fit ROI', 'sideFitRoiWidth', 4, 90)}
-        {sliderRow('Min Area %', 'minContourArea', 0.001, 10, 0.001, form.minContourArea.toFixed(3))}
-        {sliderRow('Max Area %', 'maxContourArea', 0.01, 70, 0.01, form.maxContourArea.toFixed(2))}
-        {sliderRow('Center Bias', 'centerBias', 0, 100)}
+        {sliderRow('Erosion', 'erosion')}
+        {sliderRow('Dilation', 'dilation')}
+        {sliderRow('Factor', 'factor')}
 
         <Typography variant="subtitle2" sx={SECTION_HEADING_SX}>
           Auto Measure
         </Typography>
-        <Box sx={{ pl: 1, mb: 2 }}>
+        <Stack direction="row" spacing={2} sx={{ pl: 1, mb: 2 }}>
           <FormControlLabel
             control={
               <Checkbox
@@ -247,7 +209,6 @@ function AutoMeasureSettingsDialogImpl({
             }
             label="Turret After Impress"
           />
-          <Box />
           <FormControlLabel
             control={
               <Checkbox
@@ -259,7 +220,7 @@ function AutoMeasureSettingsDialogImpl({
             }
             label="Measure After Impress"
           />
-        </Box>
+        </Stack>
 
         <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
           <Typography variant="body2" sx={ROW_LABEL_SX}>
