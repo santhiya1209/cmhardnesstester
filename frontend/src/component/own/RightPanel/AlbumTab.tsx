@@ -1,20 +1,11 @@
-import { memo, useCallback } from 'react';
-import Alert from '@mui/material/Alert';
+import { memo, useCallback, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
-import CircularProgress from '@mui/material/CircularProgress';
-import Table from '@mui/material/Table';
-import TableBody from '@mui/material/TableBody';
-import TableCell from '@mui/material/TableCell';
-import TableContainer from '@mui/material/TableContainer';
-import TableHead from '@mui/material/TableHead';
-import TableRow from '@mui/material/TableRow';
+import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
+import ImageIcon from '@mui/icons-material/Image';
 import type { SxProps, Theme } from '@mui/material/styles';
-import { useDeleteAlbumItem } from '@/hooks/mutations/useDeleteAlbumItem';
-import type { AlbumItem } from '@/types/albumItem';
-
-const COLUMNS = ['#', 'Title', 'Preview', 'Hardness', 'Captured At', 'Action'];
+import type { Measurement } from '@/types/measurement';
 
 const SECTION_SX: SxProps<Theme> = {
   px: 1.5,
@@ -24,132 +15,148 @@ const SECTION_SX: SxProps<Theme> = {
   gap: 1,
   minHeight: 220,
 };
-const TABLE_WRAP_SX: SxProps<Theme> = {
+const GRID_WRAP_SX: SxProps<Theme> = {
   flex: 1,
-  minHeight: 180,
-  maxHeight: 260,
+  minHeight: 200,
+  maxHeight: 380,
+  overflowY: 'auto',
   border: 1,
   borderColor: 'divider',
+  bgcolor: 'background.paper',
+  p: 1,
 };
-const HEAD_CELL_SX: SxProps<Theme> = {
+const GRID_SX: SxProps<Theme> = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+  gap: 1,
+};
+const CARD_SX: SxProps<Theme> = {
+  display: 'flex',
+  flexDirection: 'column',
+  border: 1,
+  borderColor: 'divider',
+  overflow: 'hidden',
+};
+const THUMB_SX: SxProps<Theme> = {
+  width: '100%',
+  aspectRatio: '4 / 3',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  bgcolor: 'action.hover',
+  color: 'text.disabled',
+  overflow: 'hidden',
+};
+const THUMB_IMG_SX: SxProps<Theme> = {
+  width: '100%',
+  height: '100%',
+  objectFit: 'cover',
+  display: 'block',
+};
+const FOOTER_SX: SxProps<Theme> = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 0.5,
+  px: 0.75,
+  py: 0.5,
+  borderTop: 1,
+  borderColor: 'divider',
+};
+const INDEX_SX: SxProps<Theme> = { fontSize: 11, fontWeight: 700, minWidth: 26 };
+const SCALE_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary', minWidth: 38 };
+const VALUE_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, flex: 1, fontVariantNumeric: 'tabular-nums' };
+const GO_BTN_SX: SxProps<Theme> = {
+  textTransform: 'none',
   fontSize: 11,
   fontWeight: 600,
-  color: 'text.secondary',
-  py: 0.5,
+  minWidth: 0,
   px: 1,
-  whiteSpace: 'nowrap',
+  py: 0,
+  height: 22,
 };
-const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.5, px: 1 };
-const EMPTY_CELL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.disabled', textAlign: 'center', py: 6 };
-const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
-const FOOTER_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 };
-const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
+const EMPTY_SX: SxProps<Theme> = {
+  flex: 1,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: 12,
+  color: 'text.secondary',
+  py: 6,
+};
 
 type Props = {
-  albumItems: AlbumItem[];
-  albumItemsError: string | null;
-  albumItemsLoading: boolean;
-  refetchAlbumItems: () => Promise<void>;
+  measurements: Measurement[];
 };
 
-function formatDateTime(value: string): string {
-  return new Intl.DateTimeFormat('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
+function formatHardnessScale(testForceKgf: number | null | undefined): string {
+  if (testForceKgf === null || testForceKgf === undefined || !Number.isFinite(testForceKgf)) {
+    return 'HV';
+  }
+  const trimmed = Number.isInteger(testForceKgf) ? String(testForceKgf) : String(testForceKgf);
+  return `HV${trimmed}`;
 }
 
-function AlbumTabImpl({
-  albumItems,
-  albumItemsError,
-  albumItemsLoading,
-  refetchAlbumItems,
-}: Props) {
-  const { deleting, error: deleteError, removeAlbumItem } = useDeleteAlbumItem();
-  const isBusy = albumItemsLoading || deleting;
-  const errorMessage = albumItemsError ?? deleteError;
+function formatHv(hv: number | null | undefined): string {
+  if (hv === null || hv === undefined || !Number.isFinite(hv)) return '--';
+  return hv.toFixed(2);
+}
 
-  const handleDeleteItem = useCallback(
-    async (id: string) => {
-      await removeAlbumItem(id);
-      await refetchAlbumItems();
-    },
-    [refetchAlbumItems, removeAlbumItem]
-  );
+function AlbumTabImpl({ measurements }: Props) {
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[album][fetch] measurements count=', measurements.length);
+  }, [measurements.length]);
 
-  const handleClearAlbum = useCallback(async () => {
-    for (const item of albumItems) {
-      await removeAlbumItem(item.id);
-    }
-
-    await refetchAlbumItems();
-  }, [albumItems, refetchAlbumItems, removeAlbumItem]);
+  const handleGo = useCallback((m: Measurement) => {
+    // eslint-disable-next-line no-console
+    console.log('[GO] Move to measurement', m.id, m.xMm ?? null, m.yMm ?? null);
+  }, []);
 
   return (
     <Box sx={SECTION_SX}>
-      <TableContainer sx={TABLE_WRAP_SX}>
-        <Table size="small" stickyHeader>
-          <TableHead>
-            <TableRow>
-              {COLUMNS.map((column) => (
-                <TableCell key={column} sx={HEAD_CELL_SX}>{column}</TableCell>
-              ))}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {albumItems.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={COLUMNS.length} sx={EMPTY_CELL_SX}>
-                  No saved depth images.
-                </TableCell>
-              </TableRow>
-            ) : (
-              albumItems.map((item, index) => (
-                <TableRow key={item.id}>
-                  <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{item.title}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{item.previewLabel}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{item.hardnessImage ? 'Enabled' : 'Disabled'}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatDateTime(item.capturedAt)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>
+      <Box sx={GRID_WRAP_SX}>
+        {measurements.length === 0 ? (
+          <Box sx={EMPTY_SX}>No album items</Box>
+        ) : (
+          <Box sx={GRID_SX}>
+            {measurements.map((m, index) => {
+              const scale = formatHardnessScale(m.testForceKgf);
+              const value = formatHv(m.hv);
+              // eslint-disable-next-line no-console
+              console.log('[album][render] card', { id: m.id, index: index + 1, scale, value, hasImage: !!m.imageDataUrl });
+              return (
+                <Paper key={m.id} elevation={0} sx={CARD_SX}>
+                  <Box sx={THUMB_SX}>
+                    {m.imageDataUrl ? (
+                      <Box
+                        component="img"
+                        src={m.imageDataUrl}
+                        alt={`Measurement ${index + 1}`}
+                        sx={THUMB_IMG_SX}
+                      />
+                    ) : (
+                      <ImageIcon fontSize="large" />
+                    )}
+                  </Box>
+                  <Box sx={FOOTER_SX}>
+                    <Typography sx={INDEX_SX}>#{index + 1}</Typography>
+                    <Typography sx={SCALE_SX}>{scale}</Typography>
+                    <Typography sx={VALUE_SX}>{value}</Typography>
                     <Button
                       variant="outlined"
                       size="small"
-                      sx={{ ...BTN_SX, minWidth: 72 }}
-                      disabled={isBusy}
-                      onClick={() => {
-                        void handleDeleteItem(item.id);
-                      }}
+                      sx={GO_BTN_SX}
+                      onClick={() => handleGo(m)}
                     >
-                      Delete
+                      GO
                     </Button>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
-
-      <Box sx={FOOTER_SX}>
-        <Button
-          variant="outlined"
-          size="small"
-          sx={BTN_SX}
-          disabled={isBusy || albumItems.length === 0}
-          onClick={() => void handleClearAlbum()}
-        >
-          Clear Album
-        </Button>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {isBusy ? <CircularProgress size={12} /> : null}
-          <Typography sx={STATUS_TEXT_SX}>
-            {albumItemsLoading ? 'Loading album...' : `${albumItems.length} saved image(s).`}
-          </Typography>
-        </Box>
+                  </Box>
+                </Paper>
+              );
+            })}
+          </Box>
+        )}
       </Box>
-
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
     </Box>
   );
 }

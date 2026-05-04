@@ -633,7 +633,7 @@ function App() {
     // Fire an immediate preview when the dialog opens (revision === 0) and
     // again after every settings change (revision bumps), with a short debounce
     // so dragging a slider doesn't fire 60×/sec.
-    const delay = autoMeasureSettingsRevision === 0 ? 0 : 250;
+    const delay = autoMeasureSettingsRevision === 0 ? 0 : 40;
     const timer = window.setTimeout(() => {
       // eslint-disable-next-line no-console
       console.log('[auto-measure] settings preview re-fit', {

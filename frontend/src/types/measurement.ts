@@ -18,6 +18,9 @@ export type MeasurementPayload = {
   objective: string | null;
   testForceKgf: number | null;
   timestamp: string;
+  imageDataUrl?: string;
+  xMm?: number | null;
+  yMm?: number | null;
 };
 
 export type MeasurementSavePayload = {

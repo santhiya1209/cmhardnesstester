@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -10,6 +10,7 @@ import { useTheme } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useSaveDepthImageSetting } from '@/hooks/mutations/useSaveDepthImageSetting';
 import { useDepthImageSettings } from '@/hooks/queries/useDepthImageSettings';
+import { useCreateAlbumItem } from '@/hooks/mutations/useCreateAlbumItem';
 import type { Measurement } from '@/types/measurement';
 
 const SECTION_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 280 };
@@ -40,7 +41,7 @@ const STATUS_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 
 const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
-const DEFAULT_PREVIEW_LABEL = '';
+const DEFAULT_PREVIEW_LABEL = 'HardnessImage';
 
 type Props = {
   albumItemCount: number;
@@ -155,7 +156,10 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   const theme = useTheme();
   const { data, error: loadError, loading, refetch } = useDepthImageSettings();
   const { error: saveError, saveDepthImageSetting, saving } = useSaveDepthImageSetting();
+  const { addAlbumItem, creating: creatingAlbumItem, error: createAlbumError } = useCreateAlbumItem();
   const [hardnessImage, setHardnessImage] = useState(false);
+  const [saveImageError, setSaveImageError] = useState<string | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const points = useMemo(() => buildPoints(measurements), [measurements]);
   const chartColors = useMemo(
     () => ({
@@ -173,20 +177,25 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
     }
   }, [data?.hardnessImage, loading]);
 
-  const isBusy = loading || saving;
-  const errorMessage = loadError ?? saveError;
+  const isBusy = loading || saving || creatingAlbumItem;
+  const errorMessage = loadError ?? saveError ?? createAlbumError ?? saveImageError;
 
   const handleToggleHardnessImage = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const next = event.target.checked;
       setHardnessImage(next);
 
+      const previewLabel =
+        data?.previewLabel && data.previewLabel.trim().length > 0
+          ? data.previewLabel
+          : DEFAULT_PREVIEW_LABEL;
+
       try {
         await saveDepthImageSetting({
           id: data?.id,
           values: {
             hardnessImage: next,
-            previewLabel: data?.previewLabel ?? DEFAULT_PREVIEW_LABEL,
+            previewLabel,
           },
         });
         await refetch();
@@ -201,13 +210,59 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
     void refetch();
   }, [refetch]);
 
-  const handleSaveImage = useCallback(() => {
-    void onAlbumChanged();
-  }, [onAlbumChanged]);
+  const handleSaveImage = useCallback(async () => {
+    setSaveImageError(null);
+
+    const svg = previewRef.current?.querySelector('svg');
+    if (!svg) {
+      // eslint-disable-next-line no-console
+      console.warn('[album][save-image] no chart to save');
+      setSaveImageError('Nothing to save: chart is empty.');
+      return;
+    }
+
+    const cloned = svg.cloneNode(true) as SVGSVGElement;
+    if (!cloned.getAttribute('xmlns')) cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    if (!cloned.getAttribute('width')) cloned.setAttribute('width', '640');
+    if (!cloned.getAttribute('height')) cloned.setAttribute('height', '280');
+    const serialized = new XMLSerializer().serializeToString(cloned);
+    const imageDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(serialized)}`;
+    const capturedAt = new Date().toISOString();
+    const latest = points[points.length - 1];
+    const previewLabel = latest
+      ? `${latest.label} ${latest.y.toFixed(1)} @ ${latest.x.toFixed(3)} mm`
+      : 'Depth image';
+    const title = `Depth Image ${new Date(capturedAt).toLocaleString('en-IN')}`;
+
+    // eslint-disable-next-line no-console
+    console.log('[album][save-image] payload', {
+      title,
+      previewLabel,
+      capturedAt,
+      bytes: imageDataUrl.length,
+    });
+
+    try {
+      await addAlbumItem({
+        title,
+        previewLabel,
+        hardnessImage,
+        capturedAt,
+        imageDataUrl,
+      });
+      // eslint-disable-next-line no-console
+      console.log('[album][save-image] saved ok');
+      await onAlbumChanged();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[album][save-image] failed', err);
+      setSaveImageError(err instanceof Error ? err.message : String(err));
+    }
+  }, [addAlbumItem, hardnessImage, onAlbumChanged, points]);
 
   return (
     <Box sx={SECTION_SX}>
-      <Box sx={PREVIEW_SX}>
+      <Box sx={PREVIEW_SX} ref={previewRef}>
         {points.length === 0 ? (
           <Box sx={EMPTY_SX}>No measurements yet</Box>
         ) : (
@@ -224,7 +279,15 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
         <Button variant="outlined" size="small" sx={BTN_SX} disabled={isBusy} onClick={handleRefresh}>
           Fresh
         </Button>
-        <Button variant="outlined" size="small" sx={BTN_SX} disabled={isBusy} onClick={handleSaveImage}>
+        <Button
+          variant="outlined"
+          size="small"
+          sx={BTN_SX}
+          disabled={isBusy || points.length === 0}
+          onClick={() => {
+            void handleSaveImage();
+          }}
+        >
           Save Image
         </Button>
         <FormControlLabel

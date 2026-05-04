@@ -24,6 +24,9 @@ export const MeasurementPayloadSchema = z.object({
   objective: NullableTextSchema,
   testForceKgf: NullablePositiveNumberSchema,
   timestamp: IsoDateTimeSchema,
+  imageDataUrl: z.string().optional(),
+  xMm: z.number().finite().nullable().optional(),
+  yMm: z.number().finite().nullable().optional(),
 });
 
 export const MeasurementModel = MeasurementPayloadSchema.extend({

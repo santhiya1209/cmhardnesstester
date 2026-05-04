@@ -6,6 +6,8 @@ export const AlbumItemPayloadSchema = z.object({
   previewLabel: NonEmptyStringSchema,
   hardnessImage: z.boolean(),
   capturedAt: IsoDateTimeSchema,
+  imageDataUrl: z.string().optional(),
+  measurementId: z.string().optional(),
 });
 
 export const AlbumItemModel = AlbumItemPayloadSchema.extend({

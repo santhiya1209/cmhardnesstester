@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -9,6 +9,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { colors } from '@/theme/theme';
 import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
+import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 
 const COLUMNS = [
   '#',
@@ -94,6 +95,17 @@ function formatTimestamp(value: string): string {
 }
 
 function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, onSelect }: Props) {
+  const { connected, status, value, displayText } = useMicrometerReading();
+  const [latchedDepth, setLatchedDepth] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (status === 'valid' && value !== null && Number.isFinite(value)) {
+      setLatchedDepth(displayText);
+    } else if (!connected) {
+      setLatchedDepth(null);
+    }
+  }, [status, value, displayText, connected]);
+
   return (
     <TableContainer sx={TABLE_WRAP_SX}>
       <Table size="small" stickyHeader>
@@ -150,7 +162,11 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.testForceKgf, 3)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.calibrationName ?? '-'}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatDepth(measurement.depthMm)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>
+                    {measurement.depthMm !== null && measurement.depthMm !== undefined
+                      ? formatDepth(measurement.depthMm)
+                      : (latchedDepth ?? '—')}
+                  </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
                 </TableRow>
               );

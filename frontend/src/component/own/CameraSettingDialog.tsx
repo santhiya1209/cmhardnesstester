@@ -56,11 +56,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     step: EXPOSURE_TIME_STEP_MS,
   });
 
-  // Live-apply: optimistically true once the addon reports SDK loaded OR open.
-  // The dialog mounts a fresh useCameraStatus instance, so the initial render
-  // shows status.open=false for a few ms while refetch() resolves; gating on
-  // sdkLoaded || open avoids flashing the "Camera is not live" alert.
-  const liveAvailable = status.open || status.streaming || status.sdkLoaded;
+  const liveAvailable = status.open || status.streaming;
   const busy = loading || saving;
   const errorMessage = loadError ?? saveError ?? liveApplyError;
 
@@ -98,12 +94,18 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
         if (er.ok && er.min !== undefined && er.max !== undefined) {
           const step = er.step !== undefined && er.step > 0 ? er.step : EXPOSURE_TIME_STEP_MS;
           setExposureRange({ min: er.min, max: er.max, step });
+          if (typeof er.current === 'number' && Number.isFinite(er.current)) {
+            setExposureMs(clamp(er.current, er.min, er.max));
+          }
         } else if (!er.ok) {
           setLiveApplyError(er.message ?? er.error ?? 'Failed to read exposure range.');
         }
         if (gr.ok && gr.min !== undefined && gr.max !== undefined) {
           const step = gr.step !== undefined && gr.step > 0 ? gr.step : ANALOG_GAIN_STEP;
           setGainRange({ min: gr.min, max: gr.max, step });
+          if (typeof gr.current === 'number' && Number.isFinite(gr.current)) {
+            setAnalogGain(clamp(gr.current, gr.min, gr.max));
+          }
         } else if (!gr.ok) {
           setLiveApplyError(gr.message ?? gr.error ?? 'Failed to read gain range.');
         }
@@ -121,11 +123,11 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   }, [open, status.open]);
 
   useEffect(() => {
-    if (open && !loading) {
+    if (open && !loading && !liveAvailable) {
       setAnalogGain(data?.analogGain ?? DEFAULT_ANALOG_GAIN);
       setExposureMs(data?.exposureTimeMs ?? DEFAULT_EXPOSURE_TIME_MS);
     }
-  }, [data, loading, open]);
+  }, [data, liveAvailable, loading, open]);
 
   const sendGain = useCallback(
     async (rawValue: number) => {

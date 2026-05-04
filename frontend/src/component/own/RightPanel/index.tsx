@@ -126,14 +126,7 @@ function renderTab(
       );
     case 4: return <StatisticsInfoTab measurements={measurements} />;
     case 5:
-      return (
-        <AlbumTab
-          albumItems={albumItems}
-          albumItemsError={albumItemsError}
-          albumItemsLoading={albumItemsLoading}
-          refetchAlbumItems={refetchAlbumItems}
-        />
-      );
+      return <AlbumTab measurements={measurements} />;
     case 6:
       return (
         <DepthImageTab

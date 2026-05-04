@@ -3,6 +3,8 @@ export type AlbumItemPayload = {
   previewLabel: string;
   hardnessImage: boolean;
   capturedAt: string;
+  imageDataUrl?: string;
+  measurementId?: string;
 };
 
 export type AlbumItem = AlbumItemPayload & {
