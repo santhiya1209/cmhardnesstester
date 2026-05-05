@@ -27,13 +27,11 @@ export async function resetToFactory(): Promise<void> {
     const autoMeasureSettings = [
       AutoMeasureSettingsModel.parse({
         id: randomUUID(),
-        imageType: 'HV-2',
-        erosion: 15,
-        dilation: 10,
-        factor: 6,
+        smoothing: 15,
+        threshold: 134,
         turretAfterImpress: true,
         measureAfterImpress: true,
-        objectiveForMeasure: '40X',
+        objectiveForMeasure: '20X',
         ...stamp,
       }),
     ];

@@ -84,8 +84,6 @@ type TabContentProps = {
   patternProgramsLoading: boolean;
   refetchPatternPrograms: () => Promise<void>;
   albumItems: AlbumItem[];
-  albumItemsError: string | null;
-  albumItemsLoading: boolean;
   refetchAlbumItems: () => Promise<void>;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
 };
@@ -99,8 +97,6 @@ function renderTab(
     patternProgramsLoading,
     refetchPatternPrograms,
     albumItems,
-    albumItemsError,
-    albumItemsLoading,
     refetchAlbumItems,
     onObjectiveChange,
   }: TabContentProps
@@ -167,8 +163,6 @@ function RightPanelImpl({
   } = usePatternPrograms();
   const {
     data: albumItems,
-    error: albumItemsError,
-    loading: albumItemsLoading,
     refetch: refetchAlbumItems,
   } = useAlbumItems();
 
@@ -202,8 +196,6 @@ function RightPanelImpl({
         patternProgramsLoading,
         refetchPatternPrograms,
         albumItems,
-        albumItemsError,
-        albumItemsLoading,
         refetchAlbumItems,
         onObjectiveChange,
       })}

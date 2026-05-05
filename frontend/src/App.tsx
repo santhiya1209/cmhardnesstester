@@ -96,6 +96,31 @@ async function readLatestMicrometerDepthMm(): Promise<number | null> {
   }
 }
 
+const POINT_TOL_PX = 0.5;
+function pointAlmostEqual(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
+  return Math.abs(a.x - b.x) < POINT_TOL_PX && Math.abs(a.y - b.y) < POINT_TOL_PX;
+}
+function graphicsAlmostEqual(a: AutoMeasureGraphics, b: AutoMeasureGraphics): boolean {
+  if (
+    !pointAlmostEqual(a.corners.top, b.corners.top) ||
+    !pointAlmostEqual(a.corners.right, b.corners.right) ||
+    !pointAlmostEqual(a.corners.bottom, b.corners.bottom) ||
+    !pointAlmostEqual(a.corners.left, b.corners.left)
+  ) {
+    return false;
+  }
+  if (a.lines.length !== b.lines.length) return false;
+  for (let i = 0; i < a.lines.length; i += 1) {
+    if (
+      !pointAlmostEqual(a.lines[i].p1, b.lines[i].p1) ||
+      !pointAlmostEqual(a.lines[i].p2, b.lines[i].p2)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 type DialogKey =
   | 'autoMeasure'
   | 'calibration'
@@ -358,7 +383,9 @@ function App() {
 
       autoMeasureInFlightRef.current = true;
       setAutoMeasuring(true);
-      setStatusMessage(preview ? 'System Status: Auto Measure preview running' : 'System Status: Auto Measure running');
+      if (!preview) {
+        setStatusMessage('System Status: Auto Measure running');
+      }
 
       try {
         const machineState = await getMachineStateSnapshot();
@@ -384,8 +411,6 @@ function App() {
           // eslint-disable-next-line no-console
           console.log('[objective] changed →', machineState.objective);
         }
-        // eslint-disable-next-line no-console
-        console.log('[calibration] using objective=', objectiveForCalibration);
         const machineStateForAuto = machineState
           ? { ...machineState, objective: objectiveForCalibration }
           : null;
@@ -397,29 +422,22 @@ function App() {
           calibrationSettingsList,
         });
         const forceKgf = parseForceKgf(machineState?.force);
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] calibration lookup', {
-          machineObjective: machineState?.objective ?? null,
-          dialogObjective: settings.objectiveForMeasure,
-          resolvedObjective: objectiveForCalibration,
-          micronPerPixel: calibration?.micronPerPixel ?? null,
-          calibrationName: calibration?.calibrationName ?? null,
-          forceKgf,
-          availableCalibrations: calibrationSettingsList.map((c) => ({
-            objective: c.objective,
-            pixelToMicron: c.pixelToMicron,
-          })),
-        });
+        if (!preview) {
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure] calibration lookup', {
+            resolvedObjective: objectiveForCalibration,
+            micronPerPixel: calibration?.micronPerPixel ?? null,
+            calibrationName: calibration?.calibrationName ?? null,
+            forceKgf,
+          });
+        }
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         const displayedFrame = cameraRef.current?.captureDisplayedFrame();
 
         if (!displayedFrame?.ok) {
           if (preview) {
-            // Keep last valid overlay; surface only via status/log.
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure] preview detection failed: no displayed frame');
-            setStatusMessage('System Status: Auto Measure preview detection failed');
+            // Keep last valid overlay; surface only via status (no log spam).
             return;
           }
           setAutoMeasureGraphics(null);
@@ -428,13 +446,9 @@ function App() {
           return;
         }
 
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] selected settings', settings);
-
         // Only forward the live machine-control objective when it normalises
         // to one of the canonical values. A transient empty / unknown machine
-        // string must never poison the value sent to native, otherwise 40X
-        // detection that previously worked gets rerouted under wrong gates.
+        // string must never poison the value sent to native.
         const liveObjectiveCandidate = String(objectiveForCalibration ?? '')
           .trim()
           .toUpperCase();
@@ -442,10 +456,6 @@ function App() {
           (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(liveObjectiveCandidate)
             ? (liveObjectiveCandidate as ObjectiveForMeasure)
             : settings.objectiveForMeasure;
-
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] objectiveForMeasure=', liveObjectiveForNative,
-          'frame size=', displayedFrame.width, 'x', displayedFrame.height);
         const result = await measureVickersAuto({
           ...settings,
           objectiveForMeasure: liveObjectiveForNative,
@@ -463,17 +473,15 @@ function App() {
           maxFrameAgeMs: 1200,
         });
 
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] result', result);
+        if (!preview) {
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure] result', result);
+        }
 
         if (!result.ok || result.confidence < minConfidence || result.lines.length !== 4) {
           const reason = result.ok ? 'low confidence' : result.reason;
           if (preview) {
-            // Preview rejection: keep last valid overlay; do NOT clear or
-            // pop the unavailable modal — only update status/log.
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure] preview detection failed:', reason);
-            setStatusMessage(`System Status: Auto Measure preview detection failed: ${reason}`);
+            // Preview rejection: keep last valid overlay; no log spam.
             return;
           }
           setAutoMeasureGraphics(null);
@@ -482,10 +490,21 @@ function App() {
           return;
         }
 
-        setAutoMeasureGraphics({
-          corners: result.corners,
-          lines: result.lines,
+        setAutoMeasureGraphics((prev) => {
+          if (
+            prev &&
+            graphicsAlmostEqual(prev, { corners: result.corners, lines: result.lines })
+          ) {
+            return prev;
+          }
+          return { corners: result.corners, lines: result.lines };
         });
+
+        if (preview) {
+          // Preview mode: only update the overlay. Do NOT touch the DB,
+          // measurement table, depth reading, or status spam.
+          return;
+        }
 
         const timestamp = new Date().toISOString();
         const depthMm = await readLatestMicrometerDepthMm();
@@ -502,23 +521,6 @@ function App() {
           targetObjective: objectiveForCalibration,
         });
 
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][calibration] activeObjective=${objectiveForCalibration} normalized=${normalizeObjectiveName(objectiveForCalibration)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure][calibration]', {
-          found: conversion.ok,
-          umPerPixel: conversion.ok ? conversion.value.umPerPixel : null,
-          reason: conversion.ok ? null : conversion.reason,
-        });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[objective][measure] using objective=${normalizeObjectiveName(objectiveForCalibration)} umPerPixel=${
-            conversion.ok ? conversion.value.umPerPixel : 'n/a'
-          }`
-        );
-
         if (!conversion.ok) {
           setUnavailableMsg(conversion.reason);
           setStatusMessage(`System Status: Auto Measure blocked: ${conversion.reason}`);
@@ -528,25 +530,13 @@ function App() {
         const values = conversion.value;
 
         // eslint-disable-next-line no-console
-        console.log('[auto-measure][diagonal]', { d1Px: values.d1Px, d2Px: values.d2Px });
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure][converted]', {
+        console.log('[auto-measure] commit', {
+          objective: values.normalizedObjective,
           d1Um: values.d1Um,
           d2Um: values.d2Um,
-          d1Mm: values.d1Mm,
-          d2Mm: values.d2Mm,
-          avgDUm: values.avgDUm,
-          avgDMm: values.avgDMm,
-        });
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure][hv]', {
-          forceKgf: values.forceKgf,
-          avgDmm: values.avgDMm,
           hv: values.hv,
         });
 
-        // eslint-disable-next-line no-console
-        console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Auto');
         const saved = await saveManualMeasurement({
           id: autoMeasurementIdRef.current ?? undefined,
           values: {
@@ -574,8 +564,8 @@ function App() {
         await refetchMeasurements();
         setStatusMessage(
           saved.hv
-            ? `System Status: Auto measurement ${preview ? 'updated' : 'added'}: HV ${saved.hv}`
-            : `System Status: Auto measurement ${preview ? 'updated' : 'added'}: ${values.d1Um} µm / ${values.d2Um} µm`
+            ? `System Status: Auto measurement added: HV ${saved.hv}`
+            : `System Status: Auto measurement added: ${values.d1Um} µm / ${values.d2Um} µm`
         );
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -801,9 +791,9 @@ function App() {
   }, []);
 
   // Auto Measure Settings dialog drives a live re-fit of the yellow lines on
-  // the camera image. ANY change to image type / erosion / dilation / factor /
-  // objective triggers a fresh detection so the user can dial in the sliders
-  // until the lines snap to the true diamond corners.
+  // the camera image. ANY change to smoothing / threshold / objective triggers
+  // a fresh detection so the user can dial in the sliders until the lines snap
+  // to the true diamond corners.
   useEffect(() => {
     if (activeDialog !== 'autoMeasure') {
       return;
@@ -814,15 +804,6 @@ function App() {
     // so dragging a slider doesn't fire 60×/sec.
     const delay = autoMeasureSettingsRevision === 0 ? 0 : 40;
     const timer = window.setTimeout(() => {
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure] settings preview re-fit', {
-        revision: autoMeasureSettingsRevision,
-        imageType: autoMeasurePreviewSettings.imageType,
-        erosion: autoMeasurePreviewSettings.erosion,
-        dilation: autoMeasurePreviewSettings.dilation,
-        factor: autoMeasurePreviewSettings.factor,
-        objectiveForMeasure: autoMeasurePreviewSettings.objectiveForMeasure,
-      });
       runAutoMeasure(autoMeasurePreviewSettings, true);
     }, delay);
 

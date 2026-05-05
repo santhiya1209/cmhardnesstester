@@ -20,12 +20,14 @@ import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useSaveAutoMeasureSettings } from '@/hooks/mutations/useSaveAutoMeasureSettings';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
-  IMAGE_TYPE_OPTIONS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
+  SMOOTHING_MAX,
+  SMOOTHING_MIN,
+  THRESHOLD_MAX,
+  THRESHOLD_MIN,
   normalizeAutoMeasureSettings,
   type AutoMeasureSettings,
   type AutoMeasureSettingsPayload,
-  type ImageType,
   type ObjectiveForMeasure,
 } from '@/types/autoMeasureSettings';
 import { colors } from '@/theme/theme';
@@ -44,9 +46,9 @@ function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsP
 
 const TITLE_SX = { bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 };
 const SECTION_HEADING_SX = { color: colors.headingSecondary, fontWeight: 600, mb: 1 };
-const ROW_LABEL_SX = { minWidth: 110 };
+const ROW_LABEL_SX = { minWidth: 160 };
 const SLIDER_VALUE_SX = {
-  minWidth: 32,
+  minWidth: 40,
   textAlign: 'right' as const,
   fontVariantNumeric: 'tabular-nums',
 };
@@ -59,7 +61,7 @@ const RIGHT_PANEL_DIALOG_PAPER_SX: SxProps<Theme> = {
   maxWidth: 'calc(100vw - 32px)',
 };
 
-type SliderField = 'erosion' | 'dilation' | 'factor';
+type SliderField = 'smoothing' | 'threshold';
 
 function AutoMeasureSettingsDialogImpl({
   open,
@@ -71,6 +73,9 @@ function AutoMeasureSettingsDialogImpl({
   const { data, error: loadError, loading, refetch } = useAutoMeasureSettings();
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
   const [form, setForm] = useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
+  const [savedBaseline, setSavedBaseline] = useState<AutoMeasureSettingsPayload>(
+    DEFAULT_AUTO_MEASURE_SETTINGS
+  );
 
   const busy = loading || saving;
   const errorMessage = loadError ?? saveError;
@@ -83,7 +88,9 @@ function AutoMeasureSettingsDialogImpl({
 
   useEffect(() => {
     if (open && !loading) {
-      setForm(toFormState(data));
+      const next = toFormState(data);
+      setForm(next);
+      setSavedBaseline(next);
     }
   }, [data, loading, open]);
 
@@ -98,16 +105,15 @@ function AutoMeasureSettingsDialogImpl({
     [onPreviewChange]
   );
 
-  const handleImageTypeChange = useCallback((event: SelectChangeEvent) => {
-    updateForm((current) => ({ ...current, imageType: event.target.value as ImageType }));
-  }, [updateForm]);
-
-  const handleObjectiveChange = useCallback((event: SelectChangeEvent) => {
-    updateForm((current) => ({
-      ...current,
-      objectiveForMeasure: event.target.value as ObjectiveForMeasure,
-    }));
-  }, [updateForm]);
+  const handleObjectiveChange = useCallback(
+    (event: SelectChangeEvent) => {
+      updateForm((current) => ({
+        ...current,
+        objectiveForMeasure: event.target.value as ObjectiveForMeasure,
+      }));
+    },
+    [updateForm]
+  );
 
   const handleSliderChange = useCallback(
     (field: SliderField) => (_e: Event, value: number | number[]) => {
@@ -131,9 +137,18 @@ function AutoMeasureSettingsDialogImpl({
     onPreviewChange?.(DEFAULT_AUTO_MEASURE_SETTINGS);
   }, [onPreviewChange]);
 
+  const handleCancel = useCallback(() => {
+    // Revert preview to last saved values, then close.
+    setForm(savedBaseline);
+    onPreviewChange?.(savedBaseline);
+    onClose();
+  }, [onClose, onPreviewChange, savedBaseline]);
+
   const handleSave = useCallback(async () => {
     try {
-      await saveAutoMeasureSettings({ id: data?.id, values: normalizeAutoMeasureSettings(form) });
+      const finalValues = normalizeAutoMeasureSettings(form);
+      await saveAutoMeasureSettings({ id: data?.id, values: finalValues });
+      setSavedBaseline(finalValues);
       onSaved?.();
       onStatusChange?.('Auto measure settings saved.');
       onClose();
@@ -142,15 +157,20 @@ function AutoMeasureSettingsDialogImpl({
     }
   }, [data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
-  const sliderRow = (label: string, field: SliderField) => (
+  const sliderRow = (
+    label: string,
+    field: SliderField,
+    min: number,
+    max: number
+  ) => (
     <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
       <Typography variant="body2" sx={ROW_LABEL_SX}>
         {label}
       </Typography>
       <Slider
         value={form[field]}
-        min={0}
-        max={100}
+        min={min}
+        max={max}
         step={1}
         onChange={handleSliderChange(field)}
         disabled={busy}
@@ -165,36 +185,20 @@ function AutoMeasureSettingsDialogImpl({
   return (
     <Dialog
       open={open}
-      onClose={busy ? undefined : onClose}
+      onClose={busy ? undefined : handleCancel}
       maxWidth={false}
       slotProps={{ paper: { sx: RIGHT_PANEL_DIALOG_PAPER_SX } }}
     >
       <DialogTitle sx={TITLE_SX}>Auto Measure Setting</DialogTitle>
       <DialogContent dividers>
-        <Typography variant="h6" sx={{ color: colors.headingPrimary, mb: 1.5 }}>
-          Select Irregular Image Type
+        <Typography variant="subtitle2" sx={SECTION_HEADING_SX}>
+          Auto Measure Correct
         </Typography>
 
-        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 2 }}>
-          <Typography variant="body2" sx={ROW_LABEL_SX}>
-            Image Type
-          </Typography>
-          <FormControl size="small" sx={{ flex: 1 }}>
-            <Select value={form.imageType} onChange={handleImageTypeChange} disabled={busy}>
-              {IMAGE_TYPE_OPTIONS.map((opt) => (
-                <MenuItem key={opt} value={opt}>
-                  {opt}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        </Stack>
+        {sliderRow('Smoothing', 'smoothing', SMOOTHING_MIN, SMOOTHING_MAX)}
+        {sliderRow('Threshold', 'threshold', THRESHOLD_MIN, THRESHOLD_MAX)}
 
-        {sliderRow('Erosion', 'erosion')}
-        {sliderRow('Dilation', 'dilation')}
-        {sliderRow('Factor', 'factor')}
-
-        <Typography variant="subtitle2" sx={SECTION_HEADING_SX}>
+        <Typography variant="subtitle2" sx={{ ...SECTION_HEADING_SX, mt: 2 }}>
           Auto Measure
         </Typography>
         <Stack direction="row" spacing={2} sx={{ pl: 1, mb: 2 }}>
@@ -255,7 +259,7 @@ function AutoMeasureSettingsDialogImpl({
         <Button variant="contained" onClick={() => void handleSave()} disabled={busy}>
           Save
         </Button>
-        <Button onClick={onClose} disabled={busy}>
+        <Button onClick={handleCancel} disabled={busy}>
           Cancel
         </Button>
       </DialogActions>

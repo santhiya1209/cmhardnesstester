@@ -24,7 +24,8 @@ type MachineControlTabProps = {
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
 const OBJECTIVE_OPTIONS = ['2.5X', '5X', '10X', '20X', '40X', '50X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
-const NUMBER_INPUT_PROPS = { min: 0 } as const;
+const LIGHTNESS_INPUT_PROPS = { min: 0, max: 9, step: 1 } as const;
+const LOAD_TIME_INPUT_PROPS = { min: 1, max: 99, step: 1 } as const;
 
 type FormState = {
   force: string;
@@ -93,6 +94,14 @@ const STATUS_ROW_SX: SxProps<Theme> = {
   borderColor: 'divider',
 };
 const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
+const STATUS_DETAILS_SX: SxProps<Theme> = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gap: 0.5,
+  px: 1.5,
+  pb: 1,
+};
+const STATUS_DETAIL_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary' };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
 function machineToForm(state: MachineState | null): FormState {
@@ -121,6 +130,20 @@ function indentLabel(status: IndentStatus): string {
     default:
       return 'Indent';
   }
+}
+
+function formatTimestamp(value?: string): string {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString();
+}
+
+function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boolean {
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric)) return false;
+  if (field === 'lightness') return numeric >= 0 && numeric <= 9;
+  return numeric >= 1 && numeric <= 99;
 }
 
 function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {}) {
@@ -162,6 +185,10 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     console.log(
       `[machine-sync][ui-state] objective=${formState.objective} force=${formState.force} lightness=${formState.lightness} loadTime=${formState.loadTime} hardnessLevel=${formState.hardnessLevel}`
     );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-ui] state objective=${formState.objective} force=${formState.force} lightness=${formState.lightness} loadTime=${formState.loadTime} hardnessLevel=${formState.hardnessLevel}`
+    );
   }, [
     formState.force,
     formState.hardnessLevel,
@@ -173,6 +200,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   const pushChange = useCallback(
     async (key: MachineControlKey, value: string) => {
       lastSentRef.current[key] = value;
+      // eslint-disable-next-line no-console
+      console.log(`[machine-ui] change field=${key} value=${value}`);
       if (key === 'objective') {
         // eslint-disable-next-line no-console
         console.log(`[objective][ipc] set-active-objective ${value}`);
@@ -197,6 +226,15 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   const handleSelectChange = useCallback(
     (field: 'force' | 'objective' | 'hardnessLevel') => (event: SelectChangeEvent) => {
       const value = event.target.value;
+      if (
+        (field === 'force' && !FORCE_OPTIONS.includes(value)) ||
+        (field === 'objective' && !OBJECTIVE_OPTIONS.includes(value)) ||
+        (field === 'hardnessLevel' && !HARDNESS_LEVEL_OPTIONS.includes(value))
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-ui] rejected invalid ${field}=${value}`);
+        return;
+      }
       if (field === 'objective') {
         // eslint-disable-next-line no-console
         console.log(`[objective][ui] changed ${formState.objective} -> ${value}`);
@@ -212,8 +250,11 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
       const value = event.target.value;
       setFormState((c) => ({ ...c, [field]: value }));
       // Only push numeric, non-blank values
-      if (value.trim() !== '' && Number.isFinite(Number(value))) {
+      if (value.trim() !== '' && isValidNumberField(field, value)) {
         void pushChange(field, value);
+      } else if (value.trim() !== '') {
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-ui] rejected invalid ${field}=${value}`);
       }
     },
     [pushChange]
@@ -222,6 +263,11 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   const handleHardnessChange = useCallback(
     (event: SelectChangeEvent) => {
       const value = event.target.value;
+      if (!HARDNESS_LEVEL_OPTIONS.includes(value)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-ui] rejected invalid hardnessLevel=${value}`);
+        return;
+      }
       setFormState((c) => ({ ...c, hardnessLevel: value }));
       void pushChange('hardnessLevel', value);
     },
@@ -276,6 +322,12 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     machineState?.lastUpdatedBy,
     machineState?.port,
   ]);
+
+  const syncStatusText = useMemo(() => {
+    const status = machineState?.syncStatus ?? 'synced';
+    const message = machineState?.syncMessage ? ` - ${machineState.syncMessage}` : '';
+    return `${status}${message}`;
+  }, [machineState?.syncMessage, machineState?.syncStatus]);
 
   return (
     <>
@@ -344,7 +396,7 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
           value={formState.lightness}
           disabled={!connected || isBusy}
           onChange={handleNumberChange('lightness')}
-          slotProps={{ htmlInput: NUMBER_INPUT_PROPS }}
+          slotProps={{ htmlInput: LIGHTNESS_INPUT_PROPS }}
         />
 
         <Typography sx={SETTING_LABEL_SX}>Objective</Typography>
@@ -368,7 +420,7 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
           value={formState.loadTime}
           disabled={!connected || isBusy}
           onChange={handleNumberChange('loadTime')}
-          slotProps={{ htmlInput: NUMBER_INPUT_PROPS }}
+          slotProps={{ htmlInput: LOAD_TIME_INPUT_PROPS }}
         />
 
         <Typography sx={SETTING_LABEL_SX}>Hardness Level</Typography>
@@ -392,6 +444,19 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
       <Box sx={STATUS_ROW_SX}>
         {isBusy ? <CircularProgress size={14} /> : null}
         <Typography sx={STATUS_TEXT_SX}>{statusText}</Typography>
+      </Box>
+
+      <Box sx={STATUS_DETAILS_SX}>
+        <Typography sx={STATUS_DETAIL_SX}>
+          Last RX: {formatTimestamp(machineState?.lastRxAt)}
+        </Typography>
+        <Typography sx={STATUS_DETAIL_SX}>
+          Last TX: {machineState?.lastTxCommand ?? 'None'}
+        </Typography>
+        <Typography sx={STATUS_DETAIL_SX}>Sync: {syncStatusText}</Typography>
+        <Typography sx={STATUS_DETAIL_SX}>
+          Current: F={formState.force}, L={formState.lightness}, T={formState.loadTime}, Obj={formState.objective}
+        </Typography>
       </Box>
 
       {errorMessage ? (

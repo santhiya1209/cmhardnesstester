@@ -26,52 +26,73 @@ function optionalFiniteNumber(payload, key) {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function clampInt(value, min, max) {
+  if (!Number.isFinite(value)) return null;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function smoothingToKernel(smoothing) {
+  if (smoothing <= 0) return 1;
+  let k = Math.min(11, smoothing * 2 + 1);
+  if (k % 2 === 0) k += 1;
+  return k;
+}
+
 function validateAutoMeasurePayload(payload) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const out = {};
-  const numericKeys = [
-    'width',
-    'height',
-    'bits',
-    'erosion',
-    'dilation',
-    'factor',
-    'erosionIterations',
-    'dilationIterations',
-    'morphologyKernelSize',
-    'manualThreshold',
-    'edgeFactor',
-    'minContourArea',
-    'maxContourArea',
-    'centerBias',
-    'sideFitRoiWidth',
-    'gradientStrengthFactor',
-    'micronPerPixel',
-    'pxPerMm',
-    'testForceKgf',
-    'minConfidence',
-    'minAreaRatio',
-    'maxAreaRatio',
-    'maxCenterDistanceRatio',
-    'minDiagonalRatio',
-    'maxDiagonalRatio',
-    'maxSideLengthRatio',
-    'angleToleranceDeg',
-    'minLinePoints',
-    'timeoutMs',
-    'maxFrameAgeMs',
-  ];
 
-  for (const key of numericKeys) {
-    const value = optionalFiniteNumber(source, key);
-    if (value !== undefined) out[key] = value;
+  // Frame metadata.
+  for (const key of [
+    'width', 'height', 'bits',
+    'micronPerPixel', 'pxPerMm', 'testForceKgf',
+    'minConfidence', 'timeoutMs', 'maxFrameAgeMs',
+  ]) {
+    const v = optionalFiniteNumber(source, key);
+    if (v !== undefined) out[key] = v;
+  }
+
+  // Primary user-facing controls.
+  const smoothing = clampInt(Number(source.smoothing), 0, 20);
+  const thresholdRaw = clampInt(
+    Number(source.threshold ?? source.manualThreshold),
+    0,
+    255
+  );
+
+  // Map → native legacy fields. Native pipeline runs:
+  //   GaussianBlur(kernel=morphologyKernelSize) → THRESH_BINARY_INV @ manualThreshold.
+  if (smoothing !== null) {
+    out.morphologyKernelSize = smoothingToKernel(smoothing);
+  }
+  out.thresholdMode = 'manual';
+  if (thresholdRaw !== null) {
+    out.manualThreshold = thresholdRaw;
+  }
+
+  // Pass-through optional native tuning if a caller supplies it (debug/testing).
+  for (const key of [
+    'erosion', 'dilation', 'factor',
+    'erosionIterations', 'dilationIterations',
+    'edgeFactor', 'minContourArea', 'maxContourArea',
+    'centerBias', 'sideFitRoiWidth', 'gradientStrengthFactor',
+    'minAreaRatio', 'maxAreaRatio',
+    'maxCenterDistanceRatio',
+    'minDiagonalRatio', 'maxDiagonalRatio', 'maxSideLengthRatio',
+    'angleToleranceDeg', 'minLinePoints',
+  ]) {
+    const v = optionalFiniteNumber(source, key);
+    if (v !== undefined) out[key] = v;
   }
 
   if (typeof source.imageType === 'string') out.imageType = source.imageType;
-  if (typeof source.objectiveForMeasure === 'string') out.objectiveForMeasure = source.objectiveForMeasure;
-  if (typeof source.thresholdMode === 'string') out.thresholdMode = source.thresholdMode;
+  if (typeof source.objectiveForMeasure === 'string') {
+    out.objectiveForMeasure = source.objectiveForMeasure;
+  }
   if (typeof source.pixelFormat === 'string') out.pixelFormat = source.pixelFormat;
-  if (source.source === 'uploaded-image' || source.source === 'live-camera') out.source = source.source;
+  if (source.source === 'uploaded-image' || source.source === 'live-camera') {
+    out.source = source.source;
+  }
   if (source.frameBuffer instanceof ArrayBuffer || ArrayBuffer.isView(source.frameBuffer)) {
     out.frameBuffer = source.frameBuffer;
   }
@@ -145,8 +166,10 @@ function registerIpc() {
   );
   ipcMain.handle('camera:measure-vickers-auto', (_e, payload) => {
     const safePayload = validateAutoMeasurePayload(payload);
-    // eslint-disable-next-line no-console
-    console.log('[ipc] camera:measure-vickers-auto payload=', safePayload);
+    if (process.env.AUTO_MEASURE_DEBUG === 'true') {
+      // eslint-disable-next-line no-console
+      console.log('[ipc] camera:measure-vickers-auto payload=', safePayload);
+    }
     return cameraService.measureVickersAuto(safePayload);
   });
 

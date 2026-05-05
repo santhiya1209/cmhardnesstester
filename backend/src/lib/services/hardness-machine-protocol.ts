@@ -331,6 +331,19 @@ export interface ParseResult {
   consumed: number;
 }
 
+function isLikelyAsciiLineChunk(buffer: Buffer): boolean {
+  for (const byte of buffer) {
+    if (byte === 0x0d || byte === 0x0a || byte === 0x09) continue;
+    if (byte < 0x20 || byte > 0x7e) return false;
+  }
+  return true;
+}
+
+function parseAsciiLine(line: Buffer): ParsedMachineFrame {
+  const payload = line.toString('ascii').replace(/\r$/, '');
+  return classifyFrame(Buffer.from(payload, 'ascii'), payload);
+}
+
 /**
  * Try to extract ONE complete frame from the front of `buffer`. Returns the
  * decoded frame plus the number of bytes consumed. The caller is responsible
@@ -345,7 +358,19 @@ export function tryParseOneFrame(buffer: Buffer, config: ProtocolConfig = PROTOC
   if (config.startByte !== null) {
     const idx = buffer.indexOf(config.startByte);
     if (idx < 0) {
-      // No start byte yet — drop everything; protect against infinite buffering.
+      // The observed machine traffic is ASCII line-oriented (`...\n`) and can
+      // arrive split across serial chunks. Log full newline-terminated frames
+      // for reverse engineering, but do not map values until the manual or
+      // controlled captures verify the meaning of each code.
+      const lineEnd = buffer.indexOf(0x0a);
+      if (lineEnd >= 0) {
+        const line = buffer.slice(0, lineEnd);
+        return { frame: parseAsciiLine(line), consumed: lineEnd + 1 };
+      }
+      if (isLikelyAsciiLineChunk(buffer) && buffer.length < 256) {
+        return { frame: { kind: 'unknown', raw: buffer.slice(0, 0) }, consumed: 0 };
+      }
+      // No recognizable framing — drop everything; protect against infinite buffering.
       return { frame: { kind: 'unknown', raw: buffer }, consumed: buffer.length };
     }
     start = idx + 1;
@@ -390,11 +415,64 @@ export function tryParseOneFrame(buffer: Buffer, config: ProtocolConfig = PROTOC
  */
 function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
   if (payload.length === 0) return { kind: 'unknown', raw: payload };
+  // eslint-disable-next-line no-console
+  console.log(`[machine-protocol] rx text=${JSON.stringify(text)} hex=${payload.toString('hex')}`);
 
   // Common terse responses many machines use. Safe to recognize because they
   // are universal and don't trigger any motion.
   if (text === 'ACK' || payload[0] === 0x06 /* ACK */) return { kind: 'ack' };
   if (text === 'NAK' || payload[0] === 0x15 /* NAK */) return { kind: 'nak' };
+
+  const objectiveMatch = /^L([12])OK$/.exec(text);
+  if (objectiveMatch) {
+    // Observed receive-only objective mapping from controlled machine-panel
+    // tests: physical 10X emits `L1OK\n`; physical 40X emits `L2OK\n`.
+    // `L3OK` is intentionally left unknown because it appears in other flows.
+    return {
+      kind: 'state-update',
+      key: 'objective',
+      value: objectiveMatch[1] === '1' ? '10X' : '40X',
+    };
+  }
+
+  const forceMap: Record<string, string> = {
+    C00: '0.01kgf',
+    C03: '0.025kgf',
+    C04: '0.05kgf',
+    C05: '0.1kgf',
+    C06: '0.2kgf',
+    C07: '0.3kgf',
+    C08: '0.5kgf',
+    C09: '1kgf',
+  };
+  if (text in forceMap) {
+    // Observed receive-only force mapping from controlled physical-panel tests.
+    return { kind: 'state-update', key: 'force', value: forceMap[text] };
+  }
+
+  const loadTimeMatch = /^T(\d{2})$/.exec(text);
+  if (loadTimeMatch) {
+    // Observed receive-only load-time mapping: physical values 5/10/15 seconds
+    // emit `T05\n`, `T10\n`, `T15\n`.
+    const loadTime = Number(loadTimeMatch[1]);
+    if (loadTime >= 1 && loadTime <= 99) {
+      return { kind: 'state-update', key: 'loadTime', value: loadTime };
+    }
+    return { kind: 'unknown', raw: payload };
+  }
+
+  const lightnessMatch = /^K(\d{4})$/.exec(text);
+  if (lightnessMatch) {
+    // Observed receive-only mapping from the connected tester: when the
+    // physical display Lightness is 2, the machine emits `K0002\n`.
+    // This parser only updates PC state from real RX bytes; it does not enable
+    // any PC-to-machine write command.
+    const lightness = Number(lightnessMatch[1]);
+    if (lightness >= 0 && lightness <= 9) {
+      return { kind: 'state-update', key: 'lightness', value: lightness };
+    }
+    return { kind: 'unknown', raw: payload };
+  }
 
   // TODO(protocol): decode state-update + indent-status from `text`/`payload`
   // once the manual is in hand. Until then, surface as 'unknown' so the

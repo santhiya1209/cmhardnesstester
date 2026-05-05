@@ -1,30 +1,28 @@
 export const IMAGE_TYPE_OPTIONS = ['HBW-A', 'HBW-B', 'HBW-C', 'HBW-EX', 'HV-1', 'HV-2', 'HV-3'] as const;
-export const OBJECTIVE_FOR_MEASURE_OPTIONS = ['10X', '20X', '40X', '50X', '100X'] as const;
+export const OBJECTIVE_FOR_MEASURE_OPTIONS = ['5X', '10X', '20X', '40X', '50X'] as const;
 export const THRESHOLD_MODE_OPTIONS = ['otsu', 'adaptive', 'manual'] as const;
+
+export const SMOOTHING_MIN = 0;
+export const SMOOTHING_MAX = 20;
+export const THRESHOLD_MIN = 0;
+export const THRESHOLD_MAX = 255;
 
 export type ImageType = (typeof IMAGE_TYPE_OPTIONS)[number];
 export type ObjectiveForMeasure = (typeof OBJECTIVE_FOR_MEASURE_OPTIONS)[number];
 export type ThresholdMode = (typeof THRESHOLD_MODE_OPTIONS)[number];
 
 export type AutoMeasureSettingsPayload = {
-  imageType: ImageType;
-  erosion: number;
-  dilation: number;
-  factor: number;
-  erosionIterations: number;
-  dilationIterations: number;
-  morphologyKernelSize: number;
-  thresholdMode: ThresholdMode;
-  manualThreshold: number;
-  edgeFactor: number;
-  minContourArea: number;
-  maxContourArea: number;
-  centerBias: number;
-  sideFitRoiWidth: number;
-  gradientStrengthFactor: number;
+  smoothing: number;
+  threshold: number;
   turretAfterImpress: boolean;
   measureAfterImpress: boolean;
   objectiveForMeasure: ObjectiveForMeasure;
+  // Derived (kept so the existing native bridge / pipeline keeps working without
+  // a wider refactor). UI never edits these directly.
+  imageType: ImageType;
+  thresholdMode: ThresholdMode;
+  manualThreshold: number;
+  morphologyKernelSize: number;
 };
 
 export type AutoMeasureSettings = AutoMeasureSettingsPayload & {
@@ -34,47 +32,41 @@ export type AutoMeasureSettings = AutoMeasureSettingsPayload & {
 };
 
 export const DEFAULT_AUTO_MEASURE_SETTINGS: AutoMeasureSettingsPayload = {
-  imageType: 'HV-2',
-  erosion: 15,
-  dilation: 10,
-  factor: 6,
-  erosionIterations: 1,
-  dilationIterations: 1,
-  morphologyKernelSize: 5,
-  thresholdMode: 'otsu',
-  manualThreshold: 118,
-  edgeFactor: 6,
-  minContourArea: 1.2,
-  maxContourArea: 35,
-  centerBias: 40,
-  sideFitRoiWidth: 28,
-  gradientStrengthFactor: 6,
+  smoothing: 15,
+  threshold: 134,
   turretAfterImpress: true,
   measureAfterImpress: true,
   objectiveForMeasure: '40X',
+  imageType: 'HV-2',
+  thresholdMode: 'manual',
+  manualThreshold: 134,
+  morphologyKernelSize: 11,
 };
 
 type LegacyAutoMeasureSettings = Partial<AutoMeasureSettingsPayload> & {
+  // tolerated on input only
   erosion?: number;
   dilation?: number;
   factor?: number;
+  edgeFactor?: number;
 };
 
-function numberOrFallback(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  return Math.max(min, Math.min(max, Math.round(n)));
 }
 
-function clampSlider(value: unknown, fallback: number): number {
-  return Math.max(0, Math.min(100, Math.round(numberOrFallback(value, fallback))));
+function smoothingToKernel(smoothing: number): number {
+  if (smoothing <= 0) return 1;
+  const k = Math.min(11, smoothing * 2 + 1);
+  return k % 2 === 0 ? k + 1 : k;
 }
 
-function sliderToIterations(value: number): number {
-  return Math.max(0, Math.min(8, Math.round(value / 12.5)));
-}
-
-function sliderToOddKernel(value: number): number {
-  const kernel = Math.max(3, Math.min(15, Math.round(3 + (value / 100) * 12)));
-  return kernel % 2 === 0 ? kernel + 1 : kernel;
+function isObjective(value: unknown): value is ObjectiveForMeasure {
+  return (
+    typeof value === 'string' &&
+    (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(value)
+  );
 }
 
 export function normalizeAutoMeasureSettings(
@@ -82,52 +74,36 @@ export function normalizeAutoMeasureSettings(
 ): AutoMeasureSettingsPayload {
   if (!settings) return DEFAULT_AUTO_MEASURE_SETTINGS;
 
-  const erosion = clampSlider(
-    settings.erosion,
-    numberOrFallback(
-      settings.erosionIterations,
-      DEFAULT_AUTO_MEASURE_SETTINGS.erosionIterations
-    ) * 12.5
+  const smoothing = clampNumber(
+    settings.smoothing,
+    SMOOTHING_MIN,
+    SMOOTHING_MAX,
+    DEFAULT_AUTO_MEASURE_SETTINGS.smoothing
   );
-  const dilation = clampSlider(
-    settings.dilation,
-    numberOrFallback(
-      settings.dilationIterations,
-      DEFAULT_AUTO_MEASURE_SETTINGS.dilationIterations
-    ) * 12.5
-  );
-  const factor = clampSlider(
-    settings.factor,
-    numberOrFallback(settings.edgeFactor, DEFAULT_AUTO_MEASURE_SETTINGS.factor)
+  const threshold = clampNumber(
+    settings.threshold ?? settings.manualThreshold,
+    THRESHOLD_MIN,
+    THRESHOLD_MAX,
+    DEFAULT_AUTO_MEASURE_SETTINGS.threshold
   );
 
   return {
-    ...DEFAULT_AUTO_MEASURE_SETTINGS,
-    ...settings,
-    erosion,
-    dilation,
-    factor,
-    erosionIterations: sliderToIterations(erosion),
-    dilationIterations: sliderToIterations(dilation),
-    morphologyKernelSize: sliderToOddKernel(Math.max(erosion, dilation)),
-    thresholdMode: settings.thresholdMode ?? DEFAULT_AUTO_MEASURE_SETTINGS.thresholdMode,
-    manualThreshold: Math.max(
-      0,
-      Math.min(
-        255,
-        Math.round(numberOrFallback(settings.manualThreshold, DEFAULT_AUTO_MEASURE_SETTINGS.manualThreshold))
-      )
-    ),
-    edgeFactor: factor,
-    minContourArea: Math.max(
-      DEFAULT_AUTO_MEASURE_SETTINGS.minContourArea,
-      numberOrFallback(settings.minContourArea, DEFAULT_AUTO_MEASURE_SETTINGS.minContourArea)
-    ),
-    maxContourArea: Math.max(
-      DEFAULT_AUTO_MEASURE_SETTINGS.maxContourArea,
-      numberOrFallback(settings.maxContourArea, DEFAULT_AUTO_MEASURE_SETTINGS.maxContourArea)
-    ),
-    sideFitRoiWidth: Math.max(8, Math.min(70, Math.round(14 + factor * 0.45))),
-    gradientStrengthFactor: factor,
+    smoothing,
+    threshold,
+    turretAfterImpress:
+      typeof settings.turretAfterImpress === 'boolean'
+        ? settings.turretAfterImpress
+        : DEFAULT_AUTO_MEASURE_SETTINGS.turretAfterImpress,
+    measureAfterImpress:
+      typeof settings.measureAfterImpress === 'boolean'
+        ? settings.measureAfterImpress
+        : DEFAULT_AUTO_MEASURE_SETTINGS.measureAfterImpress,
+    objectiveForMeasure: isObjective(settings.objectiveForMeasure)
+      ? settings.objectiveForMeasure
+      : DEFAULT_AUTO_MEASURE_SETTINGS.objectiveForMeasure,
+    imageType: DEFAULT_AUTO_MEASURE_SETTINGS.imageType,
+    thresholdMode: 'manual',
+    manualThreshold: threshold,
+    morphologyKernelSize: smoothingToKernel(smoothing),
   };
 }

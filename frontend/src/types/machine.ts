@@ -9,6 +9,12 @@ export type MachineControlKey =
 
 export type MachineCommandKey = MachineControlKey | 'indent';
 export type MachineCommandVerification = Record<MachineCommandKey, boolean>;
+export type MachineSyncStatus = 'synced' | 'pending' | 'failed';
+
+export interface SerialFrameLog {
+  hex: string;
+  ascii: string;
+}
 
 export interface MachineState {
   connected: boolean;
@@ -20,6 +26,12 @@ export interface MachineState {
   hardnessLevel: string;
   indentStatus: IndentStatus;
   commandVerification?: MachineCommandVerification;
+  lastRxAt?: string;
+  lastRxFrame?: SerialFrameLog;
+  lastTxAt?: string;
+  lastTxCommand?: string;
+  syncStatus?: MachineSyncStatus;
+  syncMessage?: string;
   lastUpdatedBy: 'pc' | 'machine' | 'system';
   lastError?: string;
   updatedAt: string;

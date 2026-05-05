@@ -6,6 +6,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
+#include <cstdlib>
 #include <cstdio>
 #include <limits>
 #include <numeric>
@@ -33,6 +35,8 @@ struct Params {
   std::string pixelFormat = "raw";
   std::string sourceType = "live-camera";
 
+  int smoothing = 4;
+  int threshold = 118;
   int erosion = 15;
   int dilation = 10;
   int factor = 6;
@@ -126,6 +130,8 @@ struct DebugInfo {
   std::string sourceType = "live-camera";
   std::string thresholdMode;
   std::string requestedThresholdMode;
+  int smoothing = 0;
+  int threshold = 0;
   int erosion = 0;
   int dilation = 0;
   int factor = 0;
@@ -258,6 +264,23 @@ std::string Lower(std::string value) {
   return value;
 }
 
+bool AutoMeasureDebugEnabled() {
+  const char* value = std::getenv("AUTO_MEASURE_DEBUG");
+  if (value == nullptr) return false;
+  std::string normalized(value);
+  normalized = Lower(normalized);
+  return normalized == "true" || normalized == "1" || normalized == "yes";
+}
+
+void DebugLog(const char* format, ...) {
+  if (!AutoMeasureDebugEnabled()) return;
+  va_list args;
+  va_start(args, format);
+  std::vfprintf(stderr, format, args);
+  va_end(args);
+  std::fflush(stderr);
+}
+
 bool ReadFrameBuffer(const Napi::Value& value, FrameView& out, std::string& reason) {
   if (value.IsBuffer()) {
     const auto buffer = value.As<Napi::Buffer<uint8_t>>();
@@ -304,6 +327,8 @@ bool ReadParamsObject(const Napi::Object& object, Params& params, std::string& r
     return kernel;
   };
 
+  params.smoothing = std::clamp(IntFromObject(object, "smoothing", params.smoothing), 0, 100);
+  params.threshold = std::clamp(IntFromObject(object, "threshold", params.threshold), 0, 255);
   params.erosion = std::clamp(IntFromObject(object, "erosion", params.erosion), 0, 100);
   params.dilation = std::clamp(IntFromObject(object, "dilation", params.dilation), 0, 100);
   params.factor = std::clamp(IntFromObject(object, "factor", params.factor), 0, 100);
@@ -321,7 +346,13 @@ bool ReadParamsObject(const Napi::Object& object, Params& params, std::string& r
   if (params.thresholdMode != "otsu" && params.thresholdMode != "adaptive" && params.thresholdMode != "manual") {
     params.thresholdMode = "otsu";
   }
-  params.manualThreshold = std::clamp(IntFromObject(object, "manualThreshold", params.manualThreshold), 0, 255);
+  params.manualThreshold = std::clamp(IntFromObject(object, "manualThreshold", params.threshold), 0, 255);
+  if (object.Has("threshold")) {
+    params.thresholdMode = "manual";
+    params.manualThreshold = params.threshold;
+  } else {
+    params.threshold = params.manualThreshold;
+  }
   params.edgeFactor = object.Has("edgeFactor")
     ? std::clamp(NumberFromObject(object, "edgeFactor", static_cast<double>(params.factor)), 0.0, 100.0)
     : static_cast<double>(params.factor);
@@ -517,8 +548,15 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.2, {8, 8});
   clahe->apply(gray, out.clahe);
 
-  const int blurKernel = params.factor >= 50 ? 7 : 5;
-  cv::GaussianBlur(out.clahe, out.blurred, {blurKernel, blurKernel}, 0.0);
+  int blurKernel = params.smoothing <= 0
+    ? 1
+    : std::clamp(params.smoothing + 1, 3, 31);
+  if (blurKernel % 2 == 0) ++blurKernel;
+  if (blurKernel > 1) {
+    cv::GaussianBlur(out.clahe, out.blurred, {blurKernel, blurKernel}, 0.0);
+  } else {
+    out.blurred = out.clahe.clone();
+  }
 
   cv::Mat otsu;
   cv::threshold(out.blurred, otsu, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
@@ -541,7 +579,7 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   cv::threshold(
     out.blurred,
     manual,
-    params.manualThreshold,
+    params.threshold,
     255,
     cv::THRESH_BINARY_INV
   );
@@ -1230,7 +1268,7 @@ std::optional<HoughDiamondResult> TryDarkBodyFallback(
       2.0 + params.edgeFactor / 12.0
     );
   } else if (params.thresholdMode == "manual") {
-    cv::threshold(pre.blurred, darkMask, params.manualThreshold, 255, cv::THRESH_BINARY_INV);
+    cv::threshold(pre.blurred, darkMask, params.threshold, 255, cv::THRESH_BINARY_INV);
   } else {
     cv::threshold(pre.blurred, darkMask, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
   }
@@ -1559,7 +1597,8 @@ bool RefineDiamondTips(
   const Preprocessed& pre,
   const Params& params,
   const std::array<LineModel, 4>& lines,
-  OrderedCorners& corners
+  OrderedCorners& corners,
+  bool onlyD2Tips = false
 ) {
   const cv::Point2f center(
     (corners.top.x + corners.right.x + corners.bottom.x + corners.left.x) * 0.25f,
@@ -1569,10 +1608,11 @@ bool RefineDiamondTips(
   const double d2 = Distance(corners.top, corners.bottom);
   const double halfDiag = std::max(d1, d2) * 0.5;
   const double maxDrift = std::clamp(halfDiag * 0.18, 4.0, 22.0);
+  const double maxD2Drift = std::clamp(halfDiag * 0.10, 8.0, 72.0);
   const double stripLen = std::clamp(halfDiag * 0.55, 14.0, 110.0);
   const int minStripPoints = std::max(4, std::min(8, params.minLinePoints / 3));
 
-  std::fprintf(stderr,
+  DebugLog(
     "[auto-measure][refine] before corners=T(%.2f,%.2f) R(%.2f,%.2f) B(%.2f,%.2f) L(%.2f,%.2f) halfDiag=%.2f maxDrift=%.2f stripLen=%.2f\n",
     corners.top.x, corners.top.y, corners.right.x, corners.right.y,
     corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y,
@@ -1585,12 +1625,13 @@ bool RefineDiamondTips(
     cv::Point2f* corner;
     int lineIdxA;
     int lineIdxB;
+    bool d2Tip;
   };
   TipSpec specs[4] = {
-    {"top",    &corners.top,    3, 0},
-    {"right",  &corners.right,  0, 1},
-    {"bottom", &corners.bottom, 1, 2},
-    {"left",   &corners.left,   2, 3},
+    {"top",    &corners.top,    3, 0, true},
+    {"right",  &corners.right,  0, 1, false},
+    {"bottom", &corners.bottom, 1, 2, true},
+    {"left",   &corners.left,   2, 3, false},
   };
 
   auto stripFor = [&](const LineModel& line, cv::Point2f tip, int& sc) -> std::vector<cv::Point2f> {
@@ -1604,6 +1645,7 @@ bool RefineDiamondTips(
 
   int refinedCount = 0;
   for (int i = 0; i < 4; ++i) {
+    if (onlyD2Tips && !specs[i].d2Tip) continue;
     const cv::Point2f original = *specs[i].corner;
     const LineModel& la = lines[specs[i].lineIdxA];
     const LineModel& lb = lines[specs[i].lineIdxB];
@@ -1633,7 +1675,8 @@ bool RefineDiamondTips(
         reason = "outside-image";
       } else {
         drift = Distance(refinedTip, original);
-        if (drift > maxDrift) {
+        const double allowedDrift = specs[i].d2Tip ? maxD2Drift : maxDrift;
+        if (drift > allowedDrift) {
           reason = "drift-exceeded";
         } else {
           *specs[i].corner = refinedTip;
@@ -1643,19 +1686,18 @@ bool RefineDiamondTips(
       }
     }
 
-    std::fprintf(stderr,
+    DebugLog(
       "[auto-measure][refine] corner index=%d name=%s roi=stripLen=%.1f stripPts=(%d,%d) best=(%.2f,%.2f) score=drift=%.2f accepted=%d reason=%s\n",
       i, specs[i].name, stripLen,
       static_cast<int>(stripA.size()), static_cast<int>(stripB.size()),
       refinedTip.x, refinedTip.y, drift, accepted ? 1 : 0, reason);
   }
 
-  std::fprintf(stderr,
+  DebugLog(
     "[auto-measure][refine] refined corners=T(%.2f,%.2f) R(%.2f,%.2f) B(%.2f,%.2f) L(%.2f,%.2f) refinedCount=%d\n",
     corners.top.x, corners.top.y, corners.right.x, corners.right.y,
     corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y,
     refinedCount);
-  std::fflush(stderr);
   return refinedCount > 0;
 }
 
@@ -1778,6 +1820,8 @@ Napi::Object DebugObject(Napi::Env env, const DebugInfo& debug) {
   object.Set("settings", [&]() {
     auto settings = Napi::Object::New(env);
     settings.Set("thresholdMode", Napi::String::New(env, debug.requestedThresholdMode));
+    settings.Set("smoothing", Napi::Number::New(env, debug.smoothing));
+    settings.Set("threshold", Napi::Number::New(env, debug.threshold));
     settings.Set("erosion", Napi::Number::New(env, debug.erosion));
     settings.Set("dilation", Napi::Number::New(env, debug.dilation));
     settings.Set("factor", Napi::Number::New(env, debug.factor));
@@ -1849,15 +1893,18 @@ Napi::Object Failure(Napi::Env env, const std::string& reason, DebugInfo debug) 
   object.Set("confidence", Napi::Number::New(env, 0.0));
   object.Set("debug", DebugObject(env, debug));
 
-  std::fprintf(stderr, "[auto-measure] rejected settings threshold=%s erosion=%d dilation=%d factor=%d erosionIterations=%d dilationIterations=%d morphologyKernel=%d manualThreshold=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
-               debug.requestedThresholdMode.c_str(), debug.erosion, debug.dilation, debug.factor,
+  DebugLog("[auto-measure] rejected settings mode=%s smoothing=%d threshold=%d morphologyKernel=%d manualThreshold=%d sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
+               debug.requestedThresholdMode.c_str(), debug.smoothing, debug.threshold,
+               debug.morphologyKernelSize, debug.manualThreshold,
+               debug.sideFitRoiWidth, debug.gradientStrengthFactor);
+  DebugLog("[auto-measure] rejected legacy-settings erosion=%d dilation=%d factor=%d erosionIterations=%d dilationIterations=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f\n",
+               debug.erosion, debug.dilation, debug.factor,
                debug.erosionIterations, debug.dilationIterations,
-               debug.morphologyKernelSize, debug.manualThreshold, debug.edgeFactor, debug.minContourArea,
-               debug.maxContourArea, debug.centerBias, debug.sideFitRoiWidth, debug.gradientStrengthFactor);
-  std::fprintf(stderr, "[auto-measure] rejected source=%s reason=%s confidence=%.3f contourArea=%.2f hullArea=%.2f validationArea=%.2f centerDistance=%.2f\n",
+               debug.edgeFactor, debug.minContourArea,
+               debug.maxContourArea, debug.centerBias);
+  DebugLog("[auto-measure] rejected source=%s reason=%s confidence=%.3f contourArea=%.2f hullArea=%.2f validationArea=%.2f centerDistance=%.2f\n",
                debug.sourceType.c_str(), reason.c_str(), debug.confidence, debug.selectedContourArea, debug.selectedHullArea,
                debug.selectedValidationArea, debug.contourCenterDistance);
-  std::fflush(stderr);
   return object;
 }
 
@@ -1891,14 +1938,12 @@ Napi::Object Success(Napi::Env env, const Params& params, const OrderedCorners& 
   object.Set("hv", hv > 0.0 ? Napi::Number::New(env, hv) : env.Null());
   object.Set("debug", DebugObject(env, debug));
 
-  std::fprintf(stderr, "[auto-measure] settings threshold=%s erosion=%d dilation=%d factor=%d erosionIterations=%d dilationIterations=%d morphologyKernel=%d manualThreshold=%d edgeFactor=%.1f minContourArea=%.3f maxContourArea=%.3f centerBias=%.1f sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
-               debug.requestedThresholdMode.c_str(), debug.erosion, debug.dilation, debug.factor,
-               debug.erosionIterations, debug.dilationIterations,
-               debug.morphologyKernelSize, debug.manualThreshold, debug.edgeFactor, debug.minContourArea,
-               debug.maxContourArea, debug.centerBias, debug.sideFitRoiWidth, debug.gradientStrengthFactor);
-  std::fprintf(
-    stderr,
-    "[auto-measure] ok source=%s threshold=%s contourArea=%.2f hullArea=%.2f validationArea=%.2f centerDistance=%.2f rect=(%.1f,%.1f %.1fx%.1f angle %.1f) sideRatio=%.3f diagRatio=%.3f points=[%d,%d,%d,%d] corners T(%.2f,%.2f) R(%.2f,%.2f) B(%.2f,%.2f) L(%.2f,%.2f) d1Px=%.3f d2Px=%.3f d1Mm=%.6f d2Mm=%.6f confidence=%.3f\n",
+  DebugLog("[auto-measure] settings mode=%s smoothing=%d threshold=%d morphologyKernel=%d manualThreshold=%d sideFitRoiWidth=%d gradientStrengthFactor=%.1f\n",
+               debug.requestedThresholdMode.c_str(), debug.smoothing, debug.threshold,
+               debug.morphologyKernelSize, debug.manualThreshold,
+               debug.sideFitRoiWidth, debug.gradientStrengthFactor);
+  DebugLog(
+    "[auto-measure] ok source=%s mode=%s contourArea=%.2f hullArea=%.2f validationArea=%.2f centerDistance=%.2f rect=(%.1f,%.1f %.1fx%.1f angle %.1f) sideRatio=%.3f diagRatio=%.3f points=[%d,%d,%d,%d] corners T(%.2f,%.2f) R(%.2f,%.2f) B(%.2f,%.2f) L(%.2f,%.2f) d1Px=%.3f d2Px=%.3f d1Mm=%.6f d2Mm=%.6f confidence=%.3f\n",
     params.sourceType.c_str(),
     debug.thresholdMode.c_str(),
     debug.selectedContourArea,
@@ -1930,7 +1975,6 @@ Napi::Object Success(Napi::Env env, const Params& params, const OrderedCorners& 
     debug.d2Mm,
     debug.confidence
   );
-  std::fflush(stderr);
 
   return object;
 }
@@ -1972,6 +2016,8 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.imageType = params.imageType;
     debug.objectiveForMeasure = params.objectiveForMeasure;
     debug.requestedThresholdMode = params.thresholdMode;
+    debug.smoothing = params.smoothing;
+    debug.threshold = params.threshold;
     debug.erosion = params.erosion;
     debug.dilation = params.dilation;
     debug.factor = params.factor;
@@ -1991,21 +2037,48 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       return Failure(env, reason, debug);
     }
 
-    {
+    if (AutoMeasureDebugEnabled()) {
       const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-      std::fprintf(stderr,
+      DebugLog(
         "[frame] processing timestamp=%lld width=%d height=%d bytes=%zu source=%s\n",
         static_cast<long long>(nowMs), params.width, params.height, frame.size,
         params.sourceType.c_str());
-      std::fflush(stderr);
     }
 
     const Preprocessed pre = Preprocess(gray, params);
 
     auto returnHoughFallback = [&](DebugInfo fallbackDebug, const HoughDiamondResult& hough) -> Napi::Value {
-      fallbackDebug.finalCorners = hough.corners;
-      fallbackDebug.finalMetrics = ComputeShapeMetrics(hough.corners);
+      OrderedCorners refinedCorners = hough.corners;
+      std::array<LineModel, 4> refinedLines = hough.lines;
+      const OrderedCorners beforeRefine = refinedCorners;
+      const bool d2Refined = RefineDiamondTips(pre, params, refinedLines, refinedCorners, true);
+      TryRefineCorners(pre.blurred, refinedCorners, params);
+
+      ShapeMetrics refinedMetrics = ComputeShapeMetrics(refinedCorners);
+      bool geometryOk = PointInsideImage(refinedCorners.top, params) &&
+                        PointInsideImage(refinedCorners.bottom, params) &&
+                        std::isfinite(refinedMetrics.diagonalRatio) &&
+                        refinedMetrics.diagonalRatio <= params.maxDiagonalRatio * 1.18 &&
+                        (1.0 / refinedMetrics.diagonalRatio) >= params.minDiagonalRatio * 0.88;
+      for (double angle : refinedMetrics.anglesDeg) {
+        if (std::abs(angle - 90.0) > params.angleToleranceDeg + 14.0) {
+          geometryOk = false;
+          break;
+        }
+      }
+      if (d2Refined && !geometryOk) {
+        DebugLog(
+          "[auto-measure][d2] fallback refinement rejected reason=geometry d1_px=%.3f d2_px=%.3f ratio=%.3f\n",
+          refinedMetrics.d1,
+          refinedMetrics.d2,
+          refinedMetrics.diagonalRatio);
+        refinedCorners = beforeRefine;
+        refinedMetrics = ComputeShapeMetrics(refinedCorners);
+      }
+
+      fallbackDebug.finalCorners = refinedCorners;
+      fallbackDebug.finalMetrics = refinedMetrics;
       fallbackDebug.hasFinalCorners = true;
       fallbackDebug.d1Pixels = fallbackDebug.finalMetrics.d1;
       fallbackDebug.d2Pixels = fallbackDebug.finalMetrics.d2;
@@ -2015,7 +2088,7 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
         fallbackDebug.d2Mm = fallbackDebug.d2Pixels / params.pxPerMm;
         fallbackDebug.averageMm = (fallbackDebug.d1Mm + fallbackDebug.d2Mm) * 0.5;
       }
-      return Success(env, params, hough.corners, fallbackDebug);
+      return Success(env, params, refinedCorners, fallbackDebug);
     };
 
     {
@@ -2136,7 +2209,7 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // refinement (the spec requires keeping the previous fitted-line corners
     // in that case).
     const OrderedCorners cornersBeforeRefine = finalCorners;
-    const bool tipsRefined = RefineDiamondTips(pre, params, lines, finalCorners);
+    const bool tipsRefined = RefineDiamondTips(pre, params, lines, finalCorners, true);
 
     TryRefineCorners(pre.blurred, finalCorners, params);
 
@@ -2145,10 +2218,9 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // Reject geometry that got worse after refinement: revert to the un-refined
     // intersection corners and re-validate from there.
     auto revertRefinement = [&](const char* reason) {
-      std::fprintf(stderr,
+      DebugLog(
         "[auto-measure][refine] accepted=false reason=%s d1_px=%.3f d2_px=%.3f\n",
         reason, finalMetrics.d1, finalMetrics.d2);
-      std::fflush(stderr);
       finalCorners = cornersBeforeRefine;
       TryRefineCorners(pre.blurred, finalCorners, params);
       finalMetrics = ComputeShapeMetrics(finalCorners);
@@ -2168,10 +2240,9 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       if (diagBad || sideBad || angleBad) {
         revertRefinement(diagBad ? "diag-ratio" : sideBad ? "side-ratio" : "angle");
       } else {
-        std::fprintf(stderr,
+        DebugLog(
           "[auto-measure][refine] accepted=true d1_px=%.3f d2_px=%.3f\n",
           finalMetrics.d1, finalMetrics.d2);
-        std::fflush(stderr);
       }
     }
 

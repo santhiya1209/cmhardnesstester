@@ -36,4 +36,16 @@ for (const candidate of candidates) {
   assert.strictEqual(found.value, 0.82);
 }
 
+assert.strictEqual(findAsciiReading(Buffer.from('0\r\n')), null);
+assert.strictEqual(findAsciiReading(Buffer.from('0.8\r\n')), null);
+assert.strictEqual(findAsciiReading(Buffer.from('0.08\r\n')), null);
+assert.strictEqual(
+  findAsciiReading(Buffer.from('00 20 20 30 2c 30 30 34 08'.replace(/\s+/g, ''), 'hex')),
+  null
+);
+assert.strictEqual(
+  findAsciiReading(Buffer.from('20 20 20 30 2c 26 30 20 08'.replace(/\s+/g, ''), 'hex')),
+  null
+);
+
 console.log('[micrometer][service-test] passed');

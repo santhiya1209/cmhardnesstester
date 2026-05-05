@@ -2,31 +2,20 @@ import { z } from 'zod';
 import { EntityIdSchema, IsoDateTimeSchema } from './common';
 
 export const ImageTypeSchema = z.enum(['HBW-A', 'HBW-B', 'HBW-C', 'HBW-EX', 'HV-1', 'HV-2', 'HV-3']);
-export const ObjectiveForMeasureSchema = z.enum(['10X', '20X', '40X', '50X', '100X']);
+export const ObjectiveForMeasureSchema = z.enum(['5X', '10X', '20X', '40X', '50X']);
 export const ThresholdModeSchema = z.enum(['otsu', 'adaptive', 'manual']);
 
-const SliderInt = z.number().int().min(0).max(100);
-const PositiveSliderInt = z.number().int().min(1).max(100);
-
 export const AutoMeasureSettingsPayloadSchema = z.object({
-  imageType: ImageTypeSchema.default('HV-2'),
-  erosion: SliderInt.default(15),
-  dilation: SliderInt.default(10),
-  factor: SliderInt.default(6),
-  erosionIterations: z.number().int().min(0).max(8).default(1),
-  dilationIterations: z.number().int().min(0).max(8).default(1),
-  morphologyKernelSize: z.number().int().min(1).max(41).default(5),
-  thresholdMode: ThresholdModeSchema.default('otsu'),
-  manualThreshold: z.number().int().min(0).max(255).default(118),
-  edgeFactor: SliderInt.default(6),
-  minContourArea: z.number().finite().min(0.001).max(10).default(1.2),
-  maxContourArea: z.number().finite().min(0.01).max(70).default(35),
-  centerBias: SliderInt.default(40),
-  sideFitRoiWidth: PositiveSliderInt.default(28),
-  gradientStrengthFactor: SliderInt.default(6),
+  smoothing: z.number().int().min(0).max(20).default(15),
+  threshold: z.number().int().min(0).max(255).default(134),
   turretAfterImpress: z.boolean().default(true),
   measureAfterImpress: z.boolean().default(true),
   objectiveForMeasure: ObjectiveForMeasureSchema.default('40X'),
+  // Derived legacy fields kept so the native bridge keeps working unchanged.
+  imageType: ImageTypeSchema.default('HV-2'),
+  thresholdMode: ThresholdModeSchema.default('manual'),
+  manualThreshold: z.number().int().min(0).max(255).default(134),
+  morphologyKernelSize: z.number().int().min(1).max(41).default(11),
 });
 
 export const AutoMeasureSettingsModel = AutoMeasureSettingsPayloadSchema.extend({

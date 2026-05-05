@@ -8,39 +8,33 @@ const {
 } = require('./micrometerDecoder');
 
 const DEFAULT_PORT = 'COM3';
-const BAUD_RATES = [2300];
 const DATA_BITS = 8;
 const PARITY = 'none';
 const STOP_BITS = 1;
 const MAX_BUFFER_BYTES = 4096;
 const MAX_ASCII_BUFFER_BYTES = 1024;
-const NO_VALID_FRAME_TIMEOUT_MS = 5000;
-const PULSE_GRACE_MS = 300;
-const PULSE_PERIOD_MS = 350;
-const PULSE_WIDTH_MS = 80;
+const NO_VALID_FRAME_TIMEOUT_MS = 10000;
+const PULSE_GRACE_MS = 3000;
+const PULSE_PERIOD_MS = 500;
+const PULSE_WIDTH_MS = 120;
 const STABLE_SAMPLE_COUNT = 2;
-const PULSE_MODES = ['rts-low'];
-const ENABLE_AUTOMATIC_REQUEST_PULSE = false;
-const STALE_READING_TIMEOUT_MS = 2000;
+const ENABLE_AUTOMATIC_REQUEST_PULSE = true;
+const SEND_OPEN_REQUEST_PULSE = false;
+const STALE_READING_TIMEOUT_MS = 5000;
 const ASCII_LINE_TERMINATORS = new Set([0x08, 0x0a, 0x0c, 0x0d]);
+const ASCII_IGNORABLE_BYTES = new Set([0x00, 0x22, 0x26]);
 
 function buildScanCandidates(portName) {
-  const candidates = [];
-
-  for (const baudRate of BAUD_RATES) {
-    for (const pulseMode of PULSE_MODES) {
-      candidates.push({
-        path: portName,
-        baudRate,
-        dataBits: DATA_BITS,
-        parity: PARITY,
-        stopBits: STOP_BITS,
-        pulseMode,
-      });
-    }
-  }
-
-  return candidates;
+  return [
+    {
+      path: portName,
+      baudRate: 2300,
+      dataBits: DATA_BITS,
+      parity: PARITY,
+      stopBits: STOP_BITS,
+      pulseMode: 'rts-low',
+    },
+  ];
 }
 
 function describeConfig(config) {
@@ -70,7 +64,7 @@ function byteToSearchChar(value) {
   if (ASCII_LINE_TERMINATORS.has(value)) {
     return '\n';
   }
-  if (value === 0x09) {
+  if (value === 0x09 || ASCII_IGNORABLE_BYTES.has(value)) {
     return ' ';
   }
   return value >= 0x20 && value <= 0x7e ? String.fromCharCode(value) : ' ';
@@ -78,7 +72,7 @@ function byteToSearchChar(value) {
 
 function hasBinaryNoise(buffer) {
   for (const value of buffer.values()) {
-    if (value === 0x09 || ASCII_LINE_TERMINATORS.has(value)) {
+    if (value === 0x09 || ASCII_LINE_TERMINATORS.has(value) || ASCII_IGNORABLE_BYTES.has(value)) {
       continue;
     }
     if (value < 0x20 || value > 0x7e) {
@@ -88,42 +82,74 @@ function hasBinaryNoise(buffer) {
   return false;
 }
 
-function findAsciiReading(buffer) {
-  const text = Array.from(buffer.values()).map(byteToSearchChar).join('');
-  const match = /[+-]?\d+(?:[.,]\d+)?(?=[ \t]*(?:mm|MM)?[ \t]*\n)/.exec(text);
+function inspectAsciiReading(buffer) {
+  const terminatorIndexes = Array.from(ASCII_LINE_TERMINATORS)
+    .map((terminator) => buffer.indexOf(terminator))
+    .filter((index) => index >= 0);
+  const terminatorIndex = terminatorIndexes.length > 0 ? Math.min(...terminatorIndexes) : -1;
 
-  if (!match || match.index === undefined) {
-    return null;
+  if (terminatorIndex < 0) {
+    return { reading: null, reason: 'partial-line' };
   }
 
-  const ascii = match[0].replace(',', '.');
+  const line = buffer.subarray(0, terminatorIndex);
+  for (const value of line.values()) {
+    const allowed =
+      value === 0x09 ||
+      value === 0x20 ||
+      value === 0x2b ||
+      value === 0x2c ||
+      value === 0x2d ||
+      value === 0x2e ||
+      (value >= 0x30 && value <= 0x39) ||
+      value === 0x4d ||
+      value === 0x6d ||
+      ASCII_IGNORABLE_BYTES.has(value);
+
+    if (!allowed) {
+      return { reading: null, reason: `noise-byte-0x${value.toString(16).padStart(2, '0')}` };
+    }
+  }
+
+  const text = Array.from(line.values()).map(byteToSearchChar).join('');
+  const match = /^[ \t]*([+-]?\d+[.,]\d{3})(?:[ \t]*[mM]{2})?[ \t]*$/.exec(text);
+
+  if (!match) {
+    return { reading: null, reason: 'not-complete-number' };
+  }
+
+  const ascii = match[1].replace(',', '.');
   const value = Number(ascii);
   if (!Number.isFinite(value)) {
-    return null;
+    return { reading: null, reason: 'non-finite-number' };
   }
 
-  const startIndex = match.index;
-  let endIndex = startIndex + match[0].length;
-  while (endIndex < text.length && (text[endIndex] === ' ' || text[endIndex] === '\t')) {
-    endIndex += 1;
-  }
-  if (text.slice(endIndex, endIndex + 2).toLowerCase() === 'mm') {
-    endIndex += 2;
-  }
+  const startIndex = text.indexOf(match[1]);
+  const endIndex = startIndex + match[1].length;
 
   return {
-    ascii,
-    value,
-    rawFrame: Buffer.from(buffer.subarray(startIndex, endIndex)),
-    endIndex,
+    reading: {
+      ascii,
+      value,
+      rawFrame: Buffer.from(buffer.subarray(startIndex, endIndex)),
+      endIndex: terminatorIndex,
+    },
+    reason: 'valid',
   };
+}
+
+function findAsciiReading(buffer) {
+  return inspectAsciiReading(buffer).reading;
 }
 
 function trimAsciiBuffer(buffer, endIndex) {
   let nextIndex = endIndex;
   while (
     nextIndex < buffer.length &&
-    (buffer[nextIndex] === 0x20 || buffer[nextIndex] === 0x09 || ASCII_LINE_TERMINATORS.has(buffer[nextIndex]))
+    (buffer[nextIndex] === 0x20 ||
+      buffer[nextIndex] === 0x09 ||
+      ASCII_LINE_TERMINATORS.has(buffer[nextIndex]) ||
+      ASCII_IGNORABLE_BYTES.has(buffer[nextIndex]))
   ) {
     nextIndex += 1;
   }
@@ -308,19 +334,8 @@ class MicrometerService {
         return;
       }
 
-      console.warn('[micrometer] latest serial value is stale; waiting for next DATA line');
+      console.warn('[micrometer] latest serial value is stale; clearing capture buffer (UI keeps last value)');
       this.latestReading = null;
-      this._setState({
-        connected: true,
-        portName: this.currentOpenConfig ? this.currentOpenConfig.path : this.state.portName,
-        value: null,
-        displayValue: 'Waiting for data...',
-        raw: null,
-        rawAscii: null,
-        rawHex: '',
-        lastError: null,
-        lockedBaudRate: this.lockedBaudRate,
-      });
     }, STALE_READING_TIMEOUT_MS);
   }
 
@@ -470,6 +485,12 @@ class MicrometerService {
 
     if (!ENABLE_AUTOMATIC_REQUEST_PULSE) {
       console.log('[micrometer] automatic REQUEST pulse disabled - waiting for manual DATA/SEND');
+      if (SEND_OPEN_REQUEST_PULSE) {
+        this.pulseStartTimer = setTimeout(() => {
+          this.pulseStartTimer = null;
+          this._sendSingleRequestPulse(mode, 'open');
+        }, PULSE_GRACE_MS);
+      }
       return;
     }
 
@@ -481,6 +502,11 @@ class MicrometerService {
     this.pulseStartTimer = setTimeout(() => {
       this.pulseStartTimer = null;
       if (!this.portOpen || !this.port || !this.port.isOpen) {
+        return;
+      }
+
+      if (this.totalBytesReceived > 0) {
+        console.log('[micrometer] DATA received before pulse grace elapsed - skipping automatic REQUEST pulse');
         return;
       }
 
@@ -500,6 +526,22 @@ class MicrometerService {
         }, PULSE_WIDTH_MS);
       }, PULSE_PERIOD_MS);
     }, PULSE_GRACE_MS);
+  }
+
+  _sendSingleRequestPulse(mode, reason) {
+    if (mode === 'none' || !this.portOpen || !this.port || !this.port.isOpen) {
+      return;
+    }
+
+    const { firstState, secondState, label } = this._pulseStates(mode);
+    console.log(`[micrometer] sending one REQUEST pulse (${reason}) mode=${pulseModeDescription(mode)}`);
+    this._setControlLines(firstState, `${label} one-shot`);
+    setTimeout(() => {
+      if (!this.portOpen || !this.port || !this.port.isOpen) {
+        return;
+      }
+      this._setControlLines(secondState, `${label} one-shot restore`);
+    }, PULSE_WIDTH_MS);
   }
 
   _pulseStates(mode) {
@@ -563,7 +605,7 @@ class MicrometerService {
         return;
       }
 
-      this._tryNextCandidate('No valid binary micrometer frame within timeout');
+      this._tryNextCandidate('No valid micrometer value within timeout');
     }, NO_VALID_FRAME_TIMEOUT_MS);
   }
 
@@ -679,7 +721,8 @@ class MicrometerService {
     let accepted = false;
 
     while (this.asciiBuffer.length > 0) {
-      const reading = findAsciiReading(this.asciiBuffer);
+      const inspected = inspectAsciiReading(this.asciiBuffer);
+      const reading = inspected.reading;
 
       if (!reading) {
         const terminatorIndexes = Array.from(ASCII_LINE_TERMINATORS)
@@ -690,7 +733,9 @@ class MicrometerService {
         if (terminatorIndex >= 0) {
           const discarded = this.asciiBuffer.subarray(0, terminatorIndex);
           if (discarded.length > 0) {
-            console.log(`[micrometer] ASCII candidate discarded reason=no-number hex=${bufferToHex(discarded)}`);
+            console.log(
+              `[micrometer] ASCII candidate discarded reason=${inspected.reason} hex=${bufferToHex(discarded)}`
+            );
           }
           this.asciiBuffer = trimAsciiBuffer(this.asciiBuffer, terminatorIndex + 1);
           continue;
@@ -728,6 +773,8 @@ class MicrometerService {
     };
 
     console.log(`[micrometer] decoded ASCII value ${decoded.displayValue} raw="${parsed.ascii}" hex=${rawHex}`);
+    this.lastCandidateValue = decoded.value.toFixed(3);
+    this.stableCount = STABLE_SAMPLE_COUNT;
     this._publishReading(decoded);
   }
 
@@ -797,11 +844,12 @@ class MicrometerService {
   _acceptStableValue(decoded) {
     const valueKey = decoded.value.toFixed(3);
 
-    if (!this.latestReading && this.lastCandidateValue === null) {
-      console.log('[micrometer] first strict DATA frame accepted');
+    if (this.lastCandidateValue === null) {
       this.lastCandidateValue = valueKey;
       this.stableCount = 1;
-      this._publishReading(decoded);
+      console.log(
+        `[micrometer] stable filter waiting value=${valueKey} count=${this.stableCount}/${STABLE_SAMPLE_COUNT}`
+      );
       return;
     }
 

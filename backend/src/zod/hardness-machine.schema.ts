@@ -1,5 +1,18 @@
 import { z } from 'zod';
 
+const FORCE_VALUES = new Set([
+  '0.01kgf',
+  '0.025kgf',
+  '0.05kgf',
+  '0.1kgf',
+  '0.2kgf',
+  '0.3kgf',
+  '0.5kgf',
+  '1kgf',
+]);
+const OBJECTIVE_VALUES = new Set(['2.5X', '5X', '10X', '20X', '40X', '50X']);
+const HARDNESS_LEVEL_VALUES = new Set(['Low', 'Middle', 'High']);
+
 export const ConnectMachineSchema = z.object({
   port: z.string().min(1),
   baudRate: z.number().int().positive().optional(),
@@ -12,5 +25,42 @@ export type ConnectMachineInput = z.infer<typeof ConnectMachineSchema>;
 export const SetMachineControlSchema = z.object({
   key: z.enum(['force', 'lightness', 'loadTime', 'objective', 'hardnessLevel']),
   value: z.union([z.string(), z.number()]),
+}).superRefine((input, ctx) => {
+  const text = String(input.value).trim();
+  switch (input.key) {
+    case 'force':
+      if (!FORCE_VALUES.has(text)) {
+        ctx.addIssue({ code: 'custom', message: 'invalid force', path: ['value'] });
+      }
+      break;
+    case 'objective':
+      if (!OBJECTIVE_VALUES.has(text.toUpperCase())) {
+        ctx.addIssue({ code: 'custom', message: 'invalid objective', path: ['value'] });
+      }
+      break;
+    case 'lightness': {
+      const numeric = Number(text);
+      if (!Number.isInteger(numeric) || numeric < 0 || numeric > 9) {
+        ctx.addIssue({ code: 'custom', message: 'invalid lightness', path: ['value'] });
+      }
+      break;
+    }
+    case 'loadTime': {
+      const numeric = Number(text);
+      if (!Number.isInteger(numeric) || numeric < 1 || numeric > 99) {
+        ctx.addIssue({ code: 'custom', message: 'invalid loadTime', path: ['value'] });
+      }
+      break;
+    }
+    case 'hardnessLevel':
+      if (!HARDNESS_LEVEL_VALUES.has(text)) {
+        ctx.addIssue({ code: 'custom', message: 'invalid hardnessLevel', path: ['value'] });
+      }
+      break;
+    default: {
+      const exhaustive: never = input.key;
+      return exhaustive;
+    }
+  }
 });
 export type SetMachineControlInput = z.infer<typeof SetMachineControlSchema>;

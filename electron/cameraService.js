@@ -175,35 +175,19 @@ class CameraService {
     };
     delete nativeParams.frameBuffer;
 
+    const debugLogs = process.env.AUTO_MEASURE_DEBUG === 'true';
     try {
-      // eslint-disable-next-line no-console
-      console.log('[frame] received timestamp=', Date.now(),
-        'frameTs=', frame.meta.timestamp, 'seq=', frame.meta.seq,
-        'bytes=', frame.data.byteLength, 'source=', frame.meta.source);
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure] native measureVickersAuto →', {
-        width: nativeParams.width,
-        height: nativeParams.height,
-        pixelFormat: nativeParams.pixelFormat,
-        bits: nativeParams.bits,
-        source: nativeParams.source,
-        imageType: nativeParams.imageType,
-        erosion: nativeParams.erosion,
-        dilation: nativeParams.dilation,
-        factor: nativeParams.factor,
-        thresholdMode: nativeParams.thresholdMode,
-        erosionIterations: nativeParams.erosionIterations,
-        dilationIterations: nativeParams.dilationIterations,
-        morphologyKernelSize: nativeParams.morphologyKernelSize,
-        manualThreshold: nativeParams.manualThreshold,
-        edgeFactor: nativeParams.edgeFactor,
-        minContourArea: nativeParams.minContourArea,
-        maxContourArea: nativeParams.maxContourArea,
-        centerBias: nativeParams.centerBias,
-        sideFitRoiWidth: nativeParams.sideFitRoiWidth,
-        gradientStrengthFactor: nativeParams.gradientStrengthFactor,
-        bytes: frame.data.byteLength,
-      });
+      if (debugLogs) {
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure] native →', {
+          width: nativeParams.width,
+          height: nativeParams.height,
+          morphologyKernelSize: nativeParams.morphologyKernelSize,
+          manualThreshold: nativeParams.manualThreshold,
+          thresholdMode: nativeParams.thresholdMode,
+          objectiveForMeasure: nativeParams.objectiveForMeasure,
+        });
+      }
       const result = fn(
         frame.data,
         nativeParams.width,
@@ -211,15 +195,14 @@ class CameraService {
         nativeParams.pixelFormat,
         nativeParams
       );
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure] native measureVickersAuto ←', {
-        ok: !!(result && result.ok),
-        reason: result && result.reason,
-        confidence: result && result.confidence,
-        d1Pixels: result && result.d1Pixels,
-        d2Pixels: result && result.d2Pixels,
-        debug: result && result.debug,
-      });
+      if (debugLogs) {
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure] native ←', {
+          ok: !!(result && result.ok),
+          reason: result && result.reason,
+          confidence: result && result.confidence,
+        });
+      }
       return result;
     } catch (err) {
       return {
