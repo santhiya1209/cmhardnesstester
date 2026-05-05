@@ -149,8 +149,12 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   onClick={() => onSelect(measurement.id)}
                 >
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>-</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>-</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>
+                    {(measurement.xMm ?? 0).toFixed(4)}
+                  </TableCell>
+                  <TableCell sx={BODY_CELL_SX}>
+                    {(measurement.yMm ?? 0).toFixed(4)}
+                  </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Px)}</TableCell>

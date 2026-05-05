@@ -161,8 +161,16 @@ function MachineControlTabImpl() {
         return;
       }
       lastSentRef.current[key] = value;
+      if (key === 'objective') {
+        // eslint-disable-next-line no-console
+        console.log(`[objective][ipc] set-active-objective ${value}`);
+      }
       try {
         await setControl(key, value);
+        if (key === 'objective') {
+          // eslint-disable-next-line no-console
+          console.log(`[objective][backend] saved activeObjective=${value}`);
+        }
       } catch {
         // Error is surfaced via the hook; keep the local edit so user sees it.
       }
@@ -173,10 +181,14 @@ function MachineControlTabImpl() {
   const handleSelectChange = useCallback(
     (field: 'force' | 'objective' | 'hardnessLevel') => (event: SelectChangeEvent) => {
       const value = event.target.value;
+      if (field === 'objective') {
+        // eslint-disable-next-line no-console
+        console.log(`[objective][ui] changed ${formState.objective} -> ${value}`);
+      }
       setFormState((c) => ({ ...c, [field]: value }));
       void pushChange(field, value);
     },
-    [pushChange]
+    [formState.objective, pushChange]
   );
 
   const handleNumberChange = useCallback(
@@ -202,10 +214,12 @@ function MachineControlTabImpl() {
 
   const handleLensClick = useCallback(
     (objective: '10X' | '40X') => {
+      // eslint-disable-next-line no-console
+      console.log(`[objective][ui] changed ${formState.objective} -> ${objective}`);
       setFormState((c) => ({ ...c, objective }));
       void pushChange('objective', objective);
     },
-    [pushChange]
+    [formState.objective, pushChange]
   );
 
   const handleIndentClick = useCallback(() => {

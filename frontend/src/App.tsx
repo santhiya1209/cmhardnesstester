@@ -134,6 +134,14 @@ function App() {
   const overlay = useImageOverlay();
   const cameraRef = useRef<CameraWindowHandle | null>(null);
   const autoMeasureInFlightRef = useRef(false);
+  // Latest preview settings that arrived while a detection was in flight.
+  // Why: Slider drags fire faster than the native detection completes
+  // (~60–200ms). Without coalescing, the user's final slider position can be
+  // dropped, leaving the yellow lines fitted to a stale value.
+  const autoMeasurePendingPreviewRef = useRef<AutoMeasureSettingsPayload | null>(null);
+  const runAutoMeasureRef = useRef<
+    ((settingsInput: AutoMeasureSettingsPayload, preview?: boolean) => void) | null
+  >(null);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
@@ -287,6 +295,12 @@ function App() {
 
   const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false) => {
     if (autoMeasuring || autoMeasureInFlightRef.current) {
+      // Coalesce: remember the latest preview settings so the trailing run
+      // after the in-flight detection picks up the user's final slider value.
+      // Non-preview (explicit Auto Measure click) is still ignored while busy.
+      if (preview) {
+        autoMeasurePendingPreviewRef.current = settingsInput;
+      }
       return;
     }
 
@@ -337,6 +351,10 @@ function App() {
 
         if (!displayedFrame?.ok) {
           if (preview) {
+            // Keep last valid overlay; surface only via status/log.
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure] preview detection failed: no displayed frame');
+            setStatusMessage('System Status: Auto Measure preview detection failed');
             return;
           }
           setAutoMeasureGraphics(null);
@@ -368,10 +386,17 @@ function App() {
         console.log('[auto-measure] result', result);
 
         if (!result.ok || result.confidence < minConfidence || result.lines.length !== 4) {
+          const reason = result.ok ? 'low confidence' : result.reason;
+          if (preview) {
+            // Preview rejection: keep last valid overlay; do NOT clear or
+            // pop the unavailable modal — only update status/log.
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure] preview detection failed:', reason);
+            setStatusMessage(`System Status: Auto Measure preview detection failed: ${reason}`);
+            return;
+          }
           setAutoMeasureGraphics(null);
-          setStatusMessage(
-            `System Status: Auto Measure rejected: ${result.ok ? 'low confidence' : result.reason}`
-          );
+          setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
           return;
         }
@@ -406,6 +431,12 @@ function App() {
           umPerPixel: conversion.ok ? conversion.value.umPerPixel : null,
           reason: conversion.ok ? null : conversion.reason,
         });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[objective][measure] using objective=${normalizeObjectiveName(objectiveForCalibration)} umPerPixel=${
+            conversion.ok ? conversion.value.umPerPixel : 'n/a'
+          }`
+        );
 
         if (!conversion.ok) {
           setUnavailableMsg(conversion.reason);
@@ -466,11 +497,24 @@ function App() {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[auto-measure] failed:', err);
-        setAutoMeasureGraphics(null);
-        setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+        if (preview) {
+          // Preview-time exception: keep overlay, just log + status.
+          setStatusMessage('System Status: Auto Measure preview detection failed');
+        } else {
+          setAutoMeasureGraphics(null);
+          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+        }
       } finally {
         autoMeasureInFlightRef.current = false;
         setAutoMeasuring(false);
+        // Drain coalesced preview: if a slider tick arrived while we were
+        // running, fire one more pass with the latest settings so the user's
+        // final position always wins.
+        const pending = autoMeasurePendingPreviewRef.current;
+        if (pending) {
+          autoMeasurePendingPreviewRef.current = null;
+          window.setTimeout(() => runAutoMeasureRef.current?.(pending, true), 0);
+        }
       }
     })();
   }, [
@@ -482,6 +526,12 @@ function App() {
     refetchMeasurements,
     saveManualMeasurement,
   ]);
+
+  // Keep a ref to the latest runAutoMeasure so the in-flight finally block
+  // can schedule a coalesced trailing run without depending on itself.
+  useEffect(() => {
+    runAutoMeasureRef.current = runAutoMeasure;
+  }, [runAutoMeasure]);
 
   const handleAutoMeasure = useCallback(() => {
     runAutoMeasure(autoMeasurePreviewSettings, false);
