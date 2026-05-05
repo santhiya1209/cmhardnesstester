@@ -16,6 +16,11 @@ import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import type { IndentStatus, MachineControlKey, MachineState } from '@/types/machine';
 
+type MachineControlTabProps = {
+  /** Called after the backend accepts a 10X / 40X lens change. */
+  onObjectiveChange?: (objective: '10X' | '40X') => void;
+};
+
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
 const OBJECTIVE_OPTIONS = ['2.5X', '5X', '10X', '20X', '40X', '50X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
@@ -118,7 +123,7 @@ function indentLabel(status: IndentStatus): string {
   }
 }
 
-function MachineControlTabImpl() {
+function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {}) {
   const { data: machineState, error: streamError } = useMachineState();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
@@ -152,30 +157,41 @@ function MachineControlTabImpl() {
     });
   }, [machineState]);
 
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-sync][ui-state] objective=${formState.objective} force=${formState.force} lightness=${formState.lightness} loadTime=${formState.loadTime} hardnessLevel=${formState.hardnessLevel}`
+    );
+  }, [
+    formState.force,
+    formState.hardnessLevel,
+    formState.lightness,
+    formState.loadTime,
+    formState.objective,
+  ]);
+
   const pushChange = useCallback(
     async (key: MachineControlKey, value: string) => {
-      // Loop prevention — don't echo machine-origin updates back to backend.
-      if (machineState?.lastUpdatedBy === 'machine' && lastSentRef.current[key] !== value) {
-        // The change came from a machine SSE update that we just merged into
-        // form state. Skip retransmit.
-        return;
-      }
       lastSentRef.current[key] = value;
       if (key === 'objective') {
         // eslint-disable-next-line no-console
         console.log(`[objective][ipc] set-active-objective ${value}`);
       }
       try {
-        await setControl(key, value);
+        const nextState = await setControl(key, value);
+        setFormState(machineToForm(nextState));
         if (key === 'objective') {
           // eslint-disable-next-line no-console
           console.log(`[objective][backend] saved activeObjective=${value}`);
         }
+        return nextState;
       } catch {
-        // Error is surfaced via the hook; keep the local edit so user sees it.
+        delete lastSentRef.current[key];
+        setFormState(machineToForm(machineState));
+        return null;
       }
     },
-    [machineState?.lastUpdatedBy, setControl]
+    [machineState, setControl]
   );
 
   const handleSelectChange = useCallback(
@@ -217,9 +233,13 @@ function MachineControlTabImpl() {
       // eslint-disable-next-line no-console
       console.log(`[objective][ui] changed ${formState.objective} -> ${objective}`);
       setFormState((c) => ({ ...c, objective }));
-      void pushChange('objective', objective);
+      void pushChange('objective', objective).then((state) => {
+        if (state?.objective === objective) {
+          onObjectiveChange?.(objective);
+        }
+      });
     },
-    [formState.objective, pushChange]
+    [formState.objective, onObjectiveChange, pushChange]
   );
 
   const handleIndentClick = useCallback(() => {
@@ -230,6 +250,10 @@ function MachineControlTabImpl() {
   const indentStatus: IndentStatus = machineState?.indentStatus ?? 'idle';
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
   const isBusy = setBusy || indentBusy;
+  const hasVerifiedCommands = useMemo(() => {
+    const verification = machineState?.commandVerification;
+    return verification ? Object.values(verification).some(Boolean) : false;
+  }, [machineState?.commandVerification]);
 
   const errorMessage = useMemo(() => {
     return (
@@ -243,8 +267,15 @@ function MachineControlTabImpl() {
 
   const statusText = useMemo(() => {
     if (!connected) return 'Machine not connected. Click Open Device to connect.';
-    return `Connected on ${machineState?.port ?? '?'} — last update by ${machineState?.lastUpdatedBy ?? 'system'} — indent: ${indentStatus}`;
-  }, [connected, indentStatus, machineState?.lastUpdatedBy, machineState?.port]);
+    const protocolNote = hasVerifiedCommands ? '' : ' - RS232 protocol unverified; writes disabled';
+    return `Connected on ${machineState?.port ?? '?'}${protocolNote} - last update by ${machineState?.lastUpdatedBy ?? 'system'} - indent: ${indentStatus}`;
+  }, [
+    connected,
+    hasVerifiedCommands,
+    indentStatus,
+    machineState?.lastUpdatedBy,
+    machineState?.port,
+  ]);
 
   return (
     <>

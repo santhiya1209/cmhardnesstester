@@ -13,7 +13,7 @@ export function useSetMachineControl() {
       setError(null);
       try {
         // eslint-disable-next-line no-console
-        console.log('[machine-ui] value changed', { key, value });
+        console.log(`[machine-sync][ui-change] field=${key} value=${value}`);
         const reply = await setMachineControlValue(key, value);
         return reply.state;
       } catch (err) {

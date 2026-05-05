@@ -24,6 +24,7 @@ type Props = {
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
+  manualMeasureObjective?: string | null;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: AutoMeasureCorners) => void;
 };
@@ -36,6 +37,7 @@ function LeftPanelImpl(
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
+    manualMeasureObjective,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
   }: Props,
@@ -51,6 +53,7 @@ function LeftPanelImpl(
         crossLineVisible={crossLineVisible}
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}
+        manualMeasureObjective={manualMeasureObjective}
         onManualMeasurementUpdated={onManualMeasurementUpdated}
         onAutoMeasureAdjusted={onAutoMeasureAdjusted}
       />

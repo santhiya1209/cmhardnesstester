@@ -71,6 +71,7 @@ type Props = {
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
+  manualMeasureObjective?: string | null;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
 };
@@ -114,6 +115,7 @@ function CameraWindowImpl(
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
+    manualMeasureObjective,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
   }: Props,
@@ -196,17 +198,15 @@ function CameraWindowImpl(
       const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
       const sourceType = frozen ? imageSourceRef.current : 'live-camera';
 
-      if (!frozen && source === live && snap) {
-        snap.width = source.width;
-        snap.height = source.height;
-        const snapCtx = snap.getContext('2d');
-        if (snapCtx) {
-          snapCtx.putImageData(imageData, 0, 0);
-          imageSourceRef.current = 'live-camera';
-          setImageSize({ width: source.width, height: source.height });
-          setFrozen(true);
-        }
-      }
+      // Why: do NOT auto-freeze after capture. Auto-freezing here meant the
+      // first Auto Measure flipped `frozen=true` and every subsequent capture
+      // (slider preview, next Auto Measure, objective change) read the stale
+      // snap canvas instead of the live stream. User-initiated freeze stays
+      // wired through `toggleFreeze`; uploaded images still arrive via
+      // `loadImageFromBuffer`. Live source must always be live.
+
+      // eslint-disable-next-line no-console
+      console.log('[frame] captured timestamp=', Date.now(), 'source=', sourceType, 'size=', source.width, 'x', source.height);
 
       return {
         ok: true,
@@ -462,6 +462,7 @@ function CameraWindowImpl(
           active={activeTool === 'manualMeasure'}
           imageSize={imageSize}
           resetKey={manualMeasureResetKey}
+          objective={manualMeasureObjective}
           onMeasurementUpdated={onManualMeasurementUpdated}
         />
         {activeTool === 'magnifier' ? (

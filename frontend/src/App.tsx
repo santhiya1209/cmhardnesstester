@@ -14,16 +14,21 @@ import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
+import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot';
+import { useMachineState } from '@/hooks/queries/useMachineState';
 import { useConnectMachine } from '@/hooks/mutations/useConnectMachine';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { getLatestMicrometerReading } from '@/api/getLatestMicrometerReading';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 import { measureVickersAuto } from '@/api/measureVickersAuto';
+import { getCameraSetting } from '@/api/getCameraSetting';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
+  OBJECTIVE_FOR_MEASURE_OPTIONS,
   normalizeAutoMeasureSettings,
   type AutoMeasureSettingsPayload,
+  type ObjectiveForMeasure,
 } from '@/types/autoMeasureSettings';
 import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
@@ -124,10 +129,14 @@ function App() {
   const { data: calibrationSettings, items: calibrationSettingsList } = useCalibrationSettings();
   const { data: calibrations, refetch: refetchCalibrations } = useCalibrations();
   const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
+  const { refetch: refetchCameraSetting } = useCameraSetting();
   const { data: serialPortSetting } = useSerialPortSetting();
   const { connect: connectMachineFn, disconnect: disconnectMachineFn } = useConnectMachine();
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
+  // SSE-reactive machine state — same hook MachineControlTab uses, so the
+  // value App reads here is the same as the highlighted lens button.
+  const { data: liveMachineState } = useMachineState();
   const restoredToolbarActionRef = useRef(false);
   const manualMeasurementIdRef = useRef<string | null>(null);
   const { activeTool, setActiveTool } = useActiveTool('pointer');
@@ -151,6 +160,22 @@ function App() {
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const [autoMeasureSettingsRevision, setAutoMeasureSettingsRevision] = useState(0);
   const autoMeasurementIdRef = useRef<string | null>(null);
+  // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
+  // - Set by the user's lens button click (authoritative, instant).
+  // - Hydrated from SSE machine state when SSE pushes (guarded so it cannot
+  //   clobber a recent user click).
+  // - Used by Auto Measure, Manual Measure, calibration lookup, and the
+  //   measurement table row.
+  // - There is NO silent fallback to a hardcoded default. If this is ever
+  //   null at save time, we surface a warning instead of saving "10X".
+  const [activeObjective, setActiveObjective] = useState<string | null>(null);
+  const lastObjectiveClickAtRef = useRef<number>(0);
+  const handleObjectiveChangeFromUI = useCallback((objective: '10X' | '40X') => {
+    lastObjectiveClickAtRef.current = Date.now();
+    setActiveObjective(objective);
+    // eslint-disable-next-line no-console
+    console.log('[objective] changed →', objective);
+  }, []);
 
   // Index loaded calibrations by normalized objective so any debugging /
   // future O(1) lookup paths see the same canonical map the lookup helpers
@@ -190,12 +215,30 @@ function App() {
             return;
           }
 
-          const targetObjective = machineState?.objective ?? null;
+          // SINGLE SOURCE OF TRUTH: activeObjective (set by lens click) → SSE
+          // snapshot. NO silent fallback to dialog default — if neither is
+          // set, surface a clear warning instead of saving a wrong value.
+          const targetObjective =
+            (activeObjective && activeObjective.trim()) ||
+            (machineState?.objective?.trim() ?? null);
+          if (!targetObjective) {
+            setUnavailableMsg(
+              'No active objective. Please click 10X or 40X in Machine Control before measuring.'
+            );
+            return;
+          }
+          const machineStateForManual = machineState
+            ? { ...machineState, objective: targetObjective }
+            : null;
           const forceKgf = parseForceKgf(machineState?.force);
+          // eslint-disable-next-line no-console
+          console.log('[manual-measure] objective=', targetObjective);
+          // eslint-disable-next-line no-console
+          console.log('[calibration] using objective=', targetObjective);
           const conversion = calculateVickersFromPixels({
             calibrationSettings,
             calibrations,
-            machineState,
+            machineState: machineStateForManual,
             d1Px: result.d1Px,
             d2Px: result.d2Px,
             forceKgf,
@@ -236,6 +279,8 @@ function App() {
             hv: values.hv,
           });
 
+          // eslint-disable-next-line no-console
+          console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Manual');
           const saved = await saveManualMeasurement({
             id: manualMeasurementIdRef.current ?? undefined,
             values: {
@@ -279,6 +324,7 @@ function App() {
       calibrationSettingsList,
       calibrations,
       getMachineStateSnapshot,
+      activeObjective,
       refetchMeasurements,
       saveManualMeasurement,
     ]
@@ -316,11 +362,30 @@ function App() {
 
       try {
         const machineState = await getMachineStateSnapshot();
-        // Prefer the live Machine Control objective toggle (10X/40X/etc.) over
-        // the static AutoMeasureSettings dialog value — the panel is what the
-        // user clicks to switch magnification, so calibration MUST follow it.
+        // SINGLE SOURCE OF TRUTH: activeObjective (lens click) → SSE snapshot.
+        // No silent fallback to AutoMeasureSettings dialog default — that's
+        // exactly what was producing wrong "10X" rows in the table.
         const objectiveForCalibration =
-          machineState?.objective?.trim() ? machineState.objective : settings.objectiveForMeasure;
+          (activeObjective && activeObjective.trim()) ||
+          (machineState?.objective?.trim() ?? null);
+        if (!objectiveForCalibration) {
+          if (preview) {
+            setStatusMessage('System Status: Auto Measure preview blocked: no active objective');
+            return;
+          }
+          setUnavailableMsg(
+            'No active objective. Please click 10X or 40X in Machine Control before Auto Measure.'
+          );
+          setStatusMessage('System Status: Auto Measure blocked: no active objective');
+          return;
+        }
+        if (machineState?.objective?.trim() && machineState.objective !== activeObjective) {
+          setActiveObjective(machineState.objective);
+          // eslint-disable-next-line no-console
+          console.log('[objective] changed →', machineState.objective);
+        }
+        // eslint-disable-next-line no-console
+        console.log('[calibration] using objective=', objectiveForCalibration);
         const machineStateForAuto = machineState
           ? { ...machineState, objective: objectiveForCalibration }
           : null;
@@ -366,8 +431,24 @@ function App() {
         // eslint-disable-next-line no-console
         console.log('[auto-measure] selected settings', settings);
 
+        // Only forward the live machine-control objective when it normalises
+        // to one of the canonical values. A transient empty / unknown machine
+        // string must never poison the value sent to native, otherwise 40X
+        // detection that previously worked gets rerouted under wrong gates.
+        const liveObjectiveCandidate = String(objectiveForCalibration ?? '')
+          .trim()
+          .toUpperCase();
+        const liveObjectiveForNative: ObjectiveForMeasure =
+          (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(liveObjectiveCandidate)
+            ? (liveObjectiveCandidate as ObjectiveForMeasure)
+            : settings.objectiveForMeasure;
+
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure] objectiveForMeasure=', liveObjectiveForNative,
+          'frame size=', displayedFrame.width, 'x', displayedFrame.height);
         const result = await measureVickersAuto({
           ...settings,
+          objectiveForMeasure: liveObjectiveForNative,
           frameBuffer: displayedFrame.buffer,
           width: displayedFrame.width,
           height: displayedFrame.height,
@@ -464,6 +545,8 @@ function App() {
           hv: values.hv,
         });
 
+        // eslint-disable-next-line no-console
+        console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Auto');
         const saved = await saveManualMeasurement({
           id: autoMeasurementIdRef.current ?? undefined,
           values: {
@@ -523,6 +606,7 @@ function App() {
     calibrationSettingsList,
     calibrations,
     getMachineStateSnapshot,
+    activeObjective,
     refetchMeasurements,
     saveManualMeasurement,
   ]);
@@ -532,6 +616,44 @@ function App() {
   useEffect(() => {
     runAutoMeasureRef.current = runAutoMeasure;
   }, [runAutoMeasure]);
+
+  // Mirror SSE machine state's objective into App-level state — but never
+  // clobber a value the user just clicked. The toggle click is the
+  // authoritative source; SSE is only for picking up changes that originated
+  // outside this UI (other tab, another client, app restart).
+  useEffect(() => {
+    const next = liveMachineState?.objective?.trim() || null;
+    if (!next) return;
+    if (Date.now() - lastObjectiveClickAtRef.current < 5000) return;
+    if (next !== activeObjective) {
+      setActiveObjective(next);
+      // eslint-disable-next-line no-console
+      console.log('[objective] changed current=', next, 'source=sse');
+    }
+  }, [liveMachineState?.objective, activeObjective]);
+
+  // When Manual Measure activates, refresh the live objective so the initial
+  // diamond size matches the magnification the user just toggled to.
+  useEffect(() => {
+    if (activeTool !== 'manualMeasure') return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const snapshot = await getMachineStateSnapshot();
+        if (cancelled) return;
+        if (snapshot?.objective?.trim()) {
+          setActiveObjective(snapshot.objective);
+          // eslint-disable-next-line no-console
+          console.log('[objective] current=', snapshot.objective);
+        }
+      } catch {
+        /* non-fatal — fall back to whatever objective we already have */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTool, getMachineStateSnapshot, manualMeasureResetKey]);
 
   const handleAutoMeasure = useCallback(() => {
     runAutoMeasure(autoMeasurePreviewSettings, false);
@@ -561,10 +683,16 @@ function App() {
         if (!corners) return;
         void (async () => {
           try {
-            const settings = normalizeAutoMeasureSettings(autoMeasureSettings);
             const machineState = await getMachineStateSnapshot();
+            // Same single source of truth as Auto Measure / Manual Measure.
+            // No dialog-default silent fallback.
             const objectiveForCalibration =
-              machineState?.objective?.trim() ? machineState.objective : settings.objectiveForMeasure;
+              (activeObjective && activeObjective.trim()) ||
+              (machineState?.objective?.trim() ?? null);
+            if (!objectiveForCalibration) {
+              setStatusMessage('System Status: Auto (Adjusted) blocked: no active objective');
+              return;
+            }
             const machineStateForAuto = machineState
               ? { ...machineState, objective: objectiveForCalibration }
               : null;
@@ -603,7 +731,6 @@ function App() {
             // eslint-disable-next-line no-console
             console.log('[auto-measure] adjusted recompute', {
               machineObjective: machineState?.objective ?? null,
-              dialogObjective: settings.objectiveForMeasure,
               resolvedObjective: objectiveForCalibration,
               micronPerPixel: values.umPerPixel,
               d1Px: values.d1Px,
@@ -617,6 +744,8 @@ function App() {
               corners,
             });
 
+            // eslint-disable-next-line no-console
+            console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Auto (Adjusted)');
             const saved = await saveManualMeasurement({
               id: targetId,
               values: {
@@ -653,11 +782,11 @@ function App() {
       }, 90);
     },
     [
-      autoMeasureSettings,
       calibrationSettings,
       calibrationSettingsList,
       calibrations,
       getMachineStateSnapshot,
+      activeObjective,
       refetchMeasurements,
       saveManualMeasurement,
     ]
@@ -814,6 +943,59 @@ function App() {
             }
             setStatusMessage('System Status: Camera streaming');
 
+            // Apply previously-saved camera settings (exposure / analog gain)
+            // to the SDK now that the handle is valid. Without this, every app
+            // restart resets the live image to the SDK's hardware defaults.
+            // Read fresh from the API to avoid the stale-closure value of
+            // `savedCameraSetting`; also keep the React-side cache in sync.
+            try {
+              const items = await getCameraSetting();
+              const saved =
+                items.length > 0
+                  ? [...items].sort(
+                      (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+                    )[0]
+                  : null;
+              // eslint-disable-next-line no-console
+              console.log('[camera-settings] loaded saved settings', saved);
+              if (saved) {
+                // eslint-disable-next-line no-console
+                console.log('[camera-settings] applying saved settings on camera open', {
+                  analogGain: saved.analogGain,
+                  exposureTimeMs: saved.exposureTimeMs,
+                  updatedAt: saved.updatedAt,
+                });
+                try {
+                  const gainReply = await window.hardnessCamera.setGain(saved.analogGain);
+                  // eslint-disable-next-line no-console
+                  console.log('[camera-settings] apply analogGain ok=', !!gainReply?.ok, gainReply);
+                } catch (gainErr) {
+                  // eslint-disable-next-line no-console
+                  console.error('[camera-settings] apply analogGain threw', gainErr);
+                }
+                try {
+                  const expReply = await window.hardnessCamera.setExposure(saved.exposureTimeMs);
+                  // eslint-disable-next-line no-console
+                  console.log('[camera-settings] apply exposure ok=', !!expReply?.ok, expReply);
+                } catch (expErr) {
+                  // eslint-disable-next-line no-console
+                  console.error('[camera-settings] apply exposure threw', expErr);
+                }
+              } else {
+                // eslint-disable-next-line no-console
+                console.log('[camera-settings] no saved settings found — SDK defaults retained');
+              }
+            } catch (loadErr) {
+              // eslint-disable-next-line no-console
+              console.warn('[camera-settings] failed to load saved settings', loadErr);
+            }
+            // Sync the React-side cache so the dialog opens with the right values.
+            try {
+              await refetchCameraSetting();
+            } catch {
+              /* non-fatal */
+            }
+
             // Surface micrometer outcome (COM3 open is performed inside the
             // device:open main handler — never on app startup).
             if (reply.micrometer) {
@@ -901,6 +1083,7 @@ function App() {
       serialPortSetting,
       connectMachineFn,
       disconnectMachineFn,
+      refetchCameraSetting,
     ]
   );
 
@@ -1009,6 +1192,7 @@ function App() {
           crossLineVisible={overlay.crossLineVisible}
           onAddShape={overlay.addShape}
           manualMeasureResetKey={manualMeasureResetKey}
+          manualMeasureObjective={activeObjective}
           onManualMeasurementUpdated={handleManualMeasurementUpdated}
           onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
         />
@@ -1018,6 +1202,7 @@ function App() {
           measurementsLoading={measurementsLoading}
           refetchMeasurements={refetchMeasurements}
           onOpenTestRecords={handleOpenTestRecords}
+          onObjectiveChange={handleObjectiveChangeFromUI}
         />
       </Box>
 

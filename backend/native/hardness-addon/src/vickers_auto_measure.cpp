@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -733,6 +734,16 @@ double RatioScore(double ratio, double maxRatio) {
   return Clamp01(1.0 - (ratio - 1.0) / std::max(0.01, maxRatio - 1.0));
 }
 
+// One-sided objective looseness: only loosen the diagonal floor for low
+// magnifications where indents are physically smaller in pixels. For 40X+
+// the gates stay bit-for-bit identical to the legacy values so we never
+// regress detection that already worked. Reference is 40X.
+double ObjectiveLowMagLooseness(const std::string& objective) {
+  if (objective == "10X") return 0.25;
+  if (objective == "20X") return 0.50;
+  return 1.00; // 40X / 50X / 100X / unknown: unchanged
+}
+
 double MinIndentationAreaPixels(const Params& params) {
   const double imageArea = static_cast<double>(params.width) * params.height;
   return std::max(120.0, imageArea * params.minAreaRatio);
@@ -740,8 +751,9 @@ double MinIndentationAreaPixels(const Params& params) {
 
 double MinIndentationDiagonalPixels(const Params& params) {
   const double minDim = std::min(params.width, params.height);
+  const double looseness = ObjectiveLowMagLooseness(params.objectiveForMeasure);
   const double areaDiagonal = std::sqrt(std::max(1.0, MinIndentationAreaPixels(params) * 2.0));
-  return std::max(minDim * 0.10, areaDiagonal);
+  return std::max(minDim * 0.10 * looseness, areaDiagonal);
 }
 
 std::optional<Candidate> SelectBestContour(
@@ -1537,6 +1549,116 @@ std::optional<HoughDiamondResult> TryHoughDiamondFallback(
   return result;
 }
 
+// Per-tip refinement: re-sample edge points only on a short strip near each
+// tip, re-fit the two adjacent sides locally, and intersect. Compensates for
+// the inward bias produced by full-side sampling (the body of the side has
+// far more strong-gradient samples than the tip end, so the global Huber fit
+// drifts away from the real tip). Each tip is accepted independently with a
+// drift cap; on rejection that single tip keeps its un-refined value.
+bool RefineDiamondTips(
+  const Preprocessed& pre,
+  const Params& params,
+  const std::array<LineModel, 4>& lines,
+  OrderedCorners& corners
+) {
+  const cv::Point2f center(
+    (corners.top.x + corners.right.x + corners.bottom.x + corners.left.x) * 0.25f,
+    (corners.top.y + corners.right.y + corners.bottom.y + corners.left.y) * 0.25f
+  );
+  const double d1 = Distance(corners.left, corners.right);
+  const double d2 = Distance(corners.top, corners.bottom);
+  const double halfDiag = std::max(d1, d2) * 0.5;
+  const double maxDrift = std::clamp(halfDiag * 0.18, 4.0, 22.0);
+  const double stripLen = std::clamp(halfDiag * 0.55, 14.0, 110.0);
+  const int minStripPoints = std::max(4, std::min(8, params.minLinePoints / 3));
+
+  std::fprintf(stderr,
+    "[auto-measure][refine] before corners=T(%.2f,%.2f) R(%.2f,%.2f) B(%.2f,%.2f) L(%.2f,%.2f) halfDiag=%.2f maxDrift=%.2f stripLen=%.2f\n",
+    corners.top.x, corners.top.y, corners.right.x, corners.right.y,
+    corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y,
+    halfDiag, maxDrift, stripLen);
+
+  // Side ordering matches lines[0..3] = top→right, right→bottom, bottom→left,
+  // left→top. Tip = intersection of two adjacent sides.
+  struct TipSpec {
+    const char* name;
+    cv::Point2f* corner;
+    int lineIdxA;
+    int lineIdxB;
+  };
+  TipSpec specs[4] = {
+    {"top",    &corners.top,    3, 0},
+    {"right",  &corners.right,  0, 1},
+    {"bottom", &corners.bottom, 1, 2},
+    {"left",   &corners.left,   2, 3},
+  };
+
+  auto stripFor = [&](const LineModel& line, cv::Point2f tip, int& sc) -> std::vector<cv::Point2f> {
+    cv::Point2f along = line.dir;
+    const cv::Point2f toMid = line.point - tip;
+    if (Dot(along, toMid) < 0.0) along = -along;
+    const cv::Point2f a = tip;
+    const cv::Point2f b = tip + along * static_cast<float>(stripLen);
+    return SampleEdgePoints(pre, a, b, center, params, sc);
+  };
+
+  int refinedCount = 0;
+  for (int i = 0; i < 4; ++i) {
+    const cv::Point2f original = *specs[i].corner;
+    const LineModel& la = lines[specs[i].lineIdxA];
+    const LineModel& lb = lines[specs[i].lineIdxB];
+    int scA = 0, scB = 0;
+    const std::vector<cv::Point2f> stripA = stripFor(la, original, scA);
+    const std::vector<cv::Point2f> stripB = stripFor(lb, original, scB);
+
+    bool accepted = false;
+    cv::Point2f refinedTip = original;
+    double drift = -1.0;
+    const char* reason = "ok";
+
+    if (static_cast<int>(stripA.size()) < minStripPoints ||
+        static_cast<int>(stripB.size()) < minStripPoints) {
+      reason = "insufficient-strip-points";
+    } else {
+      const LineModel rA = FitRobustLine(stripA, la.dir, scA, minStripPoints);
+      const LineModel rB = FitRobustLine(stripB, lb.dir, scB, minStripPoints);
+      if (!rA.ok || !rB.ok) {
+        reason = "strip-fit-failed";
+      } else if (AngleBetweenDirections(rA.dir, la.dir) > 18.0 ||
+                 AngleBetweenDirections(rB.dir, lb.dir) > 18.0) {
+        reason = "strip-angle-deviation";
+      } else if (!IntersectLines(rA, rB, refinedTip)) {
+        reason = "strip-intersect-failed";
+      } else if (!PointInsideImage(refinedTip, params)) {
+        reason = "outside-image";
+      } else {
+        drift = Distance(refinedTip, original);
+        if (drift > maxDrift) {
+          reason = "drift-exceeded";
+        } else {
+          *specs[i].corner = refinedTip;
+          accepted = true;
+          ++refinedCount;
+        }
+      }
+    }
+
+    std::fprintf(stderr,
+      "[auto-measure][refine] corner index=%d name=%s roi=stripLen=%.1f stripPts=(%d,%d) best=(%.2f,%.2f) score=drift=%.2f accepted=%d reason=%s\n",
+      i, specs[i].name, stripLen,
+      static_cast<int>(stripA.size()), static_cast<int>(stripB.size()),
+      refinedTip.x, refinedTip.y, drift, accepted ? 1 : 0, reason);
+  }
+
+  std::fprintf(stderr,
+    "[auto-measure][refine] refined corners=T(%.2f,%.2f) R(%.2f,%.2f) B(%.2f,%.2f) L(%.2f,%.2f) refinedCount=%d\n",
+    corners.top.x, corners.top.y, corners.right.x, corners.right.y,
+    corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y,
+    refinedCount);
+  std::fflush(stderr);
+  return refinedCount > 0;
+}
+
 void TryRefineCorners(const cv::Mat& gray, OrderedCorners& corners, const Params& params) {
   std::vector<cv::Point2f> pts{corners.top, corners.right, corners.bottom, corners.left};
   try {
@@ -1869,6 +1991,16 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       return Failure(env, reason, debug);
     }
 
+    {
+      const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      std::fprintf(stderr,
+        "[frame] processing timestamp=%lld width=%d height=%d bytes=%zu source=%s\n",
+        static_cast<long long>(nowMs), params.width, params.height, frame.size,
+        params.sourceType.c_str());
+      std::fflush(stderr);
+    }
+
     const Preprocessed pre = Preprocess(gray, params);
 
     auto returnHoughFallback = [&](DebugInfo fallbackDebug, const HoughDiamondResult& hough) -> Napi::Value {
@@ -1999,9 +2131,50 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       return Failure(env, "corner intersection is outside image", debug);
     }
 
+    // Per-tip strip refinement before sub-pixel polish. Snapshot first so
+    // we can revert if final geometry validation fails purely because of the
+    // refinement (the spec requires keeping the previous fitted-line corners
+    // in that case).
+    const OrderedCorners cornersBeforeRefine = finalCorners;
+    const bool tipsRefined = RefineDiamondTips(pre, params, lines, finalCorners);
+
     TryRefineCorners(pre.blurred, finalCorners, params);
 
     ShapeMetrics finalMetrics = ComputeShapeMetrics(finalCorners);
+
+    // Reject geometry that got worse after refinement: revert to the un-refined
+    // intersection corners and re-validate from there.
+    auto revertRefinement = [&](const char* reason) {
+      std::fprintf(stderr,
+        "[auto-measure][refine] accepted=false reason=%s d1_px=%.3f d2_px=%.3f\n",
+        reason, finalMetrics.d1, finalMetrics.d2);
+      std::fflush(stderr);
+      finalCorners = cornersBeforeRefine;
+      TryRefineCorners(pre.blurred, finalCorners, params);
+      finalMetrics = ComputeShapeMetrics(finalCorners);
+    };
+    if (tipsRefined) {
+      const bool diagBad =
+        finalMetrics.diagonalRatio > params.maxDiagonalRatio ||
+        (1.0 / finalMetrics.diagonalRatio) < params.minDiagonalRatio;
+      const bool sideBad = finalMetrics.sideRatio > params.maxSideLengthRatio;
+      bool angleBad = false;
+      for (double angle : finalMetrics.anglesDeg) {
+        if (std::abs(angle - 90.0) > params.angleToleranceDeg) {
+          angleBad = true;
+          break;
+        }
+      }
+      if (diagBad || sideBad || angleBad) {
+        revertRefinement(diagBad ? "diag-ratio" : sideBad ? "side-ratio" : "angle");
+      } else {
+        std::fprintf(stderr,
+          "[auto-measure][refine] accepted=true d1_px=%.3f d2_px=%.3f\n",
+          finalMetrics.d1, finalMetrics.d2);
+        std::fflush(stderr);
+      }
+    }
+
     debug.finalCorners = finalCorners;
     debug.finalMetrics = finalMetrics;
     debug.hasFinalCorners = true;

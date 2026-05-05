@@ -190,10 +190,26 @@ export function createDefaultManualMeasurePoints(
   ];
 }
 
-export function createDefaultManualGuideLines(imageSize: ImageSize): ManualGuideLines {
+// Vickers indent pixel size scales linearly with magnification. Default the
+// initial manual cross to roughly the size of an indent at the active
+// objective — at 40X the legacy 12% radius lands near the indent edges; at
+// 10X that's ~4× too big and the user sees a cross floating far from the
+// actual diamond. Anything outside the known list keeps the legacy 12%.
+function radiusFractionForObjective(objective: string | null | undefined): number {
+  const key = String(objective ?? '').trim().toUpperCase();
+  if (key === '10X') return 0.04;
+  if (key === '20X') return 0.08;
+  return 0.12;
+}
+
+export function createDefaultManualGuideLines(
+  imageSize: ImageSize,
+  objective?: string | null
+): ManualGuideLines {
   const centerX = imageSize.width / 2;
   const centerY = imageSize.height / 2;
-  const radius = Math.max(12, Math.min(imageSize.width, imageSize.height) * 0.12);
+  const fraction = radiusFractionForObjective(objective);
+  const radius = Math.max(12, Math.min(imageSize.width, imageSize.height) * fraction);
 
   return {
     leftX: Math.max(0, centerX - radius),

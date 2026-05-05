@@ -87,6 +87,7 @@ type TabContentProps = {
   albumItemsError: string | null;
   albumItemsLoading: boolean;
   refetchAlbumItems: () => Promise<void>;
+  onObjectiveChange?: (objective: '10X' | '40X') => void;
 };
 
 function renderTab(
@@ -101,10 +102,11 @@ function renderTab(
     albumItemsError,
     albumItemsLoading,
     refetchAlbumItems,
+    onObjectiveChange,
   }: TabContentProps
 ) {
   switch (tab) {
-    case 0: return <MachineControlTab />;
+    case 0: return <MachineControlTab onObjectiveChange={onObjectiveChange} />;
     case 1: return <XYZPlatformTab />;
     case 2:
       return (
@@ -145,6 +147,7 @@ type Props = {
   measurementsLoading: boolean;
   refetchMeasurements: () => Promise<void>;
   onOpenTestRecords: (measurementIds: string[]) => void;
+  onObjectiveChange?: (objective: '10X' | '40X') => void;
 };
 
 function RightPanelImpl({
@@ -153,6 +156,7 @@ function RightPanelImpl({
   measurementsLoading,
   onOpenTestRecords,
   refetchMeasurements,
+  onObjectiveChange,
 }: Props) {
   const [tab, setTab] = useState(0);
   const {
@@ -201,6 +205,7 @@ function RightPanelImpl({
         albumItemsError,
         albumItemsLoading,
         refetchAlbumItems,
+        onObjectiveChange,
       })}
     </Box>
   );

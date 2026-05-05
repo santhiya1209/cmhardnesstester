@@ -2,7 +2,11 @@ import { EventEmitter } from 'node:events';
 import {
   buildCommandForKey,
   buildStartIndentCommand,
+  getCommandVerification,
+  isCommandVerified,
   tryParseOneFrame,
+  type MachineCommandKey,
+  type MachineCommandVerification,
   type MachineControlKey,
 } from './hardness-machine-protocol';
 
@@ -51,6 +55,7 @@ export interface MachineState {
   objective: string;
   hardnessLevel: string;
   indentStatus: IndentStatus;
+  commandVerification: MachineCommandVerification;
   lastUpdatedBy: 'pc' | 'machine' | 'system';
   lastError?: string;
   updatedAt: string;
@@ -73,6 +78,7 @@ const DEFAULT_STATE: MachineState = {
   objective: '10X',
   hardnessLevel: 'Middle',
   indentStatus: 'idle',
+  commandVerification: getCommandVerification(),
   lastUpdatedBy: 'system',
   updatedAt: new Date().toISOString(),
 };
@@ -83,6 +89,7 @@ class HardnessMachineSerialService extends EventEmitter {
   private state: MachineState = { ...DEFAULT_STATE };
   private port: SerialPortInstance | null = null;
   private rxBuffer: Buffer = Buffer.alloc(0);
+  private pendingAckField: MachineCommandKey | null = null;
 
   getState(): MachineState {
     return { ...this.state };
@@ -96,10 +103,23 @@ class HardnessMachineSerialService extends EventEmitter {
     this.state = {
       ...this.state,
       ...patch,
+      commandVerification: getCommandVerification(),
       lastUpdatedBy: origin,
       updatedAt: new Date().toISOString(),
     };
     this.emit('state', this.state);
+    this.logUiState();
+  }
+
+  private logUiState(): void {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-sync][ui-state] objective=${this.state.objective} force=${this.state.force} lightness=${this.state.lightness} loadTime=${this.state.loadTime} hardnessLevel=${this.state.hardnessLevel}`
+    );
+  }
+
+  private unverifiedMessage(field: MachineCommandKey): string {
+    return `RS232 command for "${field}" is not verified; writes are disabled until the official protocol bytes are supplied.`;
   }
 
   async connectMachine(opts: ConnectOptions): Promise<MachineState> {
@@ -188,7 +208,9 @@ class HardnessMachineSerialService extends EventEmitter {
   private handleIncoming(chunk: Buffer): void {
     // [RX] hex + ascii — verbatim so the user can match against the manual.
     // eslint-disable-next-line no-console
-    console.log('[machine-service] [RX] hex=', chunk.toString('hex'), 'ascii=', JSON.stringify(chunk.toString('ascii')));
+    console.log(
+      `[machine-sync][rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
+    );
     this.rxBuffer = Buffer.concat([this.rxBuffer, chunk]);
 
     // Drain as many complete frames as the streaming parser can extract from
@@ -207,7 +229,7 @@ class HardnessMachineSerialService extends EventEmitter {
       switch (frame.kind) {
         case 'state-update':
           // eslint-disable-next-line no-console
-          console.log('[machine-service] [SYNC] machine pushed', frame.key, '=', frame.value);
+          console.log(`[machine-sync][machine-update] field=${frame.key} value=${frame.value}`);
           this.setState({ [frame.key]: frame.value } as Partial<MachineState>, 'machine');
           break;
         case 'indent-status':
@@ -222,9 +244,17 @@ class HardnessMachineSerialService extends EventEmitter {
           );
           break;
         case 'ack':
+          if (!this.pendingAckField) {
+            // eslint-disable-next-line no-console
+            console.log('[machine-sync][ack] field=unknown ok=true');
+          }
           this.emit('ack');
           break;
         case 'nak':
+          if (!this.pendingAckField) {
+            // eslint-disable-next-line no-console
+            console.log(`[machine-sync][ack] field=unknown ok=false message=${frame.message ?? 'machine NAK'}`);
+          }
           this.emit('nak', frame.message ?? 'machine NAK');
           this.setState({ lastError: frame.message ?? 'machine NAK' }, 'machine');
           break;
@@ -249,41 +279,57 @@ class HardnessMachineSerialService extends EventEmitter {
    * machine, with a timeout. Used by transmit() when callers need the UI to
    * commit only after the machine confirms.
    */
-  private waitForAck(timeoutMs: number): Promise<void> {
+  private waitForAck(field: MachineCommandKey, timeoutMs: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
         this.off('ack', onAck);
         this.off('nak', onNak);
+        if (this.pendingAckField === field) {
+          this.pendingAckField = null;
+        }
       };
       const onAck = () => {
+        // eslint-disable-next-line no-console
+        console.log(`[machine-sync][ack] field=${field} ok=true`);
         cleanup();
         resolve();
       };
       const onNak = (message: string) => {
+        // eslint-disable-next-line no-console
+        console.log(`[machine-sync][ack] field=${field} ok=false message=${message}`);
         cleanup();
         reject(new Error(message));
       };
       const timer = setTimeout(() => {
+        // eslint-disable-next-line no-console
+        console.log(`[machine-sync][ack] field=${field} ok=false message=ack timeout`);
         cleanup();
         reject(new Error('ack timeout'));
       }, timeoutMs);
+      this.pendingAckField = field;
       this.once('ack', onAck);
       this.once('nak', onNak);
     });
   }
 
-  private async transmit(frame: Buffer, opts: { awaitAck?: boolean } = {}): Promise<void> {
+  private async transmit(
+    field: MachineCommandKey,
+    frame: Buffer,
+    opts: { awaitAck?: boolean } = {}
+  ): Promise<void> {
     if (!this.port || !this.state.connected) {
       throw new Error('machine not connected');
     }
     // [TX] hex + ascii — full frame logged for protocol verification.
     // eslint-disable-next-line no-console
-    console.log('[machine-service] [TX] hex=', frame.toString('hex'), 'ascii=', JSON.stringify(frame.toString('ascii')));
+    console.log(
+      `[machine-sync][tx] field=${field} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
+    );
 
     // Pre-arm ack listener BEFORE the write completes — some machines reply
     // before the write callback fires.
-    const ackPromise = opts.awaitAck ? this.waitForAck(TX_TIMEOUT_MS) : null;
+    const ackPromise = opts.awaitAck ? this.waitForAck(field, TX_TIMEOUT_MS) : null;
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -307,32 +353,38 @@ class HardnessMachineSerialService extends EventEmitter {
   async setControlValue(key: MachineControlKey, value: string | number): Promise<MachineState> {
     // eslint-disable-next-line no-console
     console.log('[machine-service] set value requested', key, value);
-
-    // Always update local state (PC origin) so UI is consistent even when the
-    // protocol stubs refuse to transmit. Clear lastError so a successful
-    // edit removes any stale "indent refused" banner.
-    this.setState(
-      { [key]: value, lastError: undefined } as Partial<MachineState>,
-      'pc'
-    );
+    // eslint-disable-next-line no-console
+    console.log(`[machine-sync][ui-change] field=${key} value=${value}`);
 
     if (!this.state.connected) {
+      const message = 'machine not connected';
+      this.setState({ lastError: message }, 'system');
+      throw new Error(message);
+    }
+
+    if (!isCommandVerified(key)) {
+      const message = this.unverifiedMessage(key);
       // eslint-disable-next-line no-console
-      console.warn('[machine-service] not connected — value cached locally only');
-      return this.getState();
+      console.warn(`[machine-sync][tx-blocked] field=${key} verified=false reason=${message}`);
+      this.setState({ lastError: message }, 'system');
+      throw new Error(message);
     }
 
     const frame = buildCommandForKey(key, value);
     if (!frame) {
+      const message = this.unverifiedMessage(key);
       // eslint-disable-next-line no-console
-      console.warn(
-        '[machine-service] protocol builder returned null — refusing to transmit (TODO: protocol)'
-      );
-      return this.getState();
+      console.warn(`[machine-sync][tx-blocked] field=${key} verified=false reason=${message}`);
+      this.setState({ lastError: message }, 'system');
+      throw new Error(message);
     }
 
     try {
-      await this.transmit(frame);
+      await this.transmit(key, frame, { awaitAck: true });
+      this.setState(
+        { [key]: value, lastError: undefined } as Partial<MachineState>,
+        'pc'
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setState({ lastError: message }, 'system');
@@ -352,20 +404,26 @@ class HardnessMachineSerialService extends EventEmitter {
       console.warn('[machine-service] indent already in progress — ignoring duplicate');
       return this.getState();
     }
-    const frame = buildStartIndentCommand();
-    if (!frame) {
-      const message =
-        'indent command not implemented in protocol adapter — refusing to transmit';
+    if (!isCommandVerified('indent')) {
+      const message = this.unverifiedMessage('indent');
       // eslint-disable-next-line no-console
-      console.warn('[machine-service]', message);
+      console.warn(`[machine-sync][tx-blocked] field=indent verified=false reason=${message}`);
       this.setState({ lastError: message }, 'system');
       throw new Error(message);
     }
-    this.setState({ indentStatus: 'started', lastError: undefined }, 'pc');
+    const frame = buildStartIndentCommand();
+    if (!frame) {
+      const message = this.unverifiedMessage('indent');
+      // eslint-disable-next-line no-console
+      console.warn(`[machine-sync][tx-blocked] field=indent verified=false reason=${message}`);
+      this.setState({ lastError: message }, 'system');
+      throw new Error(message);
+    }
     try {
       // Indent triggers physical motion — wait for the machine's ACK before
       // the UI commits to "running". A NAK or timeout flips status to error.
-      await this.transmit(frame, { awaitAck: true });
+      await this.transmit('indent', frame, { awaitAck: true });
+      this.setState({ indentStatus: 'running', lastError: undefined }, 'pc');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setState({ indentStatus: 'error', lastError: message }, 'system');

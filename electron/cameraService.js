@@ -177,6 +177,10 @@ class CameraService {
 
     try {
       // eslint-disable-next-line no-console
+      console.log('[frame] received timestamp=', Date.now(),
+        'frameTs=', frame.meta.timestamp, 'seq=', frame.meta.seq,
+        'bytes=', frame.data.byteLength, 'source=', frame.meta.source);
+      // eslint-disable-next-line no-console
       console.log('[auto-measure] native measureVickersAuto →', {
         width: nativeParams.width,
         height: nativeParams.height,

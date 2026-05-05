@@ -21,6 +21,9 @@ type Args = {
   active: boolean;
   imageSize: ManualMeasureImageSize | null;
   resetKey: number;
+  /** Live machine objective (e.g. "10X" / "40X") so the initial diamond
+   *  defaults to roughly indent-sized at the current magnification. */
+  objective?: string | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
 };
@@ -62,6 +65,7 @@ export function useManualMeasureOverlay({
   active,
   imageSize,
   resetKey,
+  objective,
   onCursor,
   onMeasurementUpdated,
 }: Args) {
@@ -93,10 +97,13 @@ export function useManualMeasureOverlay({
       return;
     }
 
-    const initialGuides = createDefaultManualGuideLines(imageSize);
+    const initialGuides = createDefaultManualGuideLines(imageSize, objective);
     guidesRef.current = initialGuides;
     setGuides(initialGuides);
-  }, [active, imageSize]);
+    // eslint-disable-next-line no-console
+    console.log('[manual-measure] initialized objective=', objective ?? 'unknown',
+      'imageSize=', imageSize, 'guides=', initialGuides);
+  }, [active, imageSize, objective]);
 
   const scheduleDraw = useCallback(() => {
     if (frameRef.current !== null) {

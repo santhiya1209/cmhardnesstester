@@ -7,6 +7,9 @@ export type MachineControlKey =
   | 'objective'
   | 'hardnessLevel';
 
+export type MachineCommandKey = MachineControlKey | 'indent';
+export type MachineCommandVerification = Record<MachineCommandKey, boolean>;
+
 export interface MachineState {
   connected: boolean;
   port: string | null;
@@ -16,6 +19,7 @@ export interface MachineState {
   objective: string;
   hardnessLevel: string;
   indentStatus: IndentStatus;
+  commandVerification?: MachineCommandVerification;
   lastUpdatedBy: 'pc' | 'machine' | 'system';
   lastError?: string;
   updatedAt: string;

@@ -10,6 +10,7 @@ type Props = {
   active: boolean;
   imageSize: ManualMeasureImageSize | null;
   resetKey: number;
+  objective?: string | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
 };
@@ -31,6 +32,7 @@ function ManualMeasureOverlayImpl({
   active,
   imageSize,
   resetKey,
+  objective,
   onCursor,
   onMeasurementUpdated,
 }: Props) {
@@ -46,6 +48,7 @@ function ManualMeasureOverlayImpl({
     active,
     imageSize,
     resetKey,
+    objective,
     onCursor,
     onMeasurementUpdated,
   });

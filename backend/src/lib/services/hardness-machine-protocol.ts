@@ -33,6 +33,9 @@ export type MachineControlKey =
   | 'objective'
   | 'hardnessLevel';
 
+export type MachineCommandKey = MachineControlKey | 'indent';
+export type MachineCommandVerification = Record<MachineCommandKey, boolean>;
+
 export type ParsedMachineFrame =
   | {
       kind: 'state-update';
@@ -64,9 +67,8 @@ export interface ProtocolConfig {
   encoding: FrameEncoding;
 }
 
-// Default framing: STX (0x02) … ASCII payload … XOR checksum byte … ETX (0x03).
-// This is the most common industrial RS232 pattern and matches the user-confirmed
-// default. The per-command codes below are still placeholders — see COMMAND_MAP.
+// Temporary parser framing only. Command TX remains disabled until the official
+// machine manual confirms these framing bytes and the per-command codes below.
 //
 // Serial line settings (set by the caller in connectMachine, defaults match):
 //   COM7, 9600 baud, 8 data bits, no parity, 1 stop bit.
@@ -106,7 +108,16 @@ interface CommandMapEntry {
 // Helpers for value formatting are intentionally conservative — they strip
 // the human-facing unit suffix where common, but the actual wire format MUST
 // be confirmed from the manual.
-const COMMAND_MAP: Partial<Record<MachineControlKey | 'indent', CommandMapEntry>> = {
+const COMMAND_KEYS: MachineCommandKey[] = [
+  'force',
+  'lightness',
+  'loadTime',
+  'objective',
+  'hardnessLevel',
+  'indent',
+];
+
+const COMMAND_MAP: Partial<Record<MachineCommandKey, CommandMapEntry>> = {
   // TODO(protocol): real code from manual, then `verified: true`.
   force: {
     code: '__TODO__',
@@ -224,7 +235,20 @@ function logBuild(name: string, value: unknown): void {
   console.log('[machine-protocol] build command', name, value);
 }
 
-function buildFromMap(key: MachineControlKey | 'indent', value: string | number | null): FrameOrNull {
+export function isCommandVerified(key: MachineCommandKey): boolean {
+  const entry = COMMAND_MAP[key];
+  return Boolean(entry?.verified && entry.code !== '__TODO__');
+}
+
+export function getCommandVerification(): MachineCommandVerification {
+  const verification = {} as MachineCommandVerification;
+  for (const key of COMMAND_KEYS) {
+    verification[key] = isCommandVerified(key);
+  }
+  return verification;
+}
+
+function buildFromMap(key: MachineCommandKey, value: string | number | null): FrameOrNull {
   const entry = COMMAND_MAP[key];
   if (!entry) {
     // eslint-disable-next-line no-console
