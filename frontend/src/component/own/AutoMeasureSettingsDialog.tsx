@@ -36,7 +36,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onPreviewChange?: (settings: AutoMeasureSettingsPayload) => void;
-  onSaved?: () => void;
+  onSaved?: (settings: AutoMeasureSettingsPayload) => void;
   onStatusChange?: (message: string) => void;
 };
 
@@ -138,18 +138,16 @@ function AutoMeasureSettingsDialogImpl({
   }, [onPreviewChange]);
 
   const handleCancel = useCallback(() => {
-    // Revert preview to last saved values, then close.
     setForm(savedBaseline);
-    onPreviewChange?.(savedBaseline);
     onClose();
-  }, [onClose, onPreviewChange, savedBaseline]);
+  }, [onClose, savedBaseline]);
 
   const handleSave = useCallback(async () => {
     try {
       const finalValues = normalizeAutoMeasureSettings(form);
       await saveAutoMeasureSettings({ id: data?.id, values: finalValues });
       setSavedBaseline(finalValues);
-      onSaved?.();
+      onSaved?.(finalValues);
       onStatusChange?.('Auto measure settings saved.');
       onClose();
     } catch {

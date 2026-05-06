@@ -33,9 +33,8 @@ function clampInt(value, min, max) {
 
 function smoothingToKernel(smoothing) {
   if (smoothing <= 0) return 1;
-  let k = Math.min(11, smoothing * 2 + 1);
-  if (k % 2 === 0) k += 1;
-  return k;
+  const bucket = Math.min(5, Math.max(1, Math.ceil(smoothing / 4)));
+  return bucket * 2 + 1;
 }
 
 function validateAutoMeasurePayload(payload) {
@@ -63,11 +62,13 @@ function validateAutoMeasurePayload(payload) {
   // Map → native legacy fields. Native pipeline runs:
   //   GaussianBlur(kernel=morphologyKernelSize) → THRESH_BINARY_INV @ manualThreshold.
   if (smoothing !== null) {
+    out.smoothing = smoothing;
     out.morphologyKernelSize = smoothingToKernel(smoothing);
   }
-  out.thresholdMode = 'manual';
   if (thresholdRaw !== null) {
+    out.threshold = thresholdRaw;
     out.manualThreshold = thresholdRaw;
+    out.thresholdMode = thresholdRaw > 0 ? 'manual' : 'otsu';
   }
 
   // Pass-through optional native tuning if a caller supplies it (debug/testing).

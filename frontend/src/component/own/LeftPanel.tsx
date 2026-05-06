@@ -21,6 +21,7 @@ type Props = {
   activeTool: ToolId;
   overlayShapes: OverlayShape[];
   autoMeasureGraphics: AutoMeasureGraphics | null;
+  autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
@@ -34,6 +35,7 @@ function LeftPanelImpl(
     activeTool,
     overlayShapes,
     autoMeasureGraphics,
+    autoMeasureGraphicsSource,
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
@@ -50,6 +52,7 @@ function LeftPanelImpl(
         activeTool={activeTool}
         overlayShapes={overlayShapes}
         autoMeasureGraphics={autoMeasureGraphics}
+        autoMeasureGraphicsSource={autoMeasureGraphicsSource}
         crossLineVisible={crossLineVisible}
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}

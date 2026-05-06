@@ -131,6 +131,7 @@ struct DebugInfo {
   std::string thresholdMode;
   std::string requestedThresholdMode;
   int smoothing = 0;
+  int gaussianKernel = 1;
   int threshold = 0;
   int erosion = 0;
   int dilation = 0;
@@ -348,7 +349,7 @@ bool ReadParamsObject(const Napi::Object& object, Params& params, std::string& r
   }
   params.manualThreshold = std::clamp(IntFromObject(object, "manualThreshold", params.threshold), 0, 255);
   if (object.Has("threshold")) {
-    params.thresholdMode = "manual";
+    params.thresholdMode = params.threshold > 0 ? "manual" : "otsu";
     params.manualThreshold = params.threshold;
   } else {
     params.threshold = params.manualThreshold;
@@ -436,6 +437,12 @@ int SliderToOddKernel(int slider, int minValue, int maxValue) {
   value = std::max(1, value);
   if (value % 2 == 0) ++value;
   return value;
+}
+
+int SmoothingToGaussianKernel(int smoothing) {
+  if (smoothing <= 0) return 1;
+  const int bucket = std::clamp(static_cast<int>(std::ceil(smoothing / 4.0)), 1, 5);
+  return bucket * 2 + 1;
 }
 
 bool DecodeToGray(const FrameView& frame, const Params& params, cv::Mat& gray, std::string& reason) {
@@ -538,6 +545,7 @@ struct Preprocessed {
   cv::Mat gradX;
   cv::Mat gradY;
   cv::Mat gradMag;
+  int gaussianKernel = 1;
   double gradMean = 0.0;
   double gradStd = 0.0;
   std::vector<std::pair<std::string, cv::Mat>> masks;
@@ -548,10 +556,8 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.2, {8, 8});
   clahe->apply(gray, out.clahe);
 
-  int blurKernel = params.smoothing <= 0
-    ? 1
-    : std::clamp(params.smoothing + 1, 3, 31);
-  if (blurKernel % 2 == 0) ++blurKernel;
+  int blurKernel = SmoothingToGaussianKernel(params.smoothing);
+  out.gaussianKernel = blurKernel;
   if (blurKernel > 1) {
     cv::GaussianBlur(out.clahe, out.blurred, {blurKernel, blurKernel}, 0.0);
   } else {
@@ -1047,6 +1053,275 @@ bool IntersectLines(const LineModel& a, const LineModel& b, cv::Point2f& out) {
 
 bool PointInsideImage(cv::Point2f p, const Params& params) {
   return p.x >= 0.0f && p.y >= 0.0f && p.x <= params.width - 1.0f && p.y <= params.height - 1.0f;
+}
+
+void SnapCornersToAxisGuides(OrderedCorners& corners) {
+  const float centerX = static_cast<float>((corners.left.x + corners.right.x) * 0.5f);
+  const float centerY = static_cast<float>((corners.top.y + corners.bottom.y) * 0.5f);
+  corners.top.x = centerX;
+  corners.bottom.x = centerX;
+  corners.left.y = centerY;
+  corners.right.y = centerY;
+}
+
+int CountMaskRow(const cv::Mat& mask, int y, int x0, int x1) {
+  if (y < 0 || y >= mask.rows) return 0;
+  x0 = std::clamp(x0, 0, mask.cols - 1);
+  x1 = std::clamp(x1, 0, mask.cols - 1);
+  if (x0 > x1) std::swap(x0, x1);
+
+  int count = 0;
+  const uint8_t* row = mask.ptr<uint8_t>(y);
+  for (int x = x0; x <= x1; ++x) {
+    if (row[x] > 0) ++count;
+  }
+  return count;
+}
+
+float MaxGradientRow(const cv::Mat& grad, int y, int x0, int x1) {
+  if (y < 0 || y >= grad.rows) return 0.0f;
+  x0 = std::clamp(x0, 0, grad.cols - 1);
+  x1 = std::clamp(x1, 0, grad.cols - 1);
+  if (x0 > x1) std::swap(x0, x1);
+
+  float best = 0.0f;
+  const float* row = grad.ptr<float>(y);
+  for (int x = x0; x <= x1; ++x) {
+    best = std::max(best, row[x]);
+  }
+  return best;
+}
+
+int CountMaskCol(const cv::Mat& mask, int x, int y0, int y1) {
+  if (x < 0 || x >= mask.cols) return 0;
+  y0 = std::clamp(y0, 0, mask.rows - 1);
+  y1 = std::clamp(y1, 0, mask.rows - 1);
+  if (y0 > y1) std::swap(y0, y1);
+
+  int count = 0;
+  for (int y = y0; y <= y1; ++y) {
+    if (mask.at<uint8_t>(y, x) > 0) ++count;
+  }
+  return count;
+}
+
+float MaxGradientCol(const cv::Mat& grad, int x, int y0, int y1) {
+  if (x < 0 || x >= grad.cols) return 0.0f;
+  y0 = std::clamp(y0, 0, grad.rows - 1);
+  y1 = std::clamp(y1, 0, grad.rows - 1);
+  if (y0 > y1) std::swap(y0, y1);
+
+  float best = 0.0f;
+  for (int y = y0; y <= y1; ++y) {
+    best = std::max(best, grad.at<float>(y, x));
+  }
+  return best;
+}
+
+cv::Mat ManualThresholdMask(const Preprocessed& pre, const Params& params) {
+  cv::Mat mask;
+  cv::threshold(pre.blurred, mask, params.threshold, 255, cv::THRESH_BINARY_INV);
+  const int closeSize = std::clamp(params.smoothing <= 0 ? 1 : (params.smoothing / 3) * 2 + 1, 1, 9);
+  return CloseOpenMask(mask, closeSize, 1, 1);
+}
+
+std::optional<float> FindAxisTipY(
+  const Preprocessed& pre,
+  const Params& params,
+  const cv::Mat& mask,
+  const OrderedCorners& corners,
+  bool topTip
+) {
+  const double d1 = Distance(corners.left, corners.right);
+  const double d2 = Distance(corners.top, corners.bottom);
+  if (d1 <= 8.0 || d2 <= 8.0) return std::nullopt;
+
+  const float centerX = static_cast<float>((corners.left.x + corners.right.x) * 0.5f);
+  const float centerY = static_cast<float>((corners.top.y + corners.bottom.y) * 0.5f);
+  const float roughY = topTip ? corners.top.y : corners.bottom.y;
+  const int bandHalf = std::clamp(static_cast<int>(std::round(d1 * 0.035)), 10, 54);
+  const int search = std::clamp(static_cast<int>(std::round(d2 * 0.13)), 18, 130);
+  const int step = std::clamp(static_cast<int>(std::round(d2 * 0.018)), 3, 22);
+  const int cx = std::clamp(static_cast<int>(std::round(centerX)), 0, params.width - 1);
+  const int x0 = cx - bandHalf;
+  const int x1 = cx + bandHalf;
+  const int minRun = std::clamp(static_cast<int>(std::round(bandHalf * 0.22)), 3, 18);
+
+  int yStart = static_cast<int>(std::round(roughY - search));
+  int yEnd = static_cast<int>(std::round(roughY + search));
+  yStart = std::clamp(yStart, 1, params.height - 2);
+  yEnd = std::clamp(yEnd, 1, params.height - 2);
+  if (yStart > yEnd) std::swap(yStart, yEnd);
+
+  double bestScore = -1.0;
+  int bestY = -1;
+  for (int y = yStart; y <= yEnd; ++y) {
+    if (topTip && y >= centerY - d2 * 0.18) continue;
+    if (!topTip && y <= centerY + d2 * 0.18) continue;
+
+    const int here = CountMaskRow(mask, y, x0, x1);
+    const int inside = CountMaskRow(mask, topTip ? y + step : y - step, x0, x1);
+    const int outside = CountMaskRow(mask, topTip ? y - step : y + step, x0, x1);
+    if (here < minRun && inside < minRun) continue;
+
+    const int contrast = inside - outside;
+    if (contrast < std::max(2, minRun / 2)) continue;
+
+    const float gradient = MaxGradientRow(pre.gradMag, y, x0, x1);
+    const double gradientScore = Clamp01((gradient - pre.gradMean) / std::max(1.0, pre.gradStd * 2.4));
+    const double contrastScore = Clamp01(static_cast<double>(contrast) / std::max(1.0, bandHalf * 1.4));
+    const double centerScore = Clamp01(1.0 - std::abs(y - roughY) / std::max(1.0, static_cast<double>(search)));
+    const double score = 0.46 * gradientScore + 0.38 * contrastScore + 0.16 * centerScore;
+    if (score > bestScore) {
+      bestScore = score;
+      bestY = y;
+    }
+  }
+
+  if (bestY < 0 || bestScore < 0.18) return std::nullopt;
+  return static_cast<float>(bestY);
+}
+
+std::optional<float> FindAxisTipX(
+  const Preprocessed& pre,
+  const Params& params,
+  const cv::Mat& mask,
+  const OrderedCorners& corners,
+  bool leftTip
+) {
+  const double d1 = Distance(corners.left, corners.right);
+  const double d2 = Distance(corners.top, corners.bottom);
+  if (d1 <= 8.0 || d2 <= 8.0) return std::nullopt;
+
+  const float centerX = static_cast<float>((corners.left.x + corners.right.x) * 0.5f);
+  const float centerY = static_cast<float>((corners.top.y + corners.bottom.y) * 0.5f);
+  const float roughX = leftTip ? corners.left.x : corners.right.x;
+  const int bandHalf = std::clamp(static_cast<int>(std::round(d2 * 0.035)), 10, 54);
+  const int search = std::clamp(static_cast<int>(std::round(d1 * 0.13)), 18, 130);
+  const int step = std::clamp(static_cast<int>(std::round(d1 * 0.018)), 3, 22);
+  const int cy = std::clamp(static_cast<int>(std::round(centerY)), 0, params.height - 1);
+  const int y0 = cy - bandHalf;
+  const int y1 = cy + bandHalf;
+  const int minRun = std::clamp(static_cast<int>(std::round(bandHalf * 0.22)), 3, 18);
+
+  int xStart = static_cast<int>(std::round(roughX - search));
+  int xEnd = static_cast<int>(std::round(roughX + search));
+  xStart = std::clamp(xStart, 1, params.width - 2);
+  xEnd = std::clamp(xEnd, 1, params.width - 2);
+  if (xStart > xEnd) std::swap(xStart, xEnd);
+
+  double bestScore = -1.0;
+  int bestX = -1;
+  for (int x = xStart; x <= xEnd; ++x) {
+    if (leftTip && x >= centerX - d1 * 0.18) continue;
+    if (!leftTip && x <= centerX + d1 * 0.18) continue;
+
+    const int here = CountMaskCol(mask, x, y0, y1);
+    const int inside = CountMaskCol(mask, leftTip ? x + step : x - step, y0, y1);
+    const int outside = CountMaskCol(mask, leftTip ? x - step : x + step, y0, y1);
+    if (here < minRun && inside < minRun) continue;
+
+    const int contrast = inside - outside;
+    if (contrast < std::max(2, minRun / 2)) continue;
+
+    const float gradient = MaxGradientCol(pre.gradMag, x, y0, y1);
+    const double gradientScore = Clamp01((gradient - pre.gradMean) / std::max(1.0, pre.gradStd * 2.4));
+    const double contrastScore = Clamp01(static_cast<double>(contrast) / std::max(1.0, bandHalf * 1.4));
+    const double centerScore = Clamp01(1.0 - std::abs(x - roughX) / std::max(1.0, static_cast<double>(search)));
+    const double score = 0.46 * gradientScore + 0.38 * contrastScore + 0.16 * centerScore;
+    if (score > bestScore) {
+      bestScore = score;
+      bestX = x;
+    }
+  }
+
+  if (bestX < 0 || bestScore < 0.18) return std::nullopt;
+  return static_cast<float>(bestX);
+}
+
+bool RefineAxisTipsFromDarkBoundary(
+  const Preprocessed& pre,
+  const Params& params,
+  OrderedCorners& corners
+) {
+  const OrderedCorners before = corners;
+  const cv::Mat mask = ManualThresholdMask(pre, params);
+  bool changed = false;
+
+  if (auto x = FindAxisTipX(pre, params, mask, corners, true)) {
+    const double maxDrift = std::clamp(Distance(corners.left, corners.right) * 0.16, 12.0, 120.0);
+    if (std::abs(*x - corners.left.x) <= maxDrift) {
+      corners.left.x = *x;
+      changed = true;
+    }
+  }
+  if (auto x = FindAxisTipX(pre, params, mask, corners, false)) {
+    const double maxDrift = std::clamp(Distance(corners.left, corners.right) * 0.16, 12.0, 120.0);
+    if (std::abs(*x - corners.right.x) <= maxDrift) {
+      corners.right.x = *x;
+      changed = true;
+    }
+  }
+  if (auto y = FindAxisTipY(pre, params, mask, corners, true)) {
+    const double maxDrift = std::clamp(Distance(corners.top, corners.bottom) * 0.16, 12.0, 120.0);
+    if (std::abs(*y - corners.top.y) <= maxDrift) {
+      corners.top.y = *y;
+      changed = true;
+    }
+  }
+  if (auto y = FindAxisTipY(pre, params, mask, corners, false)) {
+    const double maxDrift = std::clamp(Distance(corners.top, corners.bottom) * 0.16, 12.0, 120.0);
+    if (std::abs(*y - corners.bottom.y) <= maxDrift) {
+      corners.bottom.y = *y;
+      changed = true;
+    }
+  }
+
+  if (!changed) return false;
+
+  SnapCornersToAxisGuides(corners);
+
+  const ShapeMetrics metrics = ComputeShapeMetrics(corners);
+  bool geometryOk =
+    PointInsideImage(corners.top, params) &&
+    PointInsideImage(corners.right, params) &&
+    PointInsideImage(corners.bottom, params) &&
+    PointInsideImage(corners.left, params) &&
+    std::isfinite(metrics.diagonalRatio) &&
+    metrics.diagonalRatio <= params.maxDiagonalRatio * 1.12 &&
+    (1.0 / metrics.diagonalRatio) >= params.minDiagonalRatio * 0.92;
+  for (double angle : metrics.anglesDeg) {
+    if (std::abs(angle - 90.0) > params.angleToleranceDeg + 10.0) {
+      geometryOk = false;
+      break;
+    }
+  }
+  if (!geometryOk) {
+    corners = before;
+    DebugLog(
+      "[auto-refine] accepted=false reason=axis-geometry topTipBefore=(%.2f,%.2f) topTipAfter=(%.2f,%.2f) bottomTipBefore=(%.2f,%.2f) bottomTipAfter=(%.2f,%.2f)\n",
+      before.top.x,
+      before.top.y,
+      corners.top.x,
+      corners.top.y,
+      before.bottom.x,
+      before.bottom.y,
+      corners.bottom.x,
+      corners.bottom.y);
+    return false;
+  }
+
+  DebugLog(
+    "[auto-refine] topTipBefore=(%.2f,%.2f) topTipAfter=(%.2f,%.2f) bottomTipBefore=(%.2f,%.2f) bottomTipAfter=(%.2f,%.2f)\n",
+    before.top.x,
+    before.top.y,
+    corners.top.x,
+    corners.top.y,
+    before.bottom.x,
+    before.bottom.y,
+    corners.bottom.x,
+    corners.bottom.y);
+  return true;
 }
 
 std::optional<HoughLineCandidate> BestSignedHoughLine(
@@ -2047,13 +2322,38 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     }
 
     const Preprocessed pre = Preprocess(gray, params);
+    debug.gaussianKernel = pre.gaussianKernel;
 
     auto returnHoughFallback = [&](DebugInfo fallbackDebug, const HoughDiamondResult& hough) -> Napi::Value {
       OrderedCorners refinedCorners = hough.corners;
       std::array<LineModel, 4> refinedLines = hough.lines;
       const OrderedCorners beforeRefine = refinedCorners;
-      const bool d2Refined = RefineDiamondTips(pre, params, refinedLines, refinedCorners, true);
+      DebugLog(
+        "[auto-measure:tips-before] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
+        beforeRefine.top.x,
+        beforeRefine.top.y,
+        beforeRefine.bottom.x,
+        beforeRefine.bottom.y,
+        beforeRefine.left.x,
+        beforeRefine.left.y,
+        beforeRefine.right.x,
+        beforeRefine.right.y);
+      const bool localTipsRefined = RefineDiamondTips(pre, params, refinedLines, refinedCorners, false);
+      const bool axisTipsRefined = RefineAxisTipsFromDarkBoundary(pre, params, refinedCorners);
       TryRefineCorners(pre.blurred, refinedCorners, params);
+      if (axisTipsRefined) {
+        SnapCornersToAxisGuides(refinedCorners);
+      }
+      DebugLog(
+        "[auto-measure:tips-after] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
+        refinedCorners.top.x,
+        refinedCorners.top.y,
+        refinedCorners.bottom.x,
+        refinedCorners.bottom.y,
+        refinedCorners.left.x,
+        refinedCorners.left.y,
+        refinedCorners.right.x,
+        refinedCorners.right.y);
 
       ShapeMetrics refinedMetrics = ComputeShapeMetrics(refinedCorners);
       bool geometryOk = PointInsideImage(refinedCorners.top, params) &&
@@ -2067,7 +2367,7 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
           break;
         }
       }
-      if (d2Refined && !geometryOk) {
+      if ((localTipsRefined || axisTipsRefined) && !geometryOk) {
         DebugLog(
           "[auto-measure][d2] fallback refinement rejected reason=geometry d1_px=%.3f d2_px=%.3f ratio=%.3f\n",
           refinedMetrics.d1,
@@ -2209,9 +2509,33 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // refinement (the spec requires keeping the previous fitted-line corners
     // in that case).
     const OrderedCorners cornersBeforeRefine = finalCorners;
-    const bool tipsRefined = RefineDiamondTips(pre, params, lines, finalCorners, true);
+    DebugLog(
+      "[auto-measure:tips-before] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
+      cornersBeforeRefine.top.x,
+      cornersBeforeRefine.top.y,
+      cornersBeforeRefine.bottom.x,
+      cornersBeforeRefine.bottom.y,
+      cornersBeforeRefine.left.x,
+      cornersBeforeRefine.left.y,
+      cornersBeforeRefine.right.x,
+      cornersBeforeRefine.right.y);
+    const bool tipsRefined = RefineDiamondTips(pre, params, lines, finalCorners, false);
+    const bool axisTipsRefined = RefineAxisTipsFromDarkBoundary(pre, params, finalCorners);
 
     TryRefineCorners(pre.blurred, finalCorners, params);
+    if (axisTipsRefined) {
+      SnapCornersToAxisGuides(finalCorners);
+    }
+    DebugLog(
+      "[auto-measure:tips-after] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
+      finalCorners.top.x,
+      finalCorners.top.y,
+      finalCorners.bottom.x,
+      finalCorners.bottom.y,
+      finalCorners.left.x,
+      finalCorners.left.y,
+      finalCorners.right.x,
+      finalCorners.right.y);
 
     ShapeMetrics finalMetrics = ComputeShapeMetrics(finalCorners);
 
@@ -2225,7 +2549,7 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       TryRefineCorners(pre.blurred, finalCorners, params);
       finalMetrics = ComputeShapeMetrics(finalCorners);
     };
-    if (tipsRefined) {
+    if (tipsRefined || axisTipsRefined) {
       const bool diagBad =
         finalMetrics.diagonalRatio > params.maxDiagonalRatio ||
         (1.0 / finalMetrics.diagonalRatio) < params.minDiagonalRatio;

@@ -27,6 +27,8 @@ let attached: AttachedRef | null = null;
 let ipcSubscribed = false;
 let mainThreadPaintHandlerInstalled = false;
 let lastFrameAt = 0;
+let liveFrameLogSeq = 0;
+let lastLiveFrameOverlayLogAt = 0;
 let fallbackTimer: number | null = null;
 let fallbackInFlight = false;
 
@@ -58,6 +60,7 @@ function subscribeIpcOnce() {
   let loggedFirst = false;
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
     lastFrameAt = Date.now();
+    liveFrameLogSeq += 1;
     if (!loggedFirst) {
       loggedFirst = true;
       // eslint-disable-next-line no-console
@@ -68,6 +71,11 @@ function subscribeIpcOnce() {
         height: meta.height,
         byteLength: (body as { byteLength?: number }).byteLength,
       });
+    }
+    if (lastFrameAt - lastLiveFrameOverlayLogAt > 1000) {
+      lastLiveFrameOverlayLogAt = lastFrameAt;
+      // eslint-disable-next-line no-console
+      console.log(`[live-frame] frameId=${liveFrameLogSeq} overlayUnchanged=true`);
     }
     postFrameToWorker(meta, body);
   });

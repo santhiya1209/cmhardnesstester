@@ -64,10 +64,18 @@ const CANVAS_STYLE: React.CSSProperties = {
   imageRendering: 'pixelated',
 };
 
+type ImageSize = { width: number; height: number };
+
+function keepImageSizeIfSame(current: ImageSize | null, next: ImageSize | null): ImageSize | null {
+  if (!next) return current === null ? current : null;
+  return current?.width === next.width && current.height === next.height ? current : next;
+}
+
 type Props = {
   activeTool: ToolId;
   overlayShapes: OverlayShape[];
   autoMeasureGraphics: AutoMeasureGraphics | null;
+  autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
@@ -112,6 +120,7 @@ function CameraWindowImpl(
     activeTool,
     overlayShapes,
     autoMeasureGraphics,
+    autoMeasureGraphicsSource = 'auto',
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
@@ -131,7 +140,7 @@ function CameraWindowImpl(
   const [frozen, setFrozen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [imageSize, setImageSize] = useState<ImageSize | null>(null);
   const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
 
   const toggleFreeze = useCallback(() => {
@@ -143,10 +152,13 @@ function CameraWindowImpl(
       if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
-      setImageSize(
-        live.width > 0 && live.height > 0
-          ? { width: live.width, height: live.height }
-          : null
+      setImageSize((current) =>
+        keepImageSizeIfSame(
+          current,
+          live.width > 0 && live.height > 0
+            ? { width: live.width, height: live.height }
+            : null
+        )
       );
       return false;
     }
@@ -157,7 +169,9 @@ function CameraWindowImpl(
     if (!ctx) return false;
     ctx.drawImage(live, 0, 0);
     imageSourceRef.current = 'live-camera';
-    setImageSize({ width: live.width, height: live.height });
+    setImageSize((current) =>
+      keepImageSizeIfSame(current, { width: live.width, height: live.height })
+    );
     setFrozen(true);
     return true;
   }, [frozen]);
@@ -235,7 +249,9 @@ function CameraWindowImpl(
         const bitmap = await createImageBitmap(blob);
         snap.width = bitmap.width;
         snap.height = bitmap.height;
-        setImageSize({ width: bitmap.width, height: bitmap.height });
+        setImageSize((current) =>
+          keepImageSizeIfSame(current, { width: bitmap.width, height: bitmap.height })
+        );
         const ctx = snap.getContext('2d');
         if (!ctx) {
           bitmap.close();
@@ -286,7 +302,7 @@ function CameraWindowImpl(
     if (!ctx) return;
     ctx.clearRect(0, 0, live.width, live.height);
     if (!frozen) {
-      setImageSize(null);
+      setImageSize((current) => keepImageSizeIfSame(current, null));
     }
   }, [frozen]);
 
@@ -338,7 +354,9 @@ function CameraWindowImpl(
     }
 
     if (status.width > 0 && status.height > 0) {
-      setImageSize({ width: status.width, height: status.height });
+      setImageSize((current) =>
+        keepImageSizeIfSame(current, { width: status.width, height: status.height })
+      );
     }
   }, [frozen, status.height, status.width]);
 
@@ -456,6 +474,7 @@ function CameraWindowImpl(
           graphics={autoMeasureGraphics}
           imageSize={imageSize}
           interactive={activeTool === 'pointer'}
+          source={autoMeasureGraphicsSource}
           onAdjusted={onAutoMeasureAdjusted}
         />
         <ManualMeasureOverlay

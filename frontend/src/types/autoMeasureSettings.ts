@@ -58,8 +58,8 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 
 function smoothingToKernel(smoothing: number): number {
   if (smoothing <= 0) return 1;
-  const k = Math.min(11, smoothing * 2 + 1);
-  return k % 2 === 0 ? k + 1 : k;
+  const bucket = Math.min(5, Math.max(1, Math.ceil(smoothing / 4)));
+  return bucket * 2 + 1;
 }
 
 function isObjective(value: unknown): value is ObjectiveForMeasure {

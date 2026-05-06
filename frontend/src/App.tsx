@@ -21,7 +21,7 @@ import { useConnectMachine } from '@/hooks/mutations/useConnectMachine';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { getLatestMicrometerReading } from '@/api/getLatestMicrometerReading';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
-import { measureVickersAuto } from '@/api/measureVickersAuto';
+import { measureVickersAuto, measureVickersAutoPreview } from '@/api/measureVickersAuto';
 import { getCameraSetting } from '@/api/getCameraSetting';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
@@ -50,8 +50,13 @@ import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDis
 import { dispatchMenuAction } from '@/utils/menuDispatcher';
 import type { ToolbarActionId } from '@/types/tool';
 import type { ConfigDialogId, MenuActionId } from '@/types/menu';
-import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
+import type {
+  AutoMeasureCorners,
+  AutoMeasureGraphics,
+  VickersAutoMeasureSuccess,
+} from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { MachineState } from '@/types/machine';
 import {
   calculateVickersFromPixels,
   calculateManualDiagonalsFromPixels,
@@ -121,6 +126,69 @@ function graphicsAlmostEqual(a: AutoMeasureGraphics, b: AutoMeasureGraphics): bo
   return true;
 }
 
+function autoMeasureSettingsEqual(
+  a: AutoMeasureSettingsPayload,
+  b: AutoMeasureSettingsPayload
+): boolean {
+  return JSON.stringify(normalizeAutoMeasureSettings(a)) === JSON.stringify(normalizeAutoMeasureSettings(b));
+}
+
+type AutoMeasureDetectionSnapshot = {
+  settings: AutoMeasureSettingsPayload;
+  result: VickersAutoMeasureSuccess;
+  graphics: AutoMeasureGraphics;
+  objectiveForCalibration: string;
+  machineStateForAuto: MachineState | null;
+  forceKgf: number | null;
+};
+
+type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save';
+
+type CapturedAutoMeasureFrame = Extract<
+  ReturnType<CameraWindowHandle['captureDisplayedFrame']>,
+  { ok: true }
+>;
+
+type RunAutoMeasure = (
+  settingsInput: AutoMeasureSettingsPayload,
+  preview?: boolean,
+  source?: AutoMeasureCallSource
+) => void;
+
+function logUnexpectedAutoMeasureCall(source: string) {
+  if (source === 'auto-click' || source === 'settings-preview' || source === 'settings-save') {
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[auto-measure-unexpected-call] source=${source} stack=${new Error().stack ?? 'unavailable'}`
+  );
+}
+
+function smoothingToPreviewKernel(smoothing: number): number {
+  if (smoothing <= 0) return 1;
+  const bucket = Math.min(5, Math.max(1, Math.ceil(smoothing / 4)));
+  return bucket * 2 + 1;
+}
+
+function readPreviewKernel(result: VickersAutoMeasureSuccess, smoothing: number): number {
+  const debug = result.debug;
+  const settings = debug.settings;
+  if (settings && typeof settings === 'object' && 'gaussianKernel' in settings) {
+    const value = Number((settings as { gaussianKernel?: unknown }).gaussianKernel);
+    if (Number.isFinite(value)) return value;
+  }
+  const value = Number((debug as { gaussianKernel?: unknown }).gaussianKernel);
+  return Number.isFinite(value) ? value : smoothingToPreviewKernel(smoothing);
+}
+
+function cloneCapturedFrame(frame: CapturedAutoMeasureFrame): CapturedAutoMeasureFrame {
+  return {
+    ...frame,
+    buffer: frame.buffer.slice(0),
+  };
+}
+
 type DialogKey =
   | 'autoMeasure'
   | 'calibration'
@@ -173,17 +241,28 @@ function App() {
   // (~60–200ms). Without coalescing, the user's final slider position can be
   // dropped, leaving the yellow lines fitted to a stale value.
   const autoMeasurePendingPreviewRef = useRef<AutoMeasureSettingsPayload | null>(null);
-  const runAutoMeasureRef = useRef<
-    ((settingsInput: AutoMeasureSettingsPayload, preview?: boolean) => void) | null
-  >(null);
+  const runAutoMeasureRef = useRef<RunAutoMeasure | null>(null);
+  const autoMeasurePreviewSnapshotRef = useRef<AutoMeasureDetectionSnapshot | null>(null);
+  const committedAutoMeasureFrameRef = useRef<CapturedAutoMeasureFrame | null>(null);
+  const previewMeasurementRef = useRef<{ d1Pixels: number; d2Pixels: number; confidence: number } | null>(null);
+  const autoMeasureSettingsOpenRef = useRef(false);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
-  const [autoMeasureGraphics, setAutoMeasureGraphics] = useState<AutoMeasureGraphics | null>(null);
-  const [autoMeasuring, setAutoMeasuring] = useState(false);
+  const [committedAutoMeasureOverlay, setCommittedAutoMeasureOverlay] =
+    useState<AutoMeasureGraphics | null>(null);
+  const [previewAutoMeasureOverlay, setPreviewAutoMeasureOverlay] =
+    useState<AutoMeasureGraphics | null>(null);
+  const [, setAutoMeasuring] = useState(false);
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
-  const [autoMeasureSettingsRevision, setAutoMeasureSettingsRevision] = useState(0);
+  const displayedAutoMeasureGraphics =
+    activeDialog === 'autoMeasure'
+      ? previewAutoMeasureOverlay ?? committedAutoMeasureOverlay
+      : committedAutoMeasureOverlay;
+  const displayedAutoMeasureSource: 'auto' | 'preview' | 'save' =
+    activeDialog === 'autoMeasure' && previewAutoMeasureOverlay ? 'preview' : 'auto';
+  const displayedAutoMeasureGraphicsRef = useRef<AutoMeasureGraphics | null>(null);
   const autoMeasurementIdRef = useRef<string | null>(null);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
   // - Set by the user's lens button click (authoritative, instant).
@@ -359,13 +438,124 @@ function App() {
     setAutoMeasurePreviewSettings(normalizeAutoMeasureSettings(autoMeasureSettings));
   }, [autoMeasureSettings]);
 
+  useEffect(() => {
+    displayedAutoMeasureGraphicsRef.current = displayedAutoMeasureGraphics;
+  }, [displayedAutoMeasureGraphics]);
+
   const handleAutoMeasureSettingsPreviewChange = useCallback((settings: AutoMeasureSettingsPayload) => {
     setAutoMeasurePreviewSettings(normalizeAutoMeasureSettings(settings));
-    setAutoMeasureSettingsRevision((current) => current + 1);
   }, []);
 
-  const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false) => {
-    if (autoMeasuring || autoMeasureInFlightRef.current) {
+  const commitAutoMeasureSnapshot = useCallback(
+    async (snapshot: AutoMeasureDetectionSnapshot, source: 'auto-click' | 'settings-save') => {
+      const { result, graphics, objectiveForCalibration, machineStateForAuto, forceKgf } = snapshot;
+
+      setCommittedAutoMeasureOverlay((prev) => {
+        if (prev && graphicsAlmostEqual(prev, graphics)) {
+          // eslint-disable-next-line no-console
+          console.log('[auto-overlay-skip] reason=same-lines-no-state-update');
+          return prev;
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-overlay-set] source=${source} lines=${graphics.lines.length} corners=4`
+        );
+        return graphics;
+      });
+      setPreviewAutoMeasureOverlay(null);
+      autoMeasurePreviewSnapshotRef.current = null;
+      previewMeasurementRef.current = null;
+
+      const timestamp = new Date().toISOString();
+      const depthMm = await readLatestMicrometerDepthMm();
+
+      const conversion = calculateVickersFromPixels({
+        calibrationSettings,
+        calibrationSettingsList,
+        calibrations,
+        d1Px: result.d1Pixels,
+        d2Px: result.d2Pixels,
+        forceKgf,
+        machineState: machineStateForAuto,
+        objective: objectiveForCalibration,
+        targetObjective: objectiveForCalibration,
+      });
+
+      if (!conversion.ok) {
+        setUnavailableMsg(conversion.reason);
+        setStatusMessage(`System Status: Auto Measure blocked: ${conversion.reason}`);
+        return false;
+      }
+
+      const values = conversion.value;
+
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure] commit', {
+        objective: values.normalizedObjective,
+        d1Um: values.d1Um,
+        d2Um: values.d2Um,
+        hv: values.hv,
+      });
+
+      const saved = await saveManualMeasurement({
+        id: autoMeasurementIdRef.current ?? undefined,
+        values: {
+          d1: values.d1Um,
+          d2: values.d2Um,
+          d1Px: values.d1Px,
+          d2Px: values.d2Px,
+          d1Um: values.d1Um,
+          d2Um: values.d2Um,
+          averageUm: values.avgDUm,
+          averageMm: values.avgDMm,
+          hv: values.hv,
+          micronPerPixel: values.umPerPixel,
+          calibrationName: values.calibrationName,
+          objective: values.normalizedObjective,
+          testForceKgf: values.forceKgf,
+          depthMm,
+          method: 'Auto',
+          unit: 'um',
+          timestamp,
+        },
+      });
+
+      autoMeasurementIdRef.current = saved.id;
+      await refetchMeasurements();
+
+      if (source === 'settings-save') {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-settings-save] committed=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} HV=${values.hv.toFixed(3)}`
+        );
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure:commit] overlayFrozen=true measurementAdded=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} D1_um=${values.d1Um.toFixed(3)} D2_um=${values.d2Um.toFixed(3)} HV=${values.hv.toFixed(3)}`
+        );
+      }
+
+      setStatusMessage(
+        saved.hv
+          ? `System Status: Auto measurement added: HV ${saved.hv}`
+          : `System Status: Auto measurement added: ${values.d1Um} µm / ${values.d2Um} µm`
+      );
+      return true;
+    },
+    [
+      calibrationSettings,
+      calibrationSettingsList,
+      calibrations,
+      refetchMeasurements,
+      saveManualMeasurement,
+    ]
+  );
+
+  const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource) => {
+    const callSource = source ?? (preview ? 'settings-preview' : 'auto-click');
+    logUnexpectedAutoMeasureCall(callSource);
+
+    if (autoMeasureInFlightRef.current) {
       // Coalesce: remember the latest preview settings so the trailing run
       // after the in-flight detection picks up the user's final slider value.
       // Non-preview (explicit Auto Measure click) is still ignored while busy.
@@ -379,6 +569,8 @@ function App() {
       const settings = normalizeAutoMeasureSettings(settingsInput);
       if (!preview) {
         autoMeasurementIdRef.current = null;
+        autoMeasurePreviewSnapshotRef.current = null;
+        setPreviewAutoMeasureOverlay(null);
       }
 
       autoMeasureInFlightRef.current = true;
@@ -433,17 +625,31 @@ function App() {
         }
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
-        const displayedFrame = cameraRef.current?.captureDisplayedFrame();
+        const displayedFrame =
+          callSource === 'auto-click'
+            ? cameraRef.current?.captureDisplayedFrame()
+            : committedAutoMeasureFrameRef.current;
 
         if (!displayedFrame?.ok) {
           if (preview) {
             // Keep last valid overlay; surface only via status (no log spam).
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-settings-preview-reject] reason=${displayedFrame?.error ?? 'no committed frame'} keepLastValid=true`
+            );
             return;
           }
-          setAutoMeasureGraphics(null);
+          if (callSource === 'auto-click') {
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure-click] detection-complete ok=false confidence=0 D1_px=0 D2_px=0');
+          }
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
           setStatusMessage(`System Status: Auto Measure rejected: ${displayedFrame?.error ?? 'no displayed image'}`);
           return;
+        }
+
+        if (callSource === 'auto-click') {
+          committedAutoMeasureFrameRef.current = cloneCapturedFrame(displayedFrame);
         }
 
         // Only forward the live machine-control objective when it normalises
@@ -456,7 +662,22 @@ function App() {
           (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(liveObjectiveCandidate)
             ? (liveObjectiveCandidate as ObjectiveForMeasure)
             : settings.objectiveForMeasure;
-        const result = await measureVickersAuto({
+        if (!preview) {
+          if (callSource === 'auto-click') {
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure] detection-start');
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-click] detection-start frameId=${displayedFrame.source}-${displayedFrame.width}x${displayedFrame.height}-${Date.now()}`
+            );
+          }
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure:start] frameSize=${displayedFrame.width}x${displayedFrame.height} smoothing=${settings.smoothing} threshold=${settings.threshold}`
+          );
+        }
+        const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
+        const result = await measureFn({
           ...settings,
           objectiveForMeasure: liveObjectiveForNative,
           frameBuffer: displayedFrame.buffer,
@@ -476,105 +697,128 @@ function App() {
         if (!preview) {
           // eslint-disable-next-line no-console
           console.log('[auto-measure] result', result);
+          if (callSource === 'auto-click') {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-click] detection-complete ok=${result.ok} confidence=${result.ok ? result.confidence.toFixed(3) : 0} D1_px=${result.ok ? result.d1Pixels.toFixed(3) : 0} D2_px=${result.ok ? result.d2Pixels.toFixed(3) : 0}`
+            );
+          }
         }
 
         if (!result.ok || result.confidence < minConfidence || result.lines.length !== 4) {
           const reason = result.ok ? 'low confidence' : result.reason;
           if (preview) {
             // Preview rejection: keep last valid overlay; no log spam.
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-settings-preview] smoothing=${settings.smoothing} kernel=${smoothingToPreviewKernel(settings.smoothing)} threshold=${settings.threshold} accepted=false D1_px=0 D2_px=0`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-settings-preview-reject] reason=${reason} keepLastValid=true`
+            );
             return;
           }
-          setAutoMeasureGraphics(null);
           setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure:validate] ok=false reason=${reason} D1_px=0 D2_px=0`
+          );
           return;
         }
 
-        setAutoMeasureGraphics((prev) => {
-          if (
-            prev &&
-            graphicsAlmostEqual(prev, { corners: result.corners, lines: result.lines })
-          ) {
-            return prev;
-          }
-          return { corners: result.corners, lines: result.lines };
-        });
+        if (!preview) {
+          const debug = result.debug ?? {};
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure:candidate]', {
+            area: debug.selectedContourArea,
+            center: debug.minAreaRect && typeof debug.minAreaRect === 'object'
+              ? (debug.minAreaRect as { center?: unknown }).center
+              : undefined,
+            score: debug.confidence ?? result.confidence,
+          });
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure:tips-after]', result.corners);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure:validate] ok=true reason=accepted D1_px=${result.d1Pixels.toFixed(3)} D2_px=${result.d2Pixels.toFixed(3)}`
+          );
+        }
+
+        const graphics: AutoMeasureGraphics = { corners: result.corners, lines: result.lines };
+        if (!preview && callSource === 'auto-click') {
+          const c = result.corners;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure] corners-detected top=${c.top.x.toFixed(2)},${c.top.y.toFixed(2)} right=${c.right.x.toFixed(2)},${c.right.y.toFixed(2)} bottom=${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)} left=${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}`
+          );
+        }
+        const snapshot: AutoMeasureDetectionSnapshot = {
+          settings,
+          result,
+          graphics,
+          objectiveForCalibration,
+          machineStateForAuto,
+          forceKgf,
+        };
 
         if (preview) {
-          // Preview mode: only update the overlay. Do NOT touch the DB,
-          // measurement table, depth reading, or status spam.
+          const before = displayedAutoMeasureGraphicsRef.current;
+          const kernel = readPreviewKernel(result, settings.smoothing);
+          setPreviewAutoMeasureOverlay((prev) => {
+            if (prev && graphicsAlmostEqual(prev, graphics)) {
+              // eslint-disable-next-line no-console
+              console.log('[auto-overlay-skip] reason=same-lines-no-state-update');
+              return prev;
+            }
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-overlay-set] source=settings-preview lines=${graphics.lines.length} corners=4`
+            );
+            return graphics;
+          });
+          autoMeasurePreviewSnapshotRef.current = snapshot;
+          previewMeasurementRef.current = {
+            d1Pixels: result.d1Pixels,
+            d2Pixels: result.d2Pixels,
+            confidence: result.confidence,
+          };
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-settings-preview] smoothing=${settings.smoothing} kernel=${kernel} threshold=${settings.threshold} accepted=true D1_px=${result.d1Pixels.toFixed(3)} D2_px=${result.d2Pixels.toFixed(3)}`
+          );
+          // eslint-disable-next-line no-console
+          console.log('[auto-settings-tip-move]', {
+            topBefore: before?.corners.top ?? null,
+            topAfter: result.corners.top,
+            rightBefore: before?.corners.right ?? null,
+            rightAfter: result.corners.right,
+            bottomBefore: before?.corners.bottom ?? null,
+            bottomAfter: result.corners.bottom,
+            leftBefore: before?.corners.left ?? null,
+            leftAfter: result.corners.left,
+          });
           return;
         }
 
-        const timestamp = new Date().toISOString();
-        const depthMm = await readLatestMicrometerDepthMm();
-
-        const conversion = calculateVickersFromPixels({
-          calibrationSettings,
-          calibrationSettingsList,
-          calibrations,
-          d1Px: result.d1Pixels,
-          d2Px: result.d2Pixels,
-          forceKgf,
-          machineState: machineStateForAuto,
-          objective: objectiveForCalibration,
-          targetObjective: objectiveForCalibration,
-        });
-
-        if (!conversion.ok) {
-          setUnavailableMsg(conversion.reason);
-          setStatusMessage(`System Status: Auto Measure blocked: ${conversion.reason}`);
-          return;
-        }
-
-        const values = conversion.value;
-
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] commit', {
-          objective: values.normalizedObjective,
-          d1Um: values.d1Um,
-          d2Um: values.d2Um,
-          hv: values.hv,
-        });
-
-        const saved = await saveManualMeasurement({
-          id: autoMeasurementIdRef.current ?? undefined,
-          values: {
-            d1: values.d1Um,
-            d2: values.d2Um,
-            d1Px: values.d1Px,
-            d2Px: values.d2Px,
-            d1Um: values.d1Um,
-            d2Um: values.d2Um,
-            averageUm: values.avgDUm,
-            averageMm: values.avgDMm,
-            hv: values.hv,
-            micronPerPixel: values.umPerPixel,
-            calibrationName: values.calibrationName,
-            objective: values.normalizedObjective,
-            testForceKgf: values.forceKgf,
-            depthMm,
-            method: 'Auto',
-            unit: 'um',
-            timestamp,
-          },
-        });
-
-        autoMeasurementIdRef.current = saved.id;
-        await refetchMeasurements();
-        setStatusMessage(
-          saved.hv
-            ? `System Status: Auto measurement added: HV ${saved.hv}`
-            : `System Status: Auto measurement added: ${values.d1Um} µm / ${values.d2Um} µm`
+        await commitAutoMeasureSnapshot(
+          snapshot,
+          callSource === 'settings-save' ? 'settings-save' : 'auto-click'
         );
+        return;
+
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[auto-measure] failed:', err);
+        if (!preview && callSource === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure-click] detection-complete ok=false confidence=0 D1_px=0 D2_px=0');
+        }
         if (preview) {
           // Preview-time exception: keep overlay, just log + status.
           setStatusMessage('System Status: Auto Measure preview detection failed');
         } else {
-          setAutoMeasureGraphics(null);
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
         }
       } finally {
@@ -586,19 +830,17 @@ function App() {
         const pending = autoMeasurePendingPreviewRef.current;
         if (pending) {
           autoMeasurePendingPreviewRef.current = null;
-          window.setTimeout(() => runAutoMeasureRef.current?.(pending, true), 0);
+          window.setTimeout(() => runAutoMeasureRef.current?.(pending, true, 'settings-preview'), 0);
         }
       }
     })();
   }, [
-    autoMeasuring,
     calibrationSettings,
     calibrationSettingsList,
     calibrations,
+    commitAutoMeasureSnapshot,
     getMachineStateSnapshot,
     activeObjective,
-    refetchMeasurements,
-    saveManualMeasurement,
   ]);
 
   // Keep a ref to the latest runAutoMeasure so the in-flight finally block
@@ -606,6 +848,58 @@ function App() {
   useEffect(() => {
     runAutoMeasureRef.current = runAutoMeasure;
   }, [runAutoMeasure]);
+
+  useEffect(() => {
+    if (activeDialog !== 'autoMeasure') {
+      autoMeasureSettingsOpenRef.current = false;
+      setPreviewAutoMeasureOverlay(null);
+      autoMeasurePreviewSnapshotRef.current = null;
+      previewMeasurementRef.current = null;
+      return;
+    }
+
+    if (!autoMeasureSettingsOpenRef.current) {
+      autoMeasureSettingsOpenRef.current = true;
+      setPreviewAutoMeasureOverlay((prev) => {
+        if (!committedAutoMeasureOverlay) return prev;
+        return prev && graphicsAlmostEqual(prev, committedAutoMeasureOverlay)
+          ? prev
+          : committedAutoMeasureOverlay;
+      });
+    }
+
+    const timer = window.setTimeout(() => {
+      runAutoMeasure(autoMeasurePreviewSettings, true, 'settings-preview');
+    }, 70);
+
+    return () => window.clearTimeout(timer);
+  }, [activeDialog, autoMeasurePreviewSettings, committedAutoMeasureOverlay, runAutoMeasure]);
+
+  const handleAutoMeasureSettingsSaved = useCallback(
+    (settings: AutoMeasureSettingsPayload) => {
+      const normalized = normalizeAutoMeasureSettings(settings);
+      setAutoMeasurePreviewSettings(normalized);
+      void refetchAutoMeasureSettings();
+
+      const commitPreviewOrDetect = () => {
+        if (autoMeasureInFlightRef.current) {
+          window.setTimeout(commitPreviewOrDetect, 80);
+          return;
+        }
+
+        const snapshot = autoMeasurePreviewSnapshotRef.current;
+        if (snapshot && autoMeasureSettingsEqual(snapshot.settings, normalized)) {
+          void commitAutoMeasureSnapshot(snapshot, 'settings-save');
+          return;
+        }
+
+        runAutoMeasure(normalized, false, 'settings-save');
+      };
+
+      commitPreviewOrDetect();
+    },
+    [commitAutoMeasureSnapshot, refetchAutoMeasureSettings, runAutoMeasure]
+  );
 
   // Mirror SSE machine state's objective into App-level state — but never
   // clobber a value the user just clicked. The toggle click is the
@@ -646,7 +940,7 @@ function App() {
   }, [activeTool, getMachineStateSnapshot, manualMeasureResetKey]);
 
   const handleAutoMeasure = useCallback(() => {
-    runAutoMeasure(autoMeasurePreviewSettings, false);
+    runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
   }, [autoMeasurePreviewSettings, runAutoMeasure]);
 
   // Live recompute when the user drags edges/corners on the auto-measure
@@ -660,9 +954,13 @@ function App() {
       lastAdjustedCornersRef.current = newCorners;
       // Update graphics immediately so the overlay & any downstream readers
       // see the new corners on the next frame.
-      setAutoMeasureGraphics((current) =>
-        current ? { ...current, corners: newCorners } : current
-      );
+      const applyAdjustedCorners = (current: AutoMeasureGraphics | null) =>
+        current ? { ...current, corners: newCorners } : current;
+      if (previewAutoMeasureOverlay) {
+        setPreviewAutoMeasureOverlay(applyAdjustedCorners);
+      } else {
+        setCommittedAutoMeasureOverlay(applyAdjustedCorners);
+      }
 
       if (adjustSaveTimerRef.current !== null) {
         window.clearTimeout(adjustSaveTimerRef.current);
@@ -790,26 +1088,6 @@ function App() {
     };
   }, []);
 
-  // Auto Measure Settings dialog drives a live re-fit of the yellow lines on
-  // the camera image. ANY change to smoothing / threshold / objective triggers
-  // a fresh detection so the user can dial in the sliders until the lines snap
-  // to the true diamond corners.
-  useEffect(() => {
-    if (activeDialog !== 'autoMeasure') {
-      return;
-    }
-
-    // Fire an immediate preview when the dialog opens (revision === 0) and
-    // again after every settings change (revision bumps), with a short debounce
-    // so dragging a slider doesn't fire 60×/sec.
-    const delay = autoMeasureSettingsRevision === 0 ? 0 : 40;
-    const timer = window.setTimeout(() => {
-      runAutoMeasure(autoMeasurePreviewSettings, true);
-    }, delay);
-
-    return () => window.clearTimeout(timer);
-  }, [activeDialog, autoMeasurePreviewSettings, autoMeasureSettingsRevision, runAutoMeasure]);
-
   const buildSharedCtx = useCallback(
     (): ToolDispatchContext => ({
       setActiveTool,
@@ -818,7 +1096,15 @@ function App() {
         setUnavailableMsg(`${label} is not available yet.`),
       clearGraphics: () => {
         overlay.clearAll();
-        setAutoMeasureGraphics(null);
+        // eslint-disable-next-line no-console
+        console.log('[auto-overlay-clear] reason=clear-graphics');
+        // eslint-disable-next-line no-console
+        console.log('[overlay] cleared reason=clear-graphics');
+        setCommittedAutoMeasureOverlay(null);
+        setPreviewAutoMeasureOverlay(null);
+        autoMeasurePreviewSnapshotRef.current = null;
+        committedAutoMeasureFrameRef.current = null;
+        previewMeasurementRef.current = null;
         autoMeasurementIdRef.current = null;
         resetManualMeasure();
       },
@@ -856,7 +1142,13 @@ function App() {
             const loaded = await cameraRef.current?.loadImageFromBuffer(reply.buffer);
             if (loaded?.ok) {
               resetManualMeasure();
-              setAutoMeasureGraphics(null);
+              // eslint-disable-next-line no-console
+              console.log('[overlay] cleared reason=new-image');
+              setCommittedAutoMeasureOverlay(null);
+              setPreviewAutoMeasureOverlay(null);
+              autoMeasurePreviewSnapshotRef.current = null;
+              committedAutoMeasureFrameRef.current = null;
+              previewMeasurementRef.current = null;
               autoMeasurementIdRef.current = null;
               setStatusMessage(`System Status: Loaded ${reply.fileName}`);
             } else {
@@ -1033,7 +1325,11 @@ function App() {
             // sees the camera is actually closed.
             await cameraRef.current?.refetchStatus();
             cameraRef.current?.clearLiveCanvas();
-            setAutoMeasureGraphics(null);
+            setCommittedAutoMeasureOverlay(null);
+            setPreviewAutoMeasureOverlay(null);
+            autoMeasurePreviewSnapshotRef.current = null;
+            committedAutoMeasureFrameRef.current = null;
+            previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
             resetManualMeasure();
             setStatusMessage('System Status: Device closed');
@@ -1169,7 +1465,8 @@ function App() {
           ref={cameraRef}
           activeTool={activeTool}
           overlayShapes={overlay.shapes}
-          autoMeasureGraphics={autoMeasureGraphics}
+          autoMeasureGraphics={displayedAutoMeasureGraphics}
+          autoMeasureGraphicsSource={displayedAutoMeasureSource}
           crossLineVisible={overlay.crossLineVisible}
           onAddShape={overlay.addShape}
           manualMeasureResetKey={manualMeasureResetKey}
@@ -1193,9 +1490,7 @@ function App() {
         open={activeDialog === 'autoMeasure'}
         onClose={closeDialog}
         onPreviewChange={handleAutoMeasureSettingsPreviewChange}
-        onSaved={() => {
-          void refetchAutoMeasureSettings();
-        }}
+        onSaved={handleAutoMeasureSettingsSaved}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
       />
       <CalibrationDialog
