@@ -147,6 +147,29 @@ function startSnapshotFallback() {
   }, 1000);
 }
 
+export function getLastCameraFrameAt(): number {
+  return lastFrameAt;
+}
+
+export function waitForFreshCameraFrame(timeoutMs = 1500): Promise<boolean> {
+  const startedAt = Date.now();
+  const baseline = lastFrameAt;
+  return new Promise<boolean>((resolve) => {
+    const tick = () => {
+      if (lastFrameAt > baseline) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      window.setTimeout(tick, 30);
+    };
+    tick();
+  });
+}
+
 export function useCameraStream() {
   const attachOnceRef = useRef(false);
 

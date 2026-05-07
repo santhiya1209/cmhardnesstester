@@ -26,6 +26,7 @@ type Props = {
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   manualMeasureObjective?: string | null;
+  objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: AutoMeasureCorners) => void;
 };
@@ -40,6 +41,7 @@ function LeftPanelImpl(
     onAddShape,
     manualMeasureResetKey,
     manualMeasureObjective,
+    objectiveRefreshKey,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
   }: Props,
@@ -57,6 +59,7 @@ function LeftPanelImpl(
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}
         manualMeasureObjective={manualMeasureObjective}
+        objectiveRefreshKey={objectiveRefreshKey}
         onManualMeasurementUpdated={onManualMeasurementUpdated}
         onAutoMeasureAdjusted={onAutoMeasureAdjusted}
       />

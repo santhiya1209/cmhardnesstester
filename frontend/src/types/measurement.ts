@@ -21,6 +21,10 @@ export type MeasurementPayload = {
   imageDataUrl?: string;
   xMm?: number | null;
   yMm?: number | null;
+  hardnessType?: string | null;
+  qualified?: string | null;
+  convertType?: string | null;
+  convertValue?: number | string | null;
 };
 
 export type MeasurementSavePayload = {

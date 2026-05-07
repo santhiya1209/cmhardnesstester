@@ -18,14 +18,9 @@ import NearMeIcon from '@mui/icons-material/NearMe';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import ChangeHistoryIcon from '@mui/icons-material/ChangeHistory';
 import BackspaceIcon from '@mui/icons-material/Backspace';
-import ContentCutIcon from '@mui/icons-material/ContentCut';
-import ZoomInIcon from '@mui/icons-material/ZoomIn';
-import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
-import FindInPageIcon from '@mui/icons-material/FindInPage';
-import PanoramaIcon from '@mui/icons-material/Panorama';
 
 type ToolbarItemDef = {
   action: ToolbarActionId;
@@ -38,8 +33,8 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'file:open', label: 'Open Image', icon: FolderOpenIcon },
   { action: 'file:save', label: 'Save Image', icon: SaveIcon, groupEnd: true },
 
-  { action: 'device:openCamera', label: 'Open Device', icon: PlayArrowIcon },
-  { action: 'device:closeCamera', label: 'Close Device', icon: PauseIcon, groupEnd: true },
+  { action: 'device:openCamera', label: 'Open Camera', icon: PlayArrowIcon },
+  { action: 'device:closeCamera', label: 'Close Camera', icon: PauseIcon, groupEnd: true },
 
   { action: 'tools:autoMeasure', label: 'Auto Measure', icon: CenterFocusStrongIcon },
   { action: 'tools:manualMeasure', label: 'Manual Measure', icon: TouchAppIcon, groupEnd: true },
@@ -47,19 +42,11 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'tools:pointer', label: 'Pointer', icon: NearMeIcon },
   { action: 'tools:measureLength', label: 'Measure Length', icon: StraightenIcon },
   { action: 'tools:measureAngle', label: 'Measure Angle', icon: ChangeHistoryIcon },
+  { action: 'tools:clearGraphics', label: 'Clear Graphics', icon: BackspaceIcon },
   { action: 'tools:magnifier', label: 'Magnifier', icon: SearchIcon, groupEnd: true },
 
   { action: 'tools:resumeImage', label: 'Resume Image', icon: RestartAltIcon },
-  { action: 'tools:clearGraphics', label: 'Clear Graphics', icon: BackspaceIcon },
-  { action: 'tools:trimMeasure', label: 'Trim Measure', icon: ContentCutIcon, groupEnd: true },
-
-  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon, groupEnd: true },
-
-  { action: 'tools:autoSearchEdge', label: 'Auto Search Edge', icon: FindInPageIcon },
-  { action: 'tools:panoramicScan', label: 'Panoramic Scan', icon: PanoramaIcon, groupEnd: true },
-
-  { action: 'tools:zoomIn', label: 'Zoom In', icon: ZoomInIcon },
-  { action: 'tools:zoomOut', label: 'Zoom Out', icon: ZoomOutIcon },
+  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon },
 ];
 
 const BAR_SX: SxProps<Theme> = {

@@ -5,7 +5,11 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
-import { useCameraStream } from '@/hooks/useCameraStream';
+import {
+  getLastCameraFrameAt,
+  useCameraStream,
+  waitForFreshCameraFrame,
+} from '@/hooks/useCameraStream';
 import { colors } from '@/theme/theme';
 import ImageOverlay from '@/component/own/ImageOverlay';
 import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
@@ -80,6 +84,13 @@ type Props = {
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   manualMeasureObjective?: string | null;
+  /**
+   * Bumps every time the machine confirms a new objective via L<n>OK RX.
+   * CameraWindow uses it to clear the live canvas + frozen snapshot so the
+   * next worker frame draws fresh at the new magnification — no stale pixels
+   * from the previous lens, no cached transform.
+   */
+  objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
 };
@@ -101,12 +112,15 @@ export type CameraWindowHandle = {
   exportImageBlob: (mimeType?: string) => Promise<Blob | null>;
   refetchStatus: () => Promise<void>;
   clearLiveCanvas: () => void;
+  waitForFreshFrame: (timeoutMs?: number) => Promise<boolean>;
 };
 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 4;
 const ZOOM_STEP = 1.25;
 const COORDINATE_SCALE = 1024;
+const DEFAULT_CAMERA_X = 1024;
+const DEFAULT_CAMERA_Y = 1024;
 
 function statusLabel(o: { sdkLoaded: boolean; open: boolean; streaming: boolean }) {
   if (!o.sdkLoaded) return { label: 'SDK not loaded', color: 'warning' as const };
@@ -125,6 +139,7 @@ function CameraWindowImpl(
     onAddShape,
     manualMeasureResetKey,
     manualMeasureObjective,
+    objectiveRefreshKey,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
   }: Props,
@@ -135,13 +150,24 @@ function CameraWindowImpl(
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const { attachCanvas } = useCameraStream();
   const { status, refetch: refetchStatus } = useCameraStatus();
-  const [cursorCoordinate, setCursorCoordinate] = useState<Point | null>(null);
+  // Industrial-software behavior: coordinate readout is always visible. Init
+  // to (1024, 1024) on startup, updates live while the cursor is over the
+  // image, and stays at the last valid value when the cursor leaves.
+  const [cursorCoordinate, setCursorCoordinate] = useState<Point>({
+    x: DEFAULT_CAMERA_X,
+    y: DEFAULT_CAMERA_Y,
+  });
   const [cursorDisplay, setCursorDisplay] = useState<Point | null>(null);
   const [frozen, setFrozen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [imageSize, setImageSize] = useState<ImageSize | null>(null);
   const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
+  // Set whenever the live canvas is cleared (objective change). If the next
+  // worker frame hasn't arrived yet, captureDisplayedFrame would otherwise
+  // hand the native addon a transparent/black image and detection silently
+  // fails — gate the capture on a fresh frame after this timestamp.
+  const liveCanvasClearedAtRef = useRef<number>(0);
 
   const toggleFreeze = useCallback(() => {
     const live = canvasRef.current;
@@ -199,6 +225,18 @@ function CameraWindowImpl(
     const source = frozen && snap && snap.width > 0 && snap.height > 0 ? snap : live;
     if (!source || source.width <= 0 || source.height <= 0) {
       return { ok: false, error: 'no displayed image' };
+    }
+
+    // Live source: if the canvas was cleared by an objective change and no
+    // worker frame has painted onto it since, the pixels are transparent.
+    // Refuse to capture so callers can await a fresh frame instead of
+    // shipping a black image to the native detector.
+    if (
+      source === live &&
+      liveCanvasClearedAtRef.current > 0 &&
+      getLastCameraFrameAt() <= liveCanvasClearedAtRef.current
+    ) {
+      return { ok: false, error: 'awaiting-fresh-frame' };
     }
 
     const ctx = source.getContext('2d', { willReadFrequently: true });
@@ -301,10 +339,55 @@ function CameraWindowImpl(
     const ctx = live.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, live.width, live.height);
-    if (!frozen) {
-      setImageSize((current) => keepImageSizeIfSame(current, null));
+    liveCanvasClearedAtRef.current = Date.now();
+    // Why: do NOT null imageSize here. The camera resolution is unchanged on
+    // objective change — the magnification is optical, not pixel. Nulling
+    // imageSize unmounts/blanks the AutoMeasureOverlay and the next overlay
+    // commit fails to render until status polls a width/height change (which
+    // never happens because the camera frame size is constant).
+  }, []);
+
+  const waitForFreshFrame = useCallback(async (timeoutMs = 1500) => {
+    const fresh = await waitForFreshCameraFrame(timeoutMs);
+    if (fresh) {
+      liveCanvasClearedAtRef.current = 0;
     }
-  }, [frozen]);
+    return fresh;
+  }, []);
+
+  // React to a machine-confirmed objective change by invalidating any cached
+  // viewport state so the next live frame is drawn fresh at the new mag.
+  // Skip the first render (initial value) so we don't clear on mount.
+  const lastSeenObjectiveRefreshKeyRef = useRef<number | undefined>(objectiveRefreshKey);
+  useEffect(() => {
+    if (objectiveRefreshKey === undefined) return;
+    if (lastSeenObjectiveRefreshKeyRef.current === objectiveRefreshKey) return;
+    lastSeenObjectiveRefreshKeyRef.current = objectiveRefreshKey;
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-objective-sync] objective=${manualMeasureObjective ?? 'unknown'}`
+    );
+    // eslint-disable-next-line no-console
+    console.log('[camera-refresh] reason=objective-change');
+
+    // Drop any frozen snapshot — it was captured under the previous objective.
+    if (frozen) {
+      const snap = freezeCanvasRef.current;
+      const ctx = snap?.getContext('2d');
+      if (snap && ctx) ctx.clearRect(0, 0, snap.width, snap.height);
+      imageSourceRef.current = 'live-camera';
+      setFrozen(false);
+    }
+    // Clear the live canvas so the next worker frame paints onto a clean
+    // surface — no stale pixels from the previous magnification.
+    clearLiveCanvas();
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[viewport-refresh] completed objective=${manualMeasureObjective ?? 'unknown'}`
+    );
+  }, [objectiveRefreshKey, clearLiveCanvas, frozen, manualMeasureObjective]);
 
   useImperativeHandle(
     ref,
@@ -317,6 +400,7 @@ function CameraWindowImpl(
       exportImageBlob,
       refetchStatus,
       clearLiveCanvas,
+      waitForFreshFrame,
     }),
     [
       toggleFreeze,
@@ -327,6 +411,7 @@ function CameraWindowImpl(
       exportImageBlob,
       refetchStatus,
       clearLiveCanvas,
+      waitForFreshFrame,
     ]
   );
 
@@ -364,14 +449,14 @@ function CameraWindowImpl(
     (event: React.PointerEvent<HTMLDivElement>) => {
       const viewport = viewportRef.current;
       if (!viewport || !imageSize) {
-        setCursorCoordinate(null);
+        // Hide the magnifier marker but keep the last coordinate readout
+        // — industrial UI never blanks the X/Y display.
         setCursorDisplay(null);
         return;
       }
 
       const rect = viewport.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
-        setCursorCoordinate(null);
         setCursorDisplay(null);
         return;
       }
@@ -388,7 +473,6 @@ function CameraWindowImpl(
         displayPoint.y < placement.offsetY ||
         displayPoint.y > placement.offsetY + placement.height
       ) {
-        setCursorCoordinate(null);
         setCursorDisplay(null);
         return;
       }
@@ -410,7 +494,7 @@ function CameraWindowImpl(
   );
 
   const clearCursor = useCallback(() => {
-    setCursorCoordinate(null);
+    // Only hide the magnifier marker. Last valid X/Y stays on the coord bar.
     setCursorDisplay(null);
   }, []);
 
@@ -537,10 +621,10 @@ function CameraWindowImpl(
 
       <Box sx={COORD_BAR_SX}>
         <Typography component="span" sx={COORD_VALUE_SX}>
-          X: {cursorCoordinate ? Math.round(cursorCoordinate.x) : '—'}
+          X: {Number.isFinite(cursorCoordinate.x) ? Math.round(cursorCoordinate.x) : DEFAULT_CAMERA_X}
         </Typography>
         <Typography component="span" sx={COORD_VALUE_SX}>
-          Y: {cursorCoordinate ? Math.round(cursorCoordinate.y) : '—'}
+          Y: {Number.isFinite(cursorCoordinate.y) ? Math.round(cursorCoordinate.y) : DEFAULT_CAMERA_Y}
         </Typography>
       </Box>
     </Box>

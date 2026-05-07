@@ -1120,7 +1120,11 @@ float MaxGradientCol(const cv::Mat& grad, int x, int y0, int y1) {
 
 cv::Mat ManualThresholdMask(const Preprocessed& pre, const Params& params) {
   cv::Mat mask;
-  cv::threshold(pre.blurred, mask, params.threshold, 255, cv::THRESH_BINARY_INV);
+  if (params.threshold <= 0 || params.thresholdMode != "manual") {
+    cv::threshold(pre.blurred, mask, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+  } else {
+    cv::threshold(pre.blurred, mask, params.threshold, 255, cv::THRESH_BINARY_INV);
+  }
   const int closeSize = std::clamp(params.smoothing <= 0 ? 1 : (params.smoothing / 3) * 2 + 1, 1, 9);
   return CloseOpenMask(mask, closeSize, 1, 1);
 }
@@ -2096,6 +2100,7 @@ Napi::Object DebugObject(Napi::Env env, const DebugInfo& debug) {
     auto settings = Napi::Object::New(env);
     settings.Set("thresholdMode", Napi::String::New(env, debug.requestedThresholdMode));
     settings.Set("smoothing", Napi::Number::New(env, debug.smoothing));
+    settings.Set("gaussianKernel", Napi::Number::New(env, debug.gaussianKernel));
     settings.Set("threshold", Napi::Number::New(env, debug.threshold));
     settings.Set("erosion", Napi::Number::New(env, debug.erosion));
     settings.Set("dilation", Napi::Number::New(env, debug.dilation));

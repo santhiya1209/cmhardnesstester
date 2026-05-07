@@ -15,17 +15,16 @@ const COLUMNS = [
   '#',
   'X(mm)',
   'Y(mm)',
-  'Method',
+  'Hardness',
   'Objective',
-  'D1 px',
-  'D2 px',
-  'D1 µm',
-  'D2 µm',
-  'Avg µm',
-  'Avg mm',
-  'HV',
-  'Force',
-  'Calibration',
+  'Method',
+  'Hardness Type',
+  'Qualified',
+  'D1(um)',
+  'D2(um)',
+  'Davg(um)',
+  'Convert Type',
+  'Convert Value',
   'Depth',
   'Measure Time',
 ] as const;
@@ -75,16 +74,44 @@ type Props = {
   onSelect: (measurementId: string) => void;
 };
 
-function formatNumber(value: number | null | undefined, digits = 2): string {
-  if (value === null || value === undefined) {
-    return '-';
-  }
+function formatCoordinate(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(4)
+    : '0.0000';
+}
 
-  return Number.isInteger(value) ? String(value) : value.toFixed(digits);
+function format3(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? '-'
+    : value.toFixed(3);
+}
+
+function formatBlank(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return '';
+  const s = typeof value === 'string' ? value : String(value);
+  return s.trim() === '' ? '' : s;
+}
+
+function formatHardness(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-';
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatQualified(value: unknown): 'YES' | 'NO' {
+  if (typeof value === 'boolean') return value ? 'YES' : 'NO';
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'yes' || v === 'pass' || v === 'true' || v === '1' || v === 'qualified') return 'YES';
+    return 'NO';
+  }
+  if (typeof value === 'number') return value > 0 ? 'YES' : 'NO';
+  return 'NO';
 }
 
 function formatDepth(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : formatMicrometerValue(value);
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? '--'
+    : formatMicrometerValue(value);
 }
 
 function formatTimestamp(value: string): string {
@@ -105,6 +132,11 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
       setLatchedDepth(null);
     }
   }, [status, value, displayText, connected]);
+
+  const liveDepthText =
+    status === 'valid' && value !== null && Number.isFinite(value)
+      ? displayText
+      : (latchedDepth ?? '--');
 
   return (
     <TableContainer sx={TABLE_WRAP_SX}>
@@ -133,12 +165,31 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
             </TableRow>
           ) : (
             measurements.map((measurement, index) => {
-              const d1Px = measurement.d1Px ?? (measurement.unit === 'px' ? measurement.d1 : null);
-              const d2Px = measurement.d2Px ?? (measurement.unit === 'px' ? measurement.d2 : null);
               const d1Um = measurement.d1Um ?? (measurement.unit === 'um' ? measurement.d1 : null);
               const d2Um = measurement.d2Um ?? (measurement.unit === 'um' ? measurement.d2 : null);
-              const averageUm =
-                measurement.averageUm ?? (measurement.unit === 'um' ? measurement.average : null);
+              const davgUm =
+                measurement.averageUm ??
+                (measurement.unit === 'um' ? measurement.average : null) ??
+                (d1Um !== null && d2Um !== null ? (d1Um + d2Um) / 2 : null);
+
+              const hardnessType = formatBlank(measurement.hardnessType) || 'HV';
+              const qualified = formatQualified(measurement.qualified);
+              const convertType =
+                formatBlank(measurement.convertType) || hardnessType || 'NONE';
+              let convertValueNum: number | null = null;
+              if (typeof measurement.convertValue === 'number' && Number.isFinite(measurement.convertValue)) {
+                convertValueNum = measurement.convertValue;
+              } else if (typeof measurement.convertValue === 'string' && measurement.convertValue.trim() !== '') {
+                const parsed = Number(measurement.convertValue);
+                if (Number.isFinite(parsed)) convertValueNum = parsed;
+              }
+              if (convertValueNum === null && typeof measurement.hv === 'number' && Number.isFinite(measurement.hv)) {
+                convertValueNum = measurement.hv;
+              }
+              const convertValue =
+                convertValueNum !== null
+                  ? `${formatHardness(convertValueNum)} ${convertType}`
+                  : '--';
 
               return (
                 <TableRow
@@ -149,27 +200,22 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   onClick={() => onSelect(measurement.id)}
                 >
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>
-                    {(measurement.xMm ?? 0).toFixed(4)}
-                  </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>
-                    {(measurement.yMm ?? 0).toFixed(4)}
-                  </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatCoordinate(measurement.xMm)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatCoordinate(measurement.yMm)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatHardness(measurement.hv)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Px)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d2Px)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d1Um, 3)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(d2Um, 3)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(averageUm, 3)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.averageMm, 6)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.hv)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatNumber(measurement.testForceKgf, 3)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{measurement.calibrationName ?? '-'}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{qualified}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{format3(d1Um)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{format3(d2Um)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{format3(davgUm)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>
                     {measurement.depthMm !== null && measurement.depthMm !== undefined
                       ? formatDepth(measurement.depthMm)
-                      : (latchedDepth ?? '—')}
+                      : liveDepthText}
                   </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
                 </TableRow>

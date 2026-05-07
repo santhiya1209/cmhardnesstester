@@ -40,7 +40,7 @@ export const SetMachineControlSchema = z.object({
       break;
     case 'lightness': {
       const numeric = Number(text);
-      if (!Number.isInteger(numeric) || numeric < 0 || numeric > 9) {
+      if (!Number.isInteger(numeric) || numeric < 0 || numeric > 10) {
         ctx.addIssue({ code: 'custom', message: 'invalid lightness', path: ['value'] });
       }
       break;
@@ -64,3 +64,8 @@ export const SetMachineControlSchema = z.object({
   }
 });
 export type SetMachineControlInput = z.infer<typeof SetMachineControlSchema>;
+
+export const SendTurretSchema = z.object({
+  direction: z.enum(['left', 'front', 'right']),
+});
+export type SendTurretInput = z.infer<typeof SendTurretSchema>;

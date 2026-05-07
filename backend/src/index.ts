@@ -5,6 +5,7 @@ import { env, isProd } from './lib/env';
 import { errorHandler } from './lib/http';
 import { mutateDatabase } from './lib/db';
 import apiRouter from './routes';
+import { hardnessMachineSerialService } from './lib/services/hardness-machine-serial.service';
 
 async function clearMeasurementsOnStartup(): Promise<void> {
   await mutateDatabase((database) => ({
@@ -44,7 +45,7 @@ export interface StartResult {
 
 export function start(): Promise<StartResult> {
   return new Promise((resolve, reject) => {
-    clearMeasurementsOnStartup()
+    Promise.all([clearMeasurementsOnStartup(), hardnessMachineSerialService.ready()])
       .then(() => {
         const app = createApp();
         const server = app.listen(env.PORT, () => {

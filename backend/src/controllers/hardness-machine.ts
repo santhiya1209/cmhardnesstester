@@ -5,6 +5,7 @@ import {
 } from '../lib/services/hardness-machine-serial.service';
 import {
   ConnectMachineSchema,
+  SendTurretSchema,
   SetMachineControlSchema,
 } from '../zod/hardness-machine.schema';
 
@@ -14,6 +15,8 @@ export async function connectMachine(req: Request, res: Response): Promise<void>
     res.status(400).json({ error: 'ValidationError', details: parsed.error.flatten() });
     return;
   }
+  // eslint-disable-next-line no-console
+  console.log('[machine-ipc] connect', parsed.data);
   try {
     const state = await hardnessMachineSerialService.connectMachine(parsed.data);
     res.json({ ok: true, state });
@@ -43,6 +46,8 @@ export async function setMachineControlValue(req: Request, res: Response): Promi
     res.status(400).json({ error: 'ValidationError', details: parsed.error.flatten() });
     return;
   }
+  // eslint-disable-next-line no-console
+  console.log('[machine-ipc] set', parsed.data);
   try {
     const state = await hardnessMachineSerialService.setControlValue(
       parsed.data.key,
@@ -56,12 +61,43 @@ export async function setMachineControlValue(req: Request, res: Response): Promi
 }
 
 export async function startIndent(_req: Request, res: Response): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log('[machine-ipc] indent');
   try {
     const state = await hardnessMachineSerialService.startIndent();
     res.json({ ok: true, state });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ ok: false, error: 'IndentFailed', message });
+  }
+}
+
+export function confirmObjectivePhysical(_req: Request, res: Response): void {
+  // eslint-disable-next-line no-console
+  console.log('[machine-ipc] confirm-objective-physical');
+  try {
+    const state = hardnessMachineSerialService.confirmObjectivePhysical();
+    res.json({ ok: true, state });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, error: 'ConfirmFailed', message });
+  }
+}
+
+export async function sendTurret(req: Request, res: Response): Promise<void> {
+  const parsed = SendTurretSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.log('[machine-ipc] turret', parsed.data);
+  try {
+    const state = await hardnessMachineSerialService.sendTurret(parsed.data.direction);
+    res.json({ ok: true, state });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, error: 'TurretFailed', message });
   }
 }
 

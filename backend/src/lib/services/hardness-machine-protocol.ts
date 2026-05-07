@@ -1,28 +1,20 @@
 // Hardness machine RS232 protocol adapter.
 //
-// This module is a *framework* for the wire protocol. The actual command bytes
-// for each control (force/lightness/objective/loadTime/hardnessLevel/indent)
-// are NOT defined here — populate `COMMAND_MAP` from the official protocol
-// manual. Until the manual is provided, command builders return `null` and the
-// service refuses to transmit. This is intentional: sending guessed frames to
-// the indent motor or load cell could damage the machine.
+// Command bytes here were extracted from the managed .NET
+// Communication.dll used by the original tester software:
+// Labtt.Communication.MasterControl.CodeTranslator.
 //
-// What IS implemented (and ready to use the moment the manual lands):
-//   - Configurable frame format (`PROTOCOL_CONFIG`): start byte, end byte,
-//     checksum algorithm (none/XOR/CRC8), encoding (ascii/binary).
-//   - Generic `buildFrame()` that wraps a command + value into the configured
-//     framing with checksum.
-//   - Streaming parser `parseMachineMessage()` that extracts ONE complete
-//     frame from a rolling buffer and returns the remainder for the next call,
-//     so the service can call it in a loop until it returns `unknown`.
-//   - Frame-kind discrimination (state-update/ack/nak/indent-status).
+// Confirmed TX/RX shape:
+//   software force 0.5kgf maps to machine Load -> TX "UC08\r", RX echo/status "C08"
+//   objective 40X -> TX "UL2\r",  machine RX echo/status "L2OK"
+//   lightness 5   -> TX "UK0005\r", machine RX echo/status "K0005"
+//   load time 5   -> TX "UT05\r", machine RX echo/status "T05"
+//   indent        -> TX "UV{scale}{force*1000:D7}{loadTime:D6}{P|X}\r",
+//                    machine completion "FINISH"
+//   turret slot n -> TX "ULn\r",  machine RX echo/status "LnOK"
 //
-// To bring the machine online, fill in:
-//   1. PROTOCOL_CONFIG.startByte / endByte / checksum / encoding
-//   2. COMMAND_MAP entries (the `code` and `formatValue` per control)
-//   3. RESPONSE_PARSER body (decode kind + fields from the frame payload)
-//
-// Do NOT add speculative bytes to ship the feature. A loud TODO is correct.
+// Do not add speculative bytes. Keep commands verified=false until either the
+// DLL, protocol manual, or a direction-labelled serial capture confirms them.
 
 import { Buffer } from 'node:buffer';
 
@@ -33,7 +25,14 @@ export type MachineControlKey =
   | 'objective'
   | 'hardnessLevel';
 
-export type MachineCommandKey = MachineControlKey | 'indent';
+export type TurretDirection = 'left' | 'front' | 'right';
+
+export type MachineCommandKey =
+  | MachineControlKey
+  | 'indent'
+  | 'turretLeft'
+  | 'turretFront'
+  | 'turretRight';
 export type MachineCommandVerification = Record<MachineCommandKey, boolean>;
 
 export type ParsedMachineFrame =
@@ -42,6 +41,18 @@ export type ParsedMachineFrame =
       key: MachineControlKey;
       value: string | number;
     }
+  | {
+      kind: 'state-batch';
+      values: Partial<Record<MachineControlKey, string | number>>;
+      turretSlot?: string;
+      turretDirection?: TurretDirection;
+    }
+  | {
+      kind: 'turret-update';
+      slot: string;
+      direction?: TurretDirection;
+      objective?: string;
+    }
   | { kind: 'indent-status'; status: 'started' | 'running' | 'completed' | 'error'; message?: string }
   | { kind: 'ack' }
   | { kind: 'nak'; message?: string }
@@ -49,65 +60,38 @@ export type ParsedMachineFrame =
 
 export type FrameOrNull = Buffer | null;
 
-// ---------------------------------------------------------------------------
-// Protocol configuration — populate from the machine manual.
-// ---------------------------------------------------------------------------
-
 export type ChecksumMode = 'none' | 'xor' | 'crc8';
 export type FrameEncoding = 'ascii' | 'binary';
 
 export interface ProtocolConfig {
-  /** Frame start byte (e.g. 0x02 STX). null = no start byte. */
+  /** Frame start byte. null = no start byte. */
   startByte: number | null;
-  /** Frame end byte (e.g. 0x03 ETX, or 0x0D CR, or 0x0A LF). null = no end byte. */
+  /** Frame end byte. null = no end byte. */
   endByte: number | null;
-  /** Checksum algorithm applied to the payload (between start and end bytes). */
+  /** Checksum algorithm applied to the payload. */
   checksum: ChecksumMode;
   /** Whether the command code + value are encoded as ASCII text or raw bytes. */
   encoding: FrameEncoding;
 }
 
-// Temporary parser framing only. Command TX remains disabled until the official
-// machine manual confirms these framing bytes and the per-command codes below.
-//
-// Serial line settings (set by the caller in connectMachine, defaults match):
+// Serial line settings are selected by connectMachine:
 //   COM7, 9600 baud, 8 data bits, no parity, 1 stop bit.
 export const PROTOCOL_CONFIG: ProtocolConfig = {
-  startByte: 0x02, // STX
-  endByte: 0x03,   // ETX
-  checksum: 'xor',
+  startByte: null,
+  endByte: 0x0d,
+  checksum: 'none',
   encoding: 'ascii',
 };
 
-// ---------------------------------------------------------------------------
-// Command map — populate from the machine manual.
-// ---------------------------------------------------------------------------
-
 interface CommandMapEntry {
-  /** Command code as it appears on the wire (ASCII text or hex bytes). */
+  /** Command prefix as it appears on the wire. */
   code: string;
-  /** Convert the high-level value (e.g. "0.5kgf", "10X", 5) into wire form. */
-  formatValue(value: string | number): string;
-  /**
-   * Set to TRUE only after the `code` has been verified against the official
-   * machine manual. While `false`, buildFromMap() refuses to transmit — this
-   * is the safety net that prevents speculative bytes from reaching the
-   * indent motor or load cell.
-   */
+  /** Convert the high-level value into wire form. null means not verified. */
+  formatValue(value: string | number): string | null;
+  /** False means buildFromMap() refuses to transmit. */
   verified: boolean;
 }
 
-// Placeholder command map. EVERY entry is marked `verified: false` until the
-// real RS232 manual confirms the wire codes. While unverified, buildFromMap()
-// returns null and the service does NOT transmit. Once you have the manual:
-//   1. Replace each `code: '__TODO__'` with the real command string/byte.
-//   2. Adjust `formatValue` if the wire form differs from what the manual
-//      specifies (e.g. force as "050" vs "0.5", objective as "10" vs "10X").
-//   3. Flip `verified: true` for that entry.
-//
-// Helpers for value formatting are intentionally conservative — they strip
-// the human-facing unit suffix where common, but the actual wire format MUST
-// be confirmed from the manual.
 const COMMAND_KEYS: MachineCommandKey[] = [
   'force',
   'lightness',
@@ -115,52 +99,128 @@ const COMMAND_KEYS: MachineCommandKey[] = [
   'objective',
   'hardnessLevel',
   'indent',
+  'turretLeft',
+  'turretFront',
+  'turretRight',
 ];
 
-const COMMAND_MAP: Partial<Record<MachineCommandKey, CommandMapEntry>> = {
-  // TODO(protocol): real code from manual, then `verified: true`.
-  force: {
-    code: '__TODO__',
-    formatValue: (v) => String(v).replace(/kgf$/i, '').trim(),
-    verified: false,
-  },
-  // TODO(protocol)
-  lightness: {
-    code: '__TODO__',
-    formatValue: (v) => String(Number(v) || 0),
-    verified: false,
-  },
-  // TODO(protocol)
-  loadTime: {
-    code: '__TODO__',
-    formatValue: (v) => String(Number(v) || 0),
-    verified: false,
-  },
-  // TODO(protocol)
-  objective: {
-    code: '__TODO__',
-    formatValue: (v) => String(v).toUpperCase().trim(),
-    verified: false,
-  },
-  // TODO(protocol)
-  hardnessLevel: {
-    code: '__TODO__',
-    formatValue: (v) => String(v).trim(),
-    verified: false,
-  },
-  // TODO(protocol): indent triggers physical motion. NEVER flip verified=true
-  // until the indent command bytes have been confirmed from the manual AND
-  // tested with the load cell on a sacrificial sample.
-  indent: {
-    code: '__TODO__',
-    formatValue: () => '',
-    verified: false,
-  },
+const TURRET_COMMAND_KEY: Record<TurretDirection, MachineCommandKey> = {
+  left: 'turretLeft',
+  front: 'turretFront',
+  right: 'turretRight',
 };
 
-// ---------------------------------------------------------------------------
-// Checksum utilities.
-// ---------------------------------------------------------------------------
+const TURRET_SLOT_BY_DIRECTION: Record<TurretDirection, string> = {
+  left: '1',
+  front: '2',
+  right: '3',
+};
+
+const TURRET_DIRECTION_BY_SLOT: Record<string, TurretDirection> = Object.fromEntries(
+  Object.entries(TURRET_SLOT_BY_DIRECTION).map(([direction, slot]) => [slot, direction])
+) as Record<string, TurretDirection>;
+
+const FORCE_SCALE_CODE_BY_VALUE: Record<string, string> = {
+  '0.01kgf': '00',
+  '0.025kgf': '03',
+  '0.05kgf': '04',
+  '0.1kgf': '05',
+  '0.2kgf': '06',
+  '0.3kgf': '07',
+  '0.5kgf': '08',
+  '1kgf': '09',
+};
+
+const FORCE_REAL_CODE_BY_VALUE: Record<string, string> = {
+  '0.01kgf': '0000010',
+  '0.025kgf': '0000025',
+  '0.05kgf': '0000050',
+  '0.1kgf': '0000100',
+  '0.2kgf': '0000200',
+  '0.3kgf': '0000300',
+  '0.5kgf': '0000500',
+  '1kgf': '0001000',
+};
+
+const FORCE_VALUE_BY_SCALE_CODE: Record<string, string> = Object.fromEntries(
+  Object.entries(FORCE_SCALE_CODE_BY_VALUE).map(([value, code]) => [code, value])
+);
+
+// Current connected tester mapping confirmed from live RX captures:
+//   L1OK -> 10X, L2OK -> 40X. The DLL confirms UL<n>\r as the turret TX
+// shape, but objective-per-turret is machine configuration, so do not add
+// L3/20X/other values until captured from this machine.
+const OBJECTIVE_TURRET_CODE_BY_VALUE: Record<string, string> = {
+  '10X': '1',
+  '40X': '2',
+};
+
+const OBJECTIVE_VALUE_BY_TURRET_CODE: Record<string, string> = Object.fromEntries(
+  Object.entries(OBJECTIVE_TURRET_CODE_BY_VALUE).map(([value, code]) => [code, value])
+);
+
+function padInteger(value: string | number, width: number): string | null {
+  const numeric = Number(String(value).trim());
+  if (!Number.isInteger(numeric) || numeric < 0) return null;
+  return String(numeric).padStart(width, '0').slice(-width);
+}
+
+const COMMAND_MAP: Partial<Record<MachineCommandKey, CommandMapEntry>> = {
+  force: {
+    code: 'UC',
+    formatValue: (v) => FORCE_SCALE_CODE_BY_VALUE[String(v).trim()] ?? null,
+    verified: true,
+  },
+  lightness: {
+    code: 'UK',
+    formatValue: (v) => padInteger(v, 4),
+    verified: true,
+  },
+  loadTime: {
+    code: 'UT',
+    formatValue: (v) => padInteger(v, 2),
+    verified: true,
+  },
+  objective: {
+    code: 'UL',
+    formatValue: (v) => OBJECTIVE_TURRET_CODE_BY_VALUE[String(v).toUpperCase().trim()] ?? null,
+    verified: true,
+  },
+  // No hardness-level command was found in Communication.dll.
+  hardnessLevel: {
+    code: '__TODO__',
+    formatValue: () => null,
+    verified: false,
+  },
+  // Communication.dll EncodeImpressCode emits the UV frame used by the original
+  // tester software. X means turret-after-impress, matching HV config.
+  indent: {
+    code: 'UV',
+    formatValue: () => null,
+    verified: true,
+  },
+  // Turret buttons in the old software are direction labels bound to configured
+  // turret slots. Communication.dll EncodeTurretCode(TurretInfo) emits UL<n>\r
+  // and ignores the direction enum after the UI has selected the TurretInfo:
+  //   Left slot 1 -> UL1\r
+  //   Front/down arrow slot 2 -> UL2\r
+  //   Right slot 3 -> UL3\r
+  turretLeft: {
+    code: 'UL',
+    formatValue: () => TURRET_SLOT_BY_DIRECTION.left,
+    verified: true,
+  },
+  turretFront: {
+    code: 'UL',
+    formatValue: () => TURRET_SLOT_BY_DIRECTION.front,
+    verified: true,
+  },
+  turretRight: {
+    code: 'UL',
+    formatValue: () => TURRET_SLOT_BY_DIRECTION.right,
+    verified: true,
+  },
+};
 
 export function xorChecksum(payload: Buffer): number {
   let acc = 0;
@@ -201,20 +261,11 @@ export function verifyChecksum(payload: Buffer, expected: number, mode: Checksum
   }
 }
 
-// ---------------------------------------------------------------------------
-// Frame builder.
-// ---------------------------------------------------------------------------
-
 interface BuildFrameInput {
   command: string;
   value?: string;
 }
 
-/**
- * Wraps `<command><value>` in the configured framing + checksum. Returns null
- * if the protocol is not yet configured (i.e. nothing in COMMAND_MAP can call
- * this).
- */
 export function buildFrame(input: BuildFrameInput, config: ProtocolConfig = PROTOCOL_CONFIG): Buffer {
   const text = input.command + (input.value ?? '');
   const payload =
@@ -252,21 +303,22 @@ function buildFromMap(key: MachineCommandKey, value: string | number | null): Fr
   const entry = COMMAND_MAP[key];
   if (!entry) {
     // eslint-disable-next-line no-console
-    console.warn(
-      `[machine-protocol] no command map entry for "${key}" — refusing to transmit (TODO: populate COMMAND_MAP from machine manual)`
-    );
+    console.warn(`[machine-protocol] no command map entry for "${key}" - refusing to transmit`);
     return null;
   }
   if (!entry.verified || entry.code === '__TODO__') {
-    // Safety gate: never transmit speculative bytes to the machine. Flip
-    // `verified: true` in COMMAND_MAP once the code is confirmed.
     // eslint-disable-next-line no-console
-    console.warn(
-      `[machine-protocol] command "${key}" is not verified yet — refusing to transmit (TODO: confirm code from manual then flip verified=true)`
-    );
+    console.warn(`[machine-protocol] command "${key}" is not verified yet - refusing to transmit`);
     return null;
   }
   const formatted = value === null ? '' : entry.formatValue(value);
+  if (formatted === null) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[machine-protocol] command "${key}" has no verified encoding for value "${value}" - refusing to transmit`
+    );
+    return null;
+  }
   return buildFrame({ command: entry.code, value: formatted });
 }
 
@@ -295,10 +347,52 @@ export function buildSetHardnessLevelCommand(value: string | number): FrameOrNul
   return buildFromMap('hardnessLevel', value);
 }
 
-export function buildStartIndentCommand(): FrameOrNull {
-  logBuild('startIndent', null);
-  // Indent triggers physical motion. If the map entry is missing, refuse hard.
-  return buildFromMap('indent', null);
+export function buildStartIndentCommand(
+  force: string | number,
+  loadTime: string | number,
+  turretAfterImpress = true
+): FrameOrNull {
+  logBuild('startIndent', { force, loadTime, turretAfterImpress });
+  if (!isCommandVerified('indent')) return null;
+  const forceValue = String(force).trim();
+  const scaleCode = FORCE_SCALE_CODE_BY_VALUE[forceValue];
+  const forceCode = FORCE_REAL_CODE_BY_VALUE[forceValue];
+  const loadTimeCode = padInteger(loadTime, 6);
+  if (!scaleCode || !forceCode || !loadTimeCode) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[machine-protocol] command "indent" has no verified encoding for force="${force}" loadTime="${loadTime}"`
+    );
+    return null;
+  }
+  return buildFrame({
+    command: 'UV',
+    value: `${scaleCode}${forceCode}${loadTimeCode}${turretAfterImpress ? 'X' : 'P'}`,
+  });
+}
+
+export function buildTurretCommand(direction: TurretDirection): FrameOrNull {
+  logBuild('turret', direction);
+  // Pass `direction` as the value so the entry's formatValue() actually runs
+  // (buildFromMap short-circuits to '' when value is null). The turret entries
+  // ignore the argument and emit the verified UL<n> digit themselves.
+  return buildFromMap(TURRET_COMMAND_KEY[direction], direction);
+}
+
+export function getTurretCommandKey(direction: TurretDirection): MachineCommandKey {
+  return TURRET_COMMAND_KEY[direction];
+}
+
+export function getTurretSlotForDirection(direction: TurretDirection): string {
+  return TURRET_SLOT_BY_DIRECTION[direction];
+}
+
+export function getTurretDirectionForSlot(slot: string): TurretDirection | undefined {
+  return TURRET_DIRECTION_BY_SLOT[slot];
+}
+
+export function getObjectiveForTurretSlot(slot: string): string | undefined {
+  return OBJECTIVE_VALUE_BY_TURRET_CODE[slot];
 }
 
 export function buildCommandForKey(key: MachineControlKey, value: string | number): FrameOrNull {
@@ -320,12 +414,8 @@ export function buildCommandForKey(key: MachineControlKey, value: string | numbe
   }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming parser.
-// ---------------------------------------------------------------------------
-
 export interface ParseResult {
-  /** The decoded frame (or 'unknown' if no complete frame is available yet). */
+  /** The decoded frame, or unknown if no complete frame is available yet. */
   frame: ParsedMachineFrame;
   /** Bytes consumed from the front of the input buffer. */
   consumed: number;
@@ -339,38 +429,84 @@ function isLikelyAsciiLineChunk(buffer: Buffer): boolean {
   return true;
 }
 
+function findAsciiLineEnd(buffer: Buffer): { index: number; consumed: number } | null {
+  const cr = buffer.indexOf(0x0d);
+  const lf = buffer.indexOf(0x0a);
+  if (cr < 0 && lf < 0) return null;
+  if (cr >= 0 && (lf < 0 || cr < lf)) {
+    return { index: cr, consumed: buffer[cr + 1] === 0x0a ? cr + 2 : cr + 1 };
+  }
+  return { index: lf, consumed: lf + 1 };
+}
+
 function parseAsciiLine(line: Buffer): ParsedMachineFrame {
   const payload = line.toString('ascii').replace(/\r$/, '');
   return classifyFrame(Buffer.from(payload, 'ascii'), payload);
 }
 
-/**
- * Try to extract ONE complete frame from the front of `buffer`. Returns the
- * decoded frame plus the number of bytes consumed. The caller is responsible
- * for slicing `buffer` and calling again to drain multiple frames per chunk.
- */
+function fixedAsciiFrameLength(text: string): number {
+  if (text.startsWith('FINISH')) return 'FINISH'.length;
+  if (text.startsWith('ACK')) return 'ACK'.length;
+  if (text.startsWith('NAK')) return 'NAK'.length;
+  if (text.startsWith('OK')) return 'OK'.length;
+
+  const forceWithOk = /^C\d{2}OK/.exec(text);
+  if (forceWithOk) return forceWithOk[0].length;
+  const force = /^C\d{2}/.exec(text);
+  if (force) return force[0].length;
+
+  const loadTime = /^T\d{2}/.exec(text);
+  if (loadTime) return loadTime[0].length;
+
+  const lightness = /^K\d{4}/.exec(text);
+  if (lightness) return lightness[0].length;
+
+  const turret = /^L\dOK/.exec(text);
+  if (turret) return turret[0].length;
+
+  if (text.startsWith('AV')) {
+    for (const length of [16, 14, 12]) {
+      const candidate = text.slice(0, length);
+      if (/^AV\d{2}T\d{2}K\d{4}(?:L\d(?:OK)?)?$/.test(candidate)) {
+        return length;
+      }
+    }
+  }
+
+  return 0;
+}
+
+function tryParseFixedAsciiFrame(buffer: Buffer): ParseResult | null {
+  if (!isLikelyAsciiLineChunk(buffer)) return null;
+  const text = buffer.toString('ascii');
+  const length = fixedAsciiFrameLength(text);
+  if (length === 0 || buffer.length < length) return null;
+  const payload = buffer.slice(0, length);
+  return { frame: classifyFrame(payload, payload.toString('ascii')), consumed: length };
+}
+
 export function tryParseOneFrame(buffer: Buffer, config: ProtocolConfig = PROTOCOL_CONFIG): ParseResult {
   if (buffer.length === 0) {
     return { frame: { kind: 'unknown', raw: buffer }, consumed: 0 };
+  }
+
+  if (isLikelyAsciiLineChunk(buffer)) {
+    const lineEnd = findAsciiLineEnd(buffer);
+    if (lineEnd) {
+      const line = buffer.slice(0, lineEnd.index);
+      return { frame: parseAsciiLine(line), consumed: lineEnd.consumed };
+    }
+    const fixedFrame = tryParseFixedAsciiFrame(buffer);
+    if (fixedFrame) return fixedFrame;
+    if (buffer.length < 256) {
+      return { frame: { kind: 'unknown', raw: buffer.slice(0, 0) }, consumed: 0 };
+    }
   }
 
   let start = 0;
   if (config.startByte !== null) {
     const idx = buffer.indexOf(config.startByte);
     if (idx < 0) {
-      // The observed machine traffic is ASCII line-oriented (`...\n`) and can
-      // arrive split across serial chunks. Log full newline-terminated frames
-      // for reverse engineering, but do not map values until the manual or
-      // controlled captures verify the meaning of each code.
-      const lineEnd = buffer.indexOf(0x0a);
-      if (lineEnd >= 0) {
-        const line = buffer.slice(0, lineEnd);
-        return { frame: parseAsciiLine(line), consumed: lineEnd + 1 };
-      }
-      if (isLikelyAsciiLineChunk(buffer) && buffer.length < 256) {
-        return { frame: { kind: 'unknown', raw: buffer.slice(0, 0) }, consumed: 0 };
-      }
-      // No recognizable framing — drop everything; protect against infinite buffering.
       return { frame: { kind: 'unknown', raw: buffer }, consumed: buffer.length };
     }
     start = idx + 1;
@@ -380,11 +516,9 @@ export function tryParseOneFrame(buffer: Buffer, config: ProtocolConfig = PROTOC
   if (config.endByte !== null) {
     end = buffer.indexOf(config.endByte, start);
     if (end < 0) {
-      // Wait for more data.
       return { frame: { kind: 'unknown', raw: buffer.slice(0, 0) }, consumed: 0 };
     }
   } else {
-    // No end delimiter — caller must give us a complete frame.
     end = buffer.length;
   }
 
@@ -408,52 +542,57 @@ export function tryParseOneFrame(buffer: Buffer, config: ProtocolConfig = PROTOC
   return { frame: classifyFrame(payload, text), consumed };
 }
 
-/**
- * Map the decoded payload to a high-level frame kind. Until the protocol is
- * confirmed this returns `unknown` for everything that doesn't look obviously
- * like an ACK/NAK byte. Replace the body with the real decoding rules.
- */
 function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
   if (payload.length === 0) return { kind: 'unknown', raw: payload };
   // eslint-disable-next-line no-console
   console.log(`[machine-protocol] rx text=${JSON.stringify(text)} hex=${payload.toString('hex')}`);
 
-  // Common terse responses many machines use. Safe to recognize because they
-  // are universal and don't trigger any motion.
-  if (text === 'ACK' || payload[0] === 0x06 /* ACK */) return { kind: 'ack' };
-  if (text === 'NAK' || payload[0] === 0x15 /* NAK */) return { kind: 'nak' };
+  if (text === 'OK' || text === 'ACK' || payload[0] === 0x06) return { kind: 'ack' };
+  if (text === 'NAK' || payload[0] === 0x15) return { kind: 'nak' };
+  if (text === 'FINISH') return { kind: 'indent-status', status: 'completed' };
 
-  const objectiveMatch = /^L([12])OK$/.exec(text);
+  const statusMatch = /^AV(\d{2})T(\d{2})K(\d{4})(?:L(\d)(?:OK)?)?$/.exec(text);
+  if (statusMatch) {
+    const values: Partial<Record<MachineControlKey, string | number>> = {};
+    const force = FORCE_VALUE_BY_SCALE_CODE[statusMatch[1]];
+    if (force) values.force = force;
+    const loadTime = Number(statusMatch[2]);
+    if (loadTime >= 1 && loadTime <= 99) values.loadTime = loadTime;
+    const lightness = Number(statusMatch[3]);
+    if (lightness >= 0 && lightness <= 10) values.lightness = lightness;
+    const objectiveCode = statusMatch[4];
+    const turretDirection = objectiveCode ? getTurretDirectionForSlot(objectiveCode) : undefined;
+    if (objectiveCode) {
+      const objective = OBJECTIVE_VALUE_BY_TURRET_CODE[objectiveCode];
+      if (objective) values.objective = objective;
+    }
+    return Object.keys(values).length > 0 || objectiveCode
+      ? { kind: 'state-batch', values, turretSlot: objectiveCode, turretDirection }
+      : { kind: 'unknown', raw: payload };
+  }
+
+  const objectiveMatch = /^L(\d)OK$/.exec(text);
   if (objectiveMatch) {
-    // Observed receive-only objective mapping from controlled machine-panel
-    // tests: physical 10X emits `L1OK\n`; physical 40X emits `L2OK\n`.
-    // `L3OK` is intentionally left unknown because it appears in other flows.
+    const slot = objectiveMatch[1];
     return {
-      kind: 'state-update',
-      key: 'objective',
-      value: objectiveMatch[1] === '1' ? '10X' : '40X',
+      kind: 'turret-update',
+      slot,
+      direction: getTurretDirectionForSlot(slot),
+      objective: OBJECTIVE_VALUE_BY_TURRET_CODE[slot],
     };
   }
 
-  const forceMap: Record<string, string> = {
-    C00: '0.01kgf',
-    C03: '0.025kgf',
-    C04: '0.05kgf',
-    C05: '0.1kgf',
-    C06: '0.2kgf',
-    C07: '0.3kgf',
-    C08: '0.5kgf',
-    C09: '1kgf',
-  };
-  if (text in forceMap) {
-    // Observed receive-only force mapping from controlled physical-panel tests.
-    return { kind: 'state-update', key: 'force', value: forceMap[text] };
+  const forceMatch = /^C(\d{2})(?:OK)?$/.exec(text);
+  if (forceMatch) {
+    const force = FORCE_VALUE_BY_SCALE_CODE[forceMatch[1]];
+    if (force) {
+      return { kind: 'state-update', key: 'force', value: force };
+    }
+    return { kind: 'unknown', raw: payload };
   }
 
   const loadTimeMatch = /^T(\d{2})$/.exec(text);
   if (loadTimeMatch) {
-    // Observed receive-only load-time mapping: physical values 5/10/15 seconds
-    // emit `T05\n`, `T10\n`, `T15\n`.
     const loadTime = Number(loadTimeMatch[1]);
     if (loadTime >= 1 && loadTime <= 99) {
       return { kind: 'state-update', key: 'loadTime', value: loadTime };
@@ -463,27 +602,16 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
 
   const lightnessMatch = /^K(\d{4})$/.exec(text);
   if (lightnessMatch) {
-    // Observed receive-only mapping from the connected tester: when the
-    // physical display Lightness is 2, the machine emits `K0002\n`.
-    // This parser only updates PC state from real RX bytes; it does not enable
-    // any PC-to-machine write command.
     const lightness = Number(lightnessMatch[1]);
-    if (lightness >= 0 && lightness <= 9) {
+    if (lightness >= 0 && lightness <= 10) {
       return { kind: 'state-update', key: 'lightness', value: lightness };
     }
     return { kind: 'unknown', raw: payload };
   }
 
-  // TODO(protocol): decode state-update + indent-status from `text`/`payload`
-  // once the manual is in hand. Until then, surface as 'unknown' so the
-  // service logs but does not mutate state from a guess.
   return { kind: 'unknown', raw: payload };
 }
 
-/**
- * Back-compat: parse a single buffer, returning just the frame. Prefer
- * `tryParseOneFrame` for streaming.
- */
 export function parseMachineMessage(buffer: Buffer): ParsedMachineFrame {
   const { frame } = tryParseOneFrame(buffer);
   // eslint-disable-next-line no-console

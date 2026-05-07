@@ -208,11 +208,15 @@ function AutoMeasureOverlayImpl({
       const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}`;
 
       if (!sizeChanged && lastDrawKeyRef.current === drawKey) {
-        // eslint-disable-next-line no-console
-        console.log('[overlay] skipped-redraw-no-change');
         return;
       }
       lastDrawKeyRef.current = drawKey;
+      if (corners) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay] draw-start points=top(${corners.top.x.toFixed(1)},${corners.top.y.toFixed(1)}) right(${corners.right.x.toFixed(1)},${corners.right.y.toFixed(1)}) bottom(${corners.bottom.x.toFixed(1)},${corners.bottom.y.toFixed(1)}) left(${corners.left.x.toFixed(1)},${corners.left.y.toFixed(1)})`
+        );
+      }
 
       if (sizeChanged) {
         canvas.width = targetW;
@@ -224,9 +228,6 @@ function AutoMeasureOverlayImpl({
       if (!corners || !imageSize) return;
       const placement = getImagePlacement(width, height, imageSize);
       if (!placement) return;
-
-      // eslint-disable-next-line no-console
-      console.log(`[overlay] draw-start source=${source}`);
 
       const top = imageToDisplay(corners.top, placement);
       const right = imageToDisplay(corners.right, placement);
@@ -273,8 +274,6 @@ function AutoMeasureOverlayImpl({
         y: (top.y + bottom.y) / 2,
       });
 
-      // eslint-disable-next-line no-console
-      console.log('[overlay] draw-complete lines=2 points=4');
     });
   }, [corners, hover, imageSize, source]);
 

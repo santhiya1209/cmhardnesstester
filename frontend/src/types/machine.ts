@@ -7,7 +7,15 @@ export type MachineControlKey =
   | 'objective'
   | 'hardnessLevel';
 
-export type MachineCommandKey = MachineControlKey | 'indent';
+export type TurretDirection = 'left' | 'front' | 'right';
+export type MachineTurretPosition = TurretDirection | 'unknown';
+
+export type MachineCommandKey =
+  | MachineControlKey
+  | 'indent'
+  | 'turretLeft'
+  | 'turretFront'
+  | 'turretRight';
 export type MachineCommandVerification = Record<MachineCommandKey, boolean>;
 export type MachineSyncStatus = 'synced' | 'pending' | 'failed';
 
@@ -24,17 +32,29 @@ export interface MachineState {
   loadTime: string | number;
   objective: string;
   hardnessLevel: string;
+  turretPosition?: MachineTurretPosition;
+  turret?: MachineTurretPosition;
+  indenting?: boolean;
+  machineStatus?: string;
   indentStatus: IndentStatus;
   commandVerification?: MachineCommandVerification;
   lastRxAt?: string;
+  lastRx?: string;
+  lastRxTime?: string;
   lastRxFrame?: SerialFrameLog;
   lastTxAt?: string;
+  lastTx?: string;
   lastTxCommand?: string;
   syncStatus?: MachineSyncStatus;
   syncMessage?: string;
   lastUpdatedBy: 'pc' | 'machine' | 'system';
+  lastUpdateSource?: 'pc' | 'machine' | 'system';
   lastError?: string;
   updatedAt: string;
+  lastObjectiveTx?: string;
+  lastObjectiveRx?: string;
+  confirmedObjectiveFromMachine?: string;
+  lastObjectivePhysicalCheck?: 'unknown' | 'manual';
 }
 
 export interface ConnectMachineRequest {

@@ -52,6 +52,9 @@ async function createWindow() {
   });
 
   const targetUrl = isDev ? DEV_URL : await startEmbeddedBackend();
+  if (!isDev) {
+    process.env.MACHINE_BACKEND_URL = targetUrl;
+  }
   // Vite/dev server can briefly refuse connections right after wait-on returns.
   // Retry a few times so we don't crash the renderer in the dev race window.
   for (let attempt = 1; attempt <= 8; attempt++) {

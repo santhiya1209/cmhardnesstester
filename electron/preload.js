@@ -23,6 +23,14 @@ const ALLOWED_INVOKE = new Set([
   'micrometer:close',
   'micrometer:get-state',
   'micrometer:get-latest-reading',
+  'machine:get-state',
+  'machine:set-objective',
+  'machine:set-force',
+  'machine:set-lightness',
+  'machine:set-load-time',
+  'machine:set-hardness-level',
+  'machine:start-indent',
+  'machine:move-turret',
   'app:exit',
 ]);
 
@@ -31,6 +39,7 @@ const ALLOWED_EVENTS = new Set([
   'camera:frame',
   'camera:status',
   'micrometer:state',
+  'machine:state',
 ]);
 
 contextBridge.exposeInMainWorld('api', {
@@ -66,4 +75,45 @@ contextBridge.exposeInMainWorld('hardnessCamera', {
   getGainRange: () => ipcRenderer.invoke('camera:get-gain-range'),
   openDevice: (payload) => ipcRenderer.invoke('device:open', payload || {}),
   closeDevice: () => ipcRenderer.invoke('device:close'),
+});
+
+contextBridge.exposeInMainWorld('machineControl', {
+  getState: () => ipcRenderer.invoke('machine:get-state'),
+  subscribeState: (listener) => {
+    const wrapped = (_event, state) => listener(state);
+    ipcRenderer.on('machine:state', wrapped);
+    void ipcRenderer
+      .invoke('machine:get-state')
+      .then((reply) => {
+        if (reply && reply.state) listener(reply.state);
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[machine-ipc] initial state failed:', err && err.message ? err.message : err);
+      });
+    return () => ipcRenderer.removeListener('machine:state', wrapped);
+  },
+  setObjective: (value) => ipcRenderer.invoke('machine:set-objective', { value }),
+  setForce: (value) => ipcRenderer.invoke('machine:set-force', { value }),
+  setLightness: (value) => ipcRenderer.invoke('machine:set-lightness', { value }),
+  setLoadTime: (value) => ipcRenderer.invoke('machine:set-load-time', { value }),
+  setHardnessLevel: (value) => ipcRenderer.invoke('machine:set-hardness-level', { value }),
+  setValue: (key, value) => {
+    switch (key) {
+      case 'objective':
+        return ipcRenderer.invoke('machine:set-objective', { value });
+      case 'force':
+        return ipcRenderer.invoke('machine:set-force', { value });
+      case 'lightness':
+        return ipcRenderer.invoke('machine:set-lightness', { value });
+      case 'loadTime':
+        return ipcRenderer.invoke('machine:set-load-time', { value });
+      case 'hardnessLevel':
+        return ipcRenderer.invoke('machine:set-hardness-level', { value });
+      default:
+        return Promise.reject(new Error(`Unsupported machine field: ${key}`));
+    }
+  },
+  startIndent: () => ipcRenderer.invoke('machine:start-indent'),
+  moveTurret: (direction) => ipcRenderer.invoke('machine:move-turret', { direction }),
 });

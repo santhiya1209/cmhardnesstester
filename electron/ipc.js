@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs/promises');
+const { TextDecoder } = require('node:util');
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { cameraService } = require('./cameraService');
 const { micrometerService } = require('./micrometerService');
@@ -100,6 +101,104 @@ function validateAutoMeasurePayload(payload) {
   return out;
 }
 
+function getMachineBackendUrl() {
+  const url =
+    process.env.MACHINE_BACKEND_URL ||
+    process.env.VITE_API_PROXY_TARGET ||
+    process.env.BACKEND_URL ||
+    `http://localhost:${process.env.PORT || 4000}`;
+  return url.replace(/\/+$/, '');
+}
+
+function validateMachineValuePayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('machine value payload must be an object');
+  }
+  const value = payload.value;
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new Error('machine value must be a string or number');
+  }
+  return value;
+}
+
+function validateTurretPayload(payload) {
+  const direction = payload && typeof payload.direction === 'string' ? payload.direction : '';
+  if (!['left', 'front', 'right'].includes(direction)) {
+    throw new Error('invalid turret direction');
+  }
+  return direction;
+}
+
+async function machineBackendRequest(pathname, options = {}) {
+  const response = await fetch(`${getMachineBackendUrl()}${pathname}`, {
+    method: options.method || 'GET',
+    headers: options.body ? { 'content-type': 'application/json' } : undefined,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok && data && typeof data === 'object') {
+    return { ok: false, state: data.state, error: data.error, message: data.message };
+  }
+  return data;
+}
+
+let machineEventBridgeStarted = false;
+
+function broadcastMachineState(state) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('machine:state', state);
+    }
+  }
+}
+
+function startMachineEventBridge() {
+  if (machineEventBridgeStarted) return;
+  machineEventBridgeStarted = true;
+  const decoder = new TextDecoder();
+
+  const loop = async () => {
+    while (!app.isQuitting) {
+      try {
+        const response = await fetch(`${getMachineBackendUrl()}/api/machine/events`);
+        if (!response.ok || !response.body) {
+          throw new Error(`machine event stream failed: ${response.status}`);
+        }
+        // eslint-disable-next-line no-console
+        console.log('[machine-ipc] event bridge connected');
+        const reader = response.body.getReader();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let marker = buffer.indexOf('\n\n');
+          while (marker >= 0) {
+            const block = buffer.slice(0, marker);
+            buffer = buffer.slice(marker + 2);
+            const dataLine = block
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('data: '));
+            if (dataLine) {
+              const state = JSON.parse(dataLine.slice(6));
+              broadcastMachineState(state);
+            }
+            marker = buffer.indexOf('\n\n');
+          }
+        }
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn('[machine-ipc] event bridge retry:', message);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  };
+
+  void loop();
+}
+
 function registerIpc() {
   ipcMain.handle('app:getInfo', () => ({
     name: app.getName(),
@@ -197,6 +296,49 @@ function registerIpc() {
     ok: true,
     reading: micrometerService.getLatestReading(),
   }));
+
+  /* ------------------ machine RS232 channels ------------------ */
+  ipcMain.handle('machine:get-state', async () => {
+    startMachineEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[machine-ipc] get-state');
+    return machineBackendRequest('/api/machine/state');
+  });
+
+  const setMachineValue = (key) => async (_e, payload) => {
+    startMachineEventBridge();
+    const value = validateMachineValuePayload(payload);
+    // eslint-disable-next-line no-console
+    console.log('[machine-ipc] set', { key, value });
+    return machineBackendRequest('/api/machine/set', {
+      method: 'POST',
+      body: { key, value },
+    });
+  };
+
+  ipcMain.handle('machine:set-objective', setMachineValue('objective'));
+  ipcMain.handle('machine:set-force', setMachineValue('force'));
+  ipcMain.handle('machine:set-lightness', setMachineValue('lightness'));
+  ipcMain.handle('machine:set-load-time', setMachineValue('loadTime'));
+  ipcMain.handle('machine:set-hardness-level', setMachineValue('hardnessLevel'));
+
+  ipcMain.handle('machine:start-indent', async () => {
+    startMachineEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[machine-ipc] start-indent');
+    return machineBackendRequest('/api/machine/indent', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('machine:move-turret', async (_e, payload) => {
+    startMachineEventBridge();
+    const direction = validateTurretPayload(payload);
+    // eslint-disable-next-line no-console
+    console.log('[machine-ipc] move-turret', { direction });
+    return machineBackendRequest('/api/machine/turret', {
+      method: 'POST',
+      body: { direction },
+    });
+  });
 
   /* ------------------ device channels ------------------ */
   // "Open Device" — opens camera, starts stream, and opens the micrometer

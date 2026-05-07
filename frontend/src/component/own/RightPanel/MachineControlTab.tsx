@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -11,10 +11,14 @@ import FormControl from '@mui/material/FormControl';
 import Divider from '@mui/material/Divider';
 import Stack from '@mui/material/Stack';
 import type { SxProps, Theme } from '@mui/material/styles';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useMachineState } from '@/hooks/queries/useMachineState';
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
-import type { IndentStatus, MachineControlKey, MachineState } from '@/types/machine';
+import { useTurret } from '@/hooks/mutations/useTurret';
+import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
 
 type MachineControlTabProps = {
   /** Called after the backend accepts a 10X / 40X lens change. */
@@ -24,7 +28,7 @@ type MachineControlTabProps = {
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
 const OBJECTIVE_OPTIONS = ['2.5X', '5X', '10X', '20X', '40X', '50X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
-const LIGHTNESS_INPUT_PROPS = { min: 0, max: 9, step: 1 } as const;
+const LIGHTNESS_INPUT_PROPS = { min: 0, max: 10, step: 1 } as const;
 const LOAD_TIME_INPUT_PROPS = { min: 1, max: 99, step: 1 } as const;
 
 type FormState = {
@@ -45,33 +49,27 @@ const DEFAULT_FORM_STATE: FormState = {
 
 const INDENTER_SECTION_SX: SxProps<Theme> = {
   display: 'grid',
-  gridTemplateColumns: '160px 1fr',
-  gap: 1.5,
+  gridTemplateColumns: '200px auto auto',
+  gap: 2,
   px: 1.5,
   py: 1.5,
   alignItems: 'center',
 };
 const INDENT_BUTTON_SX: SxProps<Theme> = {
-  width: 160,
-  height: 90,
+  width: 200,
+  height: 64,
   textTransform: 'none',
   fontSize: 14,
   fontWeight: 500,
 };
-const INDENTER_RIGHT_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', gap: 1 };
-const ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1 };
-const FIELD_LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary', width: 100, flexShrink: 0 };
-const READONLY_VALUE_SX: SxProps<Theme> = {
-  px: 1,
-  py: 0.5,
-  fontSize: 12,
-  border: 1,
-  borderColor: 'divider',
+const TURRET_LABEL_SX: SxProps<Theme> = { fontSize: 14, color: 'text.secondary', px: 2 };
+const TURRET_BUTTON_SX: SxProps<Theme> = {
+  minWidth: 0,
+  width: 56,
+  height: 44,
+  p: 0,
   borderRadius: 0.5,
-  minWidth: 64,
-  textAlign: 'center',
 };
-const LENS_BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, minWidth: 56, py: 0.25 };
 const SETTINGS_GRID_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'auto 1fr auto 1fr',
@@ -118,17 +116,17 @@ function machineToForm(state: MachineState | null): FormState {
 function indentLabel(status: IndentStatus): string {
   switch (status) {
     case 'idle':
-      return 'Indent';
+      return 'Impress';
     case 'started':
-      return 'Indent (starting)';
+      return 'Impress (starting)';
     case 'running':
-      return 'Indent (running)';
+      return 'Impress (running)';
     case 'completed':
-      return 'Indent (done)';
+      return 'Impress (done)';
     case 'error':
-      return 'Indent (error)';
+      return 'Impress (error)';
     default:
-      return 'Indent';
+      return 'Impress';
   }
 }
 
@@ -142,7 +140,7 @@ function formatTimestamp(value?: string): string {
 function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boolean {
   const numeric = Number(value);
   if (!Number.isInteger(numeric)) return false;
-  if (field === 'lightness') return numeric >= 0 && numeric <= 9;
+  if (field === 'lightness') return numeric >= 0 && numeric <= 10;
   return numeric >= 1 && numeric <= 99;
 }
 
@@ -150,37 +148,28 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   const { data: machineState, error: streamError } = useMachineState();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
+  const { move: moveTurret, busy: turretBusy, error: turretError } = useTurret();
 
-  // Local form mirrors machineState. We only push to the backend on USER edits.
-  const [formState, setFormState] = useState<FormState>(DEFAULT_FORM_STATE);
+  const formState = useMemo(() => machineToForm(machineState), [machineState]);
 
-  // Track the value last sent to backend per-key, so we can also ignore the
-  // echo that comes back via SSE.
-  const lastSentRef = useRef<Partial<Record<MachineControlKey, string>>>({});
-
+  // One-shot startup log: surface the values that came back from SQLite via
+  // the backend SSE snapshot so operators can verify what was restored.
+  const restoredLoggedRef = useRef(false);
   useEffect(() => {
+    if (restoredLoggedRef.current) return;
     if (!machineState) return;
-    const next = machineToForm(machineState);
-    // Apply machine-origin updates without round-tripping back to backend.
-    setFormState((current) => {
-      // Only overwrite fields that actually differ.
-      const merged: FormState = { ...current };
-      (Object.keys(next) as Array<keyof FormState>).forEach((k) => {
-        if (current[k] !== next[k]) {
-          // If this matches the last value we sent, it's just our own echo.
-          const key = k as MachineControlKey;
-          if (lastSentRef.current[key] === next[k]) {
-            // Clear the echo gate now that we've reconciled.
-            delete lastSentRef.current[key];
-          }
-          merged[k] = next[k];
-        }
-      });
-      return merged;
-    });
+    restoredLoggedRef.current = true;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-control-ui] restored lightness=${machineState.lightness} loadTime=${machineState.loadTime}`
+    );
   }, [machineState]);
 
   useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[MachineControl] render force=${formState.force} objective=${formState.objective} lightness=${formState.lightness} loadTime=${formState.loadTime}`
+    );
     // eslint-disable-next-line no-console
     console.log(
       `[machine-sync][ui-state] objective=${formState.objective} force=${formState.force} lightness=${formState.lightness} loadTime=${formState.loadTime} hardnessLevel=${formState.hardnessLevel}`
@@ -197,30 +186,59 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     formState.objective,
   ]);
 
+  useEffect(() => {
+    if (!machineState) return;
+    const source = machineState.lastUpdateSource ?? machineState.lastUpdatedBy;
+    if (source !== 'machine') return;
+    // eslint-disable-next-line no-console
+    console.log(`[MachineControl] machine update source=machine force=${machineState.force}`);
+    // eslint-disable-next-line no-console
+    console.log(`[MachineControl] force updated from machine value=${machineState.force}`);
+    // eslint-disable-next-line no-console
+    console.log(`[frontend-machine-state] force updated from machine value=${machineState.force}`);
+    // eslint-disable-next-line no-console
+    console.log(`[MachineControl] machine update source=machine objective=${machineState.objective}`);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[frontend-machine-state] objective updated from machine value=${machineState.objective}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[frontend-machine-state] objective confirmed value=${machineState.objective}`
+    );
+  }, [
+    machineState?.force,
+    machineState?.lastUpdateSource,
+    machineState?.lastUpdatedBy,
+    machineState?.objective,
+  ]);
+
   const pushChange = useCallback(
     async (key: MachineControlKey, value: string) => {
-      lastSentRef.current[key] = value;
       // eslint-disable-next-line no-console
       console.log(`[machine-ui] change field=${key} value=${value}`);
+      if (key === 'force') {
+        // eslint-disable-next-line no-console
+        console.log(`[MachineControl] force change requested value=${value}`);
+      }
       if (key === 'objective') {
+        // eslint-disable-next-line no-console
+        console.log(`[frontend-tx] objective requested value=${value}`);
         // eslint-disable-next-line no-console
         console.log(`[objective][ipc] set-active-objective ${value}`);
       }
       try {
         const nextState = await setControl(key, value);
-        setFormState(machineToForm(nextState));
         if (key === 'objective') {
           // eslint-disable-next-line no-console
           console.log(`[objective][backend] saved activeObjective=${value}`);
         }
         return nextState;
       } catch {
-        delete lastSentRef.current[key];
-        setFormState(machineToForm(machineState));
         return null;
       }
     },
-    [machineState, setControl]
+    [setControl]
   );
 
   const handleSelectChange = useCallback(
@@ -238,17 +256,27 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
       if (field === 'objective') {
         // eslint-disable-next-line no-console
         console.log(`[objective][ui] changed ${formState.objective} -> ${value}`);
+        // eslint-disable-next-line no-console
+        console.log(`[objective-ui] click value=${value}`);
+        void pushChange(field, value).then((state) => {
+          if ((value === '10X' || value === '40X') && state?.objective === value) {
+            onObjectiveChange?.(value);
+          }
+        });
+        return;
       }
-      setFormState((c) => ({ ...c, [field]: value }));
+      if (field === 'force') {
+        void pushChange(field, value);
+        return;
+      }
       void pushChange(field, value);
     },
-    [formState.objective, pushChange]
+    [formState.objective, onObjectiveChange, pushChange]
   );
 
   const handleNumberChange = useCallback(
     (field: 'lightness' | 'loadTime') => (event: React.ChangeEvent<HTMLInputElement>) => {
       const value = event.target.value;
-      setFormState((c) => ({ ...c, [field]: value }));
       // Only push numeric, non-blank values
       if (value.trim() !== '' && isValidNumberField(field, value)) {
         void pushChange(field, value);
@@ -268,34 +296,31 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         console.warn(`[machine-ui] rejected invalid hardnessLevel=${value}`);
         return;
       }
-      setFormState((c) => ({ ...c, hardnessLevel: value }));
       void pushChange('hardnessLevel', value);
     },
     [pushChange]
-  );
-
-  const handleLensClick = useCallback(
-    (objective: '10X' | '40X') => {
-      // eslint-disable-next-line no-console
-      console.log(`[objective][ui] changed ${formState.objective} -> ${objective}`);
-      setFormState((c) => ({ ...c, objective }));
-      void pushChange('objective', objective).then((state) => {
-        if (state?.objective === objective) {
-          onObjectiveChange?.(objective);
-        }
-      });
-    },
-    [formState.objective, onObjectiveChange, pushChange]
   );
 
   const handleIndentClick = useCallback(() => {
     void startIndent();
   }, [startIndent]);
 
+  const handleTurretClick = useCallback(
+    (direction: TurretDirection) => () => {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-ui] turret click direction=${direction}`);
+      void moveTurret(direction).catch(() => {
+        // Errors surface via turretError -> errorMessage. UI must NOT
+        // optimistically reflect motion; real state comes from machine RX.
+      });
+    },
+    [moveTurret]
+  );
+
   const connected = machineState?.connected ?? false;
   const indentStatus: IndentStatus = machineState?.indentStatus ?? 'idle';
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
-  const isBusy = setBusy || indentBusy;
+  const isBusy = setBusy || indentBusy || turretBusy;
   const hasVerifiedCommands = useMemo(() => {
     const verification = machineState?.commandVerification;
     return verification ? Object.values(verification).some(Boolean) : false;
@@ -305,16 +330,17 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     return (
       machineState?.lastError ??
       indentError ??
+      turretError ??
       setError ??
       streamError ??
       null
     );
-  }, [indentError, machineState?.lastError, setError, streamError]);
+  }, [indentError, machineState?.lastError, setError, streamError, turretError]);
 
   const statusText = useMemo(() => {
     if (!connected) return 'Machine not connected. Click Open Device to connect.';
     const protocolNote = hasVerifiedCommands ? '' : ' - RS232 protocol unverified; writes disabled';
-    return `Connected on ${machineState?.port ?? '?'}${protocolNote} - last update by ${machineState?.lastUpdatedBy ?? 'system'} - indent: ${indentStatus}`;
+    return `Connected on ${machineState?.port ?? '?'}${protocolNote} - last update by ${machineState?.lastUpdatedBy ?? 'system'} - impress: ${indentStatus}`;
   }, [
     connected,
     hasVerifiedCommands,
@@ -341,35 +367,39 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
           {indentLabel(indentStatus)}
         </Button>
 
-        <Box sx={INDENTER_RIGHT_SX}>
-          <Box sx={ROW_SX}>
-            <Typography sx={FIELD_LABEL_SX}>Indenter</Typography>
-            <Typography sx={READONLY_VALUE_SX}>HV</Typography>
-          </Box>
-          <Box sx={ROW_SX}>
-            <Typography sx={FIELD_LABEL_SX}>Objective Lens</Typography>
-            <Stack direction="row" spacing={1}>
-              <Button
-                variant={formState.objective === '10X' ? 'contained' : 'outlined'}
-                size="small"
-                sx={LENS_BTN_SX}
-                disabled={!connected || isBusy}
-                onClick={() => handleLensClick('10X')}
-              >
-                10X
-              </Button>
-              <Button
-                variant={formState.objective === '40X' ? 'contained' : 'outlined'}
-                size="small"
-                sx={LENS_BTN_SX}
-                disabled={!connected || isBusy}
-                onClick={() => handleLensClick('40X')}
-              >
-                40X
-              </Button>
-            </Stack>
-          </Box>
-        </Box>
+        <Typography sx={TURRET_LABEL_SX}>Turret</Typography>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="contained"
+            color="primary"
+            sx={TURRET_BUTTON_SX}
+            disabled={!connected || isBusy}
+            onClick={handleTurretClick('left')}
+            aria-label="Turret left"
+          >
+            <ArrowBackIcon fontSize="small" />
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            sx={TURRET_BUTTON_SX}
+            disabled={!connected || isBusy}
+            onClick={handleTurretClick('front')}
+            aria-label="Turret front"
+          >
+            <ArrowDownwardIcon fontSize="small" />
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            sx={TURRET_BUTTON_SX}
+            disabled={!connected || isBusy}
+            onClick={handleTurretClick('right')}
+            aria-label="Turret right"
+          >
+            <ArrowForwardIcon fontSize="small" />
+          </Button>
+        </Stack>
       </Box>
 
       <Divider />
@@ -455,7 +485,7 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         </Typography>
         <Typography sx={STATUS_DETAIL_SX}>Sync: {syncStatusText}</Typography>
         <Typography sx={STATUS_DETAIL_SX}>
-          Current: F={formState.force}, L={formState.lightness}, T={formState.loadTime}, Obj={formState.objective}
+          Current: Force={formState.force}, L={formState.lightness}, T={formState.loadTime}, Obj={formState.objective}, Turret={machineState?.turretPosition ?? 'unknown'}
         </Typography>
       </Box>
 

@@ -60,6 +60,7 @@ import type { MachineState } from '@/types/machine';
 import {
   calculateVickersFromPixels,
   calculateManualDiagonalsFromPixels,
+  findCalibrationForObjective,
   normalizeObjectiveName,
   parseForceKgf,
   resolveManualCalibration,
@@ -189,6 +190,35 @@ function cloneCapturedFrame(frame: CapturedAutoMeasureFrame): CapturedAutoMeasur
   };
 }
 
+function finitePoint(point: { x: number; y: number }): boolean {
+  return Number.isFinite(point.x) && Number.isFinite(point.y);
+}
+
+function hasValidAutoMeasureCorners(result: VickersAutoMeasureSuccess): boolean {
+  return (
+    finitePoint(result.corners.top) &&
+    finitePoint(result.corners.right) &&
+    finitePoint(result.corners.bottom) &&
+    finitePoint(result.corners.left)
+  );
+}
+
+function graphicsFromAutoMeasureResult(result: VickersAutoMeasureSuccess): AutoMeasureGraphics {
+  if (result.lines.length === 4) {
+    return { corners: result.corners, lines: result.lines };
+  }
+  const { top, right, bottom, left } = result.corners;
+  return {
+    corners: result.corners,
+    lines: [
+      { p1: top, p2: right },
+      { p1: right, p2: bottom },
+      { p1: bottom, p2: left },
+      { p1: left, p2: top },
+    ],
+  };
+}
+
 type DialogKey =
   | 'autoMeasure'
   | 'calibration'
@@ -219,7 +249,11 @@ function App() {
   } = useToolbarState();
   const { saveToolbarState } = useSaveToolbarState();
   const { data: lineColorSetting, refetch: refetchLineColor } = useLineColorSetting();
-  const { data: calibrationSettings, items: calibrationSettingsList } = useCalibrationSettings();
+  const {
+    data: calibrationSettings,
+    items: calibrationSettingsList,
+    refetch: refetchCalibrationSettings,
+  } = useCalibrationSettings();
   const { data: calibrations, refetch: refetchCalibrations } = useCalibrations();
   const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
   const { refetch: refetchCameraSetting } = useCameraSetting();
@@ -274,6 +308,12 @@ function App() {
   //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
   const lastObjectiveClickAtRef = useRef<number>(0);
+  // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
+  // CameraWindow watches it to invalidate any per-objective caches and force a
+  // fresh draw — separate from activeObjective so we can trigger a refresh
+  // even when the confirmed value is identical (e.g. user re-selects same lens).
+  const [objectiveRefreshKey, setObjectiveRefreshKey] = useState<number>(0);
+  const lastSyncedObjectiveRef = useRef<string | null>(null);
   const handleObjectiveChangeFromUI = useCallback((objective: '10X' | '40X') => {
     lastObjectiveClickAtRef.current = Date.now();
     setActiveObjective(objective);
@@ -450,17 +490,24 @@ function App() {
     async (snapshot: AutoMeasureDetectionSnapshot, source: 'auto-click' | 'settings-save') => {
       const { result, graphics, objectiveForCalibration, machineStateForAuto, forceKgf } = snapshot;
 
+      // Why: always commit a NEW reference for the explicit Auto Measure
+      // click. The graphicsAlmostEqual short-circuit was suppressing overlay
+      // updates after an objective change when the new corners happened to
+      // be near-identical to the prior run, leaving the user with the table
+      // updated but no fresh yellow lines drawn. The skip is still useful
+      // for slider-driven preview spam, so keep it on settings-save only.
+      const forceOverlayRefresh = source === 'auto-click';
       setCommittedAutoMeasureOverlay((prev) => {
-        if (prev && graphicsAlmostEqual(prev, graphics)) {
+        if (!forceOverlayRefresh && prev && graphicsAlmostEqual(prev, graphics)) {
           // eslint-disable-next-line no-console
           console.log('[auto-overlay-skip] reason=same-lines-no-state-update');
           return prev;
         }
         // eslint-disable-next-line no-console
         console.log(
-          `[auto-overlay-set] source=${source} lines=${graphics.lines.length} corners=4`
+          `[auto-overlay-set] source=${source} lines=${graphics.lines.length} corners=4 force=${forceOverlayRefresh}`
         );
-        return graphics;
+        return { ...graphics, corners: { ...graphics.corners } };
       });
       setPreviewAutoMeasureOverlay(null);
       autoMeasurePreviewSnapshotRef.current = null;
@@ -625,10 +672,33 @@ function App() {
         }
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
-        const displayedFrame =
+        let displayedFrame =
           callSource === 'auto-click'
             ? cameraRef.current?.captureDisplayedFrame()
             : committedAutoMeasureFrameRef.current;
+
+        // After an objective change the live canvas is cleared and the next
+        // worker frame typically lands within ~33ms. If the user clicks Auto
+        // Measure during that gap, wait once for a fresh frame and retry the
+        // capture so detection runs against real pixels, not a black canvas.
+        if (
+          callSource === 'auto-click' &&
+          displayedFrame &&
+          !displayedFrame.ok &&
+          displayedFrame.error === 'awaiting-fresh-frame'
+        ) {
+          if (!preview) {
+            setStatusMessage('System Status: Waiting for camera frame after objective change');
+          }
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure] waiting-for-fresh-frame after objective change');
+          const fresh = await (cameraRef.current?.waitForFreshFrame(2000) ?? Promise.resolve(false));
+          // eslint-disable-next-line no-console
+          console.log(`[auto-measure] frame-ready=${fresh}`);
+          if (fresh) {
+            displayedFrame = cameraRef.current?.captureDisplayedFrame();
+          }
+        }
 
         if (!displayedFrame?.ok) {
           if (preview) {
@@ -705,8 +775,12 @@ function App() {
           }
         }
 
-        if (!result.ok || result.confidence < minConfidence || result.lines.length !== 4) {
-          const reason = result.ok ? 'low confidence' : result.reason;
+        if (!result.ok || result.confidence < minConfidence || !hasValidAutoMeasureCorners(result)) {
+          const reason = result.ok
+            ? result.confidence < minConfidence
+              ? 'low confidence'
+              : 'invalid corner coordinates'
+            : result.reason;
           if (preview) {
             // Preview rejection: keep last valid overlay; no log spam.
             // eslint-disable-next-line no-console
@@ -746,7 +820,7 @@ function App() {
           );
         }
 
-        const graphics: AutoMeasureGraphics = { corners: result.corners, lines: result.lines };
+        const graphics = graphicsFromAutoMeasureResult(result);
         if (!preview && callSource === 'auto-click') {
           const c = result.corners;
           // eslint-disable-next-line no-console
@@ -915,6 +989,50 @@ function App() {
       console.log('[objective] changed current=', next, 'source=sse');
     }
   }, [liveMachineState?.objective, activeObjective]);
+
+  // Camera/objective sync pipeline. Triggered ONLY by a confirmed L<n>OK RX
+  // from the machine (machineState.confirmedObjectiveFromMachine), not by the
+  // OK-ACK or by the user click — so the UI never reflects a magnification the
+  // turret hasn't actually reached.
+  useEffect(() => {
+    const confirmed = liveMachineState?.confirmedObjectiveFromMachine?.trim() || null;
+    if (!confirmed) return;
+    if (lastSyncedObjectiveRef.current === confirmed) return;
+    lastSyncedObjectiveRef.current = confirmed;
+
+    // 1) Force activeObjective to the machine-confirmed value. Overrides the
+    //    optimistic value the click handler may have set.
+    setActiveObjective(confirmed);
+
+    // eslint-disable-next-line no-console
+    console.log(`[camera-objective-sync] objective=${confirmed}`);
+    // eslint-disable-next-line no-console
+    console.log(`[camera-refresh] reason=objective-change`);
+
+    // 2) Reload calibration profile for the now-confirmed objective.
+    void refetchCalibrationSettings();
+    const cal = findCalibrationForObjective(calibrationSettingsList, confirmed);
+    const umPerPixel = cal ? (cal.umPerPixel ?? cal.pixelToMicron) : null;
+    // eslint-disable-next-line no-console
+    console.log(`[camera-calibration] loaded objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'}`);
+    // eslint-disable-next-line no-console
+    console.log(`[measurement-scale] umPerPixel=${umPerPixel ?? 'unknown'}`);
+
+    // 3) Bump the viewport refresh key so CameraWindow can clear any cached
+    //    transforms and force a fresh draw at the new magnification.
+    setObjectiveRefreshKey((k) => k + 1);
+
+    // 4) Invalidate the live canvas so the next worker frame draws onto a
+    //    cleared surface (no stale frame from the previous objective).
+    cameraRef.current?.clearLiveCanvas();
+
+    // eslint-disable-next-line no-console
+    console.log(`[viewport-refresh] completed objective=${confirmed}`);
+  }, [
+    liveMachineState?.confirmedObjectiveFromMachine,
+    calibrationSettingsList,
+    refetchCalibrationSettings,
+  ]);
 
   // When Manual Measure activates, refresh the live objective so the initial
   // diamond size matches the magnification the user just toggled to.
@@ -1471,6 +1589,7 @@ function App() {
           onAddShape={overlay.addShape}
           manualMeasureResetKey={manualMeasureResetKey}
           manualMeasureObjective={activeObjective}
+          objectiveRefreshKey={objectiveRefreshKey}
           onManualMeasurementUpdated={handleManualMeasurementUpdated}
           onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
         />

@@ -16,6 +16,12 @@ import type {
   MicrometerOpenResult,
   MicrometerState,
 } from './micrometer';
+import type {
+  MachineApiResponse,
+  MachineControlKey,
+  MachineState,
+  TurretDirection,
+} from './machine';
 
 export type DeviceOpenResponse = {
   ok: true;
@@ -94,13 +100,22 @@ export type IpcInvokeChannel =
   | 'micrometer:open'
   | 'micrometer:close'
   | 'micrometer:get-state'
-  | 'micrometer:get-latest-reading';
+  | 'micrometer:get-latest-reading'
+  | 'machine:get-state'
+  | 'machine:set-objective'
+  | 'machine:set-force'
+  | 'machine:set-lightness'
+  | 'machine:set-load-time'
+  | 'machine:set-hardness-level'
+  | 'machine:start-indent'
+  | 'machine:move-turret';
 
 export type IpcEventChannel =
   | 'app:status'
   | 'camera:frame'
   | 'camera:status'
-  | 'micrometer:state';
+  | 'micrometer:state'
+  | 'machine:state';
 
 export type IpcInvokeMap = {
   'app:getInfo': { request: void; response: AppInfo };
@@ -153,6 +168,14 @@ export type IpcInvokeMap = {
   'micrometer:close': { request: void; response: MicrometerCloseResult };
   'micrometer:get-state': { request: void; response: MicrometerGetStateResult };
   'micrometer:get-latest-reading': { request: void; response: MicrometerGetLatestReadingResult };
+  'machine:get-state': { request: void; response: MachineApiResponse };
+  'machine:set-objective': { request: { value: string | number }; response: MachineApiResponse };
+  'machine:set-force': { request: { value: string | number }; response: MachineApiResponse };
+  'machine:set-lightness': { request: { value: string | number }; response: MachineApiResponse };
+  'machine:set-load-time': { request: { value: string | number }; response: MachineApiResponse };
+  'machine:set-hardness-level': { request: { value: string | number }; response: MachineApiResponse };
+  'machine:start-indent': { request: void; response: MachineApiResponse };
+  'machine:move-turret': { request: { direction: TurretDirection }; response: MachineApiResponse };
 };
 
 export type IpcEventPayloadMap = {
@@ -160,6 +183,7 @@ export type IpcEventPayloadMap = {
   'camera:frame': [CameraFrameMeta, ArrayBufferLike];
   'camera:status': [Partial<CameraStatus>];
   'micrometer:state': [MicrometerState];
+  'machine:state': [MachineState];
 };
 
 export interface ElectronApi {
@@ -172,4 +196,17 @@ export interface ElectronApi {
     listener: (...args: IpcEventPayloadMap[C]) => void
   ): () => void;
   platform: 'aix' | 'darwin' | 'freebsd' | 'linux' | 'openbsd' | 'sunos' | 'win32';
+}
+
+export interface MachineControlApi {
+  getState(): Promise<MachineApiResponse>;
+  subscribeState(listener: (state: MachineState) => void): () => void;
+  setObjective(value: string | number): Promise<MachineApiResponse>;
+  setForce(value: string | number): Promise<MachineApiResponse>;
+  setLightness(value: string | number): Promise<MachineApiResponse>;
+  setLoadTime(value: string | number): Promise<MachineApiResponse>;
+  setHardnessLevel(value: string | number): Promise<MachineApiResponse>;
+  setValue(key: MachineControlKey, value: string | number): Promise<MachineApiResponse>;
+  startIndent(): Promise<MachineApiResponse>;
+  moveTurret(direction: TurretDirection): Promise<MachineApiResponse>;
 }

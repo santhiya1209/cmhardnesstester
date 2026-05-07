@@ -3,6 +3,15 @@ import { API_BASE_URL } from '@/utils/baseUrl';
 import { getMachineState } from '@/api/getMachineState';
 import type { MachineState } from '@/types/machine';
 
+function logFrontendMachineState(state: MachineState): void {
+  const source = state.lastUpdateSource ?? state.lastUpdatedBy;
+  if (source !== 'machine') return;
+  // eslint-disable-next-line no-console
+  console.log(`[frontend-machine-state] force updated from machine value=${state.force}`);
+  // eslint-disable-next-line no-console
+  console.log(`[frontend-machine-state] objective updated from machine value=${state.objective}`);
+}
+
 // Subscribes to GET /api/machine/events (Server-Sent Events) and exposes the
 // latest MachineState. Falls back to a one-shot fetch if the EventSource
 // connection fails (e.g. dev proxy hiccup).
@@ -24,6 +33,22 @@ export function useMachineState() {
         setError(err instanceof Error ? err.message : String(err));
       });
 
+    if (window.machineControl) {
+      const unsubscribe = window.machineControl.subscribeState((state) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.log('[machine-ipc] state received', state);
+        // eslint-disable-next-line no-console
+        console.log('[machine-ui] state update from machine');
+        logFrontendMachineState(state);
+        setData(state);
+      });
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+
     const url = `${API_BASE_URL}/api/machine/events`;
     const source = new EventSource(url);
     sourceRef.current = source;
@@ -35,6 +60,7 @@ export function useMachineState() {
         console.log('[machine-ipc] state received', parsed);
         // eslint-disable-next-line no-console
         console.log('[machine-ui] state update from machine');
+        logFrontendMachineState(parsed);
         setData(parsed);
       } catch (err) {
         // eslint-disable-next-line no-console
