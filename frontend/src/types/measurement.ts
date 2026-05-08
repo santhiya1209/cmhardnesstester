@@ -45,6 +45,8 @@ export type MeasurementSavePayload = {
   objective?: string | null;
   testForceKgf?: number | null;
   timestamp?: string;
+  imageDataUrl?: string;
+  qualified?: 'YES' | 'NO' | null;
 };
 
 export type Measurement = MeasurementPayload & {

@@ -35,6 +35,8 @@ export const testRecordsService = createCrudService<
     sampleName: input.sampleName,
     testMethod: input.testMethod,
     measurementIds: input.measurementIds,
+    targetMinHv: input.targetMinHv ?? null,
+    targetMaxHv: input.targetMaxHv ?? null,
     createdAt: input.createdAt ?? now,
     updatedAt: now,
   }),

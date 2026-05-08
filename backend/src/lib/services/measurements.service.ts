@@ -55,6 +55,10 @@ export const measurementsService = createCrudService<
       objective: input.objective ?? null,
       testForceKgf: input.testForceKgf ?? null,
       timestamp,
+      imageDataUrl: input.imageDataUrl,
+      xMm: input.xMm ?? null,
+      yMm: input.yMm ?? null,
+      qualified: input.qualified ?? null,
       createdAt: now,
       updatedAt: now,
     };

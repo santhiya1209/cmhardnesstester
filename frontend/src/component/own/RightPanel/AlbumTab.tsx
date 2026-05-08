@@ -122,8 +122,13 @@ function AlbumTabImpl({ measurements }: Props) {
             {measurements.map((m, index) => {
               const scale = formatHardnessScale(m.testForceKgf);
               const value = formatHv(m.hv);
+              const hasImage = !!m.imageDataUrl;
               // eslint-disable-next-line no-console
-              console.log('[album][render] card', { id: m.id, index: index + 1, scale, value, hasImage: !!m.imageDataUrl });
+              console.log('[album] render card id=', m.id, 'hasImage=', hasImage, 'src=', hasImage ? `${(m.imageDataUrl ?? '').slice(0, 32)}...` : null);
+              if (!hasImage) {
+                // eslint-disable-next-line no-console
+                console.warn('[album] missing image for measurementId=', m.id);
+              }
               return (
                 <Paper key={m.id} elevation={0} sx={CARD_SX}>
                   <Box sx={THUMB_SX}>

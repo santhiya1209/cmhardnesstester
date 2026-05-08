@@ -197,6 +197,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     // eslint-disable-next-line no-console
     console.log(`[frontend-machine-state] force updated from machine value=${machineState.force}`);
     // eslint-disable-next-line no-console
+    console.log(`[machine-force-panel-update] value=${machineState.force} source=machine`);
+    // eslint-disable-next-line no-console
     console.log(`[MachineControl] machine update source=machine objective=${machineState.objective}`);
     // eslint-disable-next-line no-console
     console.log(
@@ -220,6 +222,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
       if (key === 'force') {
         // eslint-disable-next-line no-console
         console.log(`[MachineControl] force change requested value=${value}`);
+        // eslint-disable-next-line no-console
+        console.log(`[machine-force-ui-change] value=${value}`);
       }
       if (key === 'objective') {
         // eslint-disable-next-line no-console

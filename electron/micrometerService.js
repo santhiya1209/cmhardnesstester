@@ -1,11 +1,15 @@
 const { SerialPort } = require('serialport');
 const {
+  ALT_FRAME_LENGTH,
   BINARY_FRAME_LENGTH,
   bufferToHex,
   formatDisplayValue,
+  parseAlternatePreambleFrame,
+  parseAlternatePreambleFrames,
   parseBinaryMicrometerFrame,
   validateBinaryMicrometerFrame,
 } = require('./micrometerDecoder');
+const { loadCaptures } = require('./micrometerCaptures');
 
 const DEFAULT_PORT = 'COM3';
 const DATA_BITS = 8;
@@ -178,6 +182,24 @@ class MicrometerService {
     this.stableCount = 0;
     this.latestReading = null;
     this.lastInvalidFrameHex = '';
+    this.lastCaptureCandidateHex = '';
+
+    // Captures-based learning decoder for unknown 10-byte protocols. Inert
+    // until the user adds 2+ (LCD, hex) pairs to micrometer-captures.json.
+    try {
+      this.captureDecoder = loadCaptures();
+      console.log(
+        `[micrometer] captures loaded path=${this.captureDecoder.filePath} ` +
+          `pairs=${this.captureDecoder.pairs.length} ready=${this.captureDecoder.ready} ` +
+          `reason=${this.captureDecoder.reason}`
+      );
+    } catch (err) {
+      console.warn(
+        '[micrometer] captures load failed:',
+        err && err.message ? err.message : err
+      );
+      this.captureDecoder = { decode: () => null, ready: false, reason: 'load-failed' };
+    }
 
     this.state = {
       connected: false,
@@ -710,6 +732,69 @@ class MicrometerService {
     const acceptedAscii = this._consumeAsciiBuffer();
     if (!acceptedAscii && hasBinaryNoise(chunk)) {
       this._consumeRollingBuffer();
+      this._consumeAltPreambleBuffer();
+    }
+  }
+
+  // Fallback path for the unknown 10-byte preamble layout
+  // (20 00 ?? 20 0c .. .. .. 08 00) seen on COM3 micrometers.
+  // Aligns candidate frames and runs them through the captures-learned
+  // decoder. Inert until micrometer-captures.json has 2+ LCD/hex pairs.
+  _consumeAltPreambleBuffer() {
+    if (this.rxBuffer.length < ALT_FRAME_LENGTH) return;
+    const { frames, leftover } = parseAlternatePreambleFrames(this.rxBuffer);
+    if (frames.length === 0) return;
+    this.rxBuffer = leftover;
+
+    for (const frame of frames) {
+      const rawHex = bufferToHex(frame);
+      // Single-line capture-helper log: copy this hex into
+      // micrometer-captures.json next to the LCD reading you saw on screen.
+      if (rawHex !== this.lastCaptureCandidateHex) {
+        this.lastCaptureCandidateHex = rawHex;
+        console.log(
+          `[micrometer][capture-candidate] hex="${rawHex}" — add to micrometer-captures.json with the LCD reading you see right now`
+        );
+      }
+
+      // Prefer captures-learned decoder when ready; otherwise fall back to
+      // the best-effort byte-2/byte-5/6/7 nibble interpretation so the UI
+      // shows a value the user can validate against the LCD.
+      let decoded = this.captureDecoder.decode(frame);
+      let source = 'captures';
+      if (!decoded) {
+        decoded = parseAlternatePreambleFrame(frame);
+        source = 'alt-preamble';
+      }
+      if (!decoded) {
+        console.log(
+          `[micrometer] alt-preamble frame seen but no decoder produced a value. hex=${rawHex}`
+        );
+        continue;
+      }
+
+      if (!this.lockedBaudRate && this.currentOpenConfig) {
+        this.lockedBaudRate = this.currentOpenConfig.baudRate;
+        this._clearNoValidFrameTimeout();
+        console.log(`[micrometer] baud locked ${this.lockedBaudRate} via ${source} decoder`);
+        this._setState({ lockedBaudRate: this.lockedBaudRate }, false);
+      }
+
+      const reading = {
+        rawHex,
+        value: decoded.value,
+        displayValue: formatDisplayValue(decoded.value),
+        decimalPlaces: decoded.decimalPlaces ?? 3,
+        unit: 'mm',
+        source,
+      };
+      console.log(
+        `[micrometer] decoded ${source} value ${reading.displayValue} hex=${rawHex}`
+      );
+      // Publish immediately — alt-preamble protocol cycles through scan
+      // frames whose decoded values legitimately differ frame-to-frame, so
+      // the strict 2-of-2 stable-value filter would never publish.
+      this._publishReading(reading);
     }
   }
 

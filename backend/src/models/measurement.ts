@@ -27,6 +27,10 @@ export const MeasurementPayloadSchema = z.object({
   imageDataUrl: z.string().optional(),
   xMm: z.number().finite().nullable().optional(),
   yMm: z.number().finite().nullable().optional(),
+  // Computed at save time from the parent test record's targetMin/MaxHv vs
+  // the measured HV. Kept as 'YES'/'NO' strings to match the table renderer's
+  // existing formatQualified contract; null when no target range is set.
+  qualified: z.enum(['YES', 'NO']).nullable().optional(),
 });
 
 export const MeasurementModel = MeasurementPayloadSchema.extend({

@@ -26,14 +26,6 @@ const PREVIEW_SX: SxProps<Theme> = {
   justifyContent: 'stretch',
   overflow: 'hidden',
 };
-const EMPTY_SX: SxProps<Theme> = {
-  flex: 1,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: 12,
-  color: 'text.secondary',
-};
 const ACTION_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 2, px: 1.5, pb: 1.5 };
 const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
 const CHECK_SX: SxProps<Theme> = { '& .MuiFormControlLabel-label': { fontSize: 12 } };
@@ -49,7 +41,7 @@ type Props = {
   measurements: Measurement[];
 };
 
-type ChartPoint = { x: number; y: number; label: string };
+type ChartPoint = { x: number; y: number; label: string; index: number };
 
 const CHART_PADDING = { top: 16, right: 24, bottom: 36, left: 56 };
 const Y_TICKS = 10;
@@ -69,7 +61,7 @@ function buildPoints(measurements: Measurement[]): ChartPoint[] {
       : (idx + 1) * 0.2;
     const y = m.hv as number;
     const unit = m.method ? `HV${m.testForceKgf ?? ''}`.trim() : 'HV';
-    return { x, y, label: unit };
+    return { x, y, label: unit, index: idx + 1 };
   });
 }
 
@@ -84,13 +76,13 @@ function niceTicks(min: number, max: number, count: number): number[] {
 
 type ChartProps = {
   points: ChartPoint[];
-  stroke: string;
+  showLine: boolean;
   axis: string;
   grid: string;
   text: string;
 };
 
-function DepthChart({ points, stroke, axis, grid, text }: ChartProps) {
+function DepthChart({ points, showLine, axis, grid, text }: ChartProps) {
   const width = 640;
   const height = 280;
   const innerW = width - CHART_PADDING.left - CHART_PADDING.right;
@@ -111,7 +103,9 @@ function DepthChart({ points, stroke, axis, grid, text }: ChartProps) {
 
   const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${sx(p.x).toFixed(2)} ${sy(p.y).toFixed(2)}`).join(' ');
   const yLabel = points[0]?.label ?? 'HV';
-  const firstPoint = points[0];
+  const drawLine = showLine && points.length >= 2;
+  const drawPoints = showLine && points.length >= 1;
+  const selected = drawPoints ? points[points.length - 1] : null;
 
   return (
     <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
@@ -139,13 +133,34 @@ function DepthChart({ points, stroke, axis, grid, text }: ChartProps) {
       <text x={CHART_PADDING.left + innerW / 2} y={height - 6} fontSize={10} fill={text} textAnchor="middle">
         mm
       </text>
-      {points.length > 1 ? <path d={path} fill="none" stroke={stroke} strokeWidth={1.5} /> : null}
-      {points.map((p, i) => (
-        <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill={stroke} />
-      ))}
-      {firstPoint ? (
-        <text x={sx(firstPoint.x) + 6} y={sy(firstPoint.y) - 6} fontSize={10} fill={text}>
-          ({firstPoint.x.toFixed(4)},{Math.round(firstPoint.y)})
+      {drawLine ? <path d={path} fill="none" stroke={axis} strokeWidth={1} /> : null}
+      {drawPoints
+        ? points.map((p, i) => <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={2} fill={axis} />)
+        : null}
+      {selected ? (
+        <line
+          x1={sx(selected.x)}
+          x2={sx(selected.x)}
+          y1={sy(selected.y)}
+          y2={height - CHART_PADDING.bottom}
+          stroke={axis}
+          strokeWidth={0.75}
+        />
+      ) : null}
+      {selected ? (
+        <line
+          x1={CHART_PADDING.left}
+          x2={sx(selected.x)}
+          y1={sy(selected.y)}
+          y2={sy(selected.y)}
+          stroke={axis}
+          strokeWidth={0.75}
+          strokeDasharray="3 3"
+        />
+      ) : null}
+      {selected ? (
+        <text x={sx(selected.x) + 6} y={sy(selected.y) - 6} fontSize={10} fill={axis}>
+          ({selected.index},{Math.round(selected.x * 1000)},{Math.round(selected.y)})
         </text>
       ) : null}
     </svg>
@@ -161,9 +176,13 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   const [saveImageError, setSaveImageError] = useState<string | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const points = useMemo(() => buildPoints(measurements), [measurements]);
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[depth-image] render measurements=', measurements.length);
+  }, [measurements.length]);
   const chartColors = useMemo(
     () => ({
-      stroke: theme.palette.primary.main,
       axis: theme.palette.text.primary,
       grid: theme.palette.divider,
       text: theme.palette.text.secondary,
@@ -176,6 +195,32 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
       setHardnessImage(data?.hardnessImage ?? false);
     }
   }, [data?.hardnessImage, loading]);
+
+  useEffect(() => {
+    const showLine = hardnessImage && points.length >= 2;
+    // eslint-disable-next-line no-console
+    console.log(`[depth-image] hardnessImage=${hardnessImage} showLine=${showLine}`);
+    if (hardnessImage) {
+      // eslint-disable-next-line no-console
+      console.log(`[depth-image] hardnessImage checked=true`);
+      // eslint-disable-next-line no-console
+      console.log(`[depth-image] draw hardness line points=${points.length}`);
+      const selected = points[points.length - 1];
+      if (selected) {
+        const label = `(${selected.index},${Math.round(selected.x * 1000)},${Math.round(selected.y)})`;
+        // eslint-disable-next-line no-console
+        console.log(`[depth-image] draw selected point label=${label}`);
+        // eslint-disable-next-line no-console
+        console.log(`[depth-image] draw vertical guide`);
+        // eslint-disable-next-line no-console
+        console.log(`[depth-image] draw horizontal dotted guide`);
+      }
+      points.forEach((p) => {
+        // eslint-disable-next-line no-console
+        console.log(`[depth-image] point x=${p.x} y=${p.y} hardness=${p.y}`);
+      });
+    }
+  }, [hardnessImage, points]);
 
   const isBusy = loading || saving || creatingAlbumItem;
   const errorMessage = loadError ?? saveError ?? createAlbumError ?? saveImageError;
@@ -207,10 +252,14 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   );
 
   const handleRefresh = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[depth-image] fresh clicked');
     void refetch();
   }, [refetch]);
 
   const handleSaveImage = useCallback(async () => {
+    // eslint-disable-next-line no-console
+    console.log('[depth-image] save image clicked');
     setSaveImageError(null);
 
     const svg = previewRef.current?.querySelector('svg');
@@ -263,17 +312,13 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   return (
     <Box sx={SECTION_SX}>
       <Box sx={PREVIEW_SX} ref={previewRef}>
-        {points.length === 0 ? (
-          <Box sx={EMPTY_SX}>No measurements yet</Box>
-        ) : (
-          <DepthChart
-            points={points}
-            stroke={chartColors.stroke}
-            axis={chartColors.axis}
-            grid={chartColors.grid}
-            text={chartColors.text}
-          />
-        )}
+        <DepthChart
+          points={points}
+          showLine={hardnessImage}
+          axis={chartColors.axis}
+          grid={chartColors.grid}
+          text={chartColors.text}
+        />
       </Box>
       <Box sx={ACTION_ROW_SX}>
         <Button variant="outlined" size="small" sx={BTN_SX} disabled={isBusy} onClick={handleRefresh}>
@@ -283,7 +328,7 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
           variant="outlined"
           size="small"
           sx={BTN_SX}
-          disabled={isBusy || points.length === 0}
+          disabled={isBusy}
           onClick={() => {
             void handleSaveImage();
           }}

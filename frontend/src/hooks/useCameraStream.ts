@@ -31,6 +31,11 @@ let liveFrameLogSeq = 0;
 let lastLiveFrameOverlayLogAt = 0;
 let fallbackTimer: number | null = null;
 let fallbackInFlight = false;
+// Reset by resetCameraSession() on close so the next open re-fires the
+// first-frame / first-paint logs. The IPC subscription itself stays attached
+// for the page lifetime — only the per-session telemetry is reset.
+let firstFrameLoggedThisSession = false;
+let firstPaintLoggedThisSession = false;
 
 function getWorker(): Worker {
   if (!sharedWorker) sharedWorker = new CameraStreamWorker();
@@ -51,26 +56,27 @@ function installMainThreadPaintHandler() {
       el.height = img.height;
     }
     fallbackCtx.putImageData(img, 0, 0);
+    if (!firstPaintLoggedThisSession) {
+      firstPaintLoggedThisSession = true;
+      // eslint-disable-next-line no-console
+      console.log('[camera-ui] first-paint-after-open ok=true');
+    }
   });
 }
 
 function subscribeIpcOnce() {
   if (ipcSubscribed) return;
   ipcSubscribed = true;
-  let loggedFirst = false;
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
     lastFrameAt = Date.now();
     liveFrameLogSeq += 1;
-    if (!loggedFirst) {
-      loggedFirst = true;
+    if (!firstFrameLoggedThisSession) {
+      firstFrameLoggedThisSession = true;
+      const bytes = (body as { byteLength?: number }).byteLength ?? 0;
       // eslint-disable-next-line no-console
-      console.log('[camera] first frame', {
-        pixelFormat: meta.pixelFormat,
-        bits: meta.bits,
-        width: meta.width,
-        height: meta.height,
-        byteLength: (body as { byteLength?: number }).byteLength,
-      });
+      console.log(
+        `[camera-frame] first-frame-after-open width=${meta.width} height=${meta.height} bytes=${bytes}`
+      );
     }
     if (lastFrameAt - lastLiveFrameOverlayLogAt > 1000) {
       lastLiveFrameOverlayLogAt = lastFrameAt;
@@ -79,6 +85,11 @@ function subscribeIpcOnce() {
     }
     postFrameToWorker(meta, body);
   });
+}
+
+export function resetCameraSession() {
+  firstFrameLoggedThisSession = false;
+  firstPaintLoggedThisSession = false;
 }
 
 function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {

@@ -14,11 +14,13 @@ import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import { updateMeasurement } from '@/api/updateMeasurement';
 import { useDeleteTestRecord } from '@/hooks/mutations/useDeleteTestRecord';
 import { useSaveTestRecord } from '@/hooks/mutations/useSaveTestRecord';
 import { useTestRecords } from '@/hooks/queries/useTestRecords';
 import type { Measurement } from '@/types/measurement';
 import type { TestRecord, TestRecordSavePayload } from '@/types/testRecord';
+import { computeQualified } from '@/utils/manualMeasure';
 
 type Props = {
   open: boolean;
@@ -32,12 +34,16 @@ type FormState = {
   sampleName: string;
   testMethod: string;
   measurementIds: string[];
+  targetMinHv: string;
+  targetMaxHv: string;
 };
 
 const DEFAULT_FORM_STATE: FormState = {
   sampleName: '',
   testMethod: 'HV',
   measurementIds: [],
+  targetMinHv: '',
+  targetMaxHv: '',
 };
 
 function toFormState(record: TestRecord | null, initialMeasurementIds: string[]): FormState {
@@ -52,7 +58,16 @@ function toFormState(record: TestRecord | null, initialMeasurementIds: string[])
     sampleName: record.sampleName,
     testMethod: record.testMethod,
     measurementIds: record.measurementIds,
+    targetMinHv: record.targetMinHv != null ? String(record.targetMinHv) : '',
+    targetMaxHv: record.targetMaxHv != null ? String(record.targetMaxHv) : '',
   };
+}
+
+function parseTargetHv(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function toPayload(formState: FormState): TestRecordSavePayload | null {
@@ -63,10 +78,26 @@ function toPayload(formState: FormState): TestRecordSavePayload | null {
     return null;
   }
 
+  // Both target fields are optional, but if either is filled, both must be
+  // valid positive numbers and min must not exceed max — otherwise qualified
+  // calculation downstream would be ambiguous.
+  const minRaw = formState.targetMinHv.trim();
+  const maxRaw = formState.targetMaxHv.trim();
+  const targetMinHv = parseTargetHv(formState.targetMinHv);
+  const targetMaxHv = parseTargetHv(formState.targetMaxHv);
+  if ((minRaw && targetMinHv === null) || (maxRaw && targetMaxHv === null)) {
+    return null;
+  }
+  if (targetMinHv !== null && targetMaxHv !== null && targetMinHv > targetMaxHv) {
+    return null;
+  }
+
   return {
     sampleName,
     testMethod,
     measurementIds: formState.measurementIds,
+    targetMinHv,
+    targetMaxHv,
   };
 }
 
@@ -134,7 +165,7 @@ function TestRecordsDialogImpl({
   }, []);
 
   const handleFieldChange = useCallback(
-    (field: 'sampleName' | 'testMethod') =>
+    (field: 'sampleName' | 'testMethod' | 'targetMinHv' | 'targetMaxHv') =>
       (event: React.ChangeEvent<HTMLInputElement>) => {
         const value = event.target.value;
         setShowValidationError(false);
@@ -172,15 +203,43 @@ function TestRecordsDialogImpl({
       return;
     }
 
-    await saveTestRecord({
+    const saved = await saveTestRecord({
       id: selectedRecord?.id,
       values: payload,
     });
 
+    // Recompute Qualified for each linked measurement against the (possibly
+    // changed) target range and persist. Per-measurement persistence keeps
+    // the existing MeasurementsTable renderer working as-is — it just reads
+    // measurement.qualified.
+    const targetMin = saved.targetMinHv ?? payload.targetMinHv ?? null;
+    const targetMax = saved.targetMaxHv ?? payload.targetMaxHv ?? null;
+    const measurementById = new Map(measurements.map((m) => [m.id, m] as const));
+    for (const measurementId of payload.measurementIds) {
+      const m = measurementById.get(measurementId);
+      if (!m) continue;
+      const qualified = computeQualified(m.hv, targetMin, targetMax);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[qualified-check] targetMinHv=${targetMin ?? 'null'} targetMaxHv=${targetMax ?? 'null'} measuredHV=${m.hv ?? 'null'} result=${qualified ?? 'null'}`
+      );
+      if (qualified === m.qualified) continue;
+      try {
+        await updateMeasurement(m.id, {
+          d1: m.d1,
+          d2: m.d2,
+          qualified,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[qualified-check] update failed', m.id, err);
+      }
+    }
+
     onStatusChange?.('Test record saved.');
     await refetch();
     handleNew();
-  }, [handleNew, onStatusChange, payload, refetch, saveTestRecord, selectedRecord?.id]);
+  }, [handleNew, measurements, onStatusChange, payload, refetch, saveTestRecord, selectedRecord?.id]);
 
   const handleDelete = useCallback(async () => {
     if (!selectedRecord) {
@@ -229,6 +288,35 @@ function TestRecordsDialogImpl({
                 value={formState.testMethod}
                 disabled={busy}
                 onChange={handleFieldChange('testMethod')}
+              />
+            </Box>
+          </Box>
+
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+            <Box>
+              <Typography variant="caption">Target Min HV</Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                inputProps={{ min: 0, step: 1 }}
+                placeholder="e.g. 200"
+                value={formState.targetMinHv}
+                disabled={busy}
+                onChange={handleFieldChange('targetMinHv')}
+              />
+            </Box>
+            <Box>
+              <Typography variant="caption">Target Max HV</Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                inputProps={{ min: 0, step: 1 }}
+                placeholder="e.g. 300"
+                value={formState.targetMaxHv}
+                disabled={busy}
+                onChange={handleFieldChange('targetMaxHv')}
               />
             </Box>
           </Box>

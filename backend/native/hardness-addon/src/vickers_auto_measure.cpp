@@ -90,6 +90,8 @@ struct Candidate {
   double contourArea = 0.0;
   double hullArea = 0.0;
   double validationArea = 0.0;
+  std::vector<cv::Point> contour;
+  std::vector<cv::Point> hull;
   cv::Point2f center;
   double centerDistance = 0.0;
   cv::RotatedRect rect;
@@ -598,93 +600,103 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
     out.masks.push_back({"otsu", ApplyMorphology(otsu, params)});
   }
 
-  const int blackhatKernelSize = SliderToOddKernel(params.factor, 13, 41);
-  cv::Mat blackhat;
-  cv::morphologyEx(
-    out.clahe,
-    blackhat,
-    cv::MORPH_BLACKHAT,
-    cv::getStructuringElement(cv::MORPH_ELLIPSE, {blackhatKernelSize, blackhatKernelSize})
-  );
-  cv::Mat blackhatMask;
-  cv::threshold(blackhat, blackhatMask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-  out.masks.push_back({
-    "blackhat",
-    CloseOpenMask(
-      blackhatMask,
-      SliderToOddKernel(params.dilation, 7, 29),
-      SliderToOddKernel(params.erosion, 1, 7),
-      3
-    )
-  });
+  // Slider-dominant mode: when the user is driving threshold/smoothing from
+  // the UI (mode resolves to "manual" or "otsu"), the chosen mask must be the
+  // sole input to contour selection — otherwise edge-based fallbacks blend in
+  // and the D1/D2 tips snap instead of moving smoothly with the slider.
+  // Only "adaptive" (an opt-in legacy mode) keeps the multi-mask fallback.
+  const bool sliderDominant =
+    params.thresholdMode == "manual" || params.thresholdMode == "otsu";
 
-  cv::Mat tophat;
-  cv::morphologyEx(
-    out.clahe,
-    tophat,
-    cv::MORPH_TOPHAT,
-    cv::getStructuringElement(cv::MORPH_ELLIPSE, {blackhatKernelSize, blackhatKernelSize})
-  );
-  cv::Mat tophatMask;
-  cv::threshold(tophat, tophatMask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-  out.masks.push_back({
-    "tophat",
-    CloseOpenMask(
-      tophatMask,
-      SliderToOddKernel(params.dilation, 7, 29),
-      SliderToOddKernel(params.erosion, 1, 7),
-      3
-    )
-  });
+  if (!sliderDominant) {
+    const int blackhatKernelSize = SliderToOddKernel(params.factor, 13, 41);
+    cv::Mat blackhat;
+    cv::morphologyEx(
+      out.clahe,
+      blackhat,
+      cv::MORPH_BLACKHAT,
+      cv::getStructuringElement(cv::MORPH_ELLIPSE, {blackhatKernelSize, blackhatKernelSize})
+    );
+    cv::Mat blackhatMask;
+    cv::threshold(blackhat, blackhatMask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    out.masks.push_back({
+      "blackhat",
+      CloseOpenMask(
+        blackhatMask,
+        SliderToOddKernel(params.dilation, 7, 29),
+        SliderToOddKernel(params.erosion, 1, 7),
+        3
+      )
+    });
 
-  cv::Mat morphGradient;
-  cv::morphologyEx(
-    out.blurred,
-    morphGradient,
-    cv::MORPH_GRADIENT,
-    cv::getStructuringElement(cv::MORPH_ELLIPSE, {SliderToOddKernel(params.factor, 3, 11), SliderToOddKernel(params.factor, 3, 11)})
-  );
-  cv::Mat gradientMask;
-  cv::threshold(morphGradient, gradientMask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-  out.masks.push_back({
-    "gradient",
-    CloseOpenMask(
-      gradientMask,
-      SliderToOddKernel(params.dilation, 7, 31),
-      1,
-      3
-    )
-  });
+    cv::Mat tophat;
+    cv::morphologyEx(
+      out.clahe,
+      tophat,
+      cv::MORPH_TOPHAT,
+      cv::getStructuringElement(cv::MORPH_ELLIPSE, {blackhatKernelSize, blackhatKernelSize})
+    );
+    cv::Mat tophatMask;
+    cv::threshold(tophat, tophatMask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    out.masks.push_back({
+      "tophat",
+      CloseOpenMask(
+        tophatMask,
+        SliderToOddKernel(params.dilation, 7, 29),
+        SliderToOddKernel(params.erosion, 1, 7),
+        3
+      )
+    });
 
-  cv::Mat canny;
-  cv::Mat otsuScratch;
-  const double otsuLevel = cv::threshold(out.blurred, otsuScratch, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-  const double low = std::clamp(otsuLevel * 0.33, 18.0, 90.0);
-  const double high = std::clamp(otsuLevel * 0.90, low + 20.0, 190.0);
-  cv::Canny(out.blurred, canny, low, high, 3, true);
-  out.masks.push_back({
-    "canny",
-    CloseOpenMask(
-      canny,
-      SliderToOddKernel(params.dilation, 7, 31),
-      1,
-      3
-    )
-  });
+    cv::Mat morphGradient;
+    cv::morphologyEx(
+      out.blurred,
+      morphGradient,
+      cv::MORPH_GRADIENT,
+      cv::getStructuringElement(cv::MORPH_ELLIPSE, {SliderToOddKernel(params.factor, 3, 11), SliderToOddKernel(params.factor, 3, 11)})
+    );
+    cv::Mat gradientMask;
+    cv::threshold(morphGradient, gradientMask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    out.masks.push_back({
+      "gradient",
+      CloseOpenMask(
+        gradientMask,
+        SliderToOddKernel(params.dilation, 7, 31),
+        1,
+        3
+      )
+    });
 
-  cv::Mat edgeUnion;
-  cv::bitwise_or(blackhatMask, tophatMask, edgeUnion);
-  cv::bitwise_or(edgeUnion, gradientMask, edgeUnion);
-  cv::bitwise_or(edgeUnion, canny, edgeUnion);
-  out.masks.push_back({
-    "edge-union",
-    CloseOpenMask(
-      edgeUnion,
-      SliderToOddKernel(params.dilation, 9, 39),
-      1,
-      5
-    )
-  });
+    cv::Mat canny;
+    cv::Mat otsuScratch;
+    const double otsuLevel = cv::threshold(out.blurred, otsuScratch, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    const double low = std::clamp(otsuLevel * 0.33, 18.0, 90.0);
+    const double high = std::clamp(otsuLevel * 0.90, low + 20.0, 190.0);
+    cv::Canny(out.blurred, canny, low, high, 3, true);
+    out.masks.push_back({
+      "canny",
+      CloseOpenMask(
+        canny,
+        SliderToOddKernel(params.dilation, 7, 31),
+        1,
+        3
+      )
+    });
+
+    cv::Mat edgeUnion;
+    cv::bitwise_or(blackhatMask, tophatMask, edgeUnion);
+    cv::bitwise_or(edgeUnion, gradientMask, edgeUnion);
+    cv::bitwise_or(edgeUnion, canny, edgeUnion);
+    out.masks.push_back({
+      "edge-union",
+      CloseOpenMask(
+        edgeUnion,
+        SliderToOddKernel(params.dilation, 9, 39),
+        1,
+        5
+      )
+    });
+  }
 
   cv::Sobel(out.blurred, out.gradX, CV_32F, 1, 0, 3);
   cv::Sobel(out.blurred, out.gradY, CV_32F, 0, 1, 3);
@@ -879,6 +891,8 @@ std::optional<Candidate> SelectBestContour(
     candidate.contourArea = area;
     candidate.hullArea = hullArea;
     candidate.validationArea = validationArea;
+    candidate.contour = contour;
+    candidate.hull = hull;
     candidate.center = center;
     candidate.centerDistance = centerDistance;
     candidate.rect = rect;
@@ -1053,6 +1067,137 @@ bool IntersectLines(const LineModel& a, const LineModel& b, cv::Point2f& out) {
 
 bool PointInsideImage(cv::Point2f p, const Params& params) {
   return p.x >= 0.0f && p.y >= 0.0f && p.x <= params.width - 1.0f && p.y <= params.height - 1.0f;
+}
+
+OrderedCorners ExtractAxisTipsFromContour(
+  const std::vector<cv::Point>& contour,
+  const std::vector<cv::Point>& hull,
+  const OrderedCorners& fallback,
+  cv::Point2f center
+) {
+  const std::vector<cv::Point>& points = hull.size() >= 4 ? hull : contour;
+  if (points.empty()) return fallback;
+
+  auto toPoint2f = [](const cv::Point& p) {
+    return cv::Point2f(static_cast<float>(p.x), static_cast<float>(p.y));
+  };
+
+  cv::Point top = points.front();
+  cv::Point right = points.front();
+  cv::Point bottom = points.front();
+  cv::Point left = points.front();
+
+  double bestTop = std::numeric_limits<double>::infinity();
+  double bestRight = -std::numeric_limits<double>::infinity();
+  double bestBottom = -std::numeric_limits<double>::infinity();
+  double bestLeft = std::numeric_limits<double>::infinity();
+
+  for (const auto& p : points) {
+    const double centerPenaltyX = std::abs(static_cast<double>(p.x) - center.x) * 0.10;
+    const double centerPenaltyY = std::abs(static_cast<double>(p.y) - center.y) * 0.10;
+    const double topScore = static_cast<double>(p.y) + centerPenaltyX;
+    const double bottomScore = static_cast<double>(p.y) - centerPenaltyX;
+    const double leftScore = static_cast<double>(p.x) + centerPenaltyY;
+    const double rightScore = static_cast<double>(p.x) - centerPenaltyY;
+
+    if (topScore < bestTop) {
+      bestTop = topScore;
+      top = p;
+    }
+    if (bottomScore > bestBottom) {
+      bestBottom = bottomScore;
+      bottom = p;
+    }
+    if (leftScore < bestLeft) {
+      bestLeft = leftScore;
+      left = p;
+    }
+    if (rightScore > bestRight) {
+      bestRight = rightScore;
+      right = p;
+    }
+  }
+
+  OrderedCorners tips;
+  tips.top = toPoint2f(top);
+  tips.right = toPoint2f(right);
+  tips.bottom = toPoint2f(bottom);
+  tips.left = toPoint2f(left);
+  return tips;
+}
+
+bool ValidateContourTips(
+  const OrderedCorners& corners,
+  const Params& params,
+  const DebugInfo& debug,
+  std::string& reason
+) {
+  if (!PointInsideImage(corners.top, params) ||
+      !PointInsideImage(corners.right, params) ||
+      !PointInsideImage(corners.bottom, params) ||
+      !PointInsideImage(corners.left, params)) {
+    reason = "corner is outside image";
+    return false;
+  }
+
+  const ShapeMetrics metrics = ComputeShapeMetrics(corners);
+  if (!std::isfinite(metrics.area) || metrics.area < debug.minArea || metrics.area > debug.maxArea * 2.0) {
+    reason = "final diamond area is outside valid range";
+    return false;
+  }
+  if (metrics.d1 < MinIndentationDiagonalPixels(params) ||
+      metrics.d2 < MinIndentationDiagonalPixels(params)) {
+    reason = "selected shape is too small to be indentation";
+    return false;
+  }
+  if (!std::isfinite(metrics.sideRatio) || metrics.sideRatio > params.maxSideLengthRatio * 1.15) {
+    reason = "side ratio is abnormal";
+    return false;
+  }
+  if (!std::isfinite(metrics.diagonalRatio) ||
+      metrics.diagonalRatio > params.maxDiagonalRatio ||
+      (1.0 / metrics.diagonalRatio) < params.minDiagonalRatio) {
+    reason = "diagonal ratio is abnormal";
+    return false;
+  }
+  for (double angle : metrics.anglesDeg) {
+    if (std::abs(angle - 90.0) > params.angleToleranceDeg + 8.0) {
+      reason = "angles are not close to diamond geometry";
+      return false;
+    }
+  }
+
+  return true;
+}
+
+double ComputeContourTipConfidence(
+  const Params& params,
+  const Candidate& candidate,
+  const ShapeMetrics& metrics
+) {
+  const double maxCenterDistance = std::min(params.width, params.height) * params.maxCenterDistanceRatio;
+  const double centerScore = Clamp01(1.0 - candidate.centerDistance / std::max(1.0, maxCenterDistance));
+  const double sideScore = RatioScore(metrics.sideRatio, params.maxSideLengthRatio);
+  const double diagScore = RatioScore(metrics.diagonalRatio, params.maxDiagonalRatio);
+
+  double angleError = 0.0;
+  for (double angle : metrics.anglesDeg) {
+    angleError += std::abs(angle - 90.0);
+  }
+  angleError /= 4.0;
+  const double angleScore = Clamp01(1.0 - angleError / std::max(1.0, params.angleToleranceDeg + 8.0));
+  const double solidityScore = IsEdgeMaskMode(candidate.thresholdMode)
+    ? Clamp01(candidate.solidity / 0.22)
+    : Clamp01((candidate.solidity - 0.52) / 0.38);
+
+  return Clamp01(
+    0.24 * candidate.score +
+    0.20 * centerScore +
+    0.18 * sideScore +
+    0.18 * diagScore +
+    0.12 * angleScore +
+    0.08 * solidityScore
+  );
 }
 
 void SnapCornersToAxisGuides(OrderedCorners& corners) {
@@ -2317,6 +2462,7 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       return Failure(env, reason, debug);
     }
 
+
     if (AutoMeasureDebugEnabled()) {
       const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -2329,119 +2475,30 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     const Preprocessed pre = Preprocess(gray, params);
     debug.gaussianKernel = pre.gaussianKernel;
 
-    auto returnHoughFallback = [&](DebugInfo fallbackDebug, const HoughDiamondResult& hough) -> Napi::Value {
-      OrderedCorners refinedCorners = hough.corners;
-      std::array<LineModel, 4> refinedLines = hough.lines;
-      const OrderedCorners beforeRefine = refinedCorners;
-      DebugLog(
-        "[auto-measure:tips-before] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
-        beforeRefine.top.x,
-        beforeRefine.top.y,
-        beforeRefine.bottom.x,
-        beforeRefine.bottom.y,
-        beforeRefine.left.x,
-        beforeRefine.left.y,
-        beforeRefine.right.x,
-        beforeRefine.right.y);
-      const bool localTipsRefined = RefineDiamondTips(pre, params, refinedLines, refinedCorners, false);
-      const bool axisTipsRefined = RefineAxisTipsFromDarkBoundary(pre, params, refinedCorners);
-      TryRefineCorners(pre.blurred, refinedCorners, params);
-      if (axisTipsRefined) {
-        SnapCornersToAxisGuides(refinedCorners);
-      }
-      DebugLog(
-        "[auto-measure:tips-after] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
-        refinedCorners.top.x,
-        refinedCorners.top.y,
-        refinedCorners.bottom.x,
-        refinedCorners.bottom.y,
-        refinedCorners.left.x,
-        refinedCorners.left.y,
-        refinedCorners.right.x,
-        refinedCorners.right.y);
-
-      ShapeMetrics refinedMetrics = ComputeShapeMetrics(refinedCorners);
-      bool geometryOk = PointInsideImage(refinedCorners.top, params) &&
-                        PointInsideImage(refinedCorners.bottom, params) &&
-                        std::isfinite(refinedMetrics.diagonalRatio) &&
-                        refinedMetrics.diagonalRatio <= params.maxDiagonalRatio * 1.18 &&
-                        (1.0 / refinedMetrics.diagonalRatio) >= params.minDiagonalRatio * 0.88;
-      for (double angle : refinedMetrics.anglesDeg) {
-        if (std::abs(angle - 90.0) > params.angleToleranceDeg + 14.0) {
-          geometryOk = false;
-          break;
-        }
-      }
-      if ((localTipsRefined || axisTipsRefined) && !geometryOk) {
-        DebugLog(
-          "[auto-measure][d2] fallback refinement rejected reason=geometry d1_px=%.3f d2_px=%.3f ratio=%.3f\n",
-          refinedMetrics.d1,
-          refinedMetrics.d2,
-          refinedMetrics.diagonalRatio);
-        refinedCorners = beforeRefine;
-        refinedMetrics = ComputeShapeMetrics(refinedCorners);
-      }
-
-      fallbackDebug.finalCorners = refinedCorners;
-      fallbackDebug.finalMetrics = refinedMetrics;
-      fallbackDebug.hasFinalCorners = true;
-      fallbackDebug.d1Pixels = fallbackDebug.finalMetrics.d1;
-      fallbackDebug.d2Pixels = fallbackDebug.finalMetrics.d2;
-      fallbackDebug.confidence = hough.confidence;
-      if (params.pxPerMm > 0.0) {
-        fallbackDebug.d1Mm = fallbackDebug.d1Pixels / params.pxPerMm;
-        fallbackDebug.d2Mm = fallbackDebug.d2Pixels / params.pxPerMm;
-        fallbackDebug.averageMm = (fallbackDebug.d1Mm + fallbackDebug.d2Mm) * 0.5;
-      }
-      return Success(env, params, refinedCorners, fallbackDebug);
-    };
-
-    {
-      DebugInfo darkDebug = debug;
-      if (auto darkBody = TryDarkBodyFallback(pre, params, darkDebug)) {
-        const ShapeMetrics darkMetrics = ComputeShapeMetrics(darkBody->corners);
-        const double minDim = std::min(params.width, params.height);
-        bool anglesOk = true;
-        for (double angle : darkMetrics.anglesDeg) {
-          if (std::abs(angle - 90.0) > params.angleToleranceDeg) {
-            anglesOk = false;
-            break;
-          }
-        }
-
-        const bool strongSplitFacetVickers =
-          darkBody->confidence >= std::max(0.42, params.minConfidence * 0.86) &&
-          darkMetrics.area >= MinIndentationAreaPixels(params) * 0.72 &&
-          darkMetrics.d1 >= MinIndentationDiagonalPixels(params) &&
-          darkMetrics.d2 >= MinIndentationDiagonalPixels(params) &&
-          darkMetrics.d1 <= minDim * 0.78 &&
-          darkMetrics.d2 <= minDim * 0.78 &&
-          darkMetrics.diagonalRatio <= params.maxDiagonalRatio &&
-          (1.0 / darkMetrics.diagonalRatio) >= params.minDiagonalRatio &&
-          darkMetrics.sideRatio <= params.maxSideLengthRatio &&
-          anglesOk;
-
-        if (strongSplitFacetVickers) {
-          return returnHoughFallback(darkDebug, *darkBody);
-        }
-      }
-    }
+    DebugLog(
+      "[opencv-auto] preprocess smoothing=%d kernel=%d threshold=%d mode=%s\n",
+      params.smoothing,
+      pre.gaussianKernel,
+      params.threshold,
+      params.thresholdMode == "manual" ? "fixed" : params.thresholdMode.c_str()
+    );
 
     std::optional<Candidate> best;
-    for (const auto& item : pre.masks) {
-      std::optional<Candidate> candidate = SelectBestContour(item.second, item.first, params, debug);
-      if (candidate && (!best || candidate->score > best->score)) {
-        best = candidate;
+    if (!pre.masks.empty()) {
+      best = SelectBestContour(pre.masks.front().second, pre.masks.front().first, params, debug);
+      if (!best) {
+        for (size_t i = 1; i < pre.masks.size(); ++i) {
+          const auto& item = pre.masks[i];
+          std::optional<Candidate> candidate = SelectBestContour(item.second, item.first, params, debug);
+          if (candidate && (!best || candidate->score > best->score)) {
+            best = candidate;
+          }
+        }
       }
     }
 
     if (!best) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
+      DebugLog("[opencv-auto] reject reason=no valid centered diamond indentation contour found\n");
       return Failure(env, "no valid centered diamond indentation contour found", debug);
     }
 
@@ -2458,190 +2515,37 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.initialSideRatio = best->metrics.sideRatio;
     debug.initialDiagonalRatio = best->metrics.diagonalRatio;
 
-    const auto initial = ToSideOrder(best->corners);
-    std::array<LineModel, 4> lines;
-    for (int i = 0; i < 4; ++i) {
-      int sampleCount = 0;
-      const cv::Point2f a = initial[i];
-      const cv::Point2f b = initial[(i + 1) % 4];
-      const std::vector<cv::Point2f> edgePoints = SampleEdgePoints(pre, a, b, best->center, params, sampleCount);
-      const int dynamicMin = std::max(params.minLinePoints, std::min(34, std::max(8, sampleCount / 4)));
-      lines[i] = FitRobustLine(edgePoints, Normalize(b - a), sampleCount, dynamicMin);
-      debug.lineSampleCounts[i] = sampleCount;
-      debug.fittedLinePointCounts[i] = lines[i].pointCount;
-      debug.fittedLineResiduals[i] = lines[i].residual;
-      debug.fittedLineAngleDeltaDeg[i] = lines[i].angleDeltaDeg;
-
-      if (!lines[i].ok) {
-        return Failure(env, "fewer than 4 valid fitted sides", debug);
-      }
-      if (lines[i].angleDeltaDeg > 38.0) {
-        return Failure(env, "fitted edge angle deviates from diamond contour estimate", debug);
-      }
+    OrderedCorners contourCorners = ExtractAxisTipsFromContour(
+      best->contour,
+      best->hull,
+      best->corners,
+      best->center
+    );
+    std::string contourRejectReason;
+    if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
+      contourCorners = best->corners;
+      contourRejectReason.clear();
+    }
+    if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
+      DebugLog("[opencv-auto] reject reason=%s\n", contourRejectReason.c_str());
+      return Failure(env, contourRejectReason, debug);
     }
 
-    OrderedCorners finalCorners;
-    if (!IntersectLines(lines[3], lines[0], finalCorners.top) ||
-        !IntersectLines(lines[0], lines[1], finalCorners.right) ||
-        !IntersectLines(lines[1], lines[2], finalCorners.bottom) ||
-        !IntersectLines(lines[2], lines[3], finalCorners.left)) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "adjacent fitted side intersections are unstable", debug);
-    }
-
-    if (!PointInsideImage(finalCorners.top, params) ||
-        !PointInsideImage(finalCorners.right, params) ||
-        !PointInsideImage(finalCorners.bottom, params) ||
-        !PointInsideImage(finalCorners.left, params)) {
-      debug.finalCorners = finalCorners;
-      debug.hasFinalCorners = true;
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "corner intersection is outside image", debug);
-    }
-
-    // Per-tip strip refinement before sub-pixel polish. Snapshot first so
-    // we can revert if final geometry validation fails purely because of the
-    // refinement (the spec requires keeping the previous fitted-line corners
-    // in that case).
-    const OrderedCorners cornersBeforeRefine = finalCorners;
-    DebugLog(
-      "[auto-measure:tips-before] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
-      cornersBeforeRefine.top.x,
-      cornersBeforeRefine.top.y,
-      cornersBeforeRefine.bottom.x,
-      cornersBeforeRefine.bottom.y,
-      cornersBeforeRefine.left.x,
-      cornersBeforeRefine.left.y,
-      cornersBeforeRefine.right.x,
-      cornersBeforeRefine.right.y);
-    const bool tipsRefined = RefineDiamondTips(pre, params, lines, finalCorners, false);
-    const bool axisTipsRefined = RefineAxisTipsFromDarkBoundary(pre, params, finalCorners);
-
-    TryRefineCorners(pre.blurred, finalCorners, params);
-    if (axisTipsRefined) {
-      SnapCornersToAxisGuides(finalCorners);
-    }
-    DebugLog(
-      "[auto-measure:tips-after] top=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
-      finalCorners.top.x,
-      finalCorners.top.y,
-      finalCorners.bottom.x,
-      finalCorners.bottom.y,
-      finalCorners.left.x,
-      finalCorners.left.y,
-      finalCorners.right.x,
-      finalCorners.right.y);
-
-    ShapeMetrics finalMetrics = ComputeShapeMetrics(finalCorners);
-
-    // Reject geometry that got worse after refinement: revert to the un-refined
-    // intersection corners and re-validate from there.
-    auto revertRefinement = [&](const char* reason) {
-      DebugLog(
-        "[auto-measure][refine] accepted=false reason=%s d1_px=%.3f d2_px=%.3f\n",
-        reason, finalMetrics.d1, finalMetrics.d2);
-      finalCorners = cornersBeforeRefine;
-      TryRefineCorners(pre.blurred, finalCorners, params);
-      finalMetrics = ComputeShapeMetrics(finalCorners);
-    };
-    if (tipsRefined || axisTipsRefined) {
-      const bool diagBad =
-        finalMetrics.diagonalRatio > params.maxDiagonalRatio ||
-        (1.0 / finalMetrics.diagonalRatio) < params.minDiagonalRatio;
-      const bool sideBad = finalMetrics.sideRatio > params.maxSideLengthRatio;
-      bool angleBad = false;
-      for (double angle : finalMetrics.anglesDeg) {
-        if (std::abs(angle - 90.0) > params.angleToleranceDeg) {
-          angleBad = true;
-          break;
-        }
-      }
-      if (diagBad || sideBad || angleBad) {
-        revertRefinement(diagBad ? "diag-ratio" : sideBad ? "side-ratio" : "angle");
-      } else {
-        DebugLog(
-          "[auto-measure][refine] accepted=true d1_px=%.3f d2_px=%.3f\n",
-          finalMetrics.d1, finalMetrics.d2);
-      }
-    }
-
-    debug.finalCorners = finalCorners;
-    debug.finalMetrics = finalMetrics;
+    TryRefineCorners(pre.blurred, contourCorners, params);
+    const ShapeMetrics contourMetrics = ComputeShapeMetrics(contourCorners);
+    debug.finalCorners = contourCorners;
+    debug.finalMetrics = contourMetrics;
     debug.hasFinalCorners = true;
-    debug.d1Pixels = finalMetrics.d1;
-    debug.d2Pixels = finalMetrics.d2;
-
-    if (finalMetrics.area < debug.minArea || finalMetrics.area > debug.maxArea * 2.0) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "final diamond area is outside valid range", debug);
-    }
-    if (finalMetrics.d1 < MinIndentationDiagonalPixels(params) ||
-        finalMetrics.d2 < MinIndentationDiagonalPixels(params)) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "selected shape is too small to be indentation", debug);
-    }
-    if (finalMetrics.sideRatio > params.maxSideLengthRatio) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "side ratio is abnormal", debug);
-    }
-    if (finalMetrics.diagonalRatio > params.maxDiagonalRatio ||
-        (1.0 / finalMetrics.diagonalRatio) < params.minDiagonalRatio) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "diagonal ratio is abnormal", debug);
-    }
-
-    for (double angle : finalMetrics.anglesDeg) {
-      if (std::abs(angle - 90.0) > params.angleToleranceDeg) {
-        if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-          return returnHoughFallback(debug, *darkBody);
-        }
-        if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-          return returnHoughFallback(debug, *hough);
-        }
-        return Failure(env, "angles are not close to diamond geometry", debug);
-      }
-    }
-
-    if (AngleBetweenDirections(lines[0].dir, lines[2].dir) > 22.0 ||
-        AngleBetweenDirections(lines[1].dir, lines[3].dir) > 22.0) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
-      return Failure(env, "opposite fitted sides are not parallel enough", debug);
-    }
+    debug.d1Pixels = contourMetrics.d1;
+    debug.d2Pixels = contourMetrics.d2;
+    debug.lineSampleCounts = {
+      static_cast<int>(std::lround(contourMetrics.sideLengths[0])),
+      static_cast<int>(std::lround(contourMetrics.sideLengths[1])),
+      static_cast<int>(std::lround(contourMetrics.sideLengths[2])),
+      static_cast<int>(std::lround(contourMetrics.sideLengths[3]))
+    };
+    debug.fittedLinePointCounts = debug.lineSampleCounts;
+    debug.confidence = ComputeContourTipConfidence(params, *best, contourMetrics);
 
     if (params.pxPerMm > 0.0) {
       debug.d1Mm = debug.d1Pixels / params.pxPerMm;
@@ -2649,18 +2553,37 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       debug.averageMm = (debug.d1Mm + debug.d2Mm) * 0.5;
     }
 
-    debug.confidence = ComputeConfidence(params, *best, lines, finalMetrics);
+    DebugLog(
+      "[opencv-auto] contour area=%.2f center=(%.2f,%.2f) score=%.3f\n",
+      debug.selectedContourArea,
+      best->center.x,
+      best->center.y,
+      best->score
+    );
+    DebugLog(
+      "[opencv-auto] corners top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+      contourCorners.top.x,
+      contourCorners.top.y,
+      contourCorners.right.x,
+      contourCorners.right.y,
+      contourCorners.bottom.x,
+      contourCorners.bottom.y,
+      contourCorners.left.x,
+      contourCorners.left.y
+    );
+    DebugLog(
+      "[opencv-auto] measure D1_px=%.3f D2_px=%.3f confidence=%.3f\n",
+      debug.d1Pixels,
+      debug.d2Pixels,
+      debug.confidence
+    );
+
     if (debug.confidence < params.minConfidence) {
-      if (auto darkBody = TryDarkBodyFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *darkBody);
-      }
-      if (auto hough = TryHoughDiamondFallback(pre, params, debug)) {
-        return returnHoughFallback(debug, *hough);
-      }
+      DebugLog("[opencv-auto] reject reason=confidence score is low\n");
       return Failure(env, "confidence score is low", debug);
     }
 
-    return Success(env, params, finalCorners, debug);
+    return Success(env, params, contourCorners, debug);
   } catch (const cv::Exception& ex) {
     return Failure(env, std::string("OpenCV error: ") + ex.what(), debug);
   } catch (const std::exception& ex) {

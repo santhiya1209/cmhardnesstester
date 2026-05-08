@@ -231,6 +231,24 @@ export function guideLinesToPoints(guides: ManualGuideLines): ManualMeasurePoint
   ];
 }
 
+// Industrial qualification: HV must lie within the workpiece's configured
+// [targetMinHv, targetMaxHv]. Returns null when no target range is set so
+// the table renderer can leave the cell blank rather than reporting NO for
+// unconfigured tests. Inclusive comparison matches typical material specs.
+export function computeQualified(
+  hv: number | null | undefined,
+  targetMinHv: number | null | undefined,
+  targetMaxHv: number | null | undefined
+): 'YES' | 'NO' | null {
+  if (typeof hv !== 'number' || !Number.isFinite(hv)) return null;
+  const minSet = typeof targetMinHv === 'number' && Number.isFinite(targetMinHv) && targetMinHv > 0;
+  const maxSet = typeof targetMaxHv === 'number' && Number.isFinite(targetMaxHv) && targetMaxHv > 0;
+  if (!minSet && !maxSet) return null;
+  const min = minSet ? (targetMinHv as number) : -Infinity;
+  const max = maxSet ? (targetMaxHv as number) : Infinity;
+  return hv >= min && hv <= max ? 'YES' : 'NO';
+}
+
 export function parseForceKgf(value: string | number | null | undefined): number | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) && value > 0 ? value : null;
@@ -419,6 +437,23 @@ export function calculateVickersFromPixels({
   }
 
   const hv = VICKERS_CONSTANT * forceKgf / (avgDMm * avgDMm);
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[calibration] objective=${normalizedObjective} umPerPixel=${umPerPixel}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] D1_px=${d1Px} D2_px=${d2Px}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] D1_um=${d1Um} D2_um=${d2Um}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] D1_mm=${d1Mm} D2_mm=${d2Mm}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] averageDiagonal_mm=${avgDMm}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] force_kgf=${forceKgf}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] HV=${hv}`);
   const calibrationId = calibration?.id ?? '';
 
   return {
@@ -515,6 +550,19 @@ export function calculateManualCalibratedValuesFromPixels(
     forceKgf && forceKgf > 0 && averageMm > 0
       ? round(VICKERS_CONSTANT * forceKgf / (averageMm * averageMm), 2)
       : null;
+
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] D1_px=${d1Px} D2_px=${d2Px}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] D1_um=${d1Um} D2_um=${d2Um}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] D1_mm=${d1Um / 1000} D2_mm=${d2Um / 1000}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] averageDiagonal_mm=${averageMm}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] force_kgf=${forceKgf ?? 0}`);
+  // eslint-disable-next-line no-console
+  console.log(`[hv-calc] HV=${hv}`);
 
   return {
     d1Px: round(d1Px, 2),

@@ -588,6 +588,12 @@ class HardnessMachineSerialService extends EventEmitter {
       // eslint-disable-next-line no-console
       console.log(`[machine-rx] after-tx raw=${JSON.stringify(chunk.toString('ascii'))}`);
     }
+    if (this.pendingAckField === 'force') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-force-rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
+      );
+    }
     // eslint-disable-next-line no-console
     console.log(
       `[machine-rx] chunk hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
@@ -656,6 +662,10 @@ class HardnessMachineSerialService extends EventEmitter {
               console.log(`[machine-parse] force detected value=${value}`);
               // eslint-disable-next-line no-console
               console.log(`[machine-sync] source=machine force=${value}`);
+              // eslint-disable-next-line no-console
+              console.log(`[machine-force-panel-update] value=${value} source=machine`);
+              // eslint-disable-next-line no-console
+              console.log(`[machine-force-state-confirmed] value=${value} source=machine`);
             }
             if (field === 'objective') {
               // eslint-disable-next-line no-console
@@ -683,9 +693,21 @@ class HardnessMachineSerialService extends EventEmitter {
           };
           if (frame.values.objective !== undefined) {
             const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
+            // Defensive: assign explicitly even though `...patch` already
+            // carries it. Guards against future changes to frame.values typing
+            // and makes the machine-RX → state.objective contract explicit.
+            fullPatch.objective = String(frame.values.objective);
             fullPatch.lastObjectiveRx = rxAscii;
             fullPatch.confirmedObjectiveFromMachine = String(frame.values.objective);
             fullPatch.lastObjectivePhysicalCheck = 'unknown';
+            // eslint-disable-next-line no-console
+            console.log(
+              `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.values.objective}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[machine-sync][objective] source=machine confirmedObjective=${frame.values.objective}`
+            );
             // eslint-disable-next-line no-console
             console.log(
               `[objective-test] rx=${rxAscii} confirmed=${frame.values.objective}`
@@ -737,6 +759,15 @@ class HardnessMachineSerialService extends EventEmitter {
             lastError: undefined,
           };
           if (frame.objective !== undefined) {
+            const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
+            // eslint-disable-next-line no-console
+            console.log(
+              `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.objective}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[machine-sync][objective] source=machine confirmedObjective=${frame.objective}`
+            );
             // eslint-disable-next-line no-console
             console.log(`[machine-sync][machine-update] field=objective value=${frame.objective}`);
             this.logMachineRxField('objective', frame.objective);
@@ -744,7 +775,6 @@ class HardnessMachineSerialService extends EventEmitter {
             console.log(`[machine-rx] objective detected value=${frame.objective}`);
             // eslint-disable-next-line no-console
             console.log(`[machine-sync] source=machine objective=${frame.objective}`);
-            const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
             patch.objective = frame.objective;
             patch.lastObjectiveRx = rxAscii;
             patch.confirmedObjectiveFromMachine = frame.objective;
@@ -777,6 +807,10 @@ class HardnessMachineSerialService extends EventEmitter {
             console.log(`[machine-parse] force detected value=${frame.value}`);
             // eslint-disable-next-line no-console
             console.log(`[machine-sync] source=machine force=${frame.value}`);
+            // eslint-disable-next-line no-console
+            console.log(`[machine-force-panel-update] value=${frame.value} source=machine`);
+            // eslint-disable-next-line no-console
+            console.log(`[machine-force-state-confirmed] value=${frame.value} source=machine`);
           }
           if (frame.key === 'objective') {
             // eslint-disable-next-line no-console
@@ -807,6 +841,14 @@ class HardnessMachineSerialService extends EventEmitter {
               // Reset physical check on every fresh machine confirmation —
               // the human has not yet visually verified this new position.
               patch.lastObjectivePhysicalCheck = 'unknown';
+              // eslint-disable-next-line no-console
+              console.log(
+                `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.value}`
+              );
+              // eslint-disable-next-line no-console
+              console.log(
+                `[machine-sync][objective] source=machine confirmedObjective=${frame.value}`
+              );
               // eslint-disable-next-line no-console
               console.log(
                 `[objective-test] rx=${rxAscii} confirmed=${frame.value}`
@@ -954,6 +996,10 @@ class HardnessMachineSerialService extends EventEmitter {
         console.log(`[machine-sync][ack] field=${field} ok=true`);
         // eslint-disable-next-line no-console
         console.log(`[machine-service] ack field=${field} ok=true`);
+        if (field === 'force') {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-force-ack] command=${commandLabel} id=${commandId} expected=${expectedValue ?? 'any'}`);
+        }
         cleanup();
         resolve();
       };
@@ -972,6 +1018,10 @@ class HardnessMachineSerialService extends EventEmitter {
         console.log(`[machine-service] ack field=${field} ok=false message=ack timeout`);
         // eslint-disable-next-line no-console
         console.log(`[machine-ack] timeout command=${commandLabel} id=${commandId} expected=${expectedValue ?? 'any'}`);
+        if (field === 'force') {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-force-timeout] command=${commandLabel} id=${commandId} expected=${expectedValue ?? 'any'} timeoutMs=${timeoutMs}`);
+        }
         cleanup();
         reject(new Error('ack timeout'));
       }, timeoutMs);
@@ -1020,6 +1070,10 @@ class HardnessMachineSerialService extends EventEmitter {
       // eslint-disable-next-line no-console
       console.log(
         `[machine-tx] command=load sourceField=force value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-force-tx] value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
       );
     } else if (field === 'objective') {
       // eslint-disable-next-line no-console
@@ -1107,6 +1161,8 @@ class HardnessMachineSerialService extends EventEmitter {
     if (key === 'force') {
       // eslint-disable-next-line no-console
       console.log(`[machine-service] setForce requested value=${value}`);
+      // eslint-disable-next-line no-console
+      console.log(`[machine-force-tx-request] requested value=${value}`);
     }
 
     let normalizedValue: string | number;
@@ -1193,6 +1249,8 @@ class HardnessMachineSerialService extends EventEmitter {
         console.log(`[machine-sync] mapped software force -> machine load value=${normalizedValue}`);
         // eslint-disable-next-line no-console
         console.log(`[machine-state] force=${normalizedValue} source=pc`);
+        // eslint-disable-next-line no-console
+        console.log(`[machine-force-state-confirmed] value=${normalizedValue} source=pc`);
       }
       const confirmedByMachine =
         this.state.lastUpdatedBy === 'machine' &&
@@ -1342,6 +1400,10 @@ class HardnessMachineSerialService extends EventEmitter {
       const numericLoadTime = Number(this.state.loadTime);
       const indentTimeoutMs =
         (Number.isFinite(numericLoadTime) ? numericLoadTime * 1000 : 0) + INDENT_FINISH_GRACE_MS;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-impress-context] force=${this.state.force} loadTime=${this.state.loadTime} objective=${this.state.objective} turretAfterImpress=true ascii=${JSON.stringify(frame.toString('ascii'))} hex="${frame.toString('hex')}" expectedRx=FINISH timeoutMs=${indentTimeoutMs}`
+      );
       // Indent triggers physical motion. The original DLL decodes FINISH as
       // the completion acknowledgement, so keep the UI pending until RX proves it.
       this.updateTelemetry({

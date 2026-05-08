@@ -11,6 +11,11 @@ export const TestRecordPayloadSchema = z.object({
   testMethod: NonEmptyStringSchema,
   measurementIds: uniqueStringArraySchema(EntityIdSchema),
   createdAt: IsoDateTimeSchema,
+  // Workpiece-level hardness specification. Each measurement under this test
+  // record qualifies if HV ∈ [targetMinHv, targetMaxHv]. Optional so legacy
+  // records remain valid; when absent qualified is left null.
+  targetMinHv: z.number().positive().optional().nullable(),
+  targetMaxHv: z.number().positive().optional().nullable(),
 });
 
 export const TestRecordModel = TestRecordPayloadSchema.extend({

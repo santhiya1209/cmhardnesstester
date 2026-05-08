@@ -13,6 +13,7 @@ import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
 import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
+import ExportReportDialog from '@/component/own/ExportReportDialog';
 
 const CONVERT_TYPE_OPTIONS = [
   'HV',
@@ -90,6 +91,7 @@ function MeasurementsWorkspaceImpl({
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
   const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const selectedMeasurement = useMemo(
     () => measurements.find((measurement) => measurement.id === selectedMeasurementId) ?? null,
@@ -216,11 +218,20 @@ function MeasurementsWorkspaceImpl({
           size="small"
           sx={ACTION_BTN_SX}
           disabled={busy || measurements.length === 0}
-          onClick={() => onOpenTestRecords(selectedMeasurement ? [selectedMeasurement.id] : measurements.map((measurement) => measurement.id))}
+          onClick={() => {
+            void onOpenTestRecords;
+            setReportOpen(true);
+          }}
         >
           Report
         </Button>
       </Box>
+      <ExportReportDialog
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        measurements={measurements}
+        cameraImageDataUrl={(displayedMeasurement?.imageDataUrl ?? null) || null}
+      />
 
       <Stack direction="row" sx={STATUS_ROW_SX}>
         {busy ? <CircularProgress size={14} /> : null}

@@ -27,6 +27,8 @@ type DrawArgs = {
 const HANDLE_RADIUS = 6;
 const HIT_DISTANCE = 10;
 const YELLOW = '#FFFF00';
+const LINE_WIDTH = 2;
+const LINE_WIDTH_ACTIVE = 2.5;
 const LABEL_BG = 'rgba(0,0,0,0.58)';
 const FONT = '12px Consolas, ui-monospace, monospace';
 
@@ -161,11 +163,14 @@ export function drawManualMeasureOverlay({
   };
 
   ctx.strokeStyle = YELLOW;
-  ctx.lineWidth = 1.5;
+  ctx.lineCap = 'butt';
+  ctx.setLineDash([]);
 
   const lineWidth = (key: ManualGuideLineKey) =>
-    key === hoverGuide || key === dragGuide ? 2.5 : 1.5;
+    key === hoverGuide || key === dragGuide ? LINE_WIDTH_ACTIVE : LINE_WIDTH;
 
+  // Four full-extent solid yellow guides framing the indentation —
+  // matches the reference industrial Vickers overlay.
   ctx.beginPath();
   ctx.lineWidth = lineWidth('left');
   ctx.moveTo(displayGuides.leftX, 0);
@@ -190,18 +195,8 @@ export function drawManualMeasureOverlay({
   ctx.lineTo(width, displayGuides.bottomY);
   ctx.stroke();
 
-  ctx.setLineDash([6, 4]);
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(displayGuides.leftX, centerY);
-  ctx.lineTo(displayGuides.rightX, centerY);
-  ctx.moveTo(centerX, displayGuides.topY);
-  ctx.lineTo(centerX, displayGuides.bottomY);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  drawLabel(ctx, 'D1', { x: centerX, y: centerY });
-  drawLabel(ctx, 'D2', { x: centerX, y: (displayGuides.topY + centerY) / 2 });
+  // Tiny d1/d2 label near the center, no large background.
+  drawLabel(ctx, 'd1', { x: centerX, y: centerY });
 
   (Object.keys(handles) as ManualGuideLineKey[]).forEach((key) => {
     const point = handles[key];

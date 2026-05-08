@@ -5,7 +5,12 @@
 // Labtt.Communication.MasterControl.CodeTranslator.
 //
 // Confirmed TX/RX shape:
-//   software force 0.5kgf maps to machine Load -> TX "UC08\r", RX echo/status "C08"
+//   force / load -> TX "#<scale><value:D8>!"  (DLL pattern '#0{scale}{0:D8}!').
+//                   Examples: 0.5kgf -> "#0800000500!", 1kgf -> "#0900001000!".
+//                   No \r terminator. Machine echoes either the same '#..!' frame,
+//                   or an AV-state batch, or a bare OK — all accepted as ACK.
+//                   The earlier "UC08\r"/"C08" pair was inferred but proved silent
+//                   on the real machine; do not reintroduce it.
 //   objective 40X -> TX "UL2\r",  machine RX echo/status "L2OK"
 //   lightness 5   -> TX "UK0005\r", machine RX echo/status "K0005"
 //   load time 5   -> TX "UT05\r", machine RX echo/status "T05"
@@ -166,8 +171,12 @@ function padInteger(value: string | number, width: number): string | null {
 }
 
 const COMMAND_MAP: Partial<Record<MachineCommandKey, CommandMapEntry>> = {
+  // Force has a custom builder (buildSetForceCommand) that emits the
+  // '#<scale><value:D8>!' frame directly without the global \r terminator.
+  // The map entry stays so isCommandVerified('force') reports true; buildFromMap
+  // is bypassed for force.
   force: {
-    code: 'UC',
+    code: '#',
     formatValue: (v) => FORCE_SCALE_CODE_BY_VALUE[String(v).trim()] ?? null,
     verified: true,
   },
@@ -324,7 +333,22 @@ function buildFromMap(key: MachineCommandKey, value: string | number | null): Fr
 
 export function buildSetForceCommand(value: string | number): FrameOrNull {
   logBuild('setForce', value);
-  return buildFromMap('force', value);
+  const trimmed = String(value).trim();
+  const scaleCode = FORCE_SCALE_CODE_BY_VALUE[trimmed];
+  const realCode = FORCE_REAL_CODE_BY_VALUE[trimmed];
+  if (!scaleCode || !realCode) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[machine-protocol] no verified force encoding for "${trimmed}" — refusing to transmit`
+    );
+    return null;
+  }
+  // 8-digit zero-padded force value, e.g. 0.5kgf -> '00000500'.
+  const value8 = String(Number(realCode)).padStart(8, '0');
+  // Frame: '#<scale><value:D8>!' — no \r terminator. This is the DLL pattern
+  // '#0{scale}{0:D8}!' confirmed by the original Communication.dll.
+  const text = `#${scaleCode}${value8}!`;
+  return Buffer.from(text, 'ascii');
 }
 
 export function buildSetLightnessCommand(value: string | number): FrameOrNull {
@@ -432,11 +456,30 @@ function isLikelyAsciiLineChunk(buffer: Buffer): boolean {
 function findAsciiLineEnd(buffer: Buffer): { index: number; consumed: number } | null {
   const cr = buffer.indexOf(0x0d);
   const lf = buffer.indexOf(0x0a);
-  if (cr < 0 && lf < 0) return null;
+  // '!' (0x21) terminates the force "#<scale><value:D8>!" frame — treat it as
+  // an end-of-frame marker but keep the '!' inside the line so classifyFrame
+  // can match the full pattern. We pass index = pos of '!' + 1 so the caller's
+  // slice(0, index) keeps the '!'.
+  const bang = buffer.indexOf(0x21);
+  let bestIndex = -1;
+  let bestConsumed = 0;
   if (cr >= 0 && (lf < 0 || cr < lf)) {
-    return { index: cr, consumed: buffer[cr + 1] === 0x0a ? cr + 2 : cr + 1 };
+    bestIndex = cr;
+    bestConsumed = buffer[cr + 1] === 0x0a ? cr + 2 : cr + 1;
+  } else if (lf >= 0) {
+    bestIndex = lf;
+    bestConsumed = lf + 1;
   }
-  return { index: lf, consumed: lf + 1 };
+  if (bang >= 0 && (bestIndex < 0 || bang < bestIndex)) {
+    // Only treat '!' as a terminator if it actually closes a '#…!' frame —
+    // otherwise stray exclamation marks in noise could split frames.
+    if (buffer[0] === 0x23 /* '#' */) {
+      bestIndex = bang + 1; // include '!' in the line
+      bestConsumed = bang + 1;
+    }
+  }
+  if (bestIndex < 0) return null;
+  return { index: bestIndex, consumed: bestConsumed };
 }
 
 function parseAsciiLine(line: Buffer): ParsedMachineFrame {
@@ -454,6 +497,12 @@ function fixedAsciiFrameLength(text: string): number {
   if (forceWithOk) return forceWithOk[0].length;
   const force = /^C\d{2}/.exec(text);
   if (force) return force[0].length;
+
+  // '#<scale><value:D8>!' or just '#<scale>!' — variable length up to '!'.
+  if (text.startsWith('#')) {
+    const bang = text.indexOf('!');
+    if (bang > 0) return bang + 1;
+  }
 
   const loadTime = /^T\d{2}/.exec(text);
   if (loadTime) return loadTime[0].length;
@@ -582,13 +631,35 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
     };
   }
 
+  // Force echo in the '#<scale><value:D8>!' family. Some firmwares echo just
+  // '#<scale>!' (no value), so the value group is optional.
+  const hashForceMatch = /^#(\d{2})(\d{1,8})?!?$/.exec(text);
+  if (hashForceMatch) {
+    const force = FORCE_VALUE_BY_SCALE_CODE[hashForceMatch[1]];
+    if (force) {
+      return { kind: 'state-update', key: 'force', value: force };
+    }
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[machine-force-rx] unmapped # scale code="${hashForceMatch[1]}" raw="${text}" — accepting as ACK`
+    );
+    return { kind: 'ack' };
+  }
+
   const forceMatch = /^C(\d{2})(?:OK)?$/.exec(text);
   if (forceMatch) {
     const force = FORCE_VALUE_BY_SCALE_CODE[forceMatch[1]];
     if (force) {
       return { kind: 'state-update', key: 'force', value: force };
     }
-    return { kind: 'unknown', raw: payload };
+    // Machine echoed a force/load frame but the scale code isn't in the mapping
+    // table. Treat as bare ACK so a pending force write doesn't time out — the
+    // dropdown keeps its last confirmed value, but TX is acknowledged.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[machine-force-rx] unmapped scale code="${forceMatch[1]}" raw="${text}" — accepting as ACK`
+    );
+    return { kind: 'ack' };
   }
 
   const loadTimeMatch = /^T(\d{2})$/.exec(text);

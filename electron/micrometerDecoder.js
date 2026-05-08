@@ -189,7 +189,72 @@ function decodeMicrometerBuffer(buffer) {
 const parseChineseFrames = parseBinaryFrames;
 const decodeChineseFrame = parseBinaryMicrometerFrame;
 
+// Frame-shape detector for the unknown 10-byte preamble seen on COM3:
+//   20 00 [00|20] 20 0c [d] [d] [d] 08 00
+// The strict decoder above rejects this layout. We use this detector only to
+// align candidate 10-byte slices that can then be passed to the captures.js
+// learning decoder — we do NOT speculate which nibbles hold the digits.
+const ALT_FRAME_LENGTH = 10;
+
+function isAlternatePreambleFrame(frame) {
+  if (!Buffer.isBuffer(frame) || frame.length !== ALT_FRAME_LENGTH) return false;
+  if (frame[0] !== 0x20) return false;
+  if (frame[1] !== 0x00) return false;
+  if (frame[3] !== 0x20) return false;
+  if ((frame[4] & 0x0f) !== 0x0c) return false;
+  if (frame[8] !== 0x08) return false;
+  if (frame[9] !== 0x00) return false;
+  return true;
+}
+
+// Best-effort interpretation for the alt-preamble layout. Frame bytes 0,1,3,
+// 4,8,9 are constant on every observed frame, so the value sits in bytes 2,
+// 5, 6, 7. Treat byte-2 high nibble as the leading integer digit and the low
+// nibbles of bytes 5/6/7 as the three decimal digits. Decimal hint = byte 4
+// low nibble = 0x0c → 3 decimal places. If your LCD does not match, log the
+// frame hex + the LCD value you see — we shift nibble positions accordingly.
+function parseAlternatePreambleFrame(frame) {
+  if (!isAlternatePreambleFrame(frame)) return null;
+  const decimalPlaces = 3;
+  const leading = (frame[2] >> 4) & 0x0f;
+  const d1 = frame[5] & 0x0f;
+  const d2 = frame[6] & 0x0f;
+  const d3 = frame[7] & 0x0f;
+  if ([leading, d1, d2, d3].some((d) => d > 9)) return null;
+  const numeric = leading * 1000 + d1 * 100 + d2 * 10 + d3;
+  const value = numeric / 10 ** decimalPlaces;
+  const rawHex = bufferToHex(frame);
+  return {
+    rawHex,
+    raw: rawHex,
+    value,
+    displayValue: formatDisplayValue(value),
+    decimalPlaces,
+    unit: 'mm',
+    sign: '+',
+    digits: [leading, d1, d2, d3],
+  };
+}
+
+function parseAlternatePreambleFrames(buffer) {
+  const frames = [];
+  let cursor = 0;
+  while (cursor + ALT_FRAME_LENGTH <= buffer.length) {
+    const candidate = Buffer.from(buffer.subarray(cursor, cursor + ALT_FRAME_LENGTH));
+    if (isAlternatePreambleFrame(candidate)) {
+      frames.push(candidate);
+      cursor += ALT_FRAME_LENGTH;
+    } else {
+      cursor += 1;
+    }
+  }
+  const leftover =
+    cursor < buffer.length ? Buffer.from(buffer.subarray(cursor)) : Buffer.alloc(0);
+  return { frames, leftover };
+}
+
 module.exports = {
+  ALT_FRAME_LENGTH,
   BINARY_FRAME_LENGTH,
   SYNC_FRAME_LEN,
   bufferToHex,
@@ -198,7 +263,10 @@ module.exports = {
   decodeMicrometerBuffer,
   diagnoseChineseFrame,
   formatDisplayValue,
+  isAlternatePreambleFrame,
   isLikelyBinaryMicrometerFrame,
+  parseAlternatePreambleFrame,
+  parseAlternatePreambleFrames,
   parseBinaryFrames,
   parseBinaryMicrometerFrame,
   parseChineseFrames,

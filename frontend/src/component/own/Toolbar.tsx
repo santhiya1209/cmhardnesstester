@@ -6,7 +6,7 @@ import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { colors } from '@/theme/theme';
-import { TOOL_ACTION_TO_TOOL, type ToolId, type ToolbarActionId } from '@/types/tool';
+import type { ToolbarActionId } from '@/types/tool';
 
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import SaveIcon from '@mui/icons-material/Save';
@@ -52,38 +52,43 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
 const BAR_SX: SxProps<Theme> = {
   display: 'flex',
   alignItems: 'center',
-  gap: 0.25,
-  px: 0.5,
-  py: 0.5,
+  gap: '6px',
+  px: '6px',
+  py: '4px',
   bgcolor: colors.headingPrimary,
   borderBottom: 1,
   borderColor: colors.border,
-  flexWrap: 'wrap',
+  flexWrap: 'nowrap',
+  overflow: 'hidden',
 };
 
-const SPACER_SX: SxProps<Theme> = { width: 8 };
+const SPACER_SX: SxProps<Theme> = {
+  width: '1px',
+  height: '22px',
+  bgcolor: 'rgba(255, 255, 255, 0.18)',
+  flexShrink: 0,
+};
 
 const ICON_BUTTON_SX: SxProps<Theme> = {
+  width: 36,
+  height: 36,
+  flexShrink: 0,
   borderRadius: 0.5,
   color: '#FFFFFF',
-  p: 0.5,
+  padding: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  '& .MuiSvgIcon-root': { fontSize: 18, width: 18, height: 18 },
   '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.12)' },
-};
-
-const ICON_BUTTON_ACTIVE_SX: SxProps<Theme> = {
-  ...ICON_BUTTON_SX,
-  bgcolor: 'rgba(255, 255, 255, 0.22)',
-  outline: '1px solid rgba(255,255,255,0.6)',
-  '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.28)' },
 };
 
 type ToolbarButtonProps = {
   item: ToolbarItemDef;
-  active: boolean;
   onSelect: (action: ToolbarActionId) => void;
 };
 
-const ToolbarButton = memo(function ToolbarButton({ item, active, onSelect }: ToolbarButtonProps) {
+const ToolbarButton = memo(function ToolbarButton({ item, onSelect }: ToolbarButtonProps) {
   const Icon = item.icon;
 
   const handleClick = useCallback(() => {
@@ -96,8 +101,7 @@ const ToolbarButton = memo(function ToolbarButton({ item, active, onSelect }: To
         size="small"
         onClick={handleClick}
         aria-label={item.label}
-        aria-pressed={active}
-        sx={active ? ICON_BUTTON_ACTIVE_SX : ICON_BUTTON_SX}
+        sx={ICON_BUTTON_SX}
       >
         <Icon fontSize="small" />
       </IconButton>
@@ -106,23 +110,18 @@ const ToolbarButton = memo(function ToolbarButton({ item, active, onSelect }: To
 });
 
 type Props = {
-  activeTool: ToolId;
   onSelect: (action: ToolbarActionId) => void;
 };
 
-function ToolbarImpl({ activeTool, onSelect }: Props) {
+function ToolbarImpl({ onSelect }: Props) {
   return (
     <Box sx={BAR_SX}>
-      {TOOLBAR_ITEMS.map((item) => {
-        const mappedTool = TOOL_ACTION_TO_TOOL[item.action];
-        const active = mappedTool !== undefined && mappedTool === activeTool;
-        return (
-          <Fragment key={item.action}>
-            <ToolbarButton item={item} active={active} onSelect={onSelect} />
-            {item.groupEnd && <Box sx={SPACER_SX} />}
-          </Fragment>
-        );
-      })}
+      {TOOLBAR_ITEMS.map((item) => (
+        <Fragment key={item.action}>
+          <ToolbarButton item={item} onSelect={onSelect} />
+          {item.groupEnd && <Box sx={SPACER_SX} />}
+        </Fragment>
+      ))}
     </Box>
   );
 }

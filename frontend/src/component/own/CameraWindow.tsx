@@ -99,7 +99,7 @@ export type CameraWindowHandle = {
   toggleFreeze: () => boolean;
   zoomIn: () => number;
   zoomOut: () => number;
-  captureDisplayedFrame: () => {
+  captureDisplayedFrame: (options?: { freeze?: boolean }) => {
     ok: true;
     buffer: ArrayBuffer;
     width: number;
@@ -110,8 +110,14 @@ export type CameraWindowHandle = {
   } | { ok: false; error: string };
   loadImageFromBuffer: (buffer: ArrayBufferLike) => Promise<{ ok: boolean; error?: string }>;
   exportImageBlob: (mimeType?: string) => Promise<Blob | null>;
+  captureThumbnailDataUrl: (options?: {
+    maxWidth?: number;
+    mimeType?: string;
+    quality?: number;
+  }) => string | null;
   refetchStatus: () => Promise<void>;
   clearLiveCanvas: () => void;
+  clearLiveImage: () => void;
   waitForFreshFrame: (timeoutMs?: number) => Promise<boolean>;
 };
 
@@ -219,7 +225,7 @@ function CameraWindowImpl(
     return next;
   }, []);
 
-  const captureDisplayedFrame = useCallback<CameraWindowHandle['captureDisplayedFrame']>(() => {
+  const captureDisplayedFrame = useCallback<CameraWindowHandle['captureDisplayedFrame']>((options) => {
     const live = canvasRef.current;
     const snap = freezeCanvasRef.current;
     const source = frozen && snap && snap.width > 0 && snap.height > 0 ? snap : live;
@@ -250,12 +256,23 @@ function CameraWindowImpl(
       const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
       const sourceType = frozen ? imageSourceRef.current : 'live-camera';
 
-      // Why: do NOT auto-freeze after capture. Auto-freezing here meant the
-      // first Auto Measure flipped `frozen=true` and every subsequent capture
-      // (slider preview, next Auto Measure, objective change) read the stale
-      // snap canvas instead of the live stream. User-initiated freeze stays
-      // wired through `toggleFreeze`; uploaded images still arrive via
-      // `loadImageFromBuffer`. Live source must always be live.
+      if (options?.freeze) {
+        if (source === live && snap) {
+          snap.width = source.width;
+          snap.height = source.height;
+          const snapCtx = snap.getContext('2d');
+          if (snapCtx) {
+            snapCtx.putImageData(imageData, 0, 0);
+            imageSourceRef.current = 'live-camera';
+            setImageSize((current) =>
+              keepImageSizeIfSame(current, { width: source.width, height: source.height })
+            );
+            setFrozen(true);
+          }
+        }
+        // eslint-disable-next-line no-console
+        console.log('[opencv-auto] frame captured');
+      }
 
       // eslint-disable-next-line no-console
       console.log('[frame] captured timestamp=', Date.now(), 'source=', sourceType, 'size=', source.width, 'x', source.height);
@@ -333,6 +350,86 @@ function CameraWindowImpl(
     [frozen]
   );
 
+  const captureThumbnailDataUrl = useCallback<CameraWindowHandle['captureThumbnailDataUrl']>(
+    (options) => {
+      const maxWidth = options?.maxWidth ?? 320;
+      const mimeType = options?.mimeType ?? 'image/jpeg';
+      const quality = options?.quality ?? 0.75;
+      const live = canvasRef.current;
+      const snap = freezeCanvasRef.current;
+      const source = frozen && snap && snap.width > 0 && snap.height > 0 ? snap : live;
+      if (!source || source.width <= 0 || source.height <= 0) {
+        // eslint-disable-next-line no-console
+        console.warn('[album] snapshot capture skipped — no source frame', {
+          source: source ? 'live-or-snap' : 'null',
+          width: source?.width ?? 0,
+          height: source?.height ?? 0,
+        });
+        return null;
+      }
+      const scale = source.width > maxWidth ? maxWidth / source.width : 1;
+      const w = Math.max(1, Math.round(source.width * scale));
+      const h = Math.max(1, Math.round(source.height * scale));
+      const out = document.createElement('canvas');
+      out.width = w;
+      out.height = h;
+      const ctx = out.getContext('2d');
+      if (!ctx) {
+        // eslint-disable-next-line no-console
+        console.warn('[album] snapshot capture failed — no 2d context');
+        return null;
+      }
+      ctx.drawImage(source, 0, 0, w, h);
+
+      // Compose overlay canvases (yellow Auto/Manual Measure lines, markers,
+      // ImageOverlay shapes) on top of the camera frame so the album thumbnail
+      // matches what the user sees in the live viewport.
+      const viewport = viewportRef.current;
+      let overlayCount = 0;
+      if (viewport && imageSize && imageSize.width > 0 && imageSize.height > 0) {
+        const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
+        const overlayCanvases = Array.from(viewport.querySelectorAll('canvas')).filter(
+          (c) => c !== live && c !== snap && c.width > 0 && c.height > 0
+        );
+        if (placement) {
+          for (const overlay of overlayCanvases) {
+            const dprX = overlay.width / Math.max(1, viewport.clientWidth);
+            const dprY = overlay.height / Math.max(1, viewport.clientHeight);
+            const sx = placement.offsetX * dprX;
+            const sy = placement.offsetY * dprY;
+            const sw = placement.width * dprX;
+            const sh = placement.height * dprY;
+            if (sw <= 0 || sh <= 0) continue;
+            try {
+              ctx.drawImage(overlay, sx, sy, sw, sh, 0, 0, w, h);
+              overlayCount += 1;
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn('[album] overlay compose failed', err);
+            }
+          }
+        }
+      }
+
+      try {
+        const dataUrl = out.toDataURL(mimeType, quality);
+        // eslint-disable-next-line no-console
+        console.log(
+          '[album] snapshot captured width=', w,
+          'height=', h,
+          'overlays=', overlayCount,
+          'bytes=', dataUrl.length
+        );
+        return dataUrl;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[album] snapshot toDataURL failed', err);
+        return null;
+      }
+    },
+    [frozen, imageSize]
+  );
+
   const clearLiveCanvas = useCallback(() => {
     const live = canvasRef.current;
     if (!live) return;
@@ -346,6 +443,19 @@ function CameraWindowImpl(
     // commit fails to render until status polls a width/height change (which
     // never happens because the camera frame size is constant).
   }, []);
+
+  // Used by Close Camera: also drop any frozen snapshot and exit the frozen
+  // state so the user actually sees an empty viewport. clearLiveCanvas alone
+  // leaves a stale freeze-canvas overlay visible if the camera was frozen
+  // (e.g. via Auto Measure) at the moment of close.
+  const clearLiveImage = useCallback(() => {
+    const snap = freezeCanvasRef.current;
+    const snapCtx = snap?.getContext('2d');
+    if (snap && snapCtx) snapCtx.clearRect(0, 0, snap.width, snap.height);
+    imageSourceRef.current = 'live-camera';
+    setFrozen(false);
+    clearLiveCanvas();
+  }, [clearLiveCanvas]);
 
   const waitForFreshFrame = useCallback(async (timeoutMs = 1500) => {
     const fresh = await waitForFreshCameraFrame(timeoutMs);
@@ -398,8 +508,10 @@ function CameraWindowImpl(
       captureDisplayedFrame,
       loadImageFromBuffer,
       exportImageBlob,
+      captureThumbnailDataUrl,
       refetchStatus,
       clearLiveCanvas,
+      clearLiveImage,
       waitForFreshFrame,
     }),
     [
@@ -409,8 +521,10 @@ function CameraWindowImpl(
       captureDisplayedFrame,
       loadImageFromBuffer,
       exportImageBlob,
+      captureThumbnailDataUrl,
       refetchStatus,
       clearLiveCanvas,
+      clearLiveImage,
       waitForFreshFrame,
     ]
   );

@@ -1,19 +1,16 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
-import { colors } from '@/theme/theme';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import { displayToImage, getImagePlacement, imageToDisplay } from '@/utils/manualMeasure';
-import type { ManualMeasureImageSize } from '@/utils/manualMeasureOverlayCanvas';
+import {
+  drawManualMeasureOverlay,
+  type ManualMeasureImageSize,
+} from '@/utils/manualMeasureOverlayCanvas';
 import type { Point } from '@/types/tool';
 
-// Four long yellow guide lines, identical metaphor to ManualMeasureOverlay:
-//   - vertical line at LEFT corner's x   (full height)
-//   - vertical line at RIGHT corner's x  (full height)
-//   - horizontal line at TOP corner's y  (full width)
-//   - horizontal line at BOTTOM corner's y (full width)
-// Each line has ONE degree of freedom; corner handles snap to their owning
-// line. D1 = right.x - left.x (in image pixels), D2 = bottom.y - top.y.
+// Frozen auto-measure overlay: detected Vickers tips are displayed using the
+// same guide-line style as Manual Measure.
 
 type CornerKey = keyof AutoMeasureCorners;
 type LineKey = 'left' | 'right' | 'top' | 'bottom';
@@ -22,9 +19,7 @@ const CORNER_KEYS: CornerKey[] = ['top', 'right', 'bottom', 'left'];
 const VERTICAL_LINES: LineKey[] = ['left', 'right'];
 const HORIZONTAL_LINES: LineKey[] = ['top', 'bottom'];
 
-const HANDLE_RADIUS = 6;
 const CORNER_HIT_RADIUS = 12;
-const LINE_HIT_DISTANCE = 6;
 
 export type AutoMeasureOverlaySource = 'auto' | 'preview' | 'save';
 
@@ -51,10 +46,6 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
-const LABEL_BG = 'rgba(0, 0, 0, 0.68)';
-const HANDLE_STROKE = 'rgba(0, 0, 0, 0.9)';
-const FONT = '12px Consolas, ui-monospace, monospace';
-
 type DragState = {
   kind: 'line' | 'corner';
   line: LineKey;
@@ -76,6 +67,28 @@ function cloneCorners(c: AutoMeasureCorners): AutoMeasureCorners {
   };
 }
 
+// 120ms cubic ease-out keeps slider preview transitions feeling industrial
+// (smooth, not jumpy) without leaving a perceptible lag after the user
+// stops scrolling. Bounded animation; settles via the skip-redraw guard.
+const TWEEN_DURATION_MS = 120;
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function lerpPoint(a: Point, b: Point, t: number): Point {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+function lerpCorners(a: AutoMeasureCorners, b: AutoMeasureCorners, t: number): AutoMeasureCorners {
+  return {
+    top: lerpPoint(a.top, b.top, t),
+    right: lerpPoint(a.right, b.right, t),
+    bottom: lerpPoint(a.bottom, b.bottom, t),
+    left: lerpPoint(a.left, b.left, t),
+  };
+}
+
 function pointKey(p: Point): string {
   return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
 }
@@ -90,28 +103,6 @@ function cornersKey(c: AutoMeasureCorners | null): string {
   ].join('|');
 }
 
-function drawHandle(ctx: CanvasRenderingContext2D, point: Point, hot: boolean) {
-  ctx.beginPath();
-  ctx.arc(point.x, point.y, HANDLE_RADIUS, 0, Math.PI * 2);
-  ctx.fillStyle = hot ? '#FFFFFF' : colors.autoMeasureLine;
-  ctx.fill();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = HANDLE_STROKE;
-  ctx.stroke();
-}
-
-function drawLabel(ctx: CanvasRenderingContext2D, text: string, at: Point) {
-  ctx.font = FONT;
-  ctx.textBaseline = 'middle';
-  const textWidth = ctx.measureText(text).width;
-  const x = at.x + 8;
-  const y = at.y - 8;
-  ctx.fillStyle = LABEL_BG;
-  ctx.fillRect(x - 4, y - 9, textWidth + 8, 18);
-  ctx.fillStyle = colors.autoMeasureLine;
-  ctx.fillText(text, x, y);
-}
-
 function AutoMeasureOverlayImpl({
   graphics,
   imageSize,
@@ -124,66 +115,74 @@ function AutoMeasureOverlayImpl({
   const frameRef = useRef<number | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const lastDrawKeyRef = useRef('');
+  const tweenFrameRef = useRef<number | null>(null);
   const [localCorners, setLocalCorners] = useState<AutoMeasureCorners | null>(null);
+  const localCornersRef = useRef<AutoMeasureCorners | null>(null);
   const [hover, setHover] = useState<{ kind: 'line' | 'corner'; line: LineKey } | null>(null);
-  // Tween corners toward new upstream graphics so slider-driven preview moves
-  // smoothly instead of snapping. Only active when not dragging and when we
-  // already have prior corners to ease from.
-  const tweenRafRef = useRef<number | null>(null);
+
+  const writeCorners = useCallback((c: AutoMeasureCorners | null) => {
+    localCornersRef.current = c;
+    setLocalCorners(c);
+  }, []);
 
   useEffect(() => {
     if (dragRef.current) return;
-    if (!graphics) {
-      if (tweenRafRef.current !== null) {
-        window.cancelAnimationFrame(tweenRafRef.current);
-        tweenRafRef.current = null;
-      }
-      setLocalCorners(null);
+    if (tweenFrameRef.current !== null) {
+      window.cancelAnimationFrame(tweenFrameRef.current);
+      tweenFrameRef.current = null;
+    }
+    const target = graphics ? cloneCorners(graphics.corners) : null;
+    const current = localCornersRef.current;
+    if (source === 'auto' && target) {
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-detected] corners=${cornersKey(target)}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure][detected] points={left:(${target.left.x.toFixed(1)},${target.left.y.toFixed(1)}),right:(${target.right.x.toFixed(1)},${target.right.y.toFixed(1)}),top:(${target.top.x.toFixed(1)},${target.top.y.toFixed(1)}),bottom:(${target.bottom.x.toFixed(1)},${target.bottom.y.toFixed(1)})}`
+      );
+    }
+    if (source === 'preview' && target) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-preview-update] corners=${cornersKey(target)}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-refine] source=preview from=${cornersKey(current)} to=${cornersKey(target)}`);
+    }
+    if (source === 'save' && target) {
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-final-save] corners=${cornersKey(target)}`);
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-save-final] corners=${cornersKey(target)}`);
+    }
+    // Snap on appear/disappear — a fade-from-nothing tween isn't meaningful.
+    if (!target || !current) {
+      writeCorners(target);
       return;
     }
-
-    const target = cloneCorners(graphics.corners);
-    setLocalCorners((current) => {
-      if (!current) return target;
-
-      if (tweenRafRef.current !== null) {
-        window.cancelAnimationFrame(tweenRafRef.current);
-        tweenRafRef.current = null;
-      }
-
-      const start = cloneCorners(current);
-      const startTs = performance.now();
-      const duration = 120;
-      const ease = (t: number) => 1 - (1 - t) * (1 - t); // easeOutQuad
-      const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-
-      const step = (now: number) => {
-        const t = Math.min(1, (now - startTs) / duration);
-        const k = ease(t);
-        setLocalCorners({
-          top: { x: lerp(start.top.x, target.top.x, k), y: lerp(start.top.y, target.top.y, k) },
-          right: { x: lerp(start.right.x, target.right.x, k), y: lerp(start.right.y, target.right.y, k) },
-          bottom: { x: lerp(start.bottom.x, target.bottom.x, k), y: lerp(start.bottom.y, target.bottom.y, k) },
-          left: { x: lerp(start.left.x, target.left.x, k), y: lerp(start.left.y, target.left.y, k) },
-        });
-        if (t < 1) {
-          tweenRafRef.current = window.requestAnimationFrame(step);
-        } else {
-          tweenRafRef.current = null;
-        }
-      };
-
-      tweenRafRef.current = window.requestAnimationFrame(step);
-      return current;
-    });
-
-    return () => {
-      if (tweenRafRef.current !== null) {
-        window.cancelAnimationFrame(tweenRafRef.current);
-        tweenRafRef.current = null;
+    const from = cloneCorners(current);
+    const to = target;
+    const startTime = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - startTime) / TWEEN_DURATION_MS);
+      writeCorners(t >= 1 ? to : lerpCorners(from, to, easeOutCubic(t)));
+      if (t < 1) {
+        tweenFrameRef.current = window.requestAnimationFrame(step);
+      } else {
+        tweenFrameRef.current = null;
       }
     };
-  }, [graphics]);
+    tweenFrameRef.current = window.requestAnimationFrame(step);
+  }, [graphics, source, writeCorners]);
+
+  useEffect(() => {
+    return () => {
+      if (tweenFrameRef.current !== null) {
+        window.cancelAnimationFrame(tweenFrameRef.current);
+        tweenFrameRef.current = null;
+      }
+    };
+  }, []);
 
   const corners = localCorners ?? graphics?.corners ?? null;
 
@@ -194,8 +193,6 @@ function AutoMeasureOverlayImpl({
       const canvas = canvasRef.current;
       const wrap = wrapRef.current;
       if (!canvas || !wrap) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
 
       const dpr = window.devicePixelRatio || 1;
       const width = Math.max(1, wrap.clientWidth);
@@ -204,78 +201,75 @@ function AutoMeasureOverlayImpl({
       const targetH = Math.round(height * dpr);
       const sizeChanged = canvas.width !== targetW || canvas.height !== targetH;
       const imageSizeKey = imageSize ? `${imageSize.width}x${imageSize.height}` : 'none';
-      const hoverKey = hover ? `${hover.kind}:${hover.line}` : 'none';
-      const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}`;
+      const hoverKey = hover ? hover.line : 'none';
+      const dragKey = dragRef.current ? dragRef.current.line : 'none';
+      const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}`;
 
       if (!sizeChanged && lastDrawKeyRef.current === drawKey) {
+        // eslint-disable-next-line no-console
+        console.log('[overlay] skipped-redraw-no-change');
+        // eslint-disable-next-line no-console
+        console.log('[overlay-skipped-no-change]');
         return;
       }
       lastDrawKeyRef.current = drawKey;
-      if (corners) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay] draw-start points=top(${corners.top.x.toFixed(1)},${corners.top.y.toFixed(1)}) right(${corners.right.x.toFixed(1)},${corners.right.y.toFixed(1)}) bottom(${corners.bottom.x.toFixed(1)},${corners.bottom.y.toFixed(1)}) left(${corners.left.x.toFixed(1)},${corners.left.y.toFixed(1)})`
-        );
-      }
 
-      if (sizeChanged) {
-        canvas.width = targetW;
-        canvas.height = targetH;
-      }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, width, height);
+      // eslint-disable-next-line no-console
+      console.log('[overlay] draw-start');
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-redraw] source=${source}`);
 
-      if (!corners || !imageSize) return;
-      const placement = getImagePlacement(width, height, imageSize);
-      if (!placement) return;
-
-      const top = imageToDisplay(corners.top, placement);
-      const right = imageToDisplay(corners.right, placement);
-      const bottom = imageToDisplay(corners.bottom, placement);
-      const left = imageToDisplay(corners.left, placement);
-
-      // Industrial Clemex/Halcon look: 4 solid yellow full-extent guide lines
-      // (vertical at left.x / right.x, horizontal at top.y / bottom.y) plus
-      // the D1 and D2 corner-to-corner measurement lines on top. All solid
-      // 2px yellow, matching detected corner coordinates exactly.
-      ctx.setLineDash([]);
-      ctx.strokeStyle = colors.autoMeasureLine;
-      ctx.lineWidth = 2;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      // Full-extent guides
-      ctx.moveTo(left.x, 0);
-      ctx.lineTo(left.x, height);
-      ctx.moveTo(right.x, 0);
-      ctx.lineTo(right.x, height);
-      ctx.moveTo(0, top.y);
-      ctx.lineTo(width, top.y);
-      ctx.moveTo(0, bottom.y);
-      ctx.lineTo(width, bottom.y);
-      // D1 = left↔right corner, D2 = top↔bottom corner
-      ctx.moveTo(left.x, left.y);
-      ctx.lineTo(right.x, right.y);
-      ctx.moveTo(top.x, top.y);
-      ctx.lineTo(bottom.x, bottom.y);
-      ctx.stroke();
-
-      drawHandle(ctx, top, hover?.kind === 'corner' && hover.line === 'top');
-      drawHandle(ctx, right, hover?.kind === 'corner' && hover.line === 'right');
-      drawHandle(ctx, bottom, hover?.kind === 'corner' && hover.line === 'bottom');
-      drawHandle(ctx, left, hover?.kind === 'corner' && hover.line === 'left');
-
-      drawLabel(ctx, 'D1', {
-        x: (left.x + right.x) / 2,
-        y: (left.y + right.y) / 2 + 14,
-      });
-      drawLabel(ctx, 'D2', {
-        x: (top.x + bottom.x) / 2 + 10,
-        y: (top.y + bottom.y) / 2,
+      // Reuse Manual Measure's clean rendering pipeline: two solid yellow
+      // corner-to-corner D1/D2 lines + 4 corner dots + labels. No dashed or
+      // full-extent guides. Auto-detected diamond tips map to:
+      //   leftX/rightX = left/right tips, topY/bottomY = top/bottom tips.
+      const guides = corners
+        ? {
+            leftX: corners.left.x,
+            rightX: corners.right.x,
+            topY: corners.top.y,
+            bottomY: corners.bottom.y,
+          }
+        : null;
+      drawManualMeasureOverlay({
+        canvas,
+        wrap,
+        active: !!corners && !!imageSize,
+        imageSize,
+        guides,
+        hoverGuide: hover ? hover.line : null,
+        dragGuide: dragRef.current ? dragRef.current.line : null,
       });
 
+      // Brighter ring on the actively dragged corner so the user can see
+      // exactly which tip they're refining. Drawn on top of the shared
+      // overlay so the manual-measure pipeline isn't affected.
+      const activeKey = dragRef.current?.line ?? null;
+      if (activeKey && corners && imageSize) {
+        const placement = getImagePlacement(wrap.clientWidth, wrap.clientHeight, imageSize);
+        if (placement) {
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            const dpr = window.devicePixelRatio || 1;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            const display = imageToDisplay(corners[activeKey], placement);
+            ctx.beginPath();
+            ctx.arc(display.x, display.y, 8, 0, Math.PI * 2);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(display.x, display.y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFFF66';
+            ctx.fill();
+          }
+        }
+      }
+
+      // eslint-disable-next-line no-console
+      console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
     });
-  }, [corners, hover, imageSize, source]);
+  }, [corners, imageSize, source, hover]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -290,10 +284,6 @@ function AutoMeasureOverlayImpl({
         frameRef.current = null;
       }
     };
-  }, [draw]);
-
-  useEffect(() => {
-    draw();
   }, [draw]);
 
   const getDisplayPoint = useCallback((event: React.PointerEvent<HTMLDivElement>): Point => {
@@ -322,21 +312,25 @@ function AutoMeasureOverlayImpl({
       const placement = getImagePlacement(wrap.clientWidth, wrap.clientHeight, imageSize);
       if (!placement) return null;
 
-      // Corner handles win over lines when overlapping.
-      for (const key of CORNER_KEYS) {
-        const p = imageToDisplay(corners[key], placement);
-        if (Math.hypot(display.x - p.x, display.y - p.y) <= CORNER_HIT_RADIUS) {
-          return { kind: 'corner', line: key };
-        }
-      }
       const top = imageToDisplay(corners.top, placement);
       const right = imageToDisplay(corners.right, placement);
       const bottom = imageToDisplay(corners.bottom, placement);
       const left = imageToDisplay(corners.left, placement);
-      if (Math.abs(display.x - left.x) <= LINE_HIT_DISTANCE) return { kind: 'line', line: 'left' };
-      if (Math.abs(display.x - right.x) <= LINE_HIT_DISTANCE) return { kind: 'line', line: 'right' };
-      if (Math.abs(display.y - top.y) <= LINE_HIT_DISTANCE) return { kind: 'line', line: 'top' };
-      if (Math.abs(display.y - bottom.y) <= LINE_HIT_DISTANCE) return { kind: 'line', line: 'bottom' };
+      const handles: Record<LineKey, Point> = {
+        left,
+        right,
+        top,
+        bottom,
+      };
+
+      // Handles win over guide lines when overlapping.
+      for (const key of CORNER_KEYS) {
+        const p = handles[key];
+        if (Math.hypot(display.x - p.x, display.y - p.y) <= CORNER_HIT_RADIUS) {
+          return { kind: 'corner', line: key };
+        }
+      }
+
       return null;
     },
     [corners, imageSize]
@@ -387,7 +381,21 @@ function AutoMeasureOverlayImpl({
         const dx = nowImg.x - drag.startPointerImage.x;
         const dy = nowImg.y - drag.startPointerImage.y;
         const next = applyLineDelta(drag.line, dx, dy, drag.startCorners);
-        setLocalCorners(next);
+        writeCorners(next);
+        const d1 = Math.hypot(next.right.x - next.left.x, next.right.y - next.left.y);
+        const d2 = Math.hypot(next.bottom.x - next.top.x, next.bottom.y - next.top.y);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay-drag-move] corner=${drag.line} dx=${dx.toFixed(2)} dy=${dy.toFixed(2)}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay-recalculate] d1=${d1.toFixed(2)}px d2=${d2.toFixed(2)}px davg=${((d1 + d2) / 2).toFixed(2)}px`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][drag-update] handle=${drag.line} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
+        );
         onAdjusted?.(next);
         return;
       }
@@ -421,6 +429,10 @@ function AutoMeasureOverlayImpl({
         line: hit.line,
         corners,
       });
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-drag-start] corner=${hit.line} from=${cornersKey(corners)}`);
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure][drag-start] handle=${hit.line}`);
       dragRef.current = {
         kind: hit.kind,
         line: hit.line,
@@ -428,8 +440,9 @@ function AutoMeasureOverlayImpl({
         startCorners: cloneCorners(corners),
         startPointerImage,
       };
+      draw();
     },
-    [corners, getDisplayPoint, hitTest, toImagePoint]
+    [corners, draw, getDisplayPoint, hitTest, toImagePoint]
   );
 
   const endDrag = useCallback(
@@ -441,13 +454,20 @@ function AutoMeasureOverlayImpl({
         wrap.releasePointerCapture(event.pointerId);
       }
       dragRef.current = null;
+      draw();
       const finalCorners = localCorners;
       if (finalCorners) {
         const before = drag.startCorners;
-        const beforeD1 = before.right.x - before.left.x;
-        const beforeD2 = before.bottom.y - before.top.y;
-        const afterD1 = finalCorners.right.x - finalCorners.left.x;
-        const afterD2 = finalCorners.bottom.y - finalCorners.top.y;
+        const beforeD1 = Math.hypot(before.right.x - before.left.x, before.right.y - before.left.y);
+        const beforeD2 = Math.hypot(before.bottom.x - before.top.x, before.bottom.y - before.top.y);
+        const afterD1 = Math.hypot(
+          finalCorners.right.x - finalCorners.left.x,
+          finalCorners.right.y - finalCorners.left.y
+        );
+        const afterD2 = Math.hypot(
+          finalCorners.bottom.x - finalCorners.top.x,
+          finalCorners.bottom.y - finalCorners.top.y
+        );
         // eslint-disable-next-line no-console
         console.log('[auto-measure] adjust end', {
           line: drag.line,
@@ -458,10 +478,20 @@ function AutoMeasureOverlayImpl({
           d1Px: afterD1,
           d2Px: afterD2,
         });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay-drag-end] corner=${drag.line} d1=${afterD1.toFixed(2)}px d2=${afterD2.toFixed(2)}px`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay-recalculate] d1=${afterD1.toFixed(2)}px d2=${afterD2.toFixed(2)}px davg=${((afterD1 + afterD2) / 2).toFixed(2)}px final=true`
+        );
+        // eslint-disable-next-line no-console
+        console.log(`[auto-measure][drag-complete] corrected=true handle=${drag.line}`);
         onAdjusted?.(finalCorners);
       }
     },
-    [localCorners, onAdjusted]
+    [draw, localCorners, onAdjusted]
   );
 
   // Cursor: vertical lines → ew-resize, horizontal lines → ns-resize, corners →
