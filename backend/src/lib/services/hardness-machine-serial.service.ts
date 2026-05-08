@@ -333,6 +333,11 @@ class HardnessMachineSerialService extends EventEmitter {
 
   private setState(patch: Partial<MachineState>, origin: MachineState['lastUpdatedBy']): void {
     const normalizedPatch = this.normalizeStatePatch(patch);
+    const prevError = this.state.lastError;
+    const nextError =
+      Object.prototype.hasOwnProperty.call(normalizedPatch, 'lastError')
+        ? normalizedPatch.lastError
+        : prevError;
     this.state = {
       ...this.state,
       ...normalizedPatch,
@@ -341,6 +346,20 @@ class HardnessMachineSerialService extends EventEmitter {
       lastUpdateSource: origin,
       updatedAt: new Date().toISOString(),
     };
+    if (!prevError && nextError) {
+      const type = /timeout/i.test(nextError) ? 'ack-timeout' : 'error';
+      // eslint-disable-next-line no-console
+      console.log(`[machine-error-set] type=${type} message=${JSON.stringify(nextError)}`);
+    } else if (prevError && !nextError) {
+      const reason =
+        origin === 'machine'
+          ? 'rx-recovered'
+          : this.state.syncStatus === 'synced'
+            ? 'sync-success'
+            : 'ack-success';
+      // eslint-disable-next-line no-console
+      console.log(`[machine-error-clear] reason=${reason} prior=${JSON.stringify(prevError)}`);
+    }
     this.emit('state', this.state);
     this.logUiState();
   }
@@ -592,6 +611,12 @@ class HardnessMachineSerialService extends EventEmitter {
       // eslint-disable-next-line no-console
       console.log(
         `[machine-force-rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
+      );
+    }
+    if (this.pendingAckField === 'loadTime') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-loadtime-rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
       );
     }
     // eslint-disable-next-line no-console
@@ -865,6 +890,18 @@ class HardnessMachineSerialService extends EventEmitter {
               // eslint-disable-next-line no-console
               console.log(`[machine-rx] confirmed ${frame.key}=${frame.value}`);
             }
+            if (frame.key === 'force') {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[machine-force-ack] success=${expectedEcho} parsedForce=${frame.value}`
+              );
+            }
+            if (frame.key === 'loadTime') {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[machine-loadtime-ack] success=${expectedEcho} parsedLoadTime=${frame.value}`
+              );
+            }
             // Persist machine-driven changes too — operator may have edited
             // values directly on the panel; SQLite must mirror reality.
             if (
@@ -1075,6 +1112,13 @@ class HardnessMachineSerialService extends EventEmitter {
       console.log(
         `[machine-force-tx] value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
       );
+    } else if (field === 'loadTime') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-loadtime-tx] value=${opts.expectedValue ?? 'unknown'} ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);
     } else if (field === 'objective') {
       // eslint-disable-next-line no-console
       console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);

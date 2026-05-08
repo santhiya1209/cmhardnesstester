@@ -18,6 +18,7 @@ import PatternListTab from './PatternListTab';
 import StatisticsInfoTab from './StatisticsInfoTab';
 import AlbumTab from './AlbumTab';
 import DepthImageTab from './DepthImageTab';
+import TrimMeasurePanel, { type TrimCorner } from '@/component/own/TrimMeasurePanel';
 
 const TAB_ITEMS = [
   'Machine Control',
@@ -32,6 +33,7 @@ const TAB_ITEMS = [
 const PANEL_SX: SxProps<Theme> = {
   flex: 1,
   minWidth: 0,
+  position: 'relative',
   display: 'flex',
   flexDirection: 'column',
   bgcolor: 'background.paper',
@@ -144,6 +146,9 @@ type Props = {
   refetchMeasurements: () => Promise<void>;
   onOpenTestRecords: (measurementIds: string[]) => void;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
+  trimMeasureOpen: boolean;
+  onCloseTrimMeasure: () => void;
+  onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
 };
 
 function RightPanelImpl({
@@ -153,6 +158,9 @@ function RightPanelImpl({
   onOpenTestRecords,
   refetchMeasurements,
   onObjectiveChange,
+  trimMeasureOpen,
+  onCloseTrimMeasure,
+  onTrimAdjust,
 }: Props) {
   const [tab, setTab] = useState(0);
   const {
@@ -199,6 +207,12 @@ function RightPanelImpl({
         refetchAlbumItems,
         onObjectiveChange,
       })}
+
+      <TrimMeasurePanel
+        open={trimMeasureOpen}
+        onClose={onCloseTrimMeasure}
+        onAdjust={onTrimAdjust}
+      />
     </Box>
   );
 }

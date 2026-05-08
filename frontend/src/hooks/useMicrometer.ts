@@ -50,6 +50,10 @@ export function useMicrometer(): MicrometerState {
       const key = `${next.connected}|${next.value}|${next.rawHex}|${next.updatedAt}`;
       if (key === lastSerializedRef.current) return;
       lastSerializedRef.current = key;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[micrometer-depth] current value updated depth=${typeof next.value === 'number' && Number.isFinite(next.value) ? next.value : '-'}`
+      );
       setState(next);
     });
 

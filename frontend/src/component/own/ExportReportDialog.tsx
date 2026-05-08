@@ -1,15 +1,21 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
+import Divider from '@mui/material/Divider';
 import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
+import TextField from '@mui/material/TextField';
+import Typography from '@mui/material/Typography';
+import { useReportHeaderSetting } from '@/hooks/queries/useReportHeaderSetting';
+import { useMachineState } from '@/hooks/queries/useMachineState';
 import type { Measurement } from '@/types/measurement';
 import { exportReport, type ReportType } from '@/utils/exportReport';
 
@@ -29,17 +35,21 @@ type Props = {
   cameraImageDataUrl?: string | null;
 };
 
-function ExportReportDialogImpl({ open, onClose, measurements, cameraImageDataUrl }: Props) {
+function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
   const [selected, setSelected] = useState<ReportType>('word-data');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const { values: header, setValues, persist, loading } = useReportHeaderSetting(open);
+  const { data: machineState } = useMachineState();
 
   useEffect(() => {
     if (open) {
       setSelected('word-data');
       setError(null);
+      setSuccess(null);
       // eslint-disable-next-line no-console
-      console.log('[report] dialog opened');
+      console.log('[report-export] dialog opened');
     }
   }, [open]);
 
@@ -47,32 +57,133 @@ function ExportReportDialogImpl({ open, onClose, measurements, cameraImageDataUr
     const next = event.target.value as ReportType;
     setSelected(next);
     // eslint-disable-next-line no-console
-    console.log('[report] selected type=', next);
+    console.log('[report-export] selected type=', next);
   }, []);
 
   const handleExport = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setSuccess(null);
     try {
-      const { filename } = await exportReport(selected, measurements, cameraImageDataUrl);
+      // Persist header values so next export prefills them.
+      try {
+        await persist();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[report-export] persist header failed (continuing)', err);
+      }
+      const loadTimeSeconds = (() => {
+        const lt = machineState?.loadTime;
+        if (typeof lt === 'number' && Number.isFinite(lt)) return lt;
+        if (typeof lt === 'string' && lt.trim() !== '' && Number.isFinite(Number(lt))) {
+          return Number(lt);
+        }
+        return null;
+      })();
+      const { filename } = await exportReport({
+        type: selected,
+        measurements,
+        header,
+        loadTimeSeconds,
+      });
       // eslint-disable-next-line no-console
-      console.log('[report] export success path=', filename);
-      onClose();
+      console.log('[report-export] success path=', filename);
+      setSuccess(`Saved as ${filename}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
-      console.error('[report] export failed error=', message);
+      console.error('[report-error] export failed reason=', message);
       setError(message);
     } finally {
       setBusy(false);
     }
-  }, [cameraImageDataUrl, measurements, onClose, selected]);
+  }, [header, machineState?.loadTime, measurements, persist, selected]);
 
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="xs" fullWidth>
+    <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ fontSize: 14, fontWeight: 600 }}>Export Report</DialogTitle>
       <DialogContent dividers>
-        <FormControl>
+        <Typography variant="caption" color="text.secondary">
+          Report header
+        </Typography>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: 1,
+            mt: 0.5,
+            mb: 1.5,
+          }}
+        >
+          <TextField
+            label="Sample Name"
+            size="small"
+            value={header.sampleName}
+            onChange={(e) => setValues({ sampleName: e.target.value })}
+            disabled={busy || loading}
+          />
+          <TextField
+            label="Sample Sn"
+            size="small"
+            value={header.sampleSerialNumber}
+            onChange={(e) => setValues({ sampleSerialNumber: e.target.value })}
+            disabled={busy || loading}
+          />
+          <TextField
+            label="Inspection Company"
+            size="small"
+            value={header.inspectionCompany}
+            onChange={(e) => setValues({ inspectionCompany: e.target.value })}
+            disabled={busy || loading}
+          />
+          <TextField
+            label="Tester"
+            size="small"
+            value={header.tester}
+            onChange={(e) => setValues({ tester: e.target.value })}
+            disabled={busy || loading}
+          />
+          <TextField
+            label="Reviewer"
+            size="small"
+            value={header.reviewer}
+            onChange={(e) => setValues({ reviewer: e.target.value })}
+            disabled={busy || loading}
+          />
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField
+              label="Min HV"
+              size="small"
+              type="number"
+              fullWidth
+              value={header.hardnessMin ?? ''}
+              onChange={(e) => {
+                const n = e.target.value === '' ? null : Number(e.target.value);
+                setValues({ hardnessMin: n !== null && Number.isFinite(n) ? n : null });
+              }}
+              disabled={busy || loading}
+            />
+            <TextField
+              label="Max HV"
+              size="small"
+              type="number"
+              fullWidth
+              value={header.hardnessMax ?? ''}
+              onChange={(e) => {
+                const n = e.target.value === '' ? null : Number(e.target.value);
+                setValues({ hardnessMax: n !== null && Number.isFinite(n) ? n : null });
+              }}
+              disabled={busy || loading}
+            />
+          </Box>
+        </Box>
+
+        <Divider sx={{ mb: 1.5 }} />
+
+        <Typography variant="caption" color="text.secondary">
+          Report type
+        </Typography>
+        <FormControl sx={{ mt: 0.5, display: 'block' }}>
           <RadioGroup value={selected} onChange={handleSelect}>
             {REPORT_OPTIONS.map((opt) => (
               <FormControlLabel
@@ -91,10 +202,15 @@ function ExportReportDialogImpl({ open, onClose, measurements, cameraImageDataUr
             {error}
           </Alert>
         ) : null}
+        {success ? (
+          <Alert severity="success" sx={{ mt: 1.5 }}>
+            {success}
+          </Alert>
+        ) : null}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy} size="small" sx={{ textTransform: 'none' }}>
-          Cancel
+          Close
         </Button>
         <Button
           onClick={() => {

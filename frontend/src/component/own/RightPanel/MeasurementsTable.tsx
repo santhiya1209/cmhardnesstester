@@ -133,6 +133,22 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
     }
   }, [status, value, displayText, connected]);
 
+  useEffect(() => {
+    measurements.forEach((m, i) => {
+      const depth =
+        typeof m.depthMm === 'number' && Number.isFinite(m.depthMm) ? m.depthMm : '-';
+      const convertType = m.convertType ?? '-';
+      const convertValue =
+        typeof m.convertValue === 'number' && Number.isFinite(m.convertValue)
+          ? m.convertValue
+          : '-';
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-table] row=${i + 1} id=${m.id} depth=${depth} convertType=${convertType} convertValue=${convertValue}`
+      );
+    });
+  }, [measurements]);
+
   const liveDepthText =
     status === 'valid' && value !== null && Number.isFinite(value)
       ? displayText

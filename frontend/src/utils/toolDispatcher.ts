@@ -11,6 +11,7 @@ export type ToolDispatchContext = {
   // overlay commands — wired in Phase 2/3
   clearGraphics?: () => void;
   trimLastMeasurement?: () => void;
+  openTrimMeasure?: () => void;
   toggleCenterCrossLine?: () => void;
   autoMeasure?: () => void;
   resumeImage?: () => void;
@@ -91,8 +92,12 @@ export function dispatchToolbarAction(
       ctx.setStatus(label);
       return;
     case 'tools:trimMeasure':
-      ctx.trimLastMeasurement?.();
-      ctx.setStatus(label);
+      if (ctx.openTrimMeasure) {
+        ctx.openTrimMeasure();
+        ctx.setStatus(`${label} opened`);
+      } else {
+        ctx.notifyUnavailable(label);
+      }
       return;
     case 'tools:centerCrossLine':
       ctx.toggleCenterCrossLine?.();

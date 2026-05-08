@@ -92,14 +92,12 @@ const STATUS_ROW_SX: SxProps<Theme> = {
   borderColor: 'divider',
 };
 const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const STATUS_DETAILS_SX: SxProps<Theme> = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 0.5,
-  px: 1.5,
-  pb: 1,
+const STATUS_DOT_SX: SxProps<Theme> = {
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  flexShrink: 0,
 };
-const STATUS_DETAIL_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary' };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
 function machineToForm(state: MachineState | null): FormState {
@@ -128,13 +126,6 @@ function indentLabel(status: IndentStatus): string {
     default:
       return 'Impress';
   }
-}
-
-function formatTimestamp(value?: string): string {
-  if (!value) return 'Never';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString();
 }
 
 function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boolean {
@@ -325,39 +316,34 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   const indentStatus: IndentStatus = machineState?.indentStatus ?? 'idle';
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
   const isBusy = setBusy || indentBusy || turretBusy;
-  const hasVerifiedCommands = useMemo(() => {
-    const verification = machineState?.commandVerification;
-    return verification ? Object.values(verification).some(Boolean) : false;
-  }, [machineState?.commandVerification]);
 
+  // Hook-local errors (indentError/turretError/setError) persist in React state
+  // until the next click. Once the backend reports a healthy sync (lastError
+  // cleared, syncStatus='synced'), those local strings become stale and must
+  // not keep the red banner visible. Backend lastError remains authoritative.
+  const recovered =
+    !!connected &&
+    !machineState?.lastError &&
+    (machineState?.syncStatus === 'synced' || machineState?.syncStatus === undefined);
   const errorMessage = useMemo(() => {
-    return (
-      machineState?.lastError ??
-      indentError ??
-      turretError ??
-      setError ??
-      streamError ??
-      null
-    );
-  }, [indentError, machineState?.lastError, setError, streamError, turretError]);
+    if (machineState?.lastError) return machineState.lastError;
+    if (recovered) return null;
+    return indentError ?? turretError ?? setError ?? streamError ?? null;
+  }, [indentError, machineState?.lastError, recovered, setError, streamError, turretError]);
 
-  const statusText = useMemo(() => {
-    if (!connected) return 'Machine not connected. Click Open Device to connect.';
-    const protocolNote = hasVerifiedCommands ? '' : ' - RS232 protocol unverified; writes disabled';
-    return `Connected on ${machineState?.port ?? '?'}${protocolNote} - last update by ${machineState?.lastUpdatedBy ?? 'system'} - impress: ${indentStatus}`;
-  }, [
-    connected,
-    hasVerifiedCommands,
-    indentStatus,
-    machineState?.lastUpdatedBy,
-    machineState?.port,
-  ]);
+  const statusLabel = useMemo(() => {
+    if (!connected) return 'Disconnected';
+    if (errorMessage) return 'Error';
+    if (isIndentInFlight) return 'Impressing';
+    if (isBusy) return 'Busy';
+    return 'Ready';
+  }, [connected, errorMessage, isBusy, isIndentInFlight]);
 
-  const syncStatusText = useMemo(() => {
-    const status = machineState?.syncStatus ?? 'synced';
-    const message = machineState?.syncMessage ? ` - ${machineState.syncMessage}` : '';
-    return `${status}${message}`;
-  }, [machineState?.syncMessage, machineState?.syncStatus]);
+  const statusDotColor = useMemo(() => {
+    if (!connected || errorMessage) return 'error.main';
+    if (isBusy || isIndentInFlight) return 'warning.main';
+    return 'success.main';
+  }, [connected, errorMessage, isBusy, isIndentInFlight]);
 
   return (
     <>
@@ -476,21 +462,13 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
       </Box>
 
       <Box sx={STATUS_ROW_SX}>
-        {isBusy ? <CircularProgress size={14} /> : null}
-        <Typography sx={STATUS_TEXT_SX}>{statusText}</Typography>
-      </Box>
-
-      <Box sx={STATUS_DETAILS_SX}>
-        <Typography sx={STATUS_DETAIL_SX}>
-          Last RX: {formatTimestamp(machineState?.lastRxAt)}
+        <Box sx={{ ...STATUS_DOT_SX, bgcolor: statusDotColor }} />
+        <Typography sx={STATUS_TEXT_SX}>
+          {connected
+            ? `Machine: Connected · COM: ${machineState?.port ?? '?'} · Status: ${statusLabel}`
+            : `Machine: Disconnected · Status: ${statusLabel}`}
         </Typography>
-        <Typography sx={STATUS_DETAIL_SX}>
-          Last TX: {machineState?.lastTxCommand ?? 'None'}
-        </Typography>
-        <Typography sx={STATUS_DETAIL_SX}>Sync: {syncStatusText}</Typography>
-        <Typography sx={STATUS_DETAIL_SX}>
-          Current: Force={formState.force}, L={formState.lightness}, T={formState.loadTime}, Obj={formState.objective}, Turret={machineState?.turretPosition ?? 'unknown'}
-        </Typography>
+        {isBusy ? <CircularProgress size={12} /> : null}
       </Box>
 
       {errorMessage ? (

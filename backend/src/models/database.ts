@@ -7,6 +7,7 @@ import { CameraSettingModel } from './camera-setting';
 import { LineColorSettingModel } from './line-color-setting';
 import { GenericSettingModel } from './generic-setting';
 import { OtherSettingModel } from './other-setting';
+import { ReportHeaderSettingModel } from './report-header-setting';
 import { SerialPortSettingModel } from './serial-port-setting';
 import { DepthImageSettingModel } from './depth-image-setting';
 import { IsoDateTimeSchema } from './common';
@@ -34,6 +35,7 @@ export const DatabaseSchema = z.object({
   cameraSettings: z.array(CameraSettingModel).default([]),
   genericSettings: z.array(GenericSettingModel).default([]),
   otherSettings: z.array(OtherSettingModel).default([]),
+  reportHeaderSettings: z.array(ReportHeaderSettingModel).default([]),
   testRecords: z.array(TestRecordModel).default([]),
   xyzPlatformStates: z.array(XYZPlatformStateModel).default([]),
   patternPrograms: z.array(PatternProgramModel).default([]),
@@ -55,6 +57,7 @@ export const COLLECTION_NAMES = [
   'cameraSettings',
   'genericSettings',
   'otherSettings',
+  'reportHeaderSettings',
   'testRecords',
   'xyzPlatformStates',
   'patternPrograms',
@@ -81,6 +84,7 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     cameraSettings: [],
     genericSettings: [],
     otherSettings: [],
+    reportHeaderSettings: [],
     testRecords: [],
     xyzPlatformStates: [],
     patternPrograms: [],

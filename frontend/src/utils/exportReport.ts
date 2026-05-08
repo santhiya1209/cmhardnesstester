@@ -1,13 +1,13 @@
-// Centralized report generation. CSV is hand-rolled; xlsx/docx come from
-// `xlsx` (SheetJS) and `docx` packages — added because the report feature
-// requires real Office files Word/Excel can open without warnings, and HTML
-// fallbacks cannot embed images cleanly. See CLAUDE.md §11.
+// Centralized report generation. CSV is hand-rolled; XLSX uses exceljs for
+// styled headers/borders; DOCX uses the docx package. See CLAUDE.md §11.
 import {
   AlignmentType,
   BorderStyle,
   Document,
+  Footer,
   HeadingLevel,
   ImageRun,
+  PageNumber,
   PageOrientation,
   Packer,
   Paragraph,
@@ -18,8 +18,9 @@ import {
   VerticalAlign,
   WidthType,
 } from 'docx';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import type { Measurement } from '@/types/measurement';
+import type { ReportHeaderSettingPayload } from '@/types/reportHeaderSetting';
 
 export type ReportType =
   | 'csv'
@@ -56,7 +57,7 @@ const HEADERS = [
   'Measure Time',
 ];
 
-// --- Normalized report row formatters (single source of truth for CSV / XLSX / DOCX) ---
+// --- formatters (single source of truth for CSV / XLSX / DOCX) ---
 
 function safeText(value: unknown, fallback = ''): string {
   if (value === null || value === undefined) return fallback;
@@ -115,6 +116,13 @@ function formatMeasureTime(iso: string | null | undefined): string {
   return `${day}-${month}-${year} ${String(h).padStart(2, '0')}:${min} ${ampm}`;
 }
 
+function formatInspectionDate(d = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}/${m}/${day}`;
+}
+
 type ReportRow = {
   index: string;
   xMm: string;
@@ -157,7 +165,19 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     const parsed = Number(m.convertValue);
     if (Number.isFinite(parsed)) convertValueNum = parsed;
   }
-  const convertValue = convertValueNum !== null ? formatHardness(convertValueNum) : '';
+  // Fallback chain so Convert Value never exports as a blank cell:
+  // 1. Saved convertValue (number or numeric string).
+  // 2. If a Convert Type is set but no value, fall back to the row's hardness
+  //    value (HV is the source of every conversion).
+  // 3. Otherwise '-'.
+  let convertValue: string;
+  if (convertValueNum !== null) {
+    convertValue = formatHardness(convertValueNum);
+  } else if (convertTypeRaw && typeof m.hv === 'number' && Number.isFinite(m.hv)) {
+    convertValue = formatHardness(m.hv);
+  } else {
+    convertValue = '-';
+  }
 
   const row: ReportRow = {
     index: String(idx + 1),
@@ -179,35 +199,29 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
 
   // eslint-disable-next-line no-console
   console.log(
-    `[report] normalized row id=${m.id} hardnessType=${row.hardnessType} qualified=${row.qualified} convertType=${row.convertType} convertValue=${row.convertValue || '-'} depth=${row.depth || '-'}`
+    `[report-data] row id=${m.id} hardnessType=${row.hardnessType} qualified=${row.qualified} convertType=${row.convertType} convertValue=${row.convertValue || '-'} depth=${row.depth || '-'}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(`[report-depth] row=${row.index} depth=${row.depth || '-'}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-convert] row=${row.index} convertType=${row.convertType} convertValue=${row.convertValue}`
   );
   return row;
 }
 
 function rowAsArray(row: ReportRow): string[] {
   return [
-    row.index,
-    row.xMm,
-    row.yMm,
-    row.hardness,
-    row.objective,
-    row.method,
-    row.hardnessType,
-    row.qualified,
-    row.d1Um,
-    row.d2Um,
-    row.davgUm,
-    row.convertType,
-    row.convertValue,
-    row.depth,
-    row.measureTime,
+    row.index, row.xMm, row.yMm, row.hardness, row.objective, row.method,
+    row.hardnessType, row.qualified, row.d1Um, row.d2Um, row.davgUm,
+    row.convertType, row.convertValue, row.depth, row.measureTime,
   ];
 }
 
 function normalizeAll(measurements: Measurement[]): ReportRow[] {
   const rows = measurements.map((m, i) => normalizeReportRow(m, i));
   // eslint-disable-next-line no-console
-  console.log('[report] table rows normalized count=', rows.length);
+  console.log('[report-table] rows normalized count=', rows.length);
   return rows;
 }
 
@@ -271,11 +285,11 @@ async function svgStringToPngBuffer(
   }
 }
 
-const DEPTH_PADDING = { top: 16, right: 24, bottom: 36, left: 56 };
+const DEPTH_PADDING = { top: 24, right: 32, bottom: 48, left: 72 };
 
 function buildDepthSvg(measurements: Measurement[]): string {
-  const w = 640;
-  const h = 280;
+  const w = 720;
+  const h = 320;
   const innerW = w - DEPTH_PADDING.left - DEPTH_PADDING.right;
   const innerH = h - DEPTH_PADDING.top - DEPTH_PADDING.bottom;
 
@@ -288,6 +302,9 @@ function buildDepthSvg(measurements: Measurement[]): string {
           : (idx + 1) * 0.2;
       return { x, y: m.hv as number, index: idx + 1 };
     });
+
+  // eslint-disable-next-line no-console
+  console.log('[report-depth-chart] points=', points.length);
 
   const xMax = Math.max(0.2, ...points.map((p) => p.x)) * 1.05;
   const yMax = Math.max(10, ...points.map((p) => p.y)) * 1.1;
@@ -324,7 +341,10 @@ function buildDepthSvg(measurements: Measurement[]): string {
   const axes =
     `<line x1="${DEPTH_PADDING.left}" x2="${DEPTH_PADDING.left}" y1="${DEPTH_PADDING.top}" y2="${h - DEPTH_PADDING.bottom}" stroke="${axis}" stroke-width="1"/>` +
     `<line x1="${DEPTH_PADDING.left}" x2="${w - DEPTH_PADDING.right}" y1="${h - DEPTH_PADDING.bottom}" y2="${h - DEPTH_PADDING.bottom}" stroke="${axis}" stroke-width="1"/>` +
-    `<text x="${DEPTH_PADDING.left + innerW / 2}" y="${h - 6}" font-size="10" fill="${text}" text-anchor="middle">mm</text>`;
+    // X axis title
+    `<text x="${DEPTH_PADDING.left + innerW / 2}" y="${h - 8}" font-size="11" fill="${text}" text-anchor="middle" font-weight="bold">Depth (mm)</text>` +
+    // Y axis title (rotated)
+    `<text x="${16}" y="${DEPTH_PADDING.top + innerH / 2}" font-size="11" fill="${text}" text-anchor="middle" font-weight="bold" transform="rotate(-90 16 ${DEPTH_PADDING.top + innerH / 2})">Hardness (HV)</text>`;
 
   let line = '';
   let dots = '';
@@ -333,17 +353,17 @@ function buildDepthSvg(measurements: Measurement[]): string {
     const d = points
       .map((p, i) => `${i === 0 ? 'M' : 'L'} ${sx(p.x).toFixed(2)} ${sy(p.y).toFixed(2)}`)
       .join(' ');
-    line = `<path d="${d}" fill="none" stroke="${axis}" stroke-width="1"/>`;
+    line = `<path d="${d}" fill="none" stroke="${axis}" stroke-width="1.2"/>`;
   }
   dots = points
-    .map((p) => `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="2" fill="${axis}"/>`)
+    .map((p) => `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="2.5" fill="${axis}"/>`)
     .join('');
   const sel = points[points.length - 1];
   if (sel) {
     label =
       `<line x1="${sx(sel.x)}" x2="${sx(sel.x)}" y1="${sy(sel.y)}" y2="${h - DEPTH_PADDING.bottom}" stroke="${axis}" stroke-width="0.75"/>` +
       `<line x1="${DEPTH_PADDING.left}" x2="${sx(sel.x)}" y1="${sy(sel.y)}" y2="${sy(sel.y)}" stroke="${axis}" stroke-width="0.75" stroke-dasharray="3 3"/>` +
-      `<text x="${sx(sel.x) + 6}" y="${sy(sel.y) - 6}" font-size="10" fill="${axis}">(${sel.index},${Math.round(sel.x * 1000)},${Math.round(sel.y)})</text>`;
+      `<text x="${sx(sel.x) + 6}" y="${sy(sel.y) - 6}" font-size="10" fill="${axis}">(${sel.index}, ${sel.x.toFixed(3)}mm, ${Math.round(sel.y)})</text>`;
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -353,30 +373,85 @@ function buildDepthSvg(measurements: Measurement[]): string {
 </svg>`;
 }
 
-// Per-column display widths matching the human-readable output. Tuned so D1/D2/Davg,
-// Convert Value, and Measure Time never wrap to a second line.
-const COLUMN_CHAR_WIDTHS: number[] = [4, 9, 9, 10, 10, 12, 14, 10, 11, 11, 11, 13, 14, 12, 22];
-
 function exportCsv(rows: ReportRow[]): void {
   const csv = buildCsv(rows);
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
   downloadBlob(blob, REPORT_FILENAMES.csv);
+  // eslint-disable-next-line no-console
+  console.log('[report-csv] rows=', rows.length, 'path=', REPORT_FILENAMES.csv);
 }
 
-function exportXlsx(rows: ReportRow[]): void {
-  const aoa: string[][] = [HEADERS, ...rows.map(rowAsArray)];
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = COLUMN_CHAR_WIDTHS.map((wch) => ({ wch }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Measurements');
-  const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-  const blob = new Blob([out], {
+// --- Excel via exceljs (styled headers, borders, autoFilter) ---
+
+async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload): Promise<void> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Hardness Tester';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('Measurements', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+
+  // Title row (merged)
+  ws.mergeCells(1, 1, 1, HEADERS.length);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = 'Vickers Hardness Report';
+  titleCell.font = { name: 'Arial', size: 14, bold: true };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(1).height = 24;
+
+  // Sub-header (sample / tester)
+  ws.mergeCells(2, 1, 2, HEADERS.length);
+  const subCell = ws.getCell(2, 1);
+  subCell.value = `Sample: ${safeText(header.sampleName, '-')}    SN: ${safeText(header.sampleSerialNumber, '-')}    Tester: ${safeText(header.tester, '-')}    Date: ${formatInspectionDate()}`;
+  subCell.font = { name: 'Arial', size: 10, italic: true };
+  subCell.alignment = { horizontal: 'center' };
+
+  // Column header row
+  const headerRow = ws.addRow(HEADERS);
+  headerRow.font = { name: 'Arial', size: 10, bold: true };
+  headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE8E8E8' },
+  };
+  headerRow.height = 20;
+
+  rows.forEach((r) => {
+    const dataRow = ws.addRow(rowAsArray(r));
+    dataRow.font = { name: 'Arial', size: 10 };
+    dataRow.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+
+  // Borders
+  const lastRow = ws.lastRow?.number ?? 3;
+  for (let r = 3; r <= lastRow; r += 1) {
+    for (let c = 1; c <= HEADERS.length; c += 1) {
+      ws.getCell(r, c).border = {
+        top: { style: 'thin' },
+        bottom: { style: 'thin' },
+        left: { style: 'thin' },
+        right: { style: 'thin' },
+      };
+    }
+  }
+
+  // Column widths (chars)
+  const widths = [4, 9, 9, 10, 10, 12, 14, 10, 11, 11, 11, 13, 14, 12, 22];
+  ws.columns = widths.map((w) => ({ width: w }));
+
+  ws.autoFilter = { from: { row: 3, column: 1 }, to: { row: lastRow, column: HEADERS.length } };
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   downloadBlob(blob, REPORT_FILENAMES.xlsx);
+  // eslint-disable-next-line no-console
+  console.log('[report-excel] rows=', rows.length, 'path=', REPORT_FILENAMES.xlsx);
 }
 
-// --- Industrial Word report layout (matches reference hardness tester output) ---
+// --- Industrial Word report (matches reference layout) ---
 
 const DOCX_FONT = 'Arial';
 const DOCX_BODY_SIZE = 18; // 9pt
@@ -396,7 +471,13 @@ const TABLE_BORDERS = {
 function makeCell(
   text: string,
   width: number,
-  opts?: { bold?: boolean; size?: number; align?: typeof AlignmentType[keyof typeof AlignmentType]; shaded?: boolean; columnSpan?: number }
+  opts?: {
+    bold?: boolean;
+    size?: number;
+    align?: typeof AlignmentType[keyof typeof AlignmentType];
+    shaded?: boolean;
+    columnSpan?: number;
+  }
 ): TableCell {
   return new TableCell({
     width: { size: width, type: WidthType.DXA },
@@ -434,27 +515,37 @@ function sectionHeading(text: string): Paragraph {
   });
 }
 
-// Letter landscape minus 0.5" margins ≈ 14400 dxa usable width.
-const PAGE_WIDTH_DXA = 14400;
+// A4 landscape: 16838 dxa wide × 11906 tall. Minus 720 margins → ~15398 usable.
+const PAGE_WIDTH_DXA = 15400;
 
-function buildSampleInfoTable(measurements: Measurement[]): Table {
+function buildSampleInfoTable(
+  measurements: Measurement[],
+  header: ReportHeaderSettingPayload,
+  loadTimeSeconds: number | null
+): Table {
   const colW = PAGE_WIDTH_DXA / 4;
   const latest = measurements[measurements.length - 1] ?? null;
-  const todayIso = new Date().toISOString();
-  const today = formatMeasureTime(todayIso).split(' ').slice(0, 1).join(' '); // date portion
+  const today = formatInspectionDate();
 
   const force =
     typeof latest?.testForceKgf === 'number' && Number.isFinite(latest.testForceKgf)
-      ? `${latest.testForceKgf} kgf`
-      : '';
-  // Load time isn't tracked yet — leave the value side blank rather than fake a number.
-  const loadTime = '';
+      ? `${latest.testForceKgf}kgf`
+      : '-';
+  const loadTime =
+    typeof loadTimeSeconds === 'number' && Number.isFinite(loadTimeSeconds)
+      ? String(loadTimeSeconds)
+      : '-';
 
   const rows: [string, string, string, string][] = [
-    ['Sample Name', 'Sample Name', 'Sample Sn', 'Sample Sn'],
-    ['Min Value', '300', 'Max Value', '800'],
-    ['Inspection Company', 'Inspection Company', 'Inspection Date', today],
-    ['Tester', 'Tester', 'Reviewer', 'Reviewer'],
+    ['Sample Name', safeText(header.sampleName, '-'), 'Sample Sn', safeText(header.sampleSerialNumber, '-')],
+    [
+      'Min Value',
+      header.hardnessMin !== null ? String(header.hardnessMin) : '-',
+      'Max Value',
+      header.hardnessMax !== null ? String(header.hardnessMax) : '-',
+    ],
+    ['Inspection Company', safeText(header.inspectionCompany, '-'), 'Inspection Date', today],
+    ['Tester', safeText(header.tester, '-'), 'Reviewer', safeText(header.reviewer, '-')],
     ['Force', force, 'Load Time (s)', loadTime],
   ];
 
@@ -487,26 +578,53 @@ type Statistics = {
   cpk: number | null;
 };
 
-function computeStatistics(measurements: Measurement[], lsl = 300, usl = 800): Statistics {
+function computeStatistics(
+  measurements: Measurement[],
+  lsl: number | null,
+  usl: number | null
+): Statistics {
   const values = measurements
     .map((m) => m.hv)
     .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
   const count = values.length;
   if (count === 0) {
-    return { count: 0, max: null, min: null, avg: null, variance: null, std: null, cp: null, cpk: null };
+    return {
+      count: 0,
+      max: null,
+      min: null,
+      avg: null,
+      variance: null,
+      std: null,
+      cp: null,
+      cpk: null,
+    };
   }
   const max = Math.max(...values);
   const min = Math.min(...values);
   const avg = values.reduce((a, b) => a + b, 0) / count;
   const variance = values.reduce((a, b) => a + (b - avg) ** 2, 0) / count;
   const std = Math.sqrt(variance);
-  const cp = std > 0 ? (usl - lsl) / (6 * std) : null;
-  const cpk = std > 0 ? Math.min((usl - avg) / (3 * std), (avg - lsl) / (3 * std)) : null;
+  const hasRange = typeof lsl === 'number' && typeof usl === 'number';
+  const cp = std > 0 && hasRange ? (usl! - lsl!) / (6 * std) : null;
+  const cpk = std > 0 && hasRange
+    ? Math.min((usl! - avg) / (3 * std), (avg - lsl!) / (3 * std))
+    : null;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-stats] ave=${avg.toFixed(3)} std=${std.toFixed(3)} lsl=${lsl ?? '-'} usl=${usl ?? '-'} cp=${cp !== null ? cp.toFixed(3) : '-'} cpk=${cpk !== null ? cpk.toFixed(3) : '-'}`
+  );
+  if (!hasRange) {
+    // eslint-disable-next-line no-console
+    console.log('[report-stats] cp-cpk skipped reason=missing-target-range');
+  } else if (std === 0) {
+    // eslint-disable-next-line no-console
+    console.log('[report-stats] cp-cpk skipped reason=std-zero');
+  }
   return { count, max, min, avg, variance, std, cp, cpk };
 }
 
 function fmtStat(v: number | null, decimals = 2): string {
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(decimals) : '';
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(decimals) : '-';
 }
 
 function buildStatisticsTable(stats: Statistics): Table {
@@ -547,29 +665,38 @@ function buildDetailedDataTable(rows: ReportRow[]): Table {
     'Convert Type',
     'Convert Value',
     'Qualified',
+    'Measure Time',
   ];
-  // Hand-tuned widths summing to ~14400.
-  const widths = [600, 1500, 1500, 1500, 1900, 1900, 1900, 1900, 1700];
+  // Hand-tuned widths summing to ~15400.
+  const widths = [500, 1400, 1400, 1400, 1700, 1700, 1700, 1700, 1500, 2400];
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h, i) => makeCell(h, widths[i], { bold: true, shaded: true })),
   });
-  const dataRows = rows.map(
-    (r) =>
-      new TableRow({
-        children: [
-          makeCell(r.index, widths[0]),
-          makeCell(r.d1Um, widths[1]),
-          makeCell(r.d2Um, widths[2]),
-          makeCell(r.davgUm, widths[3]),
-          makeCell(r.hardnessType, widths[4]),
-          makeCell(r.hardness, widths[5]),
-          makeCell(r.convertType, widths[6]),
-          makeCell(r.convertValue, widths[7]),
-          makeCell(r.qualified, widths[8]),
-        ],
-      })
-  );
+  const dataRows = rows.map((r) => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[report-detail] row=${r.index} convertType=${r.convertType} convertValue=${r.convertValue} measureTime=${r.measureTime || '-'}`
+    );
+    if (!r.measureTime) {
+      // eslint-disable-next-line no-console
+      console.log(`[report-export] missing-field field=measureTime row=${r.index}`);
+    }
+    return new TableRow({
+      children: [
+        makeCell(r.index, widths[0]),
+        makeCell(r.d1Um, widths[1]),
+        makeCell(r.d2Um, widths[2]),
+        makeCell(r.davgUm, widths[3]),
+        makeCell(r.hardnessType, widths[4]),
+        makeCell(r.hardness, widths[5]),
+        makeCell(r.convertType, widths[6]),
+        makeCell(r.convertValue, widths[7]),
+        makeCell(r.qualified, widths[8]),
+        makeCell(r.measureTime || '-', widths[9]),
+      ],
+    });
+  });
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     columnWidths: widths,
@@ -586,7 +713,6 @@ async function buildPictureTable(
     .filter((entry) => typeof entry.m.imageDataUrl === 'string' && entry.m.imageDataUrl.length > 0);
   if (withImage.length === 0) return { table: null, count: 0 };
 
-  const cellW = PAGE_WIDTH_DXA / 4;
   const indexCellW = 800;
   const pictureCellW = (PAGE_WIDTH_DXA - indexCellW * 2) / 2;
   const widths = [indexCellW, pictureCellW, indexCellW, pictureCellW];
@@ -618,7 +744,7 @@ async function buildPictureTable(
             children: [
               new ImageRun({
                 data: buf,
-                transformation: { width: 280, height: 210 },
+                transformation: { width: 300, height: 225 },
                 type: imageType,
               }),
             ],
@@ -626,9 +752,11 @@ async function buildPictureTable(
         ],
       });
       cells.push({ idx: entry.idx, image: cell });
+      // eslint-disable-next-line no-console
+      console.log('[report-image] embedded idx=', entry.idx, 'bytes=', buf.byteLength);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('[report-word] picture cell failed idx=', entry.idx, err);
+      console.warn('[report-image] picture cell failed idx=', entry.idx, err);
     }
   }
 
@@ -654,8 +782,6 @@ async function buildPictureTable(
       })
     );
   }
-  // suppress unused warning if cellW only shadowed by indexCellW
-  void cellW;
 
   return {
     table: new Table({
@@ -668,16 +794,34 @@ async function buildPictureTable(
   };
 }
 
+function buildFooter(): Footer {
+  return new Footer({
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({ text: 'Page ', size: DOCX_BODY_SIZE, font: DOCX_FONT }),
+          new TextRun({ children: [PageNumber.CURRENT], size: DOCX_BODY_SIZE, font: DOCX_FONT }),
+          new TextRun({ text: ' of ', size: DOCX_BODY_SIZE, font: DOCX_FONT }),
+          new TextRun({ children: [PageNumber.TOTAL_PAGES], size: DOCX_BODY_SIZE, font: DOCX_FONT }),
+        ],
+      }),
+    ],
+  });
+}
+
 async function exportWord(
   type: 'word-data' | 'word-image' | 'word-depth' | 'word-image-depth',
   rows: ReportRow[],
-  measurements: Measurement[]
+  measurements: Measurement[],
+  header: ReportHeaderSettingPayload,
+  loadTimeSeconds: number | null
 ): Promise<void> {
   const includeImage = type === 'word-image' || type === 'word-image-depth';
   const includeDepth = type === 'word-depth' || type === 'word-image-depth';
 
   // eslint-disable-next-line no-console
-  console.log('[report-word] building industrial format');
+  console.log('[report-word] building type=', type, 'rows=', rows.length);
 
   const children: (Paragraph | Table)[] = [];
 
@@ -694,29 +838,25 @@ async function exportWord(
   );
 
   // 2. Sample / Inspection Info
-  children.push(buildSampleInfoTable(measurements));
-  // eslint-disable-next-line no-console
-  console.log('[report-word] sample info added');
+  children.push(buildSampleInfoTable(measurements, header, loadTimeSeconds));
   children.push(blankParagraph());
 
   // 3. Statistical Data
-  const stats = computeStatistics(measurements);
+  const stats = computeStatistics(measurements, header.hardnessMin, header.hardnessMax);
   children.push(sectionHeading('Statistical data'));
   children.push(buildStatisticsTable(stats));
   // eslint-disable-next-line no-console
   console.log(
-    `[report-word] statistics added count=${stats.count} max=${fmtStat(stats.max)} min=${fmtStat(stats.min)} avg=${fmtStat(stats.avg)}`
+    `[report-word] stats count=${stats.count} max=${fmtStat(stats.max)} min=${fmtStat(stats.min)} avg=${fmtStat(stats.avg)}`
   );
   children.push(blankParagraph());
 
   // 4. Detailed Data
   children.push(sectionHeading('Detailed data'));
   children.push(buildDetailedDataTable(rows));
-  // eslint-disable-next-line no-console
-  console.log('[report-word] detailed data rows=', rows.length);
   children.push(blankParagraph());
 
-  // 5. Picture Table
+  // 5. Pictures
   if (includeImage) {
     const { table, count } = await buildPictureTable(measurements);
     if (table) {
@@ -725,15 +865,15 @@ async function exportWord(
       children.push(blankParagraph());
     }
     // eslint-disable-next-line no-console
-    console.log('[report-word] images added count=', count);
+    console.log('[report-image] images embedded count=', count);
   }
 
-  // 6. Deep Hardness
+  // 6. Deep Hardness chart
   let depthAdded = false;
   if (includeDepth) {
     try {
       const svg = buildDepthSvg(measurements);
-      const png = await svgStringToPngBuffer(svg, 640, 280);
+      const png = await svgStringToPngBuffer(svg, 720, 320);
       children.push(sectionHeading('Deep Hardness'));
       children.push(
         new Paragraph({
@@ -741,7 +881,7 @@ async function exportWord(
           children: [
             new ImageRun({
               data: png,
-              transformation: { width: 640, height: 280 },
+              transformation: { width: 720, height: 320 },
               type: 'png',
             }),
           ],
@@ -750,7 +890,7 @@ async function exportWord(
       depthAdded = true;
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('[report-word] embed depth chart failed', err);
+      console.warn('[report-depth-chart] embed failed', err);
     }
   }
   // eslint-disable-next-line no-console
@@ -768,10 +908,15 @@ async function exportWord(
       {
         properties: {
           page: {
-            size: { orientation: PageOrientation.LANDSCAPE },
+            size: {
+              orientation: PageOrientation.LANDSCAPE,
+              width: 16838,
+              height: 11906,
+            },
             margin: { top: 720, right: 720, bottom: 720, left: 720 },
           },
         },
+        footers: { default: buildFooter() },
         children,
       },
     ],
@@ -782,28 +927,46 @@ async function exportWord(
   console.log('[report-word] export success path=', REPORT_FILENAMES[type]);
 }
 
-export async function exportReport(
-  type: ReportType,
-  measurements: Measurement[],
-  cameraImageDataUrl?: string | null
-): Promise<{ filename: string }> {
-  // eslint-disable-next-line no-console
-  console.log('[report] export start type=', type);
-  const rows = normalizeAll(measurements);
-  const includeImage = type === 'word-image' || type === 'word-image-depth';
-  const includeDepth = type === 'word-depth' || type === 'word-image-depth';
-  // eslint-disable-next-line no-console
-  console.log('[report] include image=', includeImage);
-  // eslint-disable-next-line no-console
-  console.log('[report] include depth=', includeDepth);
+export type ExportReportInput = {
+  type: ReportType;
+  measurements: Measurement[];
+  header: ReportHeaderSettingPayload;
+  loadTimeSeconds: number | null;
+};
 
-  void cameraImageDataUrl; // images come from each measurement's imageDataUrl now
-  if (type === 'csv') exportCsv(rows);
-  else if (type === 'xlsx') exportXlsx(rows);
-  else await exportWord(type, rows, measurements);
+export async function exportReport(input: ExportReportInput): Promise<{ filename: string }> {
+  const { type, measurements, header, loadTimeSeconds } = input;
+  const t0 = performance.now();
+  // eslint-disable-next-line no-console
+  console.log(
+    '[report-export] start type=',
+    type,
+    'measurements=',
+    measurements.length,
+    'header.sample=',
+    header.sampleName || '-'
+  );
+  const missing: string[] = [];
+  if (!header.sampleName) missing.push('sampleName');
+  if (!header.tester) missing.push('tester');
+  if (missing.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log('[report-data] missing optional fields=', missing.join(','));
+  }
+  const rows = normalizeAll(measurements);
+
+  try {
+    if (type === 'csv') exportCsv(rows);
+    else if (type === 'xlsx') await exportXlsx(rows, header);
+    else await exportWord(type, rows, measurements, header, loadTimeSeconds);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[report-error] type=', type, 'reason=', err);
+    throw err;
+  }
 
   const filename = REPORT_FILENAMES[type];
   // eslint-disable-next-line no-console
-  console.log('[report] export success path=', filename);
+  console.log('[report-export] success path=', filename, 'ms=', Math.round(performance.now() - t0));
   return { filename };
 }

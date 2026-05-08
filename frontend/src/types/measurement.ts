@@ -47,6 +47,8 @@ export type MeasurementSavePayload = {
   timestamp?: string;
   imageDataUrl?: string;
   qualified?: 'YES' | 'NO' | null;
+  convertType?: string | null;
+  convertValue?: number | null;
 };
 
 export type Measurement = MeasurementPayload & {

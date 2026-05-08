@@ -10,6 +10,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
+import { updateMeasurement } from '@/api/updateMeasurement';
 import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
@@ -92,6 +93,7 @@ function MeasurementsWorkspaceImpl({
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
   const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [convertSyncError, setConvertSyncError] = useState<string | null>(null);
 
   const selectedMeasurement = useMemo(
     () => measurements.find((measurement) => measurement.id === selectedMeasurementId) ?? null,
@@ -99,8 +101,60 @@ function MeasurementsWorkspaceImpl({
   );
   const latestMeasurement = measurements[0] ?? null;
   const displayedMeasurement = selectedMeasurement ?? latestMeasurement;
-  const mutationError = error ?? deleteError;
+  const mutationError = error ?? deleteError ?? convertSyncError;
   const busy = loading || deleting;
+
+  // Sync the dropdown to whichever row is being shown so switching selection
+  // reflects that row's saved convertType. Empty/legacy rows show 'HV'.
+  useEffect(() => {
+    const saved = displayedMeasurement?.convertType;
+    if (saved && CONVERT_TYPE_OPTIONS.includes(saved as (typeof CONVERT_TYPE_OPTIONS)[number])) {
+      setConvertType(saved as (typeof CONVERT_TYPE_OPTIONS)[number]);
+    } else {
+      setConvertType('HV');
+    }
+  }, [displayedMeasurement?.id, displayedMeasurement?.convertType]);
+
+  const handleConvertTypeChange = useCallback(
+    async (next: (typeof CONVERT_TYPE_OPTIONS)[number]) => {
+      // eslint-disable-next-line no-console
+      console.log(`[convert-type-ui] selected=${next}`);
+      setConvertType(next);
+      // eslint-disable-next-line no-console
+      console.log(`[convert-type-state] value=${next}`);
+      const target = displayedMeasurement;
+      if (!target) {
+        // eslint-disable-next-line no-console
+        console.log('[measurement-convert] no target row — dropdown only');
+        return;
+      }
+      const convertValue = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-convert] rowId=${target.id} convertType=${next} convertValue=${convertValue ?? '-'}`
+      );
+      try {
+        await updateMeasurement(target.id, {
+          d1: target.d1,
+          d2: target.d2,
+          convertType: next,
+          convertValue,
+        });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-save] rowId=${target.id} convertType=${next} convertValue=${convertValue ?? '-'}`
+        );
+        setConvertSyncError(null);
+        await refetch();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.error(`[measurement-convert] save failed reason=${message}`);
+        setConvertSyncError(`Failed to update convert type: ${message}`);
+      }
+    },
+    [displayedMeasurement, refetch]
+  );
 
   useEffect(() => {
     if (selectedMeasurementId && !selectedMeasurement) {
@@ -158,7 +212,9 @@ function MeasurementsWorkspaceImpl({
               value={convertType}
               disabled={busy}
               onChange={(event: SelectChangeEvent<(typeof CONVERT_TYPE_OPTIONS)[number]>) =>
-                setConvertType(event.target.value as (typeof CONVERT_TYPE_OPTIONS)[number])
+                void handleConvertTypeChange(
+                  event.target.value as (typeof CONVERT_TYPE_OPTIONS)[number]
+                )
               }
             >
               {CONVERT_TYPE_OPTIONS.map((option) => (

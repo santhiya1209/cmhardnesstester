@@ -295,6 +295,7 @@ function App() {
   const previewMeasurementRef = useRef<{ d1Pixels: number; d2Pixels: number; confidence: number } | null>(null);
   const autoMeasureSettingsOpenRef = useRef(false);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
+  const [trimMeasureOpen, setTrimMeasureOpen] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
   const [committedAutoMeasureOverlay, setCommittedAutoMeasureOverlay] =
@@ -362,6 +363,10 @@ function App() {
           const depthPayload = isNewManualMeasurement
             ? { depthMm: await readLatestMicrometerDepthMm() }
             : {};
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-save] depth from micrometer=${depthPayload.depthMm ?? '-'} new=${isNewManualMeasurement}`
+          );
           const pixelValues = calculateManualDiagonalsFromPixels(
             result.d1Px,
             result.d2Px,
@@ -548,7 +553,16 @@ function App() {
       previewMeasurementRef.current = null;
 
       const timestamp = new Date().toISOString();
-      const depthMm = await readLatestMicrometerDepthMm();
+      // Depth is captured ONLY when creating a new auto-measure row. On
+      // re-detection of an existing row we must keep the originally saved
+      // micrometer reading — overwriting would violate "old saved row must
+      // not change" and copy the current depth across all re-detected rows.
+      const isNewAutoMeasurement = autoMeasurementIdRef.current === null;
+      const depthMm = isNewAutoMeasurement ? await readLatestMicrometerDepthMm() : null;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-save] depth from micrometer=${depthMm ?? '-'} new=${isNewAutoMeasurement}`
+      );
 
       const conversion = calculateVickersFromPixels({
         calibrationSettings,
@@ -615,7 +629,7 @@ function App() {
           calibrationName: values.calibrationName,
           objective: values.normalizedObjective,
           testForceKgf: values.forceKgf,
-          depthMm,
+          ...(isNewAutoMeasurement ? { depthMm } : {}),
           method: 'Auto',
           unit: 'um',
           timestamp,
@@ -1331,6 +1345,37 @@ function App() {
     };
   }, []);
 
+  // Trim Measure: nudge an existing auto-measure corner by (dx, dy). Reuses
+  // the already-displayed yellow corners — does NOT add a separate overlay.
+  // No-op when there is no committed auto-measure result (nothing to trim).
+  const handleTrimAdjust = useCallback(
+    (corner: 'top' | 'right' | 'bottom' | 'left', dx: number, dy: number) => {
+      setCommittedAutoMeasureOverlay((prev) => {
+        if (!prev) {
+          // eslint-disable-next-line no-console
+          console.log('[trim-measure-overlay] no auto-measure corners to move — skipped');
+          return prev;
+        }
+        const current = prev.corners[corner];
+        const next = { x: current.x + dx, y: current.y + dy };
+        const nextCorners = { ...prev.corners, [corner]: next };
+        const lineKey: 'topY' | 'bottomY' | 'leftX' | 'rightX' =
+          corner === 'top'
+            ? 'topY'
+            : corner === 'bottom'
+              ? 'bottomY'
+              : corner === 'left'
+                ? 'leftX'
+                : 'rightX';
+        const lineValue = corner === 'left' || corner === 'right' ? next.x : next.y;
+        // eslint-disable-next-line no-console
+        console.log(`[trim-measure-overlay] move existingLine=${lineKey} value=${lineValue}`);
+        return { ...prev, corners: nextCorners };
+      });
+    },
+    []
+  );
+
   const buildSharedCtx = useCallback(
     (): ToolDispatchContext => ({
       setActiveTool,
@@ -1355,6 +1400,7 @@ function App() {
       },
       autoMeasure: handleAutoMeasure,
       trimLastMeasurement: overlay.trimLast,
+      openTrimMeasure: () => setTrimMeasureOpen(true),
       toggleCenterCrossLine: overlay.toggleCrossLine,
       resumeImage: () => {
         const nowFrozen = cameraRef.current?.toggleFreeze() ?? false;
@@ -1774,6 +1820,9 @@ function App() {
           refetchMeasurements={refetchMeasurements}
           onOpenTestRecords={handleOpenTestRecords}
           onObjectiveChange={handleObjectiveChangeFromUI}
+          trimMeasureOpen={trimMeasureOpen}
+          onCloseTrimMeasure={() => setTrimMeasureOpen(false)}
+          onTrimAdjust={handleTrimAdjust}
         />
       </Box>
 
@@ -1900,6 +1949,7 @@ function App() {
         initialMeasurementIds={testRecordMeasurementIds}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
       />
+
     </Box>
   );
 }
