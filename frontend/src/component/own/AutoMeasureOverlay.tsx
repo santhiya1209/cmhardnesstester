@@ -241,31 +241,6 @@ function AutoMeasureOverlayImpl({
         dragGuide: dragRef.current ? dragRef.current.line : null,
       });
 
-      // Brighter ring on the actively dragged corner so the user can see
-      // exactly which tip they're refining. Drawn on top of the shared
-      // overlay so the manual-measure pipeline isn't affected.
-      const activeKey = dragRef.current?.line ?? null;
-      if (activeKey && corners && imageSize) {
-        const placement = getImagePlacement(wrap.clientWidth, wrap.clientHeight, imageSize);
-        if (placement) {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            const dpr = window.devicePixelRatio || 1;
-            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            const display = imageToDisplay(corners[activeKey], placement);
-            ctx.beginPath();
-            ctx.arc(display.x, display.y, 8, 0, Math.PI * 2);
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = '#FFFFFF';
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(display.x, display.y, 5, 0, Math.PI * 2);
-            ctx.fillStyle = '#FFFF66';
-            ctx.fill();
-          }
-        }
-      }
-
       // eslint-disable-next-line no-console
       console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
     });

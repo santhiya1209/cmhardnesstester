@@ -299,7 +299,7 @@ function TestRecordsDialogImpl({
                 fullWidth
                 size="small"
                 type="number"
-                inputProps={{ min: 0, step: 1 }}
+                slotProps={{ htmlInput: { min: 0, step: 1 } }}
                 placeholder="e.g. 200"
                 value={formState.targetMinHv}
                 disabled={busy}
@@ -312,7 +312,7 @@ function TestRecordsDialogImpl({
                 fullWidth
                 size="small"
                 type="number"
-                inputProps={{ min: 0, step: 1 }}
+                slotProps={{ htmlInput: { min: 0, step: 1 } }}
                 placeholder="e.g. 300"
                 value={formState.targetMaxHv}
                 disabled={busy}

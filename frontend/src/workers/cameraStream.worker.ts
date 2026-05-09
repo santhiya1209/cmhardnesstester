@@ -39,6 +39,11 @@ type FrameMsg = {
   height: number;
   pixelFormat: PixelFormat;
   bits: 8 | 16;
+  // Tagged by the main thread with the live frameEpoch when posted. Echoed
+  // back in the 'paint' message so the main-thread paint handler can drop
+  // paints whose frame was received before the latest canvas clear.
+  epoch?: number;
+  seq?: number;
 };
 type DisposeMsg = { type: 'dispose' };
 type IncomingMsg = InitMsg | Init2dMsg | FrameMsg | DisposeMsg;
@@ -170,9 +175,10 @@ function paint(frame: FrameMsg) {
   const img = decode(frame.buffer, frame.width, frame.height, frame.pixelFormat, frame.bits);
   if (mainThreadPaint) {
     const copy = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height);
-    (self as DedicatedWorkerGlobalScope).postMessage({ type: 'paint', imageData: copy }, [
-      copy.data.buffer,
-    ]);
+    (self as DedicatedWorkerGlobalScope).postMessage(
+      { type: 'paint', imageData: copy, epoch: frame.epoch ?? 0, seq: frame.seq ?? 0 },
+      [copy.data.buffer]
+    );
     return;
   }
   if (!canvas || !ctx) {

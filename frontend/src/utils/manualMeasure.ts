@@ -54,8 +54,11 @@ export type VickersFromPixelsValue = {
   d2Mm: number;
   avgDUm: number;
   avgDMm: number;
-  forceKgf: number;
-  hv: number;
+  // forceKgf and hv become null when force is missing. D1µm/D2µm/Davg are
+  // still produced from calibration alone — the table now shows the µm
+  // diagonals and a blank HV instead of refusing to create a row at all.
+  forceKgf: number | null;
+  hv: number | null;
   calibrationId: string;
   calibrationName: string | null;
   umPerPixel: number;
@@ -303,22 +306,83 @@ export function resolveManualCalibration({
       .filter(
         (item) =>
           normalizeObjectiveName(item.zoomTime) === target &&
-          (item.pixelLengthX > 0 || item.pixelLengthY > 0)
+          (item.pixelLengthX > 0 ||
+            item.pixelLengthY > 0 ||
+            (typeof item.realDistanceX === 'number' && item.realDistanceX > 0) ||
+            (typeof item.realDistanceY === 'number' && item.realDistanceY > 0))
       )
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
     const legacy = legacyForObjective[0];
     if (!legacy) {
       return null;
     }
-    const axes = [legacy.pixelLengthX, legacy.pixelLengthY].filter(
-      (value) => Number.isFinite(value) && value > 0
+    // Calibration coefficient: when the user filled BOTH the measured pixel
+    // span AND the real-world distance, compute µm/pixel = realDistance /
+    // pixelLength per axis. Otherwise fall back to the legacy interpretation
+    // where pixelLengthX/Y is itself the µm/pixel coefficient — keeps any
+    // pre-existing rows working without forcing the user to re-enter them.
+    const realX = typeof legacy.realDistanceX === 'number' ? legacy.realDistanceX : 0;
+    const realY = typeof legacy.realDistanceY === 'number' ? legacy.realDistanceY : 0;
+    const pxX = legacy.pixelLengthX;
+    const pxY = legacy.pixelLengthY;
+    const computedX = pxX > 0 && realX > 0 ? realX / pxX : null;
+    const computedY = pxY > 0 && realY > 0 ? realY / pxY : null;
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[calibration-compute] objective=${target} pixelX=${pxX} realX=${realX} umPerPixelX=${computedX ?? 'n/a'}`
     );
-    if (axes.length === 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[calibration-compute] objective=${target} pixelY=${pxY} realY=${realY} umPerPixelY=${computedY ?? 'n/a'}`
+    );
+
+    let micronPerPixel = 0;
+    let micronPerPixelX: number | undefined;
+    let micronPerPixelY: number | undefined;
+    if (computedX !== null && computedY !== null) {
+      micronPerPixelX = computedX;
+      micronPerPixelY = computedY;
+      micronPerPixel = (computedX + computedY) / 2;
+    } else if (computedX !== null) {
+      micronPerPixelX = computedX;
+      micronPerPixelY = computedX;
+      micronPerPixel = computedX;
+    } else if (computedY !== null) {
+      micronPerPixelX = computedY;
+      micronPerPixelY = computedY;
+      micronPerPixel = computedY;
+    } else {
+      // Legacy fallback for calibrations saved BEFORE the knownReferenceUm
+      // flow existed (no realDistance). Treat pxX/pxY as µm/pixel directly so
+      // pre-existing rows / per-objective lookups don't break. New saves go
+      // through the realDistance branch above and are unaffected.
+      const axes = [pxX, pxY].filter((value) => Number.isFinite(value) && value > 0);
+      if (axes.length === 0) {
+        return null;
+      }
+      micronPerPixelX = pxX > 0 ? pxX : pxY;
+      micronPerPixelY = pxY > 0 ? pxY : pxX;
+      micronPerPixel = axes.reduce((sum, value) => sum + value, 0) / axes.length;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calibration-legacy-fallback] objective=${target} pxX=${pxX} pxY=${pxY} — no knownReferenceUm; treating pixelLength as µm/pixel for back-compat`
+      );
+    }
+
+    if (!Number.isFinite(micronPerPixel) || micronPerPixel <= 0) {
       return null;
     }
-    const micronPerPixel = axes.reduce((sum, value) => sum + value, 0) / axes.length;
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[measurement-scale] objective=${target} xUmPerPixel=${micronPerPixelX ?? 'n/a'} yUmPerPixel=${micronPerPixelY ?? 'n/a'} avg=${micronPerPixel}`
+    );
+
     return {
       micronPerPixel,
+      micronPerPixelX,
+      micronPerPixelY,
       calibrationName: `${legacy.zoomTime} ${legacy.force} ${legacy.hardnessLevel}`,
       objective: legacy.zoomTime,
     };
@@ -394,14 +458,10 @@ export function calculateVickersFromPixels({
     return { ok: false, reason: 'D1/D2 pixel values are invalid.', normalizedObjective };
   }
 
-  if (!forceKgf || !Number.isFinite(forceKgf) || forceKgf <= 0) {
-    return {
-      ok: false,
-      reason: 'Force/load required to calculate HV.',
-      normalizedObjective,
-    };
-  }
-
+  // Calibration is required to convert pixels → microns. Resolve it BEFORE
+  // checking force, because force only affects HV — D1µm/D2µm/Davg can be
+  // produced without it. Refusing the whole row when force is missing is
+  // what was leaving the measurement table blank.
   const calibration = findCalibrationForObjective(
     calibrationSettingsList ?? (calibrationSettings ? [calibrationSettings] : []),
     normalizedObjective
@@ -416,8 +476,13 @@ export function calculateVickersFromPixels({
         targetObjective: normalizedObjective,
       });
   const umPerPixel = calibration ? readUmPerPixel(calibration) : legacyCalibration?.micronPerPixel ?? 0;
+  // Per-axis coefficients per spec: prefer the legacy Calibration record's
+  // separate xUmPerPixel / yUmPerPixel (knownReferenceUm / pixelLengthX|Y).
+  // calibration_settings only carries a single value, so X==Y in that case.
+  const xUmPerPixel = legacyCalibration?.micronPerPixelX ?? umPerPixel;
+  const yUmPerPixel = legacyCalibration?.micronPerPixelY ?? umPerPixel;
 
-  if (umPerPixel <= 0) {
+  if (umPerPixel <= 0 || xUmPerPixel <= 0 || yUmPerPixel <= 0) {
     return {
       ok: false,
       reason: `Calibration not found for ${normalizedObjective}. Please calibrate this objective before measurement.`,
@@ -425,8 +490,8 @@ export function calculateVickersFromPixels({
     };
   }
 
-  const d1Um = d1Px * umPerPixel;
-  const d2Um = d2Px * umPerPixel;
+  const d1Um = d1Px * xUmPerPixel;
+  const d2Um = d2Px * yUmPerPixel;
   const d1Mm = d1Um / 1000;
   const d2Mm = d2Um / 1000;
   const avgDUm = (d1Um + d2Um) / 2;
@@ -436,11 +501,25 @@ export function calculateVickersFromPixels({
     return { ok: false, reason: 'Average diagonal is zero.', normalizedObjective };
   }
 
-  const hv = VICKERS_CONSTANT * forceKgf / (avgDMm * avgDMm);
+  // HV needs force. Without force we still emit D1µm/D2µm/Davg so the table
+  // is populated; HV column displays "-" via formatHardness(null).
+  const hasForce = typeof forceKgf === 'number' && Number.isFinite(forceKgf) && forceKgf > 0;
+  const hv = hasForce ? VICKERS_CONSTANT * (forceKgf as number) / (avgDMm * avgDMm) : null;
+  const effectiveForceKgf = hasForce ? (forceKgf as number) : null;
+  if (!hasForce) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[measurement-hv-skipped] reason=force-missing objective=${normalizedObjective} d1Um=${d1Um} d2Um=${d2Um} davgUm=${avgDUm} — row will save with hv=null`
+    );
+  }
 
   // eslint-disable-next-line no-console
   console.log(
     `[calibration] objective=${normalizedObjective} umPerPixel=${umPerPixel}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(
+    `[measurement-convert]\nd1Px=${d1Px}\nd2Px=${d2Px}\nxUmPerPixel=${xUmPerPixel}\nyUmPerPixel=${yUmPerPixel}\nd1Um=${d1Um}\nd2Um=${d2Um}\ndavgUm=${avgDUm}\nhv=${hv ?? 'n/a'}`
   );
   // eslint-disable-next-line no-console
   console.log(`[hv-calc] D1_px=${d1Px} D2_px=${d2Px}`);
@@ -451,9 +530,13 @@ export function calculateVickersFromPixels({
   // eslint-disable-next-line no-console
   console.log(`[hv-calc] averageDiagonal_mm=${avgDMm}`);
   // eslint-disable-next-line no-console
-  console.log(`[hv-calc] force_kgf=${forceKgf}`);
+  console.log(`[hv-calc] force_kgf=${effectiveForceKgf ?? 'missing'}`);
   // eslint-disable-next-line no-console
-  console.log(`[hv-calc] HV=${hv}`);
+  console.log(`[hv-calc] HV=${hv ?? 'n/a (force missing)'}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[measurement-hv] objective=${normalizedObjective} force=${effectiveForceKgf ?? 'missing'} davgUm=${avgDUm} hv=${hv ?? 'n/a'}`
+  );
   const calibrationId = calibration?.id ?? '';
 
   return {
@@ -469,8 +552,8 @@ export function calculateVickersFromPixels({
       d2Mm: round(d2Mm, 6),
       avgDUm: round(avgDUm, 3),
       avgDMm: round(avgDMm, 6),
-      forceKgf,
-      hv: round(hv, 2),
+      forceKgf: effectiveForceKgf,
+      hv: hv === null ? null : round(hv, 2),
       calibrationId,
       calibrationName: calibration?.objective ?? legacyCalibration?.calibrationName ?? normalizedObjective,
       umPerPixel,

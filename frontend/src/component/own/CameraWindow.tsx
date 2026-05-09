@@ -6,7 +6,10 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
 import {
-  getLastCameraFrameAt,
+  bumpFrameEpochOnCanvasClear,
+  getCurrentFrameEpoch,
+  getLastCameraFramePaintAt,
+  getLastPaintEpoch,
   useCameraStream,
   waitForFreshCameraFrame,
 } from '@/hooks/useCameraStream';
@@ -234,14 +237,22 @@ function CameraWindowImpl(
     }
 
     // Live source: if the canvas was cleared by an objective change and no
-    // worker frame has painted onto it since, the pixels are transparent.
-    // Refuse to capture so callers can await a fresh frame instead of
-    // shipping a black image to the native detector.
+    // worker frame has actually PAINTED onto it since (epoch-tagged round
+    // trip through the worker), the pixels are still transparent or carry
+    // pre-clear stale content. Refuse to capture so callers can await a
+    // fresh post-clear frame instead of shipping a stale image to the
+    // native detector. Note: paint-time, not IPC-arrival time — the IPC
+    // body is forwarded to the worker before any pixels land on the canvas.
     if (
       source === live &&
       liveCanvasClearedAtRef.current > 0 &&
-      getLastCameraFrameAt() <= liveCanvasClearedAtRef.current
+      (getLastPaintEpoch() < getCurrentFrameEpoch() ||
+        getLastCameraFramePaintAt() <= liveCanvasClearedAtRef.current)
     ) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-guard] reason=awaiting-fresh-frame currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()} lastPaintAt=${getLastCameraFramePaintAt()} clearedAt=${liveCanvasClearedAtRef.current}`
+      );
       return { ok: false, error: 'awaiting-fresh-frame' };
     }
 
@@ -437,6 +448,14 @@ function CameraWindowImpl(
     if (!ctx) return;
     ctx.clearRect(0, 0, live.width, live.height);
     liveCanvasClearedAtRef.current = Date.now();
+    // Bump epoch so any frame already in the worker queue (decoded but not
+    // yet painted on the main thread) is dropped on arrival instead of
+    // repainting stale previous-objective pixels onto the cleared canvas.
+    const newEpoch = bumpFrameEpochOnCanvasClear();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-frame-clear] reason=objective-change clearedAt=${liveCanvasClearedAtRef.current} newEpoch=${newEpoch}`
+    );
     // Why: do NOT null imageSize here. The camera resolution is unchanged on
     // objective change — the magnification is optical, not pixel. Nulling
     // imageSize unmounts/blanks the AutoMeasureOverlay and the next overlay
@@ -461,6 +480,15 @@ function CameraWindowImpl(
     const fresh = await waitForFreshCameraFrame(timeoutMs);
     if (fresh) {
       liveCanvasClearedAtRef.current = 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-fresh] paintEpoch=${getLastPaintEpoch()} currentEpoch=${getCurrentFrameEpoch()} paintAt=${getLastCameraFramePaintAt()}`
+      );
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-watchdog] no-frame timeoutMs=${timeoutMs} currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()}`
+      );
     }
     return fresh;
   }, []);

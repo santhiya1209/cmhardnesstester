@@ -70,6 +70,17 @@ async function createWindow() {
   cameraService.attach(mainWindow.webContents);
   micrometerService.attach(mainWindow.webContents);
 
+  // Re-attach on every page load (Vite full reload, Ctrl+R, in-app navigation)
+  // so micrometer:state/camera:* events keep flowing after the renderer is
+  // re-created. Without this, the service's `destroyed` listener nulls
+  // webContents and _emit silently no-ops for the rest of the session.
+  mainWindow.webContents.on('did-finish-load', () => {
+    cameraService.attach(mainWindow.webContents);
+    micrometerService.attach(mainWindow.webContents);
+    // eslint-disable-next-line no-console
+    console.log('[main] webContents reattached after did-finish-load');
+  });
+
   const wcRef = mainWindow.webContents;
   mainWindow.on('closed', () => {
     try { cameraService.detach(wcRef); } catch { /* ignore */ }

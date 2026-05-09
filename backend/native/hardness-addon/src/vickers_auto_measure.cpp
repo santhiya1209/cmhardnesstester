@@ -832,7 +832,14 @@ std::optional<Candidate> SelectBestContour(
   const double maxCenterDistance = std::min(params.width, params.height) * params.maxCenterDistanceRatio;
 
   std::optional<Candidate> best;
+  // Per-contour index for log correlation. Logging is gated on
+  // AutoMeasureDebugEnabled() so production builds stay quiet unless the
+  // env flag is set; on the failing frame the user enables the flag,
+  // reproduces, and reads which filter fired without algorithm changes.
+  const bool debugLog = AutoMeasureDebugEnabled();
+  int contourIndex = -1;
   for (const auto& contour : contours) {
+    ++contourIndex;
     const double area = std::abs(cv::contourArea(contour));
 
     std::vector<cv::Point> hull;
@@ -840,37 +847,136 @@ std::optional<Candidate> SelectBestContour(
     const double hullArea = std::abs(cv::contourArea(hull));
     const bool edgeMaskMode = IsEdgeMaskMode(thresholdMode);
     const double validationArea = edgeMaskMode ? std::max(area, hullArea) : area;
-    if (validationArea < minArea || validationArea > maxArea) continue;
+
+    cv::Point2f preCenter(0.0f, 0.0f);
+    double preCenterDistance = -1.0;
+    {
+      const cv::Moments mm = cv::moments(contour);
+      if (std::abs(mm.m00) > 1e-6) {
+        preCenter = cv::Point2f(
+          static_cast<float>(mm.m10 / mm.m00),
+          static_cast<float>(mm.m01 / mm.m00)
+        );
+        preCenterDistance = Distance(preCenter, imageCenter);
+      }
+    }
+    const cv::RotatedRect preRect = cv::minAreaRect(contour);
+    const double preRectShort = std::min(preRect.size.width, preRect.size.height);
+    const double preRectLong = std::max(preRect.size.width, preRect.size.height);
+    const double preRatio = preRectShort > 1e-6 ? preRectLong / preRectShort : 0.0;
+
+    if (debugLog) {
+      DebugLog(
+        "[auto-measure-candidate] mode=%s contour=%d area=%.2f hullArea=%.2f validationArea=%.2f centerX=%.2f centerY=%.2f rectShort=%.2f rectLong=%.2f ratio=%.3f\n",
+        thresholdMode.c_str(), contourIndex, area, hullArea, validationArea,
+        preCenter.x, preCenter.y, preRectShort, preRectLong, preRatio
+      );
+    }
+
+    if (validationArea < minArea) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=area-too-small validationArea=%.2f min=%.2f\n",
+        thresholdMode.c_str(), contourIndex, validationArea, minArea
+      );
+      continue;
+    }
+    if (validationArea > maxArea) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=area-too-large validationArea=%.2f max=%.2f\n",
+        thresholdMode.c_str(), contourIndex, validationArea, maxArea
+      );
+      continue;
+    }
 
     const cv::Moments m = cv::moments(contour);
-    if (std::abs(m.m00) <= 1e-6) continue;
+    if (std::abs(m.m00) <= 1e-6) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=zero-moment m00=%.6f\n",
+        thresholdMode.c_str(), contourIndex, m.m00
+      );
+      continue;
+    }
     const cv::Point2f center(static_cast<float>(m.m10 / m.m00), static_cast<float>(m.m01 / m.m00));
     const double centerDistance = Distance(center, imageCenter);
-    if (centerDistance > maxCenterDistance) continue;
+    if (centerDistance > maxCenterDistance) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=not-centered dx=%.2f dy=%.2f distance=%.2f tolerance=%.2f\n",
+        thresholdMode.c_str(), contourIndex,
+        static_cast<double>(center.x - imageCenter.x),
+        static_cast<double>(center.y - imageCenter.y),
+        centerDistance, maxCenterDistance
+      );
+      continue;
+    }
 
     const double solidity = hullArea > 1e-6 ? area / hullArea : 0.0;
-    if (solidity < (edgeMaskMode ? 0.035 : 0.52)) continue;
+    const double solidityMin = edgeMaskMode ? 0.035 : 0.52;
+    if (solidity < solidityMin) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=solidity-too-low solidity=%.4f min=%.4f edgeMaskMode=%d\n",
+        thresholdMode.c_str(), contourIndex, solidity, solidityMin, edgeMaskMode ? 1 : 0
+      );
+      continue;
+    }
 
     const cv::RotatedRect rect = cv::minAreaRect(contour);
     const double rectShort = std::min(rect.size.width, rect.size.height);
     const double rectLong = std::max(rect.size.width, rect.size.height);
-    if (rectShort < 8.0 || rectLong < 12.0) continue;
+    if (rectShort < 8.0 || rectLong < 12.0) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=rect-too-small rectShort=%.2f rectLong=%.2f minShort=8.00 minLong=12.00\n",
+        thresholdMode.c_str(), contourIndex, rectShort, rectLong
+      );
+      continue;
+    }
 
     int approxPointCount = 0;
     std::vector<cv::Point2f> initial = InitialCornerEstimate(contour, rect, approxPointCount);
-    if (initial.size() != 4) continue;
+    if (initial.size() != 4) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=initial-corners-not-4 cornerCount=%zu approxPointCount=%d\n",
+        thresholdMode.c_str(), contourIndex, initial.size(), approxPointCount
+      );
+      continue;
+    }
 
     const OrderedCorners corners = OrderDiamondCorners(initial, center);
     const ShapeMetrics metrics = ComputeShapeMetrics(corners);
-    if (!std::isfinite(metrics.sideRatio) || metrics.sideRatio > params.maxSideLengthRatio * 1.25) continue;
-    if (!std::isfinite(metrics.diagonalRatio)) continue;
-    if (metrics.diagonalRatio > params.maxDiagonalRatio || (1.0 / metrics.diagonalRatio) < params.minDiagonalRatio) continue;
+    if (!std::isfinite(metrics.sideRatio) || metrics.sideRatio > params.maxSideLengthRatio * 1.25) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=side-ratio-invalid sideRatio=%.4f max=%.4f\n",
+        thresholdMode.c_str(), contourIndex, metrics.sideRatio, params.maxSideLengthRatio * 1.25
+      );
+      continue;
+    }
+    if (!std::isfinite(metrics.diagonalRatio)) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=diagonal-ratio-non-finite\n",
+        thresholdMode.c_str(), contourIndex
+      );
+      continue;
+    }
+    if (metrics.diagonalRatio > params.maxDiagonalRatio || (1.0 / metrics.diagonalRatio) < params.minDiagonalRatio) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=diagonal-ratio-out-of-range diagonalRatio=%.4f min=%.4f max=%.4f\n",
+        thresholdMode.c_str(), contourIndex,
+        metrics.diagonalRatio, params.minDiagonalRatio, params.maxDiagonalRatio
+      );
+      continue;
+    }
 
     double maxAngleError = 0.0;
     for (double angle : metrics.anglesDeg) {
       maxAngleError = std::max(maxAngleError, std::abs(angle - 90.0));
     }
-    if (maxAngleError > params.angleToleranceDeg + 16.0) continue;
+    if (maxAngleError > params.angleToleranceDeg + 16.0) {
+      if (debugLog) DebugLog(
+        "[auto-measure-reject] mode=%s contour=%d reason=angle-error-too-large maxAngleError=%.2f tolerance=%.2f\n",
+        thresholdMode.c_str(), contourIndex,
+        maxAngleError, params.angleToleranceDeg + 16.0
+      );
+      continue;
+    }
 
     const double areaScore = Clamp01(validationArea / (imageArea * 0.055));
     const double centerScore = Clamp01(1.0 - centerDistance / std::max(1.0, maxCenterDistance));
@@ -906,6 +1012,33 @@ std::optional<Candidate> SelectBestContour(
 
     if (!best || candidate.score > best->score) {
       best = candidate;
+    }
+  }
+
+  if (debugLog) {
+    if (best) {
+      DebugLog(
+        "[auto-measure-selected] mode=%s contour=%d centerX=%.2f centerY=%.2f area=%.2f score=%.4f rectShort=%.2f rectLong=%.2f sideRatio=%.4f diagonalRatio=%.4f\n",
+        thresholdMode.c_str(),
+        best->contourCount,
+        best->center.x,
+        best->center.y,
+        best->contourArea,
+        best->score,
+        std::min(best->rect.size.width, best->rect.size.height),
+        std::max(best->rect.size.width, best->rect.size.height),
+        best->metrics.sideRatio,
+        best->metrics.diagonalRatio
+      );
+    } else {
+      DebugLog(
+        "[auto-measure-selected] mode=%s contour=none totalContours=%d minArea=%.2f maxArea=%.2f maxCenterDistance=%.2f\n",
+        thresholdMode.c_str(),
+        static_cast<int>(contours.size()),
+        minArea,
+        maxArea,
+        maxCenterDistance
+      );
     }
   }
 

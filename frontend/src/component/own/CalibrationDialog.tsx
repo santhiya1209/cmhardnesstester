@@ -3,14 +3,11 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogTitle from '@mui/material/DialogTitle';
+import IconButton from '@mui/material/IconButton';
+import CloseIcon from '@mui/icons-material/Close';
 import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
-import InputAdornment from '@mui/material/InputAdornment';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
 import Radio from '@mui/material/Radio';
@@ -55,8 +52,6 @@ type FormState = {
   pixelLengthY: string;
   hardness: string;
   lengthMode: LengthMode;
-  realDistanceX: string;
-  realDistanceY: string;
 };
 
 const DEFAULT_FORM_STATE: FormState = {
@@ -67,15 +62,71 @@ const DEFAULT_FORM_STATE: FormState = {
   pixelLengthY: '0',
   hardness: '0',
   lengthMode: 'linear',
-  realDistanceX: '0',
-  realDistanceY: '0',
 };
+
+// Inverse Vickers: given the known HV and force (kgf), the calibration
+// diagonal in µm is sqrt(1.8544 * F / HV) * 1000. Used to derive the per-axis
+// calibration coefficients (xUmPerPixel = D_um / pixelX, similarly Y) without
+// asking the user for a separate reference value.
+function diagonalUmFromHv(forceKgf: number, hv: number): number | null {
+  if (!Number.isFinite(forceKgf) || forceKgf <= 0) return null;
+  if (!Number.isFinite(hv) || hv <= 0) return null;
+  const dMm = Math.sqrt((1.8544 * forceKgf) / hv);
+  if (!Number.isFinite(dMm) || dMm <= 0) return null;
+  return dMm * 1000;
+}
+
+function parseForceKgfFromLabel(value: string): number | null {
+  const match = String(value ?? '').match(/([0-9]+(?:\.[0-9]+)?)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
 
 type Props = {
   open: boolean;
   onClose: () => void;
   onStatusChange?: (message: string) => void;
   onChanged?: () => void;
+  /**
+   * Latest measured pixel diagonals from the live image (Manual Measure).
+   * When the dialog opens, these auto-fill Pixel Length X / Y so the user
+   * doesn't have to retype what they just measured. Editable after the
+   * auto-fill — typing into the fields wins. Pass null/0 to skip auto-fill.
+   */
+  autoFillPixelLengthX?: number | null;
+  autoFillPixelLengthY?: number | null;
+  /**
+   * Active objective (confirmed-from-machine first, optimistic activeObjective
+   * fallback). Used to default the Zoom Time selector so the saved row lands
+   * under the right objective without the user having to re-pick it.
+   */
+  defaultObjective?: string | null;
+  /**
+   * Run native Auto Measure detection on the current live frame using the
+   * dialog's selected objective. Returns detected pixel diagonals so the
+   * dialog can fill Pixel Length X / Y. NO measurement row is created
+   * (calibration mode is pixels-only). Returns null when detection fails
+   * or no frame is available.
+   */
+  onRequestAutoMeasure?: (objective: string) => Promise<{ d1Px: number; d2Px: number } | null>;
+  /**
+   * Switch the app into Manual Measure mode for calibration. The dialog is
+   * closed by the parent so the user can drag the cross on the live image;
+   * each drag emits [calibration-drag-update]. When the user re-opens this
+   * dialog, the `autoFillPixelLength*` props provide the captured values.
+   */
+  onRequestManualMeasure?: () => void;
+  /**
+   * Fired immediately after a successful Add Calibration. Receives the saved
+   * calibration and the payload that produced it. The parent uses this to
+   * commit a measurement row from the CURRENT D1/D2 line pixels
+   * (payload.pixelLengthX/Y) so the table is populated automatically.
+   */
+  onAutoCreateMeasurementRow?: (args: {
+    savedCalibration: Calibration;
+    payload: CalibrationSavePayload;
+  }) => Promise<void> | void;
 };
 
 function nonNeg(value: string): number | null {
@@ -88,8 +139,14 @@ function buildHardnessPayload(form: FormState): CalibrationSavePayload | null {
   const px = nonNeg(form.pixelLengthX);
   const py = nonNeg(form.pixelLengthY);
   const h = nonNeg(form.hardness);
+  const forceKgf = parseForceKgfFromLabel(form.force);
   if (!form.zoomTime || !form.force || !form.hardnessLevel) return null;
-  if (px === null || py === null || h === null) return null;
+  if (px === null || py === null || h === null || forceKgf === null) return null;
+  const diagonalUm = diagonalUmFromHv(forceKgf, h);
+  if (diagonalUm === null) return null;
+  // Persist the inverse-Vickers diagonal into realDistanceX/Y so the existing
+  // resolver (xUmPerPixel = realDistance / pixelLength) and the auto-row
+  // handler both pick up correct per-axis coefficients without any extra UI.
   return {
     zoomTime: form.zoomTime,
     force: form.force,
@@ -98,27 +155,33 @@ function buildHardnessPayload(form: FormState): CalibrationSavePayload | null {
     pixelLengthY: py,
     hardness: h,
     calibrationType: 'hardness',
+    realDistanceX: diagonalUm,
+    realDistanceY: diagonalUm,
   };
 }
 
 function buildLengthPayload(form: FormState): CalibrationSavePayload | null {
   const px = nonNeg(form.pixelLengthX);
   const py = nonNeg(form.pixelLengthY);
-  const rx = nonNeg(form.realDistanceX);
-  const ry = nonNeg(form.realDistanceY);
+  const h = nonNeg(form.hardness);
+  const forceKgf = parseForceKgfFromLabel(form.force);
   if (!form.zoomTime || !form.force || !form.hardnessLevel) return null;
-  if (px === null || py === null || rx === null || ry === null) return null;
+  if (px === null || py === null || h === null || forceKgf === null) return null;
+  // Same inverse-Vickers derivation as the Hardness tab — both tabs now use
+  // the input HV + Force to derive the calibration diagonal.
+  const diagonalUm = diagonalUmFromHv(forceKgf, h);
+  if (diagonalUm === null) return null;
   return {
     zoomTime: form.zoomTime,
     force: form.force,
     hardnessLevel: form.hardnessLevel,
     pixelLengthX: px,
     pixelLengthY: py,
-    hardness: 0,
+    hardness: h,
     calibrationType: 'length',
     lengthMode: form.lengthMode,
-    realDistanceX: rx,
-    realDistanceY: ry,
+    realDistanceX: diagonalUm,
+    realDistanceY: diagonalUm,
   };
 }
 
@@ -129,13 +192,20 @@ const HEADER_CELL_SX = {
 };
 
 const SECTION_TITLE_SX = { color: colors.headingSecondary, fontWeight: 600 };
-const MICRON_ADORNMENT = {
-  input: { endAdornment: <InputAdornment position="end">µm</InputAdornment> },
-  htmlInput: { min: 0, step: 'any' },
-};
 const NUMBER_SLOT_PROPS = { htmlInput: { min: 0, step: 'any' } } as const;
 
-function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Props) {
+function CalibrationDialogImpl({
+  open,
+  onClose,
+  onStatusChange,
+  onChanged,
+  autoFillPixelLengthX,
+  autoFillPixelLengthY,
+  defaultObjective,
+  onRequestAutoMeasure,
+  onRequestManualMeasure,
+  onAutoCreateMeasurementRow,
+}: Props) {
   const { data: items, error: loadError, loading, refetch } = useCalibrations();
   const { saveCalibration, saving } = useCreateCalibration();
   const { removeCalibration, deleting } = useDeleteCalibration();
@@ -149,20 +219,95 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
   const [validationError, setValidationError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const panelLoggedOpenRef = useRef(false);
+  const lastLivePixelLogRef = useRef<string | null>(null);
 
   const busy = loading || saving || deleting || clearing || importing;
   const errorMessage = loadError ?? validationError ?? actionError;
 
+  // First-open effect: runs ONLY when the panel transitions from closed to
+  // open. Sets up the initial form state, default objective, and resets
+  // selection / errors / active tab. We deliberately omit
+  // autoFillPixelLengthX/Y from the deps so live drag updates (handled by
+  // the second effect below) don't reset selectedIds / validationError /
+  // active tab while the panel is open.
   useEffect(() => {
-    if (open) {
-      void refetch();
-      setForm(DEFAULT_FORM_STATE);
-      setSelectedIds([]);
-      setValidationError(null);
-      setActionError(null);
-      setTab('hardness');
+    if (!open) return;
+    void refetch();
+    const normalizedDefault =
+      typeof defaultObjective === 'string' ? defaultObjective.trim().toUpperCase() : '';
+    const objective = (ZOOM_OPTIONS as readonly string[]).includes(normalizedDefault)
+      ? normalizedDefault
+      : DEFAULT_FORM_STATE.zoomTime;
+    const pxX =
+      typeof autoFillPixelLengthX === 'number' &&
+      Number.isFinite(autoFillPixelLengthX) &&
+      autoFillPixelLengthX > 0
+        ? String(Number(autoFillPixelLengthX.toFixed(2)))
+        : DEFAULT_FORM_STATE.pixelLengthX;
+    const pxY =
+      typeof autoFillPixelLengthY === 'number' &&
+      Number.isFinite(autoFillPixelLengthY) &&
+      autoFillPixelLengthY > 0
+        ? String(Number(autoFillPixelLengthY.toFixed(2)))
+        : DEFAULT_FORM_STATE.pixelLengthY;
+    setForm({
+      ...DEFAULT_FORM_STATE,
+      zoomTime: objective,
+      pixelLengthX: pxX,
+      pixelLengthY: pxY,
+    });
+    setSelectedIds([]);
+    setConfirmClear(false);
+    setValidationError(null);
+    setActionError(null);
+    const hasMeasuredPixels =
+      pxX !== DEFAULT_FORM_STATE.pixelLengthX || pxY !== DEFAULT_FORM_STATE.pixelLengthY;
+    setTab(hasMeasuredPixels ? 'length' : 'hardness');
+    // eslint-disable-next-line no-console
+    console.log(
+      `[calibration-dialog-open] objective=${objective} pixelX=${pxX} pixelY=${pxY}`
+    );
+    if (hasMeasuredPixels) {
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-autofill] pixelLengthX=${pxX} pixelLengthY=${pxY}`);
     }
-  }, [open, refetch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Live-update effect: while the panel is open, sync Pixel Length X / Y
+  // from the parent's latest manual-measure pixel diagonals. Lets the user
+  // drag the manual cross on the live image and watch Pixel X / Y values
+  // update live in the panel without dismissing it. Other form fields are
+  // untouched so user edits in Force / Hardness Level / Real Distance stay.
+  useEffect(() => {
+    if (!open) return;
+    if (
+      typeof autoFillPixelLengthX !== 'number' ||
+      typeof autoFillPixelLengthY !== 'number' ||
+      !Number.isFinite(autoFillPixelLengthX) ||
+      !Number.isFinite(autoFillPixelLengthY) ||
+      autoFillPixelLengthX <= 0 ||
+      autoFillPixelLengthY <= 0
+    ) {
+      return;
+    }
+    const pxX = String(Number(autoFillPixelLengthX.toFixed(2)));
+    const pxY = String(Number(autoFillPixelLengthY.toFixed(2)));
+    const logKey = `${pxX}|${pxY}`;
+    setForm((current) =>
+      current.pixelLengthX === pxX && current.pixelLengthY === pxY
+        ? current
+        : { ...current, pixelLengthX: pxX, pixelLengthY: pxY }
+    );
+    if (lastLivePixelLogRef.current !== logKey) {
+      lastLivePixelLogRef.current = logKey;
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-live-update] pixelX=${pxX} pixelY=${pxY}`);
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-live-pixels] pixelX=${pxX} pixelY=${pxY}`);
+    }
+  }, [open, autoFillPixelLengthX, autoFillPixelLengthY]);
 
   const handleTabChange = useCallback((_e: unknown, value: CalibrationType) => {
     setTab(value);
@@ -203,22 +348,136 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
     setValidationError(null);
     setActionError(null);
     try {
-      await saveCalibration(payload);
+      // Pixel X/Y are RAW pixel lengths from Auto/Manual measure. The
+      // calibration diagonal (in µm) is derived by inverse Vickers from the
+      // known Hardness Value + Force, then per-axis coefficients are
+      // derived as D_um / pixelLengthX|Y. realDistanceX/Y carries D_um.
+      const knownReferenceUm = payload.realDistanceX ?? 0;
+      const xUmPerPixel = payload.pixelLengthX > 0 && knownReferenceUm > 0
+        ? knownReferenceUm / payload.pixelLengthX
+        : null;
+      const yUmPerPixel = payload.pixelLengthY > 0 && knownReferenceUm > 0
+        ? knownReferenceUm / payload.pixelLengthY
+        : null;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-raw-pixels] pixelX=${payload.pixelLengthX} pixelY=${payload.pixelLengthY}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-live-pixels] pixelX=${payload.pixelLengthX} pixelY=${payload.pixelLengthY}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-reference] knownReferenceUm=${knownReferenceUm} derivedFromHv=${payload.hardness} force=${payload.force}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-coefficient] xUmPerPixel=${xUmPerPixel ?? 'n/a'} yUmPerPixel=${yUmPerPixel ?? 'n/a'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-convert-to-um-per-pixel] xUmPerPixel=${xUmPerPixel ?? 'n/a'} yUmPerPixel=${yUmPerPixel ?? 'n/a'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-save] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel}`
+      );
+      const savedCalibration = await saveCalibration(payload);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-save-success] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} pixelLengthX=${payload.pixelLengthX} pixelLengthY=${payload.pixelLengthY} knownReferenceUm=${knownReferenceUm} xUmPerPixel=${xUmPerPixel ?? 'n/a'} yUmPerPixel=${yUmPerPixel ?? 'n/a'}`
+      );
       await refetch();
       onChanged?.();
-      onStatusChange?.('Calibration added.');
+      onStatusChange?.('Calibration saved.');
+
+      // Auto-create a measurement row from the CURRENT D1/D2 line pixels so
+      // the table is populated immediately — see onAutoCreateMeasurementRow.
+      const currentD1Px = payload.pixelLengthX;
+      const currentD2Px = payload.pixelLengthY;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-current-lines] d1Px=${currentD1Px} d2Px=${currentD2Px}`
+      );
+      if (
+        !Number.isFinite(currentD1Px) ||
+        !Number.isFinite(currentD2Px) ||
+        currentD1Px <= 0 ||
+        currentD2Px <= 0
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[calibration-auto-row-blocked] reason=current-lines-zero d1Px=${currentD1Px} d2Px=${currentD2Px}`
+        );
+        setActionError(
+          'Calibration saved, but D1/D2 line pixels are zero — no measurement row was created. Run Manual or Auto Measure first, then Add Calibration.'
+        );
+      } else if (onAutoCreateMeasurementRow) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-auto-row-create] objective=${payload.zoomTime} force=${payload.force} d1Px=${currentD1Px} d2Px=${currentD2Px}`
+        );
+        try {
+          await onAutoCreateMeasurementRow({ savedCalibration, payload });
+        } catch (rowErr) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[calibration-auto-row-blocked] reason=row-create-error detail="${rowErr instanceof Error ? rowErr.message : String(rowErr)}"`
+          );
+          setActionError(
+            `Calibration saved, but creating the measurement row failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`
+          );
+        }
+      }
     } catch (e) {
       setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
     }
-  }, [form, onChanged, onStatusChange, refetch, saveCalibration, tab]);
+  }, [form, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, tab]);
 
   const handleManual = useCallback(() => {
-    onStatusChange?.('Manual measurement (UI placeholder).');
-  }, [onStatusChange]);
+    if (!onRequestManualMeasure) {
+      onStatusChange?.('Manual measurement not wired.');
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[calibration-mode-start] objective=${form.zoomTime} force=${form.force} hardnessLevel=${form.hardnessLevel}`
+    );
+    onRequestManualMeasure();
+  }, [form.force, form.hardnessLevel, form.zoomTime, onRequestManualMeasure, onStatusChange]);
 
-  const handleAutoMeasure = useCallback(() => {
-    onStatusChange?.('Auto measurement (UI placeholder).');
-  }, [onStatusChange]);
+  const handleAutoMeasure = useCallback(async () => {
+    if (!onRequestAutoMeasure) {
+      onStatusChange?.('Auto measurement not wired.');
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[calibration-mode-start] objective=${form.zoomTime} force=${form.force} hardnessLevel=${form.hardnessLevel}`
+    );
+    setActionError(null);
+    try {
+      const detected = await onRequestAutoMeasure(form.zoomTime);
+      if (!detected) {
+        setActionError('Auto Measure could not detect a diamond. Try Manual Measure instead.');
+        return;
+      }
+      const pxX = String(Number(detected.d1Px.toFixed(2)));
+      const pxY = String(Number(detected.d2Px.toFixed(2)));
+      setForm((current) => ({
+        ...current,
+        pixelLengthX: pxX,
+        pixelLengthY: pxY,
+      }));
+      lastLivePixelLogRef.current = `${pxX}|${pxY}`;
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-live-update] pixelX=${pxX} pixelY=${pxY}`);
+      onStatusChange?.(`Auto Measure filled Pixel X=${pxX}, Pixel Y=${pxY}.`);
+    } catch (e) {
+      setActionError(getApiErrorMessage(e, 'Auto Measure failed.'));
+    }
+  }, [form.force, form.hardnessLevel, form.zoomTime, onRequestAutoMeasure, onStatusChange]);
 
   const toggleSelected = useCallback((id: string) => {
     setSelectedIds((current) =>
@@ -329,19 +588,68 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
 
   const tableRows = useMemo(() => items, [items]);
 
+  // Panel-mode: render inline inside the right panel instead of an MUI modal.
+  // The live camera remains separate on the left, so the user can keep
+  // dragging measurement guides while calibration values stay visible.
+  useEffect(() => {
+    if (open) {
+      if (panelLoggedOpenRef.current) return;
+      panelLoggedOpenRef.current = true;
+      // eslint-disable-next-line no-console
+      console.log('[calibration-panel-open]');
+      return;
+    }
+    if (!panelLoggedOpenRef.current) return;
+    panelLoggedOpenRef.current = false;
+    lastLivePixelLogRef.current = null;
+    // eslint-disable-next-line no-console
+    console.log('[calibration-panel-close]');
+  }, [open]);
+
+  if (!open) return null;
+
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="md">
-      <DialogTitle sx={{ bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 }}>
-        Calibration
-      </DialogTitle>
-      <DialogContent dividers>
+    <Box
+      sx={{
+        flex: 1,
+        minHeight: 0,
+        bgcolor: 'background.paper',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          bgcolor: colors.headingPrimary,
+          color: '#FFFFFF',
+          px: 2,
+          py: 1.25,
+          fontSize: 14,
+          fontWeight: 600,
+          letterSpacing: 0.3,
+        }}
+      >
+        <Box sx={{ flex: 1 }}>Calibration</Box>
+        <IconButton
+          size="small"
+          onClick={busy ? undefined : onClose}
+          disabled={busy}
+          sx={{ color: '#FFFFFF' }}
+          aria-label="Close calibration"
+        >
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+      <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
         <TableContainer component={Paper} variant="outlined" sx={{ mb: 1, maxHeight: 220 }}>
           <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>
                 <TableCell padding="checkbox" sx={HEADER_CELL_SX} />
                 <TableCell sx={HEADER_CELL_SX}>#</TableCell>
-                <TableCell sx={HEADER_CELL_SX}>Zoom Time</TableCell>
+                <TableCell sx={HEADER_CELL_SX}>Zoom Time / Objective</TableCell>
                 <TableCell sx={HEADER_CELL_SX}>Force</TableCell>
                 <TableCell sx={HEADER_CELL_SX}>Hardness Level</TableCell>
                 <TableCell sx={HEADER_CELL_SX} align="right">
@@ -360,23 +668,43 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
                   </TableCell>
                 </TableRow>
               ) : (
-                tableRows.map((it, idx) => (
-                  <TableRow key={it.id} hover selected={selectedIds.includes(it.id)}>
-                    <TableCell padding="checkbox">
-                      <Checkbox
-                        size="small"
-                        checked={selectedIds.includes(it.id)}
-                        onChange={() => toggleSelected(it.id)}
-                      />
-                    </TableCell>
-                    <TableCell>{idx + 1}</TableCell>
-                    <TableCell>{it.zoomTime}</TableCell>
-                    <TableCell>{it.force}</TableCell>
-                    <TableCell>{it.hardnessLevel}</TableCell>
-                    <TableCell align="right">{it.pixelLengthX}</TableCell>
-                    <TableCell align="right">{it.pixelLengthY}</TableCell>
-                  </TableRow>
-                ))
+                tableRows.map((it, idx) => {
+                  const knownReferenceUm =
+                    typeof it.realDistanceX === 'number' && it.realDistanceX > 0
+                      ? it.realDistanceX
+                      : typeof it.realDistanceY === 'number' && it.realDistanceY > 0
+                        ? it.realDistanceY
+                        : 0;
+                  const xUmPerPixel =
+                    it.pixelLengthX > 0 && knownReferenceUm > 0
+                      ? knownReferenceUm / it.pixelLengthX
+                      : 0;
+                  const yUmPerPixel =
+                    it.pixelLengthY > 0 && knownReferenceUm > 0
+                      ? knownReferenceUm / it.pixelLengthY
+                      : 0;
+                  // eslint-disable-next-line no-console
+                  console.log(
+                    `[calibration-table-row] id=${it.id} xPixelLengthUmPerPx=${xUmPerPixel.toFixed(5)} yPixelLengthUmPerPx=${yUmPerPixel.toFixed(5)}`
+                  );
+                  return (
+                    <TableRow key={it.id} hover selected={selectedIds.includes(it.id)}>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          size="small"
+                          checked={selectedIds.includes(it.id)}
+                          onChange={() => toggleSelected(it.id)}
+                        />
+                      </TableCell>
+                      <TableCell>{idx + 1}</TableCell>
+                      <TableCell>{it.zoomTime}</TableCell>
+                      <TableCell>{it.force}</TableCell>
+                      <TableCell>{it.hardnessLevel}</TableCell>
+                      <TableCell align="right">{xUmPerPixel.toFixed(5)}</TableCell>
+                      <TableCell align="right">{yUmPerPixel.toFixed(5)}</TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -437,7 +765,7 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
 
         <Grid container spacing={1.5}>
           <Grid size={{ xs: 4 }}>
-            <Typography variant="caption">Zoom Time</Typography>
+            <Typography variant="caption">Zoom Time / Objective</Typography>
             <FormControl fullWidth size="small">
               <Select
                 value={form.zoomTime}
@@ -482,7 +810,7 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
           </Grid>
 
           <Grid size={{ xs: 4 }}>
-            <Typography variant="caption">Pixel Length X</Typography>
+            <Typography variant="caption">Pixel X</Typography>
             <TextField
               fullWidth
               size="small"
@@ -494,7 +822,7 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
             />
           </Grid>
           <Grid size={{ xs: 4 }}>
-            <Typography variant="caption">Pixel Length Y</Typography>
+            <Typography variant="caption">Pixel Y</Typography>
             <TextField
               fullWidth
               size="small"
@@ -506,64 +834,30 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
             />
           </Grid>
 
-          {tab === 'hardness' ? (
-            <Grid size={{ xs: 4 }}>
-              <Typography variant="caption">Hardness</Typography>
-              <TextField
-                fullWidth
-                size="small"
-                type="number"
-                value={form.hardness}
-                onChange={handleInputChange('hardness')}
-                disabled={busy}
-                slotProps={NUMBER_SLOT_PROPS}
-              />
-            </Grid>
-          ) : (
-            <Grid size={{ xs: 4 }} />
-          )}
-
-          {tab === 'length' ? (
-            <>
-              <Grid size={{ xs: 4 }}>
-                <Typography variant="caption">Real Distance X</Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  type="number"
-                  value={form.realDistanceX}
-                  onChange={handleInputChange('realDistanceX')}
-                  disabled={busy}
-                  slotProps={MICRON_ADORNMENT}
-                />
-              </Grid>
-              <Grid size={{ xs: 4 }}>
-                <Typography variant="caption">Real Distance Y</Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  type="number"
-                  value={form.realDistanceY}
-                  onChange={handleInputChange('realDistanceY')}
-                  disabled={busy}
-                  slotProps={MICRON_ADORNMENT}
-                />
-              </Grid>
-            </>
-          ) : null}
+          <Grid size={{ xs: 4 }}>
+            <Typography variant="caption">Hardness Value</Typography>
+            <TextField
+              fullWidth
+              size="small"
+              type="number"
+              value={form.hardness}
+              onChange={handleInputChange('hardness')}
+              disabled={busy}
+              slotProps={NUMBER_SLOT_PROPS}
+            />
+          </Grid>
         </Grid>
 
         <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-          {tab === 'hardness' ? (
-            <>
-              <Button variant="outlined" onClick={handleManual} disabled={busy}>
-                Manual
-              </Button>
-              <Button variant="outlined" onClick={handleAutoMeasure} disabled={busy}>
-                Auto Measure
-              </Button>
-            </>
-          ) : null}
+          {/* Manual / Auto Measure are valid on both Length and Hardness
+              calibration: they fill Pixel Length X / Y from the live
+              indentation, which is the same field set both tabs save. */}
+          <Button variant="outlined" onClick={handleManual} disabled={busy}>
+            Manual Measure
+          </Button>
+          <Button variant="outlined" onClick={() => void handleAutoMeasure()} disabled={busy}>
+            Auto Measure
+          </Button>
           <Box sx={{ flex: 1 }} />
           <Button variant="contained" onClick={() => void handleAdd()} disabled={busy}>
             Add Calibration
@@ -575,29 +869,50 @@ function CalibrationDialogImpl({ open, onClose, onStatusChange, onChanged }: Pro
             {errorMessage}
           </Alert>
         ) : null}
-      </DialogContent>
-      <DialogActions>
+      </Box>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'flex-end',
+          px: 2,
+          py: 1,
+          borderTop: 1,
+          borderColor: 'divider',
+        }}
+      >
         <Button onClick={onClose} disabled={busy}>
           Close
         </Button>
-      </DialogActions>
+      </Box>
 
-      <Dialog open={confirmClear} onClose={() => setConfirmClear(false)}>
-        <DialogTitle>Clear all calibrations?</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2">
-            This will permanently remove all {items.length} calibration record(s) from the
-            database. This action cannot be undone.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirmClear(false)}>Cancel</Button>
-          <Button color="error" variant="contained" onClick={() => void handleClearConfirm()}>
-            Clear All
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </Dialog>
+      {confirmClear ? (
+        <Alert
+          severity="warning"
+          sx={{
+            mx: 2,
+            mb: 1,
+            alignItems: 'center',
+          }}
+          action={
+            <Stack direction="row" spacing={1}>
+              <Button size="small" onClick={() => setConfirmClear(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="small"
+                color="error"
+                variant="contained"
+                onClick={() => void handleClearConfirm()}
+              >
+                Clear All
+              </Button>
+            </Stack>
+          }
+        >
+          Clear all {items.length} calibration record(s)?
+        </Alert>
+      ) : null}
+    </Box>
   );
 }
 

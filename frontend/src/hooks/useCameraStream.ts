@@ -27,6 +27,19 @@ let attached: AttachedRef | null = null;
 let ipcSubscribed = false;
 let mainThreadPaintHandlerInstalled = false;
 let lastFrameAt = 0;
+// lastPaintAt tracks when pixels actually landed on the visible canvas (after
+// worker decode + main-thread putImageData), not when the IPC body arrived.
+// Stale-frame guards must check this, not lastFrameAt — otherwise a guard can
+// pass before the worker has round-tripped paint, and capture reads an empty /
+// previous-objective canvas.
+let lastPaintAt = 0;
+// frameEpoch is bumped by bumpFrameEpochOnCanvasClear() whenever the live
+// canvas is cleared (objective change). Every IPC frame is tagged with the
+// current epoch and the worker echoes it back in 'paint'. Paints whose epoch
+// is < frameEpoch are dropped so a frame that was already in the worker queue
+// before the clear cannot repaint stale pixels of the previous objective.
+let frameEpoch = 0;
+let lastPaintEpoch = 0;
 let liveFrameLogSeq = 0;
 let lastLiveFrameOverlayLogAt = 0;
 let fallbackTimer: number | null = null;
@@ -46,22 +59,38 @@ function installMainThreadPaintHandler() {
   if (mainThreadPaintHandlerInstalled) return;
   mainThreadPaintHandlerInstalled = true;
   const worker = getWorker();
-  worker.addEventListener('message', (e: MessageEvent<{ type: string; imageData?: ImageData }>) => {
-    if (!e.data || e.data.type !== 'paint' || !e.data.imageData) return;
-    if (!attached || !attached.fallbackCtx) return;
-    const { el, fallbackCtx } = attached;
-    const img = e.data.imageData;
-    if (el.width !== img.width || el.height !== img.height) {
-      el.width = img.width;
-      el.height = img.height;
+  worker.addEventListener(
+    'message',
+    (e: MessageEvent<{ type: string; imageData?: ImageData; epoch?: number; seq?: number }>) => {
+      if (!e.data || e.data.type !== 'paint' || !e.data.imageData) return;
+      const paintEpoch = typeof e.data.epoch === 'number' ? e.data.epoch : 0;
+      // Drop paints from a frame received before the latest canvas clear —
+      // those pixels belong to the previous objective and would re-pollute
+      // the freshly-cleared canvas.
+      if (paintEpoch < frameEpoch) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-frame-drop] reason=stale-epoch paintEpoch=${paintEpoch} currentEpoch=${frameEpoch} seq=${e.data.seq ?? 'n/a'}`
+        );
+        return;
+      }
+      if (!attached || !attached.fallbackCtx) return;
+      const { el, fallbackCtx } = attached;
+      const img = e.data.imageData;
+      if (el.width !== img.width || el.height !== img.height) {
+        el.width = img.width;
+        el.height = img.height;
+      }
+      fallbackCtx.putImageData(img, 0, 0);
+      lastPaintAt = Date.now();
+      lastPaintEpoch = paintEpoch;
+      if (!firstPaintLoggedThisSession) {
+        firstPaintLoggedThisSession = true;
+        // eslint-disable-next-line no-console
+        console.log('[camera-ui] first-paint-after-open ok=true');
+      }
     }
-    fallbackCtx.putImageData(img, 0, 0);
-    if (!firstPaintLoggedThisSession) {
-      firstPaintLoggedThisSession = true;
-      // eslint-disable-next-line no-console
-      console.log('[camera-ui] first-paint-after-open ok=true');
-    }
-  });
+  );
 }
 
 function subscribeIpcOnce() {
@@ -109,6 +138,8 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike) {
       height: meta.height,
       pixelFormat: meta.pixelFormat,
       bits: meta.bits,
+      epoch: frameEpoch,
+      seq: meta.seq,
     },
     [ab]
   );
@@ -162,12 +193,46 @@ export function getLastCameraFrameAt(): number {
   return lastFrameAt;
 }
 
+export function getLastCameraFramePaintAt(): number {
+  return lastPaintAt;
+}
+
+export function getCurrentFrameEpoch(): number {
+  return frameEpoch;
+}
+
+export function getLastPaintEpoch(): number {
+  return lastPaintEpoch;
+}
+
+/**
+ * Bumps the frame epoch and resets paint tracking. Call this immediately
+ * AFTER clearing the live canvas (objective change). Effect:
+ *   - Any frame already queued in the worker, decoded but not yet painted,
+ *     is dropped on arrival (epoch mismatch) instead of overwriting the
+ *     freshly cleared canvas.
+ *   - waitForFreshCameraFrame / capture guards now require a paint whose
+ *     epoch matches the new value, i.e. a frame that was received AFTER
+ *     the clear and successfully painted.
+ */
+export function bumpFrameEpochOnCanvasClear(): number {
+  frameEpoch += 1;
+  // lastPaintAt deliberately NOT zeroed — guards compare lastPaintEpoch,
+  // not lastPaintAt, to decide if a fresh post-clear paint has landed.
+  return frameEpoch;
+}
+
 export function waitForFreshCameraFrame(timeoutMs = 1500): Promise<boolean> {
   const startedAt = Date.now();
-  const baseline = lastFrameAt;
+  const targetEpoch = frameEpoch;
+  const baselinePaint = lastPaintAt;
   return new Promise<boolean>((resolve) => {
     const tick = () => {
-      if (lastFrameAt > baseline) {
+      // Fresh = a paint at the current epoch that landed after we started
+      // waiting. Both conditions matter: epoch guards against pre-clear
+      // pixels; baselinePaint guards against an old paint that already
+      // happened before this call.
+      if (lastPaintEpoch >= targetEpoch && lastPaintAt > baselinePaint) {
         resolve(true);
         return;
       }

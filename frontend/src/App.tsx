@@ -42,7 +42,12 @@ import { useSaveToolbarState } from '@/hooks/mutations/useSaveToolbarState';
 import { useMeasurements } from '@/hooks/queries/useMeasurements';
 import { useToolbarState } from '@/hooks/queries/useToolbarState';
 import { useActiveTool } from '@/hooks/useActiveTool';
-import { resetCameraSession } from '@/hooks/useCameraStream';
+import {
+  getCurrentFrameEpoch,
+  getLastCameraFramePaintAt,
+  getLastPaintEpoch,
+  resetCameraSession,
+} from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { openImageDialog } from '@/api/openImageDialog';
 import { saveImageDialog } from '@/api/saveImageDialog';
@@ -57,10 +62,12 @@ import type {
   VickersAutoMeasureSuccess,
 } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
 import type { MachineState } from '@/types/machine';
 import {
   calculateVickersFromPixels,
   calculateManualDiagonalsFromPixels,
+  computeQualified,
   findCalibrationForObjective,
   normalizeObjectiveName,
   parseForceKgf,
@@ -133,6 +140,21 @@ function autoMeasureSettingsEqual(
   b: AutoMeasureSettingsPayload
 ): boolean {
   return JSON.stringify(normalizeAutoMeasureSettings(a)) === JSON.stringify(normalizeAutoMeasureSettings(b));
+}
+
+// Fixed acceptance window for the Qualified column. Treated as inclusive on
+// both ends per the workpiece spec. Hoist to a Settings panel later if a
+// per-job range is needed.
+const QUALIFIED_TARGET_MIN_HV = 300;
+const QUALIFIED_TARGET_MAX_HV = 800;
+
+function deriveQualifiedForRow(hv: number | null | undefined): 'YES' | 'NO' | null {
+  const result = computeQualified(hv, QUALIFIED_TARGET_MIN_HV, QUALIFIED_TARGET_MAX_HV);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[measurement-qualified-check]\nhv=${typeof hv === 'number' && Number.isFinite(hv) ? hv : 'null'}\ntargetMin=${QUALIFIED_TARGET_MIN_HV}\ntargetMax=${QUALIFIED_TARGET_MAX_HV}\nqualified=${result ?? 'null'}`
+  );
+  return result;
 }
 
 type AutoMeasureDetectionSnapshot = {
@@ -313,6 +335,17 @@ function App() {
     activeDialog === 'autoMeasure' && previewAutoMeasureOverlay ? 'preview' : 'auto';
   const displayedAutoMeasureGraphicsRef = useRef<AutoMeasureGraphics | null>(null);
   const autoMeasurementIdRef = useRef<string | null>(null);
+  // Duplicate-measurement guard. Captures the last committed Auto Measure
+  // result so a repeat click on the same unchanged frame doesn't append a
+  // duplicate table row. Cleared on camera close, new image, objective
+  // change, and clear-graphics — see [measurement-session-reset] logs.
+  const lastCommittedFingerprintRef = useRef<{
+    d1Px: number;
+    d2Px: number;
+    centerX: number;
+    centerY: number;
+    frameEpoch: number;
+  } | null>(null);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
   // - Set by the user's lens button click (authoritative, instant).
   // - Hydrated from SSE machine state when SSE pushes (guarded so it cannot
@@ -322,6 +355,19 @@ function App() {
   // - There is NO silent fallback to a hardcoded default. If this is ever
   //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
+  // Last manual-measure pixel diagonals (d1Px = horizontal, d2Px = vertical).
+  // Captured in handleManualMeasurementUpdated and passed to CalibrationDialog
+  // so opening the dialog auto-fills Pixel Length X / Y. State (not ref) so
+  // the dialog re-renders with fresh values when re-opened.
+  const [latestManualPixels, setLatestManualPixels] = useState<{
+    d1Px: number;
+    d2Px: number;
+  } | null>(null);
+  // True while the user is doing a Manual Measure that was launched from the
+  // Calibration dialog. handleManualMeasurementUpdated checks this flag so it
+  // can suppress measurement-row creation (calibration mode is pixels-only)
+  // and the calibration dialog re-opens once the user is done.
+  const calibrationManualModeRef = useRef(false);
   const lastObjectiveClickAtRef = useRef<number>(0);
   // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
   // CameraWindow watches it to invalidate any per-objective caches and force a
@@ -335,6 +381,295 @@ function App() {
     // eslint-disable-next-line no-console
     console.log('[objective] changed →', objective);
   }, []);
+
+  // Calibration-mode Auto Measure: runs the same native detector used by
+  // normal Auto Measure but does NOT save a measurement row. Returns the
+  // detected pixel diagonals so the Calibration dialog can fill Pixel
+  // Length X / Y. The yellow corners + lines are still drawn on the camera
+  // overlay so the user can verify the detection visually after closing
+  // the dialog.
+  const handleCalibrationAutoMeasure = useCallback(
+    async (objective: string): Promise<{ d1Px: number; d2Px: number } | null> => {
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-auto-measure-start] objective=${objective}`);
+      const camera = cameraRef.current;
+      if (!camera) {
+        setStatusMessage('System Status: Calibration Auto Measure: camera unavailable');
+        return null;
+      }
+      let frame = camera.captureDisplayedFrame({ freeze: true });
+      if (frame && !frame.ok && frame.error === 'awaiting-fresh-frame') {
+        const fresh = await camera.waitForFreshFrame(2000);
+        if (fresh) frame = camera.captureDisplayedFrame({ freeze: true });
+      }
+      if (!frame?.ok) {
+        setStatusMessage(
+          `System Status: Calibration Auto Measure: ${frame?.error ?? 'no frame'}`
+        );
+        return null;
+      }
+      const settings = normalizeAutoMeasureSettings(autoMeasureSettings);
+      const candidate = String(objective ?? '').trim().toUpperCase();
+      const liveObjectiveForNative: ObjectiveForMeasure =
+        (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(candidate)
+          ? (candidate as ObjectiveForMeasure)
+          : settings.objectiveForMeasure;
+      const minConfidence =
+        settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
+      const result = await measureVickersAuto({
+        smoothing: settings.smoothing,
+        threshold: settings.threshold,
+        objectiveForMeasure: liveObjectiveForNative,
+        frameBuffer: frame.buffer,
+        width: frame.width,
+        height: frame.height,
+        pixelFormat: frame.pixelFormat,
+        bits: frame.bits,
+        source: frame.source,
+        micronPerPixel: null,
+        pxPerMm: null,
+        testForceKgf: null,
+        minConfidence,
+        timeoutMs: 4000,
+        maxFrameAgeMs: 1200,
+      });
+      if (!result.ok || !hasValidAutoMeasureCorners(result)) {
+        const reason = result.ok ? 'invalid corner coordinates' : result.reason;
+        setStatusMessage(`System Status: Calibration Auto Measure rejected: ${reason}`);
+        return null;
+      }
+      // Draw the detected diamond on the camera overlay so the user sees the
+      // detection result after closing the calibration dialog.
+      setCommittedAutoMeasureOverlay(graphicsFromAutoMeasureResult(result));
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-measure-success] pixelX=${result.d1Pixels} pixelY=${result.d2Pixels}`
+      );
+      return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
+    },
+    [autoMeasureSettings]
+  );
+
+  // Calibration-mode Manual Measure: activates the manual measure tool while
+  // keeping the calibration PANEL open (panel layout, not modal). The user
+  // drags the cross over the indent on the live image; each drag updates
+  // latestManualPixels (and emits [calibration-drag-update]); the panel's
+  // live-update effect syncs Pixel Length X / Y in real time. The flag
+  // suppresses measurement-row creation so the calibration drag does not
+  // pollute the measurement table.
+  const handleCalibrationManualMeasure = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[calibration-manual-measure-start]');
+    calibrationManualModeRef.current = true;
+    setActiveTool('manualMeasure');
+    setStatusMessage(
+      'System Status: Calibration Manual Measure active: drag the cross over the indent. Pixel X/Y update live in the panel.'
+    );
+  }, [setActiveTool]);
+
+  // Triggered immediately after Add Calibration succeeds. Reads the CURRENT
+  // D1/D2 line pixels (already in the calibration payload), runs the
+  // pixels→µm→HV conversion using the just-saved calibration, and commits a
+  // measurement row so the table updates without a second click.
+  const handleCalibrationAutoCreateRow = useCallback(
+    async ({
+      payload,
+    }: {
+      savedCalibration: Calibration;
+      payload: CalibrationSavePayload;
+    }) => {
+      const d1Px = payload.pixelLengthX;
+      const d2Px = payload.pixelLengthY;
+      const targetObjective = payload.zoomTime;
+      const forceKgf = parseForceKgf(payload.force);
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-row-create-start] objective=${targetObjective} force=${payload.force} forceKgf=${forceKgf ?? 'null'} d1Px=${d1Px} d2Px=${d2Px}`
+      );
+
+      // Derive PER-AXIS coefficients per spec:
+      //   xUmPerPixel = knownReferenceUm / pixelLengthX
+      //   yUmPerPixel = knownReferenceUm / pixelLengthY
+      // Priority: 1) per-objective calibration_settings, 2) Length-tab
+      // knownReferenceUm (stored in payload.realDistanceX/Y). Otherwise block
+      // with a clear reason — never silently fall back to interpreting raw
+      // pixel lengths as µm/pixel (that path produced nonsense rows).
+      const settingsMatch = findCalibrationForObjective(
+        calibrationSettingsList,
+        targetObjective
+      );
+      const umPerPixelFromSettings =
+        settingsMatch?.umPerPixel ?? settingsMatch?.pixelToMicron ?? 0;
+      const knownReferenceUm =
+        typeof payload.realDistanceX === 'number' && payload.realDistanceX > 0
+          ? payload.realDistanceX
+          : typeof payload.realDistanceY === 'number' && payload.realDistanceY > 0
+            ? payload.realDistanceY
+            : 0;
+      const xUmPerPixel =
+        umPerPixelFromSettings > 0
+          ? umPerPixelFromSettings
+          : d1Px > 0 && knownReferenceUm > 0
+            ? knownReferenceUm / d1Px
+            : 0;
+      const yUmPerPixel =
+        umPerPixelFromSettings > 0
+          ? umPerPixelFromSettings
+          : d2Px > 0 && knownReferenceUm > 0
+            ? knownReferenceUm / d2Px
+            : 0;
+
+      if (!Number.isFinite(d1Px) || !Number.isFinite(d2Px) || d1Px <= 0 || d2Px <= 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[calibration-auto-row-blocked] reason=invalid-pixel-values d1Px=${d1Px} d2Px=${d2Px}`
+        );
+        setUnavailableMsg('D1/D2 pixel values are zero. Run Manual or Auto Measure first.');
+        return;
+      }
+
+      if (xUmPerPixel <= 0 || yUmPerPixel <= 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[calibration-auto-row-blocked] reason=known-reference-missing-or-zero objective=${targetObjective} knownReferenceUm=${knownReferenceUm} settingsMatch=${settingsMatch ? 'yes' : 'no'}`
+        );
+        setUnavailableMsg(
+          'Calibration saved, but Known Reference (µm) is zero — cannot derive xUmPerPixel / yUmPerPixel for the row.'
+        );
+        setStatusMessage(
+          'System Status: Calibration saved. Auto row blocked: known-reference-missing-or-zero'
+        );
+        return;
+      }
+
+      // Spec formulas — separate per-axis coefficients, no averaging:
+      //   d1Um = d1Px * xUmPerPixel
+      //   d2Um = d2Px * yUmPerPixel
+      //   davgUm = (d1Um + d2Um) / 2
+      //   HV = 1.8544 * F / D_mm²  (D in mm; davgMm = davgUm / 1000)
+      const d1UmExact = d1Px * xUmPerPixel;
+      const d2UmExact = d2Px * yUmPerPixel;
+      const davgUmExact = (d1UmExact + d2UmExact) / 2;
+      const davgMmExact = davgUmExact / 1000;
+      const hvExact =
+        forceKgf && forceKgf > 0 && davgMmExact > 0
+          ? (1.8544 * forceKgf) / (davgMmExact * davgMmExact)
+          : null;
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-convert]\nd1Px=${d1Px}\nd2Px=${d2Px}\nxUmPerPixel=${xUmPerPixel}\nyUmPerPixel=${yUmPerPixel}\nd1Um=${d1UmExact}\nd2Um=${d2UmExact}\ndavgUm=${davgUmExact}\nhv=${hvExact ?? 'n/a'}`
+      );
+
+      const round = (value: number, digits: number): number =>
+        Number(value.toFixed(digits));
+
+      const d1Um = round(d1UmExact, 3);
+      const d2Um = round(d2UmExact, 3);
+      const averageUm = round(davgUmExact, 3);
+      const averageMm = round(davgMmExact, 6);
+      const hv = hvExact === null ? null : round(hvExact, 2);
+
+      if (d1Um <= 0 || d2Um <= 0 || averageUm <= 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[calibration-auto-row-blocked] reason=converted-values-non-positive d1Um=${d1Um} d2Um=${d2Um} averageUm=${averageUm}`
+        );
+        setUnavailableMsg('Computed µm values are zero — calibration coefficient is too small.');
+        return;
+      }
+      if (hv !== null && hv <= 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[calibration-auto-row-blocked] reason=hv-non-positive hv=${hv} hvExact=${hvExact} davgMm=${davgMmExact}`
+        );
+        setUnavailableMsg(
+          'Computed HV is non-positive — check force / calibration coefficient.'
+        );
+        return;
+      }
+
+      const normalizedObjective = normalizeObjectiveName(targetObjective);
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-row-create] objective=${normalizedObjective} xUmPerPixel=${xUmPerPixel} yUmPerPixel=${yUmPerPixel} d1Um=${d1Um} d2Um=${d2Um} davgUm=${averageUm} hv=${hv ?? 'n/a'}`
+      );
+
+      let depthMm: number | null = null;
+      try {
+        depthMm = await readLatestMicrometerDepthMm();
+      } catch {
+        depthMm = null;
+      }
+      await waitForOverlayPaint();
+      const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
+
+      const rowPayload = {
+        d1: d1Um,
+        d2: d2Um,
+        d1Px: round(d1Px, 2),
+        d2Px: round(d2Px, 2),
+        d1Um,
+        d2Um,
+        averageUm,
+        averageMm,
+        hv,
+        qualified: deriveQualifiedForRow(hv),
+        micronPerPixel: round((xUmPerPixel + yUmPerPixel) / 2, 6),
+        calibrationName: settingsMatch?.objective ?? `${payload.zoomTime} ${payload.force} ${payload.hardnessLevel}`,
+        objective: normalizedObjective,
+        testForceKgf: forceKgf,
+        depthMm,
+        method: 'Manual' as const,
+        unit: 'um' as const,
+        timestamp: new Date().toISOString(),
+        imageDataUrl,
+      };
+
+      // eslint-disable-next-line no-console
+      console.log('[calibration-auto-row-payload]', rowPayload);
+
+      try {
+        const saved = await saveManualMeasurement({ values: rowPayload });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-auto-row-saved] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} objective=${saved.objective}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-row-create] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} objective=${saved.objective}`
+        );
+        await refetchMeasurements();
+        // Clear yellow Auto/Manual Measure overlays now that the calibration
+        // row has been committed. Guarded behind the successful saveManual...
+        // path above so a save failure leaves the overlay in place for retry.
+        setCommittedAutoMeasureOverlay(null);
+        setPreviewAutoMeasureOverlay(null);
+        setManualMeasureResetKey((current) => current + 1);
+        // eslint-disable-next-line no-console
+        console.log('[overlay-clear] reason=calibration-complete');
+        setStatusMessage(
+          `System Status: Calibration saved. Measurement row added: HV ${hv ?? 'n/a (force missing)'}`
+        );
+      } catch (saveErr) {
+        const ax = saveErr as { response?: { status?: number; data?: unknown } };
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[calibration-auto-row-blocked] reason=row-save-failed http=${ax.response?.status ?? '?'} body=${JSON.stringify(ax.response?.data ?? null)} detail="${saveErr instanceof Error ? saveErr.message : String(saveErr)}"`
+        );
+        setUnavailableMsg(
+          `Failed to save measurement row: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`
+        );
+      }
+    },
+    [
+      calibrationSettingsList,
+      refetchMeasurements,
+      saveManualMeasurement,
+    ]
+  );
 
   // Index loaded calibrations by normalized objective so any debugging /
   // future O(1) lookup paths see the same canonical map the lookup helpers
@@ -357,6 +692,10 @@ function App() {
     (result: ManualMeasureDragResult) => {
       void (async () => {
         try {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-create-start] method=Manual d1Px=${result.d1Px} d2Px=${result.d2Px}`
+          );
           const machineState = await getMachineStateSnapshot();
           const timestamp = new Date().toISOString();
           const isNewManualMeasurement = manualMeasurementIdRef.current === null;
@@ -374,9 +713,38 @@ function App() {
           );
 
           if (!pixelValues) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[measurement-commit-blocked] method=Manual reason=invalid-pixel-values d1Px=${result.d1Px} d2Px=${result.d2Px}`
+            );
             setUnavailableMsg('Manual Measure requires valid D1/D2 values greater than 0.');
             return;
           }
+
+          // Stash the most recent manual pixel diagonals so the Calibration
+          // dialog can auto-fill Pixel Length X / Y without the user having
+          // to retype what they just measured on the live image.
+          if (Number.isFinite(result.d1Px) && Number.isFinite(result.d2Px) && result.d1Px > 0 && result.d2Px > 0) {
+            setLatestManualPixels({ d1Px: result.d1Px, d2Px: result.d2Px });
+            // eslint-disable-next-line no-console
+            console.log(
+              `[calibration-drag-update] pixelX=${result.d1Px} pixelY=${result.d2Px}`
+            );
+          }
+
+          // Calibration mode: the manual diamond is being used to PICK pixel
+          // diagonals for calibration only. Do NOT save a measurement row —
+          // calibration auto/manual must not pollute the measurement table.
+          // The pixel values are already captured into latestManualPixels.
+          if (calibrationManualModeRef.current) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[measurement-commit-blocked] method=Manual reason=calibration-manual-mode flag=true — drag is for calibration, no row created. (Closes when Add Calibration succeeds or dialog closes.)'
+            );
+            return;
+          }
+          // eslint-disable-next-line no-console
+          console.log('[measurement-commit-start] method=Manual');
 
           // SINGLE SOURCE OF TRUTH: activeObjective (set by lens click) → SSE
           // snapshot. NO silent fallback to dialog default — if neither is
@@ -385,11 +753,19 @@ function App() {
             (activeObjective && activeObjective.trim()) ||
             (machineState?.objective?.trim() ?? null);
           if (!targetObjective) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[measurement-commit-blocked] method=Manual reason=no-active-objective activeObjective=${activeObjective ?? 'null'} machineObjective=${machineState?.objective ?? 'null'}`
+            );
             setUnavailableMsg(
               'No active objective. Please click 10X or 40X in Machine Control before measuring.'
             );
             return;
           }
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-create-input] method=Manual d1Px=${result.d1Px} d2Px=${result.d2Px} objective=${targetObjective} force=${machineState?.force ?? 'null'} forceKgf=${parseForceKgf(machineState?.force) ?? 'null'}`
+          );
           const machineStateForManual = machineState
             ? { ...machineState, objective: targetObjective }
             : null;
@@ -420,6 +796,10 @@ function App() {
           });
 
           if (!conversion.ok) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[measurement-commit-blocked] method=Manual reason=conversion-failed detail="${conversion.reason}" objective=${targetObjective}`
+            );
             setUnavailableMsg(conversion.reason);
             setStatusMessage(`System Status: Manual Measure blocked: ${conversion.reason}`);
             return;
@@ -445,6 +825,10 @@ function App() {
           // eslint-disable-next-line no-console
           console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Manual');
           // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-row-create] method=Manual d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
+          );
+          // eslint-disable-next-line no-console
           console.log('[album] snapshot capture start measurementId=', manualMeasurementIdRef.current ?? 'new');
           await waitForOverlayPaint();
           // eslint-disable-next-line no-console
@@ -457,29 +841,37 @@ function App() {
             // eslint-disable-next-line no-console
             console.warn('[album] missing image for measurementId=', manualMeasurementIdRef.current ?? 'new');
           }
+          const rowPayload = {
+            d1: values.d1Um,
+            d2: values.d2Um,
+            d1Px: values.d1Px,
+            d2Px: values.d2Px,
+            d1Um: values.d1Um,
+            d2Um: values.d2Um,
+            averageUm: values.avgDUm,
+            averageMm: values.avgDMm,
+            hv: values.hv,
+            qualified: deriveQualifiedForRow(values.hv),
+            micronPerPixel: values.umPerPixel,
+            calibrationName: values.calibrationName,
+            objective: values.normalizedObjective,
+            testForceKgf: values.forceKgf,
+            ...depthPayload,
+            method: 'Manual' as const,
+            unit: 'um' as const,
+            timestamp,
+            imageDataUrl,
+          };
+          // eslint-disable-next-line no-console
+          console.log('[measurement-row-object] method=Manual', rowPayload);
           const saved = await saveManualMeasurement({
             id: manualMeasurementIdRef.current ?? undefined,
-            values: {
-              d1: values.d1Um,
-              d2: values.d2Um,
-              d1Px: values.d1Px,
-              d2Px: values.d2Px,
-              d1Um: values.d1Um,
-              d2Um: values.d2Um,
-              averageUm: values.avgDUm,
-              averageMm: values.avgDMm,
-              hv: values.hv,
-              micronPerPixel: values.umPerPixel,
-              calibrationName: values.calibrationName,
-              objective: values.normalizedObjective,
-              testForceKgf: values.forceKgf,
-              ...depthPayload,
-              method: 'Manual',
-              unit: 'um',
-              timestamp,
-              imageDataUrl,
-            },
+            values: rowPayload,
           });
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-row-save-success] method=Manual id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv} objective=${saved.objective}`
+          );
           // eslint-disable-next-line no-console
           console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
@@ -490,8 +882,23 @@ function App() {
             id: saved.id,
             method: saved.method,
           });
-          setStatusMessage(`System Status: Manual measurement updated: HV ${values.hv}`);
+          setStatusMessage(
+            `System Status: Manual measurement updated: HV ${values.hv ?? 'n/a (force missing)'}`
+          );
         } catch (err) {
+          // Surface the real backend error (axios response body / zod issues)
+          // to the console — without this the user sees only the popup and we
+          // have no way to diagnose validation rejections.
+          // eslint-disable-next-line no-console
+          console.error('[measurement-row-save-error] method=Manual', err);
+          // Cast to a loose shape to avoid a hard import of axios types here.
+          const ax = err as { response?: { status?: number; data?: unknown } };
+          if (ax.response) {
+            // eslint-disable-next-line no-console
+            console.error(
+              `[measurement-row-save-error] http=${ax.response.status} body=${JSON.stringify(ax.response.data)}`
+            );
+          }
           setUnavailableMsg(
             `Manual Measure failed: ${err instanceof Error ? err.message : String(err)}`
           );
@@ -528,6 +935,53 @@ function App() {
   const commitAutoMeasureSnapshot = useCallback(
     async (snapshot: AutoMeasureDetectionSnapshot, source: 'auto-click' | 'settings-save') => {
       const { result, graphics, objectiveForCalibration, machineStateForAuto, forceKgf } = snapshot;
+
+      // Duplicate-measurement guard. Identical detection on the same unchanged
+      // frame (repeat click) must NOT spawn a new table row. Tolerance is
+      // sub-pixel because the native detector is deterministic for an
+      // unchanged frame; a real new indentation moves D1/D2/center well past
+      // these bounds. Settings-save is exempt — the user is intentionally
+      // re-detecting under new params and expects the existing row to update.
+      const centerX = (graphics.corners.left.x + graphics.corners.right.x) / 2;
+      const centerY = (graphics.corners.top.y + graphics.corners.bottom.y) / 2;
+      const frameEpoch = getLastPaintEpoch();
+      const fingerprint = {
+        d1Px: result.d1Pixels,
+        d2Px: result.d2Pixels,
+        centerX,
+        centerY,
+        frameEpoch,
+      };
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-start] frameId=${frameEpoch}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-fingerprint]\ncenterX=${centerX.toFixed(2)}\ncenterY=${centerY.toFixed(2)}\nd1Px=${fingerprint.d1Px.toFixed(2)}\nd2Px=${fingerprint.d2Px.toFixed(2)}\nframeId=${frameEpoch}`
+      );
+
+      const last = lastCommittedFingerprintRef.current;
+      if (source === 'auto-click' && last) {
+        const D_PX_TOL = 1.5;
+        const CENTER_TOL = 2;
+        const sameValues =
+          Math.abs(last.d1Px - fingerprint.d1Px) <= D_PX_TOL &&
+          Math.abs(last.d2Px - fingerprint.d2Px) <= D_PX_TOL &&
+          Math.abs(last.centerX - fingerprint.centerX) <= CENTER_TOL &&
+          Math.abs(last.centerY - fingerprint.centerY) <= CENTER_TOL;
+        const sameFrame = last.frameEpoch === fingerprint.frameEpoch;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-duplicate-check]\nsameFrame=${sameFrame}\nsameValues=${sameValues}`
+        );
+        if (sameValues) {
+          // eslint-disable-next-line no-console
+          console.log('[measurement-row-blocked] reason=duplicate-measurement');
+          setStatusMessage(
+            'System Status: Auto Measure: same indentation — no duplicate row added.'
+          );
+          return false;
+        }
+      }
 
       // Why: always commit a NEW reference for the explicit Auto Measure
       // click. The graphicsAlmostEqual short-circuit was suppressing overlay
@@ -577,10 +1031,18 @@ function App() {
       });
 
       if (!conversion.ok) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[measurement-commit-blocked] method=Auto reason=conversion-failed detail="${conversion.reason}" objective=${objectiveForCalibration}`
+        );
         setUnavailableMsg(conversion.reason);
         setStatusMessage(`System Status: Auto Measure blocked: ${conversion.reason}`);
         return false;
       }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-commit-start] method=Auto objective=${objectiveForCalibration} d1Px=${result.d1Pixels} d2Px=${result.d2Pixels}`
+      );
 
       const values = conversion.value;
 
@@ -599,6 +1061,10 @@ function App() {
       console.log(
         `[auto-measure][compute] d1Um=${values.d1Um.toFixed(3)} d2Um=${values.d2Um.toFixed(3)} davgUm=${values.avgDUm.toFixed(3)} hv=${values.hv ?? 'n/a'}`
       );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-row-create] method=Auto d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
+      );
 
       // eslint-disable-next-line no-console
       console.log('[album] snapshot capture start measurementId=', autoMeasurementIdRef.current ?? 'new');
@@ -613,33 +1079,60 @@ function App() {
         // eslint-disable-next-line no-console
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
       }
-      const saved = await saveManualMeasurement({
-        id: autoMeasurementIdRef.current ?? undefined,
-        values: {
-          d1: values.d1Um,
-          d2: values.d2Um,
-          d1Px: values.d1Px,
-          d2Px: values.d2Px,
-          d1Um: values.d1Um,
-          d2Um: values.d2Um,
-          averageUm: values.avgDUm,
-          averageMm: values.avgDMm,
-          hv: values.hv,
-          micronPerPixel: values.umPerPixel,
-          calibrationName: values.calibrationName,
-          objective: values.normalizedObjective,
-          testForceKgf: values.forceKgf,
-          ...(isNewAutoMeasurement ? { depthMm } : {}),
-          method: 'Auto',
-          unit: 'um',
-          timestamp,
-          imageDataUrl,
-        },
-      });
+      const autoRowPayload = {
+        d1: values.d1Um,
+        d2: values.d2Um,
+        d1Px: values.d1Px,
+        d2Px: values.d2Px,
+        d1Um: values.d1Um,
+        d2Um: values.d2Um,
+        averageUm: values.avgDUm,
+        averageMm: values.avgDMm,
+        hv: values.hv,
+        qualified: deriveQualifiedForRow(values.hv),
+        micronPerPixel: values.umPerPixel,
+        calibrationName: values.calibrationName,
+        objective: values.normalizedObjective,
+        testForceKgf: values.forceKgf,
+        ...(isNewAutoMeasurement ? { depthMm } : {}),
+        method: 'Auto' as const,
+        unit: 'um' as const,
+        timestamp,
+        imageDataUrl,
+      };
+      // eslint-disable-next-line no-console
+      console.log('[measurement-row-object] method=Auto', autoRowPayload);
+      let saved;
+      try {
+        saved = await saveManualMeasurement({
+          id: autoMeasurementIdRef.current ?? undefined,
+          values: autoRowPayload,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[measurement-row-save-error] method=Auto', err);
+        const ax = err as { response?: { status?: number; data?: unknown } };
+        if (ax.response) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[measurement-row-save-error] http=${ax.response.status} body=${JSON.stringify(ax.response.data)}`
+          );
+        }
+        throw err;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-row-save-success] method=Auto id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv} objective=${saved.objective}`
+      );
       // eslint-disable-next-line no-console
       console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
       autoMeasurementIdRef.current = saved.id;
+      lastCommittedFingerprintRef.current = fingerprint;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-row-create]\nframeId=${frameEpoch}\nd1Um=${saved.d1Um}\nd2Um=${saved.d2Um}\nhv=${saved.hv ?? 'n/a'}`
+      );
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure][table-auto-update] rowId=${saved.id} source=detected`
@@ -651,12 +1144,12 @@ function App() {
       if (source === 'settings-save') {
         // eslint-disable-next-line no-console
         console.log(
-          `[auto-settings-save] committed=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} HV=${values.hv.toFixed(3)}`
+          `[auto-settings-save] committed=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} HV=${values.hv === null ? 'n/a' : values.hv.toFixed(3)}`
         );
       } else {
         // eslint-disable-next-line no-console
         console.log(
-          `[auto-measure:commit] overlayFrozen=true measurementAdded=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} D1_um=${values.d1Um.toFixed(3)} D2_um=${values.d2Um.toFixed(3)} HV=${values.hv.toFixed(3)}`
+          `[auto-measure:commit] overlayFrozen=true measurementAdded=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} D1_um=${values.d1Um.toFixed(3)} D2_um=${values.d2Um.toFixed(3)} HV=${values.hv === null ? 'n/a' : values.hv.toFixed(3)}`
         );
       }
 
@@ -730,6 +1223,10 @@ function App() {
           // eslint-disable-next-line no-console
           console.error(
             '[frontend-objective-sync] no objective available — blocking Auto Measure'
+          );
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[measurement-commit-blocked] method=Auto reason=no-active-objective confirmedFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'}`
           );
           if (preview) {
             setStatusMessage('System Status: Auto Measure preview blocked: no active objective');
@@ -842,6 +1339,13 @@ function App() {
             `[auto-measure:start] frameSize=${displayedFrame.width}x${displayedFrame.height} smoothing=${settings.smoothing} threshold=${settings.threshold}`
           );
         }
+        // Prove the frame about to be detected matches the confirmed
+        // objective AND was painted after the most recent canvas clear.
+        // Both fields must be aligned for detection to be trustworthy.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-fresh-check] objective=${liveObjectiveForNative} confirmedFromMachine=${confirmedFromMachine ?? 'null'} currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()} lastPaintAt=${getLastCameraFramePaintAt()} now=${Date.now()} frameSource=${displayedFrame.source} frameSize=${displayedFrame.width}x${displayedFrame.height}`
+        );
         const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
         const result = await measureFn({
           smoothing: settings.smoothing,
@@ -895,6 +1399,10 @@ function App() {
           // eslint-disable-next-line no-console
           console.log(
             `[auto-measure:validate] ok=false reason=${reason} D1_px=0 D2_px=0`
+          );
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[measurement-commit-blocked] method=Auto reason=detection-rejected detail="${reason}"`
           );
           return;
         }
@@ -1119,7 +1627,9 @@ function App() {
     // eslint-disable-next-line no-console
     console.log(`[camera-calibration] loaded objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'}`);
     // eslint-disable-next-line no-console
-    console.log(`[measurement-scale] umPerPixel=${umPerPixel ?? 'unknown'}`);
+    console.log(`[calibration-load] objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'}`);
+    // eslint-disable-next-line no-console
+    console.log(`[measurement-scale] objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'}`);
 
     // 3) Bump the viewport refresh key so CameraWindow can clear any cached
     //    transforms and force a fresh draw at the new magnification.
@@ -1136,6 +1646,10 @@ function App() {
     autoMeasurePreviewSnapshotRef.current = null;
     setCommittedAutoMeasureOverlay(null);
     setPreviewAutoMeasureOverlay(null);
+    autoMeasurementIdRef.current = null;
+    lastCommittedFingerprintRef.current = null;
+    // eslint-disable-next-line no-console
+    console.log('[measurement-session-reset] reason=objective-change');
     // eslint-disable-next-line no-console
     console.log(`[auto-measure-reset] reason=objective-change objective=${confirmed}`);
 
@@ -1270,6 +1784,10 @@ function App() {
               `[auto-measure][save] source=auto-corrected d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv ?? 'n/a'}`
             );
             // eslint-disable-next-line no-console
+            console.log(
+              `[measurement-row-create] method=Auto-Adjusted d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
+            );
+            // eslint-disable-next-line no-console
             console.log('[album] snapshot capture start measurementId=', targetId ?? 'new');
             await waitForOverlayPaint();
             // eslint-disable-next-line no-console
@@ -1294,6 +1812,7 @@ function App() {
                 averageUm: values.avgDUm,
                 averageMm: values.avgDMm,
                 hv: values.hv,
+                qualified: deriveQualifiedForRow(values.hv),
                 micronPerPixel: values.umPerPixel,
                 calibrationName: values.calibrationName,
                 objective: values.normalizedObjective,
@@ -1396,6 +1915,9 @@ function App() {
         committedAutoMeasureFrameRef.current = null;
         previewMeasurementRef.current = null;
         autoMeasurementIdRef.current = null;
+        lastCommittedFingerprintRef.current = null;
+        // eslint-disable-next-line no-console
+        console.log('[measurement-session-reset] reason=clear-graphics');
         resetManualMeasure();
       },
       autoMeasure: handleAutoMeasure,
@@ -1441,6 +1963,9 @@ function App() {
               committedAutoMeasureFrameRef.current = null;
               previewMeasurementRef.current = null;
               autoMeasurementIdRef.current = null;
+              lastCommittedFingerprintRef.current = null;
+              // eslint-disable-next-line no-console
+              console.log('[measurement-session-reset] reason=new-image');
               setStatusMessage(`System Status: Loaded ${reply.fileName}`);
             } else {
               setUnavailableMsg(
@@ -1636,6 +2161,9 @@ function App() {
             committedAutoMeasureFrameRef.current = null;
             previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
+            lastCommittedFingerprintRef.current = null;
+            // eslint-disable-next-line no-console
+            console.log('[measurement-session-reset] reason=camera-reopen');
             resetManualMeasure();
             // Reset per-session log flags so the next open re-fires
             // [camera-frame] first-frame-after-open and the paint log.
@@ -1823,6 +2351,34 @@ function App() {
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={() => setTrimMeasureOpen(false)}
           onTrimAdjust={handleTrimAdjust}
+          calibrationActive={activeDialog === 'calibration'}
+          calibrationSlot={
+            <CalibrationDialog
+              open={activeDialog === 'calibration'}
+              onClose={() => {
+                if (calibrationManualModeRef.current) {
+                  calibrationManualModeRef.current = false;
+                  // eslint-disable-next-line no-console
+                  console.log('[calibration-manual-mode-cleared] reason=panel-closed-by-user');
+                }
+                closeDialog();
+              }}
+              onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+              onChanged={() => {
+                void refetchCalibrations();
+              }}
+              autoFillPixelLengthX={latestManualPixels?.d1Px ?? null}
+              autoFillPixelLengthY={latestManualPixels?.d2Px ?? null}
+              defaultObjective={
+                liveMachineState?.confirmedObjectiveFromMachine?.trim() ||
+                activeObjective ||
+                null
+              }
+              onRequestAutoMeasure={handleCalibrationAutoMeasure}
+              onRequestManualMeasure={handleCalibrationManualMeasure}
+              onAutoCreateMeasurementRow={handleCalibrationAutoCreateRow}
+            />
+          }
         />
       </Box>
 
@@ -1834,14 +2390,6 @@ function App() {
         onPreviewChange={handleAutoMeasureSettingsPreviewChange}
         onSaved={handleAutoMeasureSettingsSaved}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-      />
-      <CalibrationDialog
-        open={activeDialog === 'calibration'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-        onChanged={() => {
-          void refetchCalibrations();
-        }}
       />
       <LineColorSettingDialog
         open={activeDialog === 'lineColor'}

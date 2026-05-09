@@ -102,11 +102,16 @@ const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
 function machineToForm(state: MachineState | null): FormState {
   if (!state) return DEFAULT_FORM_STATE;
+  // The dropdown reflects the machine-confirmed objective (set on L1OK/L2OK
+  // RX). state.objective is the optimistic activeObjective written by the
+  // last set-control TX — using it would let the dropdown jump to the user's
+  // pick before the lens physically rotates. Fall back to state.objective
+  // only when no confirmation has arrived yet (first connection).
   return {
     force: String(state.force),
     lightness: String(state.lightness),
     loadTime: String(state.loadTime),
-    objective: state.objective,
+    objective: state.confirmedObjectiveFromMachine ?? state.objective,
     hardnessLevel: state.hardnessLevel,
   };
 }
@@ -177,6 +182,23 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     formState.objective,
   ]);
 
+  // Mirror confirmedObjectiveFromMachine into a ref so impress logs can read
+  // the freshest value without re-binding the click handler on every SSE tick.
+  const lastConfirmedObjectiveRef = useRef<string | null>(null);
+  useEffect(() => {
+    const confirmed = machineState?.confirmedObjectiveFromMachine ?? null;
+    if (confirmed === lastConfirmedObjectiveRef.current) return;
+    lastConfirmedObjectiveRef.current = confirmed;
+    if (confirmed) {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-objective-rx] confirmedObjective=${confirmed}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-objective-sync] uiObjective=${formState.objective} confirmedObjective=${confirmed}`
+      );
+    }
+  }, [machineState?.confirmedObjectiveFromMachine, formState.objective]);
+
   useEffect(() => {
     if (!machineState) return;
     const source = machineState.lastUpdateSource ?? machineState.lastUpdatedBy;
@@ -221,6 +243,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         console.log(`[frontend-tx] objective requested value=${value}`);
         // eslint-disable-next-line no-console
         console.log(`[objective][ipc] set-active-objective ${value}`);
+        // eslint-disable-next-line no-console
+        console.log(`[machine-objective-tx] objective=${value}`);
       }
       try {
         const nextState = await setControl(key, value);
@@ -253,6 +277,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         console.log(`[objective][ui] changed ${formState.objective} -> ${value}`);
         // eslint-disable-next-line no-console
         console.log(`[objective-ui] click value=${value}`);
+        // eslint-disable-next-line no-console
+        console.log(`[machine-objective-ui] selected=${value}`);
         void pushChange(field, value).then((state) => {
           if ((value === '10X' || value === '40X') && state?.objective === value) {
             onObjectiveChange?.(value);
@@ -297,8 +323,31 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   );
 
   const handleIndentClick = useCallback(() => {
+    // Source-of-truth resolution: confirmed lens position first, optimistic
+    // activeObjective only when no confirmation has arrived yet. Mirrors the
+    // backend command path so the operator can verify which objective the
+    // impress is actually firing under.
+    const confirmedObjective =
+      machineState?.confirmedObjectiveFromMachine ?? lastConfirmedObjectiveRef.current ?? null;
+    const activeObjective = machineState?.objective ?? null;
+    const objectiveForCommand = confirmedObjective ?? activeObjective ?? formState.objective;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[impress-click] confirmedObjective=${confirmedObjective ?? 'null'} activeObjective=${activeObjective ?? 'null'}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[impress-command-context] objective=${objectiveForCommand} force=${formState.force} loadTime=${formState.loadTime}`
+    );
     void startIndent();
-  }, [startIndent]);
+  }, [
+    formState.force,
+    formState.loadTime,
+    formState.objective,
+    machineState?.confirmedObjectiveFromMachine,
+    machineState?.objective,
+    startIndent,
+  ]);
 
   const handleTurretClick = useCallback(
     (direction: TurretDirection) => () => {

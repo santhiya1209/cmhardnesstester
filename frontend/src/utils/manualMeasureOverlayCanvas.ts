@@ -24,23 +24,10 @@ type DrawArgs = {
   dragGuide: ManualGuideLineKey | null;
 };
 
-const HANDLE_RADIUS = 6;
 const HIT_DISTANCE = 10;
 const YELLOW = '#FFFF00';
 const LINE_WIDTH = 2;
 const LINE_WIDTH_ACTIVE = 2.5;
-const LABEL_BG = 'rgba(0,0,0,0.58)';
-const FONT = '12px Consolas, ui-monospace, monospace';
-
-function drawLabel(ctx: CanvasRenderingContext2D, text: string, at: Point) {
-  ctx.font = FONT;
-  const width = ctx.measureText(text).width + 8;
-  ctx.fillStyle = LABEL_BG;
-  ctx.fillRect(at.x + 6, at.y + 6, width, 18);
-  ctx.fillStyle = YELLOW;
-  ctx.textBaseline = 'top';
-  ctx.fillText(text, at.x + 10, at.y + 9);
-}
 
 export function pointerToDisplayPoint(
   event: { clientX: number; clientY: number },
@@ -153,15 +140,6 @@ export function drawManualMeasureOverlay({
     return;
   }
 
-  const centerX = (displayGuides.leftX + displayGuides.rightX) / 2;
-  const centerY = (displayGuides.topY + displayGuides.bottomY) / 2;
-  const handles: Record<ManualGuideLineKey, Point> = {
-    left: { x: displayGuides.leftX, y: centerY },
-    right: { x: displayGuides.rightX, y: centerY },
-    top: { x: centerX, y: displayGuides.topY },
-    bottom: { x: centerX, y: displayGuides.bottomY },
-  };
-
   ctx.strokeStyle = YELLOW;
   ctx.lineCap = 'butt';
   ctx.setLineDash([]);
@@ -194,18 +172,4 @@ export function drawManualMeasureOverlay({
   ctx.moveTo(0, displayGuides.bottomY);
   ctx.lineTo(width, displayGuides.bottomY);
   ctx.stroke();
-
-  // Tiny d1/d2 label near the center, no large background.
-  drawLabel(ctx, 'd1', { x: centerX, y: centerY });
-
-  (Object.keys(handles) as ManualGuideLineKey[]).forEach((key) => {
-    const point = handles[key];
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, HANDLE_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = YELLOW;
-    ctx.fill();
-    ctx.lineWidth = key === hoverGuide || key === dragGuide ? 2 : 1;
-    ctx.strokeStyle = '#111111';
-    ctx.stroke();
-  });
 }

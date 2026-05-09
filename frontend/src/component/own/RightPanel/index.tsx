@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
@@ -149,6 +149,15 @@ type Props = {
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
+  calibrationActive?: boolean;
+  /**
+   * Calibration controls. Rendered as the right-panel content when the
+   * calibration screen is active. Slot
+   * pattern (vs. drilling all 9 calibration props) so the camera + machine
+   * controls + measurement table remain visible and interactive while the
+   * user calibrates — no modal blocking, matches industrial-software UX.
+   */
+  calibrationSlot?: ReactNode;
 };
 
 function RightPanelImpl({
@@ -161,6 +170,8 @@ function RightPanelImpl({
   trimMeasureOpen,
   onCloseTrimMeasure,
   onTrimAdjust,
+  calibrationActive = false,
+  calibrationSlot,
 }: Props) {
   const [tab, setTab] = useState(0);
   const {
@@ -176,43 +187,48 @@ function RightPanelImpl({
 
   return (
     <Box sx={PANEL_SX}>
-      <MeasurementsWorkspace
-        measurements={measurements}
-        loading={measurementsLoading}
-        error={measurementsError}
-        refetch={refetchMeasurements}
-        onOpenStatisticsTab={() => setTab(4)}
-        onOpenTestRecords={onOpenTestRecords}
-      />
+      {calibrationSlot}
+      {calibrationActive ? null : (
+        <>
+          <MeasurementsWorkspace
+            measurements={measurements}
+            loading={measurementsLoading}
+            error={measurementsError}
+            refetch={refetchMeasurements}
+            onOpenStatisticsTab={() => setTab(4)}
+            onOpenTestRecords={onOpenTestRecords}
+          />
 
-      <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        variant="scrollable"
-        scrollButtons="auto"
-        sx={TABS_SX}
-      >
-        {TAB_ITEMS.map((label) => (
-          <Tab key={label} label={label} />
-        ))}
-      </Tabs>
+          <Tabs
+            value={tab}
+            onChange={(_, v) => setTab(v)}
+            variant="scrollable"
+            scrollButtons="auto"
+            sx={TABS_SX}
+          >
+            {TAB_ITEMS.map((label) => (
+              <Tab key={label} label={label} />
+            ))}
+          </Tabs>
 
-      {renderTab(tab, {
-        measurements,
-        patternPrograms,
-        patternProgramsError,
-        patternProgramsLoading,
-        refetchPatternPrograms,
-        albumItems,
-        refetchAlbumItems,
-        onObjectiveChange,
-      })}
+          {renderTab(tab, {
+            measurements,
+            patternPrograms,
+            patternProgramsError,
+            patternProgramsLoading,
+            refetchPatternPrograms,
+            albumItems,
+            refetchAlbumItems,
+            onObjectiveChange,
+          })}
 
-      <TrimMeasurePanel
-        open={trimMeasureOpen}
-        onClose={onCloseTrimMeasure}
-        onAdjust={onTrimAdjust}
-      />
+          <TrimMeasurePanel
+            open={trimMeasureOpen}
+            onClose={onCloseTrimMeasure}
+            onAdjust={onTrimAdjust}
+          />
+        </>
+      )}
     </Box>
   );
 }

@@ -293,11 +293,17 @@ class MicrometerService {
   _emit() {
     const wc = this.webContents;
     if (!wc || wc.isDestroyed()) {
+      console.warn(
+        `[micrometer] IPC state send SKIPPED — no attached webContents (value=${this.state.value} displayValue=${this.state.displayValue}). Renderer may have been reloaded; reattach required.`
+      );
       return;
     }
 
     try {
       wc.send('micrometer:state', this.getState());
+      console.log(
+        `[micrometer] IPC state emitted value=${this.state.value} displayValue=${this.state.displayValue} status=${this.state.status}`
+      );
     } catch (err) {
       console.warn('[micrometer] IPC state send failed:', err && err.message ? err.message : err);
     }
