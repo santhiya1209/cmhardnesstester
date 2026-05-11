@@ -371,6 +371,26 @@ bool ReadParamsObject(const Napi::Object& object, Params& params, std::string& r
   params.imageType = StringFromObject(object, "imageType", params.imageType);
   params.objectiveForMeasure = StringFromObject(object, "objectiveForMeasure", params.objectiveForMeasure);
 
+  // Objective-aware default rescale. Only applied when the caller did NOT
+  // explicitly set the parameter — manual tuning from the Auto Measure
+  // settings dialog still wins. Without this, 10X indents (small in pixels)
+  // get crushed by the 40X-tuned 5x5 morphology kernel and the 28-px
+  // sideFitRoi scan band reaches past the true edge, so the fitted corner
+  // tips land inside the diamond rather than on the indent tips.
+  {
+    const double objScale = ObjectivePixelScale(params.objectiveForMeasure);
+    if (!object.Has("morphologyKernelSize") && objScale < 0.99) {
+      int k = static_cast<int>(std::lround(params.morphologyKernelSize * objScale));
+      if (k < 3) k = 3;
+      if (k % 2 == 0) ++k;
+      params.morphologyKernelSize = std::clamp(k, 3, 41);
+    }
+    if (!object.Has("sideFitRoiWidth") && objScale < 0.99) {
+      int w = static_cast<int>(std::lround(params.sideFitRoiWidth * objScale));
+      params.sideFitRoiWidth = std::clamp(w, 4, 90);
+    }
+  }
+
   params.micronPerPixel = PositiveNumberFromObject(object, "micronPerPixel", 0.0);
   params.pxPerMm = PositiveNumberFromObject(object, "pxPerMm", 0.0);
   params.testForceKgf = PositiveNumberFromObject(object, "testForceKgf", 0.0);
@@ -800,9 +820,64 @@ double ObjectiveLowMagLooseness(const std::string& objective) {
   return 1.00; // 40X / 50X / 100X / unknown: unchanged
 }
 
+// Pixel-scale factor for objective-aware default tuning. The pixel size of a
+// Vickers indent is proportional to the optical magnification. The default
+// `morphologyKernelSize` (5) and `sideFitRoiWidth` (28) are tuned for 40X.
+// At 10X the indent is ~1/4 the pixel area, so a 5x5 closing kernel can crush
+// the diamond corners and a 28-pixel side-fit scan band can reach into
+// surrounding microstructure, dragging the fitted side lines off the true
+// edge and putting the corner intersections inside the indent rather than on
+// the tips. Reference: 40X = 1.0.
+double ObjectivePixelScale(const std::string& objective) {
+  if (objective == "5X")  return 0.20;
+  if (objective == "10X") return 0.35;
+  if (objective == "20X") return 0.60;
+  if (objective == "40X") return 1.00;
+  if (objective == "50X") return 1.10;
+  if (objective == "100X") return 1.40;
+  return 1.00; // unknown: no rescale
+}
+
 double MinIndentationAreaPixels(const Params& params) {
   const double imageArea = static_cast<double>(params.width) * params.height;
   return std::max(120.0, imageArea * params.minAreaRatio);
+}
+
+// Expected indent area as fraction of full-frame area for each objective.
+// Used to BOTH peak the candidate-selection area score and tighten the
+// max-area gate at low magnifications. Returns 0.0 when unknown so callers
+// know to fall back to legacy behaviour (40X-tuned).
+double ObjectiveExpectedAreaRatio(const std::string& objective) {
+  if (objective == "5X")  return 0.003;
+  if (objective == "10X") return 0.012;
+  if (objective == "20X") return 0.025;
+  if (objective == "40X") return 0.055;
+  if (objective == "50X") return 0.060;
+  if (objective == "100X") return 0.075;
+  return 0.0; // unknown
+}
+
+// Max area as fraction of frame allowed for the diamond contour at each
+// objective. At low mag the indent is small in pixels, so a contour that
+// is 18% of the frame (the legacy maxAreaRatio) is almost certainly a
+// scratch / polish mark / frame artefact rather than the indent. Tighten.
+double ObjectiveMaxAreaRatio(const std::string& objective) {
+  if (objective == "5X")  return 0.020;
+  if (objective == "10X") return 0.050;
+  if (objective == "20X") return 0.090;
+  return 0.0; // 40X+ / unknown: keep legacy params.maxAreaRatio
+}
+
+// Peaked area-score: 1.0 when contourArea == expectedArea, drops to 0 at
+// expectedArea*2^1.5 (~2.8x) or expectedArea/2^1.5 (~0.36x). This replaces
+// the linear "bigger = better" bias that was picking large background
+// regions over the actual small indent at 10X.
+double PeakedAreaScore(double contourArea, double expectedArea) {
+  if (expectedArea <= 0.0 || contourArea <= 0.0) return 0.0;
+  const double octaves = std::log2(contourArea / expectedArea);
+  const double absOctaves = std::abs(octaves);
+  if (absOctaves >= 1.5) return 0.0;
+  return 1.0 - (absOctaves / 1.5);
 }
 
 double MinIndentationDiagonalPixels(const Params& params) {
@@ -824,9 +899,33 @@ std::optional<Candidate> SelectBestContour(
 
   const double imageArea = static_cast<double>(params.width) * params.height;
   const double minArea = MinIndentationAreaPixels(params);
-  const double maxArea = std::max(minArea * 2.0, imageArea * params.maxAreaRatio);
+  // Objective-aware max area: at 10X / 20X the indent is small, so the
+  // legacy 18%-of-frame ceiling lets background contours (scratches, polish
+  // marks, frame edges) win selection. Tighten the cap to ~5% / 9% at low
+  // mag so wrong-large contours never enter the score race in the first
+  // place. 40X+ / unknown keep the original gate bit-for-bit.
+  const double objMaxAreaRatio = ObjectiveMaxAreaRatio(params.objectiveForMeasure);
+  const double effectiveMaxAreaRatio =
+    objMaxAreaRatio > 0.0 ? std::min(params.maxAreaRatio, objMaxAreaRatio) : params.maxAreaRatio;
+  const double maxArea = std::max(minArea * 2.0, imageArea * effectiveMaxAreaRatio);
+  // Expected/peak indent area in pixels for the current objective. Drives
+  // the area component of the candidate score so that the diamond beats
+  // wrong-large contours instead of losing to them.
+  const double expectedAreaRatio = ObjectiveExpectedAreaRatio(params.objectiveForMeasure);
+  const double expectedAreaPx = expectedAreaRatio > 0.0 ? imageArea * expectedAreaRatio : 0.0;
   debug.minArea = minArea;
   debug.maxArea = maxArea;
+
+  // Unconditional spec-format log so the operator can correlate which
+  // objective + frame dims are active without needing AUTO_MEASURE_DEBUG.
+  // Emitted once per call (per mask pass actually, but the start log
+  // upstream in MeasureVickersAuto already runs once per detection).
+  std::fprintf(stderr,
+    "[auto-measure-selectbest] mode=%s minArea=%.1f maxArea=%.1f maxAreaRatio=%.4f expectedAreaPx=%.1f maxCenterDistance=%.1f\n",
+    thresholdMode.c_str(), minArea, maxArea, effectiveMaxAreaRatio,
+    expectedAreaPx,
+    std::min(params.width, params.height) * params.maxCenterDistanceRatio);
+  std::fflush(stderr);
 
   const cv::Point2f imageCenter(params.width * 0.5f, params.height * 0.5f);
   const double maxCenterDistance = std::min(params.width, params.height) * params.maxCenterDistanceRatio;
@@ -978,7 +1077,13 @@ std::optional<Candidate> SelectBestContour(
       continue;
     }
 
-    const double areaScore = Clamp01(validationArea / (imageArea * 0.055));
+    // Area score: peaked around the objective's expected indent area when
+    // we know it (10X/20X/40X/...). Otherwise fall back to the legacy
+    // linear-up-to-5.5%-of-frame curve so existing 40X-tuned behaviour is
+    // preserved bit-for-bit on unknown objectives.
+    const double areaScore = expectedAreaPx > 0.0
+      ? PeakedAreaScore(validationArea, expectedAreaPx)
+      : Clamp01(validationArea / (imageArea * 0.055));
     const double centerScore = Clamp01(1.0 - centerDistance / std::max(1.0, maxCenterDistance));
     const double sideScore = RatioScore(metrics.sideRatio, params.maxSideLengthRatio);
     const double diagScore = RatioScore(metrics.diagonalRatio, params.maxDiagonalRatio);
@@ -1010,9 +1115,25 @@ std::optional<Candidate> SelectBestContour(
     candidate.thresholdMode = thresholdMode;
     candidate.contourCount = static_cast<int>(contours.size());
 
+    // Unconditional per-accepted-candidate trace (spec format). Helps the
+    // operator see WHY a wrong-large contour was preferred — e.g. seeing
+    // multiple candidates with similar score lets us tune weights.
+    std::fprintf(stderr,
+      "[auto-measure-candidate] index=%d area=%.2f centerX=%.2f centerY=%.2f rectShort=%.2f rectLong=%.2f darkness=%.4f diamondScore=%.4f score=%.4f areaScore=%.4f\n",
+      contourIndex, validationArea, center.x, center.y, rectShort, rectLong,
+      solidity, shapeScore, score, areaScore);
+    std::fflush(stderr);
+
     if (!best || candidate.score > best->score) {
       best = candidate;
     }
+  }
+
+  if (best) {
+    std::fprintf(stderr,
+      "[auto-measure-selected] index=%d area=%.2f centerX=%.2f centerY=%.2f reason=best-dark-diamond score=%.4f\n",
+      best->approxPointCount, best->contourArea, best->center.x, best->center.y, best->score);
+    std::fflush(stderr);
   }
 
   if (debugLog) {
@@ -1202,6 +1323,33 @@ bool PointInsideImage(cv::Point2f p, const Params& params) {
   return p.x >= 0.0f && p.y >= 0.0f && p.x <= params.width - 1.0f && p.y <= params.height - 1.0f;
 }
 
+// How far a corner is allowed to fall outside the image (in pixels) before
+// we treat it as a genuine failure. At low magnifications (10X) the
+// side-fit / minAreaRect path can produce tip coordinates a couple of
+// pixels past the edge due to extrapolation when the diamond is near the
+// frame border. Snapping these back to the boundary is correct and avoids
+// rejecting an otherwise-valid detection.
+constexpr float kCornerOutsideToleranceFloor = 6.0f;
+
+float CornerOutsideTolerance(const Params& params) {
+  const float dim = static_cast<float>(std::min(params.width, params.height));
+  return std::max(kCornerOutsideToleranceFloor, dim * 0.01f);
+}
+
+// Returns (corner, distanceClampedPx). Snaps to the image boundary when the
+// point is outside; reports zero distance when fully inside.
+cv::Point2f ClampPointToImageBounds(cv::Point2f p, const Params& params, float& distanceOut) {
+  const float maxX = static_cast<float>(params.width) - 1.0f;
+  const float maxY = static_cast<float>(params.height) - 1.0f;
+  cv::Point2f c = p;
+  if (c.x < 0.0f) c.x = 0.0f;
+  if (c.y < 0.0f) c.y = 0.0f;
+  if (c.x > maxX) c.x = maxX;
+  if (c.y > maxY) c.y = maxY;
+  distanceOut = std::hypot(c.x - p.x, c.y - p.y);
+  return c;
+}
+
 OrderedCorners ExtractAxisTipsFromContour(
   const std::vector<cv::Point>& contour,
   const std::vector<cv::Point>& hull,
@@ -1260,17 +1408,35 @@ OrderedCorners ExtractAxisTipsFromContour(
 }
 
 bool ValidateContourTips(
-  const OrderedCorners& corners,
+  OrderedCorners& corners,
   const Params& params,
   const DebugInfo& debug,
   std::string& reason
 ) {
-  if (!PointInsideImage(corners.top, params) ||
-      !PointInsideImage(corners.right, params) ||
-      !PointInsideImage(corners.bottom, params) ||
-      !PointInsideImage(corners.left, params)) {
-    reason = "corner is outside image";
-    return false;
+  // Soft clamp: snap tips that fall a few pixels outside the image back to
+  // the boundary. Only reject when a corner is FAR outside (likely garbage),
+  // which avoids over-rejecting valid 10X detections where the diamond
+  // touches a frame edge and the fit extrapolates by ~1-3 px.
+  const float tol = CornerOutsideTolerance(params);
+  cv::Point2f* tips[4] = { &corners.top, &corners.right, &corners.bottom, &corners.left };
+  const char* names[4] = { "top", "right", "bottom", "left" };
+  for (int i = 0; i < 4; ++i) {
+    float dist = 0.0f;
+    cv::Point2f clamped = ClampPointToImageBounds(*tips[i], params, dist);
+    if (dist > tol) {
+      std::fprintf(stderr,
+        "[auto-measure-reject] reason=corner-outside-image corner=%s x=%.2f y=%.2f frameWidth=%d frameHeight=%d distPx=%.2f tolPx=%.2f\n",
+        names[i], tips[i]->x, tips[i]->y, params.width, params.height, dist, tol);
+      std::fflush(stderr);
+      reason = "corner is outside image";
+      return false;
+    }
+    if (dist > 0.0f) {
+      DebugLog(
+        "[auto-measure-corner-clamp] corner=%s rawX=%.2f rawY=%.2f clampedX=%.2f clampedY=%.2f distPx=%.2f\n",
+        names[i], tips[i]->x, tips[i]->y, clamped.x, clamped.y, dist);
+      *tips[i] = clamped;
+    }
   }
 
   const ShapeMetrics metrics = ComputeShapeMetrics(corners);
@@ -2595,6 +2761,23 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       return Failure(env, reason, debug);
     }
 
+    // Unconditional spec-format diagnostic lines — these always emit (no
+    // AUTO_MEASURE_DEBUG env required) so the operator can correlate a
+    // rejection with the actual objective + frame size + tuned thresholds.
+    std::fprintf(stderr,
+      "[auto-measure-start] objective=%s frameWidth=%d frameHeight=%d\n",
+      params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str(),
+      params.width, params.height);
+    std::fprintf(stderr,
+      "[auto-measure-native-params] objective=%s roi=%d minArea=%.1f maxArea=%.1f diagonalMin=%.1f morphologyKernel=%d\n",
+      params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str(),
+      params.sideFitRoiWidth,
+      MinIndentationAreaPixels(params),
+      std::max(MinIndentationAreaPixels(params) * 2.0,
+               static_cast<double>(params.width) * params.height * params.maxAreaRatio),
+      MinIndentationDiagonalPixels(params),
+      params.morphologyKernelSize);
+    std::fflush(stderr);
 
     if (AutoMeasureDebugEnabled()) {
       const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2648,12 +2831,28 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.initialSideRatio = best->metrics.sideRatio;
     debug.initialDiagonalRatio = best->metrics.diagonalRatio;
 
+    {
+      const float rectShort = std::min(best->rect.size.width, best->rect.size.height);
+      const float rectLong = std::max(best->rect.size.width, best->rect.size.height);
+      std::fprintf(stderr,
+        "[auto-measure-candidate] centerX=%.2f centerY=%.2f area=%.2f rectShort=%.2f rectLong=%.2f angle=%.2f\n",
+        best->center.x, best->center.y, best->contourArea, rectShort, rectLong, best->rect.angle);
+      std::fflush(stderr);
+    }
+
     OrderedCorners contourCorners = ExtractAxisTipsFromContour(
       best->contour,
       best->hull,
       best->corners,
       best->center
     );
+    std::fprintf(stderr,
+      "[auto-measure-corners] top=%.2f,%.2f right=%.2f,%.2f bottom=%.2f,%.2f left=%.2f,%.2f\n",
+      contourCorners.top.x, contourCorners.top.y,
+      contourCorners.right.x, contourCorners.right.y,
+      contourCorners.bottom.x, contourCorners.bottom.y,
+      contourCorners.left.x, contourCorners.left.y);
+    std::fflush(stderr);
     std::string contourRejectReason;
     if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
       contourCorners = best->corners;

@@ -532,15 +532,17 @@ class CameraService {
       capturedAt,
     };
 
-    // Layer-1 latency: native capture timestamp → ready to send. Throttled.
+    // Per-layer trace at the native→main hand-off. Throttled to ~1 Hz so
+    // logging itself doesn't add latency. The previous
+    // `[camera-latency] captureToSendMs=0` line was removed because
+    // `captureToSendMs` is computed as `capturedAt - capturedAt = 0` by
+    // construction and was noise.
     if (capturedAt - this._lastLatencyLogAt > 1000) {
       this._lastLatencyLogAt = capturedAt;
       const sdkTs = Number(safeMeta.timestamp) || 0;
-      // SDK timestamp is in 100ns ticks on many DVP cameras; surface raw
-      // delta and let the renderer normalize. We just emit our wall-clock.
       // eslint-disable-next-line no-console
       console.log(
-        `[camera-latency] captureToSendMs=0 frameId=${frameId} sdkTimestamp=${sdkTs}`
+        `[camera-frame-capture] frameId=${frameId} ts=${capturedAt} sdkTs=${sdkTs}`
       );
     }
 
@@ -575,6 +577,13 @@ class CameraService {
     safeMeta.sentAt = sentAt;
     this._inFlightSeq = safeMeta.frameId;
     this._inFlightSentAt = sentAt;
+    // Throttled per-frame send trace (1Hz). Reuses _lastLatencyLogAt as a
+    // shared throttle so the capture+send pair lands close in the log.
+    if (sentAt - (this._lastSendLogAt || 0) > 1000) {
+      this._lastSendLogAt = sentAt;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-frame-send] frameId=${safeMeta.frameId} ts=${sentAt}`);
+    }
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
     } catch (_e) {

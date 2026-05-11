@@ -307,6 +307,38 @@ void StreamLoop() {
     s.lastWidth = frame.iWidth;
     s.lastHeight = frame.iHeight;
 
+    // ─────────────────────────────────────────────────────────────────
+    // Drain-to-newest: the DVP SDK's GetFrame returns the OLDEST frame
+    // from its internal ring (FIFO). The ring is several frames deep on
+    // most DVP cameras and the SDK exposes no buffer-count knob, so by
+    // the time the OS-level call returns, two or three newer frames may
+    // already be sitting behind it. Without this loop we always show
+    // frame N-k where k is the live ring depth — that is the residual
+    // "physical move → visible" latency the user is complaining about.
+    //
+    // Strategy: keep calling GetFrame with timeout=0 (non-blocking) and
+    // overwrite `frame`/`pBuffer` with whatever the SDK returns. The
+    // previous pBuffer is invalidated by each successful GetFrame (the
+    // SDK reuses the slot), so it is safe — and correct — to discard
+    // intermediate frames without copying them. We stop as soon as
+    // GetFrame returns non-OK (typically TIMEOUT → ring is empty).
+    int extraFramesDrained = 0;
+    for (int i = 0; i < 16; ++i) {
+      dvpFrame nf{};
+      void* np = nullptr;
+      dvpStatus nrs = s.dll.GetFrame(s.handle, &nf, &np, 0);
+      if (nrs != DVP_STATUS_OK || !np || nf.uBytes == 0) break;
+      frame = nf;
+      pBuffer = np;
+      s.lastWidth = nf.iWidth;
+      s.lastHeight = nf.iHeight;
+      extraFramesDrained++;
+    }
+    if (extraFramesDrained > 0) {
+      s.droppedFrames.fetch_add(extraFramesDrained, std::memory_order_relaxed);
+    }
+    // ─────────────────────────────────────────────────────────────────
+
     // Latest-frame-only drop at the native source. If JS hasn't drained the
     // previous frame from the TSF queue, skip this one entirely — no alloc,
     // no memcpy, no TSF push. The SDK buffer is already consumed (we called

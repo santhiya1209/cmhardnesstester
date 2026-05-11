@@ -55,6 +55,16 @@ let imageData: ImageData | null = null;
 let imageDataDims: { w: number; h: number } | null = null;
 
 function ensureImageData(w: number, h: number): ImageData {
+  // In the main-thread paint path (2D-fallback) we need to transfer the
+  // decoded ImageData to the renderer — and transferring detaches the
+  // backing store. Reusing a single shared ImageData would therefore force
+  // us to memcpy the pixels into a fresh buffer every frame (the previous
+  // code's `new Uint8ClampedArray(img.data)` line). For a 1920x1080 frame
+  // that is ~8 MB / frame of avoidable copying. Allocate fresh per frame
+  // when we know we're about to transfer.
+  if (mainThreadPaint) {
+    return new ImageData(w, h);
+  }
   if (imageData && imageDataDims && imageDataDims.w === w && imageDataDims.h === h) {
     return imageData;
   }
@@ -171,13 +181,29 @@ function decode(
 }
 
 let paintCount = 0;
+let lastConvertLogAt = 0;
 function paint(frame: FrameMsg) {
+  const t0 = performance.now();
   const img = decode(frame.buffer, frame.width, frame.height, frame.pixelFormat, frame.bits);
+  const convertMs = performance.now() - t0;
+  // Throttled per-stage timing — every ~1s. Per-frame logging at 30fps
+  // would flood DevTools and itself add measurable latency.
+  const nowMs = Date.now();
+  if (nowMs - lastConvertLogAt > 1000) {
+    lastConvertLogAt = nowMs;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-frame-convert] frameId=${frame.seq ?? 0} ms=${convertMs.toFixed(2)}`
+    );
+  }
   if (mainThreadPaint) {
-    const copy = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height);
+    // ImageData was freshly allocated by ensureImageData() above, so we can
+    // transfer its backing store directly — zero copies. Previously this
+    // path did `new Uint8ClampedArray(img.data)` which was an ~8MB memcpy
+    // per 1080p frame.
     (self as DedicatedWorkerGlobalScope).postMessage(
-      { type: 'paint', imageData: copy, epoch: frame.epoch ?? 0, seq: frame.seq ?? 0 },
-      [copy.data.buffer]
+      { type: 'paint', imageData: img, epoch: frame.epoch ?? 0, seq: frame.seq ?? 0 },
+      [img.data.buffer]
     );
     return;
   }

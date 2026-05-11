@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -15,6 +15,7 @@ import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
 import ExportReportDialog from '@/component/own/ExportReportDialog';
+import { convertVickers, type ConvertTargetType } from '@/utils/hardnessConvert';
 
 const CONVERT_TYPE_OPTIONS = [
   'HV',
@@ -36,14 +37,51 @@ const CONVERT_TYPE_OPTIONS = [
 const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1, display: 'flex', flexDirection: 'column', gap: 1 };
 const SUMMARY_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const HV_FIELD_SX: SxProps<Theme> = { flex: 1, minWidth: 80 };
+// Top HV value box: bold, larger, accent colour so the latest hardness result
+// reads at a glance from across the bench. Industrial-clean — no chip,
+// no shadow — just typography weight + theme-aware accent.
 const HV_DISPLAY_SX: SxProps<Theme> = {
   flex: 1,
   minWidth: 80,
-  minHeight: 30,
+  minHeight: 34,
   px: 1,
   py: 0.5,
-  fontSize: 12,
+  fontSize: 18,
+  fontWeight: 800,
+  letterSpacing: 0.3,
+  color: 'primary.main',
+  fontVariantNumeric: 'tabular-nums',
+  border: 1,
+  borderColor: 'divider',
+  borderRadius: 0.5,
+  bgcolor: 'background.paper',
+  display: 'flex',
+  alignItems: 'center',
+};
+// Top HV-type Select: same vertical rhythm, bold value text. Compact
+// industrial dropdown — uses theme tokens for dark/light.
+const HV_FIELD_SX: SxProps<Theme> = {
+  flex: 1,
+  minWidth: 80,
+  '& .MuiSelect-select': {
+    fontWeight: 700,
+    fontSize: 14,
+    letterSpacing: 0.5,
+  },
+};
+// Companion "Convert Value" display next to the type dropdown — keeps the
+// converted hardness visible separately so the original HV is never
+// replaced visually.
+const CONVERT_VALUE_DISPLAY_SX: SxProps<Theme> = {
+  flex: 1,
+  minWidth: 80,
+  minHeight: 34,
+  px: 1,
+  py: 0.5,
+  fontSize: 14,
+  fontWeight: 600,
+  color: 'text.primary',
+  fontVariantNumeric: 'tabular-nums',
   border: 1,
   borderColor: 'divider',
   borderRadius: 0.5,
@@ -95,6 +133,25 @@ function MeasurementsWorkspaceImpl({
   const [reportOpen, setReportOpen] = useState(false);
   const [convertSyncError, setConvertSyncError] = useState<string | null>(null);
 
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[measurement-ui-style-update] section=hv-display');
+  }, []);
+
+  // Tracks the most recent measurement we've seen so we can emit the
+  // [hardness-original-set] trace when a fresh Auto/Manual result lands.
+  const lastSeenMeasurementIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const latest = measurements[0];
+    if (!latest) return;
+    if (lastSeenMeasurementIdRef.current === latest.id) return;
+    lastSeenMeasurementIdRef.current = latest.id;
+    if (typeof latest.hv === 'number' && Number.isFinite(latest.hv)) {
+      // eslint-disable-next-line no-console
+      console.log(`[hardness-original-set] hv=${latest.hv}`);
+    }
+  }, [measurements]);
+
   const selectedMeasurement = useMemo(
     () => measurements.find((measurement) => measurement.id === selectedMeasurementId) ?? null,
     [measurements, selectedMeasurementId]
@@ -128,18 +185,69 @@ function MeasurementsWorkspaceImpl({
         console.log('[measurement-convert] no target row — dropdown only');
         return;
       }
-      const convertValue = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
+      // Original HV is the row's existing hv — it is NEVER overwritten by
+      // the conversion path below. The convertValue is a derived/companion
+      // field stored alongside.
+      const originalHv = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
+      // eslint-disable-next-line no-console
+      console.log(`[hardness-original] hv=${originalHv ?? '-'}`);
+      // eslint-disable-next-line no-console
+      console.log(`[hardness-convert-start] originalHv=${originalHv ?? '-'} targetType=${next}`);
+      // Analytical Vickers→target conversion (see utils/hardnessConvert.ts).
+      // These are widely-used approximations for hardened/soft steel, NOT
+      // ISO 18265 / E140 table-grade values. Returns `null` when the input
+      // HV falls outside the target scale's reasonable range — the UI then
+      // renders a dash, which is the correct industrial behaviour (don't
+      // fabricate a number you can't justify).
+      const convertValue = convertVickers(originalHv, next as ConvertTargetType);
       // eslint-disable-next-line no-console
       console.log(
-        `[measurement-convert] rowId=${target.id} convertType=${next} convertValue=${convertValue ?? '-'}`
+        `[hardness-convert-result] originalHv=${originalHv ?? '-'} convertType=${next} convertValue=${convertValue ?? '-'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[hardness-convert] originalHv=${originalHv ?? '-'} convertType=${next} convertValue=${convertValue ?? '-'}`
       );
       try {
+        // IMPORTANT: We must explicitly forward every nullable-with-default
+        // field from the existing row. Reason: the backend's
+        // `UpdateMeasurementSchema` is built via `buildUpdateSchema(...).partial()`,
+        // but the underlying `MeasurementPayloadSchema` declares many fields
+        // as `.nullable().default(null)`. Zod's `.partial()` does NOT strip
+        // the `.default(null)`, so any nullable field absent from the request
+        // body is parsed as `null` (not `undefined`). The service's
+        // `updateEntity` then reads `input.hv === undefined ? current.hv : input.hv`
+        // and stores `null`, wiping the original Vickers value.
+        //
+        // Until the schema is fixed properly (rebuild buildUpdateSchema to
+        // strip defaults), this row passes through every preservable field
+        // so partial updates here are non-destructive.
         await updateMeasurement(target.id, {
           d1: target.d1,
           d2: target.d2,
+          hv: target.hv ?? null,
+          d1Px: target.d1Px ?? null,
+          d2Px: target.d2Px ?? null,
+          d1Um: target.d1Um ?? null,
+          d2Um: target.d2Um ?? null,
+          averageUm: target.averageUm ?? null,
+          averageMm: target.averageMm ?? null,
+          micronPerPixel: target.micronPerPixel ?? null,
+          calibrationName: target.calibrationName ?? null,
+          objective: target.objective ?? null,
+          testForceKgf: target.testForceKgf ?? null,
+          depthMm: target.depthMm ?? null,
           convertType: next,
           convertValue,
         });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-row-update-conversion] rowId=${target.id} hardness=${originalHv ?? '-'} convertType=${next} convertValue=${convertValue ?? '-'}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-row-update] hardness=${originalHv ?? '-'} hardnessType=HV convertType=${next} convertValue=${convertValue ?? '-'}`
+        );
         // eslint-disable-next-line no-console
         console.log(
           `[measurement-save] rowId=${target.id} convertType=${next} convertValue=${convertValue ?? '-'}`
@@ -224,6 +332,13 @@ function MeasurementsWorkspaceImpl({
               ))}
             </Select>
           </FormControl>
+          <Box sx={CONVERT_VALUE_DISPLAY_SX}>
+            {formatNumber(
+              typeof displayedMeasurement?.convertValue === 'number'
+                ? displayedMeasurement.convertValue
+                : null
+            )}
+          </Box>
           <Typography sx={LABEL_SX}>Micrometer</Typography>
           <MicrometerDisplay sx={MICROMETER_FIELD_SX} />
         </Box>

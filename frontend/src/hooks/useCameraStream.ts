@@ -178,6 +178,8 @@ function schedulePaintRaf() {
       );
       // eslint-disable-next-line no-console
       console.log(`[camera-frame-render] frameId=${p.frameId} latencyMs=${totalMs}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-latency-total] frameId=${p.frameId} totalMs=${totalMs}`);
     }
     if (p.frameId > 0) ackCameraFrame(p.frameId);
   });
@@ -220,8 +222,10 @@ function subscribeIpcOnce() {
       console.log(`[live-frame] frameId=${liveFrameLogSeq} overlayUnchanged=true`);
       const sentAt = meta.sentAt ?? 0;
       // eslint-disable-next-line no-console
+      console.log(`[camera-frame-recv] frameId=${frameId} ts=${receivedAt}`);
+      // eslint-disable-next-line no-console
       console.log(
-        `[camera-frame-recv] frameId=${frameId} timestamp=${meta.timestamp} sentAt=${sentAt} receivedAt=${receivedAt}`
+        `[camera-frame-recv-detail] frameId=${frameId} timestamp=${meta.timestamp} sentAt=${sentAt} receivedAt=${receivedAt}`
       );
       if (sentAt > 0) {
         // eslint-disable-next-line no-console
@@ -229,6 +233,8 @@ function subscribeIpcOnce() {
           `[camera-latency] frameId=${frameId} sendToRendererMs=${receivedAt - sentAt}`
         );
       }
+      // eslint-disable-next-line no-console
+      console.log(`[camera-queue] size=${pendingFrame ? 1 : 0}`);
     }
     // Latest-frame-only policy: if the worker is still decoding a previous
     // frame, replace any pending frame with this one and drop the older

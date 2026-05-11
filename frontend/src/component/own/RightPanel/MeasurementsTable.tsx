@@ -56,38 +56,6 @@ const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
   },
 };
 const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.5, px: 1 };
-// Industrial-software emphasis for the HV result column. Bigger, bolder,
-// tabular numerics so the operator can read the hardness value at a glance
-// from across the bench. Uses theme tokens so it tracks dark/light mode.
-const HV_VALUE_CELL_SX: SxProps<Theme> = {
-  fontSize: 20,
-  fontWeight: 800,
-  py: 0.5,
-  px: 1,
-  color: 'primary.main',
-  letterSpacing: 0.2,
-  fontVariantNumeric: 'tabular-nums',
-  whiteSpace: 'nowrap',
-};
-// Hardness Type sits next to the value — render it as a compact uppercase
-// chip-style label so the unit reads as a unit, not as another number.
-const HV_TYPE_CELL_SX: SxProps<Theme> = {
-  fontSize: 13,
-  fontWeight: 700,
-  py: 0.5,
-  px: 1,
-  color: 'text.primary',
-  letterSpacing: 0.6,
-  textTransform: 'uppercase',
-  whiteSpace: 'nowrap',
-};
-const HV_TYPE_CHIP_SX: SxProps<Theme> = {
-  display: 'inline-block',
-  px: 0.75,
-  py: 0.125,
-  borderRadius: 0.5,
-  bgcolor: 'action.selected',
-};
 const EMPTY_CELL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.disabled', textAlign: 'center', py: 4 };
 const SELECTED_ROW_SX: SxProps<Theme> = {
   cursor: 'pointer',
@@ -158,11 +126,6 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
   const [latchedDepth, setLatchedDepth] = useState<string | null>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[measurement-ui-style-update] section=hv-display');
-  }, []);
-
-  useEffect(() => {
     if (status === 'valid' && value !== null && Number.isFinite(value)) {
       setLatchedDepth(displayText);
     } else if (!connected) {
@@ -220,6 +183,10 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
       // eslint-disable-next-line no-console
       console.log(
         `[measurement-table-display] row=${i + 1} objective=${m.objective ?? '-'} d1Um=${d1Um ?? '-'} d2Um=${d2Um ?? '-'} davgUm=${davgUm ?? '-'} hardness=${m.hv ?? '-'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-table-render] hardness=${m.hv ?? '-'} convertType=${m.convertType ?? '-'} convertValue=${m.convertValue ?? '-'}`
       );
     });
   }, [measurements]);
@@ -293,12 +260,10 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatCoordinate(measurement.xMm)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatCoordinate(measurement.yMm)}</TableCell>
-                  <TableCell sx={HV_VALUE_CELL_SX}>{formatHardness(measurement.hv)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatHardness(measurement.hv)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
-                  <TableCell sx={HV_TYPE_CELL_SX}>
-                    <Box component="span" sx={HV_TYPE_CHIP_SX}>{hardnessType}</Box>
-                  </TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{qualified}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{format3(d1Um)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{format3(d2Um)}</TableCell>
