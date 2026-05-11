@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react';
 import CameraStreamWorker from '@/workers/cameraStream.worker.ts?worker';
 import { getCameraFrame } from '@/api/getCameraFrame';
+import { ackCameraFrame } from '@/api/ackCameraFrame';
+import { flushCameraStream } from '@/api/flushCameraStream';
 import type { CameraFrameMeta } from '@/types/camera';
 
 /**
@@ -42,6 +44,35 @@ let frameEpoch = 0;
 let lastPaintEpoch = 0;
 let liveFrameLogSeq = 0;
 let lastLiveFrameOverlayLogAt = 0;
+// Latest-frame-only backpressure. The worker decodes serially; without this,
+// frames pile up in its message-port queue and the user sees a delayed replay
+// of physical machine movement. Policy: at most ONE frame in-flight in the
+// worker + ONE pending frame on the main thread. A newer frame replaces the
+// pending one (older queued frames are dropped). The worker's 'paint' echo is
+// the "decoder idle" signal that flushes the pending frame.
+let decoderBusy = false;
+let pendingFrame: { meta: CameraFrameMeta; body: ArrayBufferLike; frameId: number } | null = null;
+let inFlightCapturedAt = 0;
+let inFlightFrameId = 0;
+let inFlightSentAt = 0;
+let inFlightReceivedAt = 0;
+let inFlightPostedAt = 0;
+let frameIdCounter = 0;
+let lastLatencyLogAt = 0;
+let objectiveChangedAt = 0;
+// Pending paint for rAF coalescing. The 2D paint path receives 'paint'
+// messages serially from the worker; on a hot loop we could call
+// putImageData N times per rAF tick. Coalescing means only the most recent
+// ImageData ever lands on the canvas — older paints are dropped at the
+// putImageData step, not just at the decode step.
+let pendingPaint: {
+  imageData: ImageData;
+  epoch: number;
+  seq: number;
+  frameId: number;
+  capturedAt: number;
+} | null = null;
+let rafScheduled = false;
 let fallbackTimer: number | null = null;
 let fallbackInFlight = false;
 // Reset by resetCameraSession() on close so the next open re-fires the
@@ -72,33 +103,97 @@ function installMainThreadPaintHandler() {
         console.log(
           `[camera-frame-drop] reason=stale-epoch paintEpoch=${paintEpoch} currentEpoch=${frameEpoch} seq=${e.data.seq ?? 'n/a'}`
         );
+        decoderBusy = false;
+        // Still ack so main process releases its slot — the frame was
+        // delivered + decoded; main shouldn't be stuck waiting.
+        if (inFlightFrameId > 0) ackCameraFrame(inFlightFrameId);
+        flushPendingFrame();
         return;
       }
-      if (!attached || !attached.fallbackCtx) return;
-      const { el, fallbackCtx } = attached;
-      const img = e.data.imageData;
-      if (el.width !== img.width || el.height !== img.height) {
-        el.width = img.width;
-        el.height = img.height;
-      }
-      fallbackCtx.putImageData(img, 0, 0);
-      lastPaintAt = Date.now();
-      lastPaintEpoch = paintEpoch;
-      if (!firstPaintLoggedThisSession) {
-        firstPaintLoggedThisSession = true;
+      // Stash latest decoded image; rAF coalesces multiple paints into one
+      // putImageData per frame. If a newer paint arrives before rAF fires,
+      // it replaces this one — the older pixels never touch the canvas.
+      if (pendingPaint) {
         // eslint-disable-next-line no-console
-        console.log('[camera-ui] first-paint-after-open ok=true');
+        console.log(
+          `[camera-frame-drop] frameId=${pendingPaint.frameId} reason=newer-frame-available`
+        );
       }
+      pendingPaint = {
+        imageData: e.data.imageData,
+        epoch: paintEpoch,
+        seq: e.data.seq ?? 0,
+        frameId: inFlightFrameId,
+        capturedAt: inFlightCapturedAt,
+      };
+      decoderBusy = false;
+      flushPendingFrame();
+      schedulePaintRaf();
     }
   );
+}
+
+function schedulePaintRaf() {
+  if (rafScheduled) return;
+  rafScheduled = true;
+  requestAnimationFrame(() => {
+    rafScheduled = false;
+    const p = pendingPaint;
+    pendingPaint = null;
+    if (!p) return;
+    if (!attached || !attached.fallbackCtx) {
+      if (p.frameId > 0) ackCameraFrame(p.frameId);
+      return;
+    }
+    const { el, fallbackCtx } = attached;
+    const img = p.imageData;
+    if (el.width !== img.width || el.height !== img.height) {
+      el.width = img.width;
+      el.height = img.height;
+    }
+    const drawStart = performance.now();
+    fallbackCtx.putImageData(img, 0, 0);
+    const drawMs = Math.round(performance.now() - drawStart);
+    lastPaintAt = Date.now();
+    lastPaintEpoch = p.epoch;
+    if (!firstPaintLoggedThisSession) {
+      firstPaintLoggedThisSession = true;
+      // eslint-disable-next-line no-console
+      console.log('[camera-ui] first-paint-after-open ok=true');
+    }
+    if (lastPaintAt - lastLatencyLogAt > 1000) {
+      lastLatencyLogAt = lastPaintAt;
+      const totalMs = p.capturedAt > 0 ? lastPaintAt - p.capturedAt : 0;
+      const sendToRendererMs =
+        inFlightSentAt > 0 && inFlightReceivedAt > 0
+          ? inFlightReceivedAt - inFlightSentAt
+          : 0;
+      const rendererQueueMs =
+        inFlightReceivedAt > 0 && inFlightPostedAt > 0
+          ? inFlightPostedAt - inFlightReceivedAt
+          : 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-latency] frameId=${p.frameId} sendToRendererMs=${sendToRendererMs} rendererQueueMs=${rendererQueueMs} drawMs=${drawMs} totalMs=${totalMs}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[camera-frame-render] frameId=${p.frameId} latencyMs=${totalMs}`);
+    }
+    if (p.frameId > 0) ackCameraFrame(p.frameId);
+  });
 }
 
 function subscribeIpcOnce() {
   if (ipcSubscribed) return;
   ipcSubscribed = true;
+  // eslint-disable-next-line no-console
+  console.log('[camera-render-mode] latest-frame-only=true');
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
-    lastFrameAt = Date.now();
+    const receivedAt = Date.now();
+    lastFrameAt = receivedAt;
     liveFrameLogSeq += 1;
+    frameIdCounter += 1;
+    const frameId = meta.frameId ?? frameIdCounter;
     if (!firstFrameLoggedThisSession) {
       firstFrameLoggedThisSession = true;
       const bytes = (body as { byteLength?: number }).byteLength ?? 0;
@@ -107,13 +202,64 @@ function subscribeIpcOnce() {
         `[camera-frame] first-frame-after-open width=${meta.width} height=${meta.height} bytes=${bytes}`
       );
     }
+    // Objective-change guard: drop frames captured before the most recent
+    // objective swap — they are SDK-buffered pixels of the previous lens.
+    const capturedAt = meta.capturedAt ?? 0;
+    if (objectiveChangedAt > 0 && capturedAt > 0 && capturedAt < objectiveChangedAt) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-drop] frameId=${frameId} reason=stale-pre-objective-change capturedAt=${capturedAt} objectiveChangedAt=${objectiveChangedAt}`
+      );
+      // Still ack so main releases its in-flight slot.
+      ackCameraFrame(frameId);
+      return;
+    }
     if (lastFrameAt - lastLiveFrameOverlayLogAt > 1000) {
       lastLiveFrameOverlayLogAt = lastFrameAt;
       // eslint-disable-next-line no-console
       console.log(`[live-frame] frameId=${liveFrameLogSeq} overlayUnchanged=true`);
+      const sentAt = meta.sentAt ?? 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-recv] frameId=${frameId} timestamp=${meta.timestamp} sentAt=${sentAt} receivedAt=${receivedAt}`
+      );
+      if (sentAt > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-latency] frameId=${frameId} sendToRendererMs=${receivedAt - sentAt}`
+        );
+      }
     }
-    postFrameToWorker(meta, body);
+    // Latest-frame-only policy: if the worker is still decoding a previous
+    // frame, replace any pending frame with this one and drop the older
+    // pending. This bounds the queue to 1 in-flight + 1 pending and keeps
+    // the visible canvas tracking the freshest physical state of the machine.
+    if (decoderBusy) {
+      if (pendingFrame) {
+        // eslint-disable-next-line no-console
+        console.log(`[camera-frame-drop] frameId=${pendingFrame.frameId} reason=newer-frame-available`);
+        // Older pending will never reach decode/paint — ack so main process
+        // doesn't keep it in flight forever.
+        ackCameraFrame(pendingFrame.frameId);
+      }
+      pendingFrame = { meta, body, frameId };
+      // Stash receivedAt on the held frame so we can measure rendererQueueMs
+      // accurately when it finally posts.
+      (pendingFrame as unknown as { receivedAt: number }).receivedAt = receivedAt;
+      return;
+    }
+    inFlightReceivedAt = receivedAt;
+    postFrameToWorker(meta, body, frameId);
   });
+}
+
+function flushPendingFrame() {
+  if (!pendingFrame || decoderBusy) return;
+  const held = pendingFrame as unknown as { receivedAt: number };
+  if (held.receivedAt) inFlightReceivedAt = held.receivedAt;
+  const { meta, body, frameId } = pendingFrame;
+  pendingFrame = null;
+  postFrameToWorker(meta, body, frameId);
 }
 
 export function resetCameraSession() {
@@ -127,9 +273,23 @@ function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
   return u8.slice().buffer as ArrayBuffer;
 }
 
-function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike) {
+function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId = 0) {
   const worker = getWorker();
   const ab = toArrayBuffer(body);
+  decoderBusy = true;
+  // Track capture time end-to-end (main-process capturedAt is the most
+  // authoritative reference for totalMs — closer to the native callback
+  // than anything we can measure in the renderer).
+  inFlightCapturedAt = meta.capturedAt ?? Date.now();
+  inFlightSentAt = meta.sentAt ?? 0;
+  inFlightFrameId = frameId;
+  inFlightPostedAt = Date.now();
+  if (frameId && frameId % 60 === 0) {
+    // eslint-disable-next-line no-console
+    console.log(`[camera-frame-send] frameId=${frameId} timestamp=${meta.timestamp}`);
+    // eslint-disable-next-line no-console
+    console.log(`[camera-queue] size=${pendingFrame ? 1 : 0}`);
+  }
   worker.postMessage(
     {
       type: 'frame',
@@ -217,6 +377,25 @@ export function getLastPaintEpoch(): number {
  */
 export function bumpFrameEpochOnCanvasClear(): number {
   frameEpoch += 1;
+  objectiveChangedAt = Date.now();
+  // Drop any frame that was queued behind the in-flight decode but had not
+  // been posted yet — it was captured before the canvas clear and would
+  // repaint stale pixels of the previous objective. The in-flight frame
+  // itself is tagged with the old epoch (assigned at post time) and is
+  // already dropped by the paintEpoch < frameEpoch guard.
+  if (pendingFrame) {
+    // eslint-disable-next-line no-console
+    console.log(`[camera-frame-drop] frameId=${pendingFrame.frameId} reason=stale`);
+    pendingFrame = null;
+  }
+  // Drop any pending paint too — it was decoded from a pre-clear frame.
+  if (pendingPaint) {
+    // eslint-disable-next-line no-console
+    console.log(`[camera-frame-drop] frameId=${pendingPaint.frameId} reason=stale-epoch-paint`);
+    pendingPaint = null;
+  }
+  // Ask main process to drop SDK-buffered frames captured before this point.
+  flushCameraStream('objective-change');
   // lastPaintAt deliberately NOT zeroed — guards compare lastPaintEpoch,
   // not lastPaintAt, to decide if a fresh post-clear paint has landed.
   return frameEpoch;

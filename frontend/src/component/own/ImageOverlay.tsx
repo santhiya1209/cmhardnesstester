@@ -104,6 +104,10 @@ type Props = {
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   onCursor?: (p: Point | null) => void;
+  // Called by the overlay when a new length/angle draft starts so the host
+  // can drop previously-completed shapes of the same kind. Keeps the camera
+  // window from accumulating stale measurement lines across iterations.
+  onClearKind?: (kind: OverlayShape['kind']) => void;
 };
 
 function ImageOverlayImpl({
@@ -112,6 +116,7 @@ function ImageOverlayImpl({
   crossLineVisible,
   onAddShape,
   onCursor,
+  onClearKind,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -182,10 +187,23 @@ function ImageOverlayImpl({
     }
   }, [shapes, draft, hover, crossLineVisible]);
 
-  // Cancel draft when switching tools.
+  // Lifecycle: announce open when entering a drawing tool and reset on exit.
   useEffect(() => {
-    setDraft(null);
+    if (activeTool === 'measureLength') {
+      // eslint-disable-next-line no-console
+      console.log('[measure-length-open]');
+    }
+    setDraft((prev) => {
+      if (prev) {
+        // eslint-disable-next-line no-console
+        console.log('[measure-length-reset] reason=tool-switch');
+      }
+      return null;
+    });
   }, [activeTool]);
+
+  // Throttle the per-move length log to ~10Hz so the console isn't flooded.
+  const lastLengthLogAtRef = useRef(0);
 
   const localPoint = useCallback((e: React.PointerEvent): Point => {
     const wrap = wrapRef.current;
@@ -203,8 +221,19 @@ function ImageOverlayImpl({
       const p = localPoint(e);
       setHover(p);
       onCursor?.(p);
+      if (draft && draft.kind === 'length') {
+        const now = Date.now();
+        if (now - lastLengthLogAtRef.current >= 100) {
+          lastLengthLogAtRef.current = now;
+          const lengthPx = dist(draft.a, p);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measure-length-update] lengthPx=${lengthPx.toFixed(2)} lengthUm=n/a`
+          );
+        }
+      }
     },
-    [localPoint, onCursor]
+    [draft, localPoint, onCursor]
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -220,15 +249,25 @@ function ImageOverlayImpl({
 
       if (activeTool === 'measureLength') {
         if (!draft) {
+          // First click of a new length: drop any previous length shape so
+          // only the most recent measurement is visible.
+          onClearKind?.('length');
           setDraft({ kind: 'length', a: p, b: p });
+          // eslint-disable-next-line no-console
+          console.log('[measure-length-start]');
         } else if (draft.kind === 'length') {
           onAddShape({ kind: 'length', a: draft.a, b: p });
           setDraft(null);
+          // eslint-disable-next-line no-console
+          console.log('[measure-length-complete]');
+          // eslint-disable-next-line no-console
+          console.log('[measure-length-reset] reason=complete');
         }
         return;
       }
       if (activeTool === 'measureAngle') {
         if (!draft) {
+          onClearKind?.('angle');
           setDraft({ kind: 'angle', step: 'a', vertex: p, a: p });
         } else if (draft.kind === 'angle' && draft.step === 'a') {
           setDraft({ kind: 'angle', step: 'b', vertex: draft.vertex, a: p, b: p });
@@ -238,7 +277,7 @@ function ImageOverlayImpl({
         }
       }
     },
-    [activeTool, draft, isDrawingTool, localPoint, onAddShape]
+    [activeTool, draft, isDrawingTool, localPoint, onAddShape, onClearKind]
   );
 
   // Right-click cancels the in-progress draft.
@@ -246,11 +285,31 @@ function ImageOverlayImpl({
     (e: React.MouseEvent) => {
       if (draft) {
         e.preventDefault();
+        if (draft.kind === 'length') {
+          // eslint-disable-next-line no-console
+          console.log('[measure-length-reset] reason=escape');
+        }
         setDraft(null);
       }
     },
     [draft]
   );
+
+  // Escape key also cancels an in-progress draft.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setDraft((prev) => {
+        if (prev && prev.kind === 'length') {
+          // eslint-disable-next-line no-console
+          console.log('[measure-length-reset] reason=escape');
+        }
+        return null;
+      });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const cursor =
     activeTool === 'pointer'

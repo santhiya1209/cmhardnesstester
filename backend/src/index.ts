@@ -4,6 +4,7 @@ import cors from 'cors';
 import { env, isProd } from './lib/env';
 import { errorHandler } from './lib/http';
 import { mutateDatabase } from './lib/db';
+import { getDb } from './lib/sqlite';
 import apiRouter from './routes';
 import { hardnessMachineSerialService } from './lib/services/hardness-machine-serial.service';
 
@@ -45,6 +46,10 @@ export interface StartResult {
 
 export function start(): Promise<StartResult> {
   return new Promise((resolve, reject) => {
+    // Force DB open before anything else so the startup logs
+    // ([db-path], [db-kind], [db-open], [db-table] *) print before the HTTP
+    // server announces. Also surfaces migration output ([db-migrate]).
+    getDb();
     Promise.all([clearMeasurementsOnStartup(), hardnessMachineSerialService.ready()])
       .then(() => {
         const app = createApp();

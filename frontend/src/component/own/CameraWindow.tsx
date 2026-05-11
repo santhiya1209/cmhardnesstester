@@ -96,6 +96,10 @@ type Props = {
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
+  magnifierEnabled: boolean;
+  onClearShapeKind?: (kind: OverlayShape['kind']) => void;
+  /** Yellow-line stroke width in CSS px (driven by useLineThickness). */
+  lineStrokeWidth?: number;
 };
 
 export type CameraWindowHandle = {
@@ -151,6 +155,9 @@ function CameraWindowImpl(
     objectiveRefreshKey,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
+    magnifierEnabled,
+    onClearShapeKind,
+    lineStrokeWidth,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -621,6 +628,19 @@ function CameraWindowImpl(
 
       setCursorDisplay(displayPoint);
       const imagePoint = displayToImage(displayPoint, placement, imageSize);
+      if (magnifierEnabled) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[magnifier-move] screenX=${event.clientX.toFixed(1)} screenY=${event.clientY.toFixed(1)} imageX=${imagePoint.x.toFixed(1)} imageY=${imagePoint.y.toFixed(1)}`
+        );
+        // Full coordinate-map trace: client → viewport (canvas CSS) →
+        // image (post-letterbox) → source bitmap pixel. devicePixelRatio is
+        // included because the lens canvas is allocated at DPR for crispness.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[magnifier-coordinate-map] clientX=${event.clientX.toFixed(2)} clientY=${event.clientY.toFixed(2)} canvasX=${displayPoint.x.toFixed(2)} canvasY=${displayPoint.y.toFixed(2)} imageX=${imagePoint.x.toFixed(2)} imageY=${imagePoint.y.toFixed(2)} scale=${placement.scale.toFixed(4)} offsetX=${placement.offsetX.toFixed(2)} offsetY=${placement.offsetY.toFixed(2)} devicePixelRatio=${window.devicePixelRatio || 1}`
+        );
+      }
       setCursorCoordinate({
         x: Math.max(
           0,
@@ -632,7 +652,7 @@ function CameraWindowImpl(
         ),
       });
     },
-    [imageSize]
+    [magnifierEnabled, imageSize]
   );
 
   const clearCursor = useCallback(() => {
@@ -695,6 +715,7 @@ function CameraWindowImpl(
           shapes={overlayShapes}
           crossLineVisible={crossLineVisible}
           onAddShape={onAddShape}
+          onClearKind={onClearShapeKind}
         />
         <AutoMeasureOverlay
           graphics={autoMeasureGraphics}
@@ -702,6 +723,7 @@ function CameraWindowImpl(
           interactive={activeTool === 'pointer'}
           source={autoMeasureGraphicsSource}
           onAdjusted={onAutoMeasureAdjusted}
+          strokeWidth={lineStrokeWidth}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}
@@ -709,13 +731,15 @@ function CameraWindowImpl(
           resetKey={manualMeasureResetKey}
           objective={manualMeasureObjective}
           onMeasurementUpdated={onManualMeasurementUpdated}
+          strokeWidth={lineStrokeWidth}
         />
-        {activeTool === 'magnifier' ? (
+        {magnifierEnabled ? (
           <MagnifierLens
             source={frozen ? freezeCanvasRef.current : canvasRef.current}
             cursor={cursorDisplay}
             containerWidth={viewportSize.w}
             containerHeight={viewportSize.h}
+            imageSize={imageSize}
           />
         ) : null}
         </Box>

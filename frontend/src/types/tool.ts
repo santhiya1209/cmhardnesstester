@@ -27,7 +27,11 @@ export type ToolbarActionId =
   | 'tools:centerCrossLine'
   | 'tools:resumeImage'
   | 'tools:zoomIn'
-  | 'tools:zoomOut';
+  | 'tools:zoomOut'
+  // yellow measurement-line thickness (shared across Auto + Manual overlays)
+  | 'tools:lineThin'
+  | 'tools:lineNormal'
+  | 'tools:lineThick';
 
 export type Point = { x: number; y: number };
 
@@ -57,5 +61,7 @@ export const TOOL_ACTION_TO_TOOL: Partial<Record<ToolbarActionId, ToolId>> = {
   'tools:manualMeasure': 'manualMeasure',
   'tools:measureLength': 'measureLength',
   'tools:measureAngle': 'measureAngle',
-  'tools:magnifier': 'magnifier',
+  // Note: 'tools:magnifier' is intentionally NOT a mode-switch. Magnifier is
+  // now an independent overlay toggle (see App.tsx `magnifierEnabled`) so it
+  // can coexist with Manual Measure as a precision-placement helper.
 };

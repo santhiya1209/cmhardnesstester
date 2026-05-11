@@ -3,6 +3,7 @@ import {
   type ToolId,
   type ToolbarActionId,
 } from '@/types/tool';
+import type { LineThickness } from '@/types/lineThickness';
 
 export type ToolDispatchContext = {
   setActiveTool: (tool: ToolId) => void;
@@ -14,6 +15,8 @@ export type ToolDispatchContext = {
   openTrimMeasure?: () => void;
   toggleCenterCrossLine?: () => void;
   autoMeasure?: () => void;
+  toggleMagnifier?: () => void;
+  setLineThickness?: (thickness: LineThickness) => void;
   resumeImage?: () => void;
   zoomIn?: () => void;
   zoomOut?: () => void;
@@ -43,6 +46,9 @@ const FRIENDLY_LABEL: Record<ToolbarActionId, string> = {
   'tools:resumeImage': 'Resume Image',
   'tools:zoomIn': 'Zoom In',
   'tools:zoomOut': 'Zoom Out',
+  'tools:lineThin': 'Thin Line',
+  'tools:lineNormal': 'Normal Line',
+  'tools:lineThick': 'Thick Line',
 };
 
 export function dispatchToolbarAction(
@@ -107,6 +113,26 @@ export function dispatchToolbarAction(
       if (ctx.autoMeasure) {
         ctx.autoMeasure();
         ctx.setStatus(`${label} requested`);
+      } else {
+        ctx.notifyUnavailable(label);
+      }
+      return;
+    case 'tools:magnifier':
+      if (ctx.toggleMagnifier) {
+        ctx.toggleMagnifier();
+        ctx.setStatus(`${label} toggled`);
+      } else {
+        ctx.notifyUnavailable(label);
+      }
+      return;
+    case 'tools:lineThin':
+    case 'tools:lineNormal':
+    case 'tools:lineThick':
+      if (ctx.setLineThickness) {
+        const next: LineThickness =
+          action === 'tools:lineThin' ? 'thin' : action === 'tools:lineThick' ? 'thick' : 'normal';
+        ctx.setLineThickness(next);
+        ctx.setStatus(`${label} applied`);
       } else {
         ctx.notifyUnavailable(label);
       }

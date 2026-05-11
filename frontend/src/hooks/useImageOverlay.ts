@@ -9,6 +9,7 @@ export type ImageOverlayApi = {
   crossLineVisible: boolean;
   addShape: (shape: OverlayShapeInput) => void;
   clearAll: () => void;
+  clearByKind: (kind: OverlayShape['kind']) => void;
   trimLast: () => void;
   toggleCrossLine: () => void;
 };
@@ -25,6 +26,10 @@ export function useImageOverlay(): ImageOverlayApi {
     setShapes([]);
   }, []);
 
+  const clearByKind = useCallback((kind: OverlayShape['kind']) => {
+    setShapes((prev) => (prev.some((s) => s.kind === kind) ? prev.filter((s) => s.kind !== kind) : prev));
+  }, []);
+
   const trimLast = useCallback(() => {
     setShapes((prev) => (prev.length === 0 ? prev : prev.slice(0, -1)));
   }, []);
@@ -34,7 +39,7 @@ export function useImageOverlay(): ImageOverlayApi {
   }, []);
 
   return useMemo(
-    () => ({ shapes, crossLineVisible, addShape, clearAll, trimLast, toggleCrossLine }),
-    [shapes, crossLineVisible, addShape, clearAll, trimLast, toggleCrossLine]
+    () => ({ shapes, crossLineVisible, addShape, clearAll, clearByKind, trimLast, toggleCrossLine }),
+    [shapes, crossLineVisible, addShape, clearAll, clearByKind, trimLast, toggleCrossLine]
   );
 }

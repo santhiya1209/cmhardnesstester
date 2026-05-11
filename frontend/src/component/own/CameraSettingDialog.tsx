@@ -2,13 +2,13 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogTitle from '@mui/material/DialogTitle';
+import IconButton from '@mui/material/IconButton';
+import Paper from '@mui/material/Paper';
 import Slider from '@mui/material/Slider';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import CloseIcon from '@mui/icons-material/Close';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useSaveCameraSetting } from '@/hooks/mutations/useSaveCameraSetting';
@@ -66,12 +66,39 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const gainPendingRef = useRef<number | null>(null);
   const exposureInFlightRef = useRef(false);
   const exposurePendingRef = useRef<number | null>(null);
+  // True while the user is actively dragging the exposure slider. We skip
+  // reconciling the SDK reply value back into state during a drag, otherwise
+  // the thumb snaps backward to the previously-applied value mid-drag and
+  // the slider feels jittery instead of smooth.
+  const exposureDraggingRef = useRef(false);
+  // Throttle drag-time IPC sends to one every ~100ms so the slider stays
+  // smooth even when the SDK is slow. The final commit value is always sent
+  // immediately bypassing the throttle.
+  const exposureThrottleTimerRef = useRef<number | null>(null);
+  const exposureLastSentValueRef = useRef<number | null>(null);
+  const exposureLastSentAtRef = useRef<number>(0);
+  const EXPOSURE_DRAG_THROTTLE_MS = 100;
+
+  // Floating-panel drag state. null = use the initial anchored placement;
+  // once the user grabs the header, becomes an explicit (x, y).
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const dragStateRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+    lastLogAt: number;
+  } | null>(null);
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line no-console
+      console.log('[camera-settings-open]');
       setLiveApplyError(null);
       void refetch();
       void refetchStatus();
+    } else {
+      // eslint-disable-next-line no-console
+      console.log('[camera-settings-close]');
     }
   }, [open, refetch, refetchStatus]);
 
@@ -171,7 +198,14 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           console.error('[camera-settings][frontend] setExposure failed:', reply);
           setLiveApplyError(reply.message ?? reply.error ?? 'Failed to apply exposure.');
         } else {
-          if (typeof reply.exposureMs === 'number' && Number.isFinite(reply.exposureMs)) {
+          if (
+            typeof reply.exposureMs === 'number' &&
+            Number.isFinite(reply.exposureMs) &&
+            !exposureDraggingRef.current
+          ) {
+            // Only reconcile to the device-reported value when the user is
+            // not actively dragging. Mid-drag reconciliation causes the
+            // slider thumb to snap backward and feel jittery.
             setExposureMs(reply.exposureMs);
           }
           setLiveApplyError(null);
@@ -210,34 +244,77 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     [liveAvailable, sendGain]
   );
 
-  const applyExposureLive = useCallback(
+  const flushExposureLive = useCallback(
     (valueMs: number) => {
-      if (!liveAvailable) return;
       if (exposureInFlightRef.current) {
         exposurePendingRef.current = valueMs;
+        // eslint-disable-next-line no-console
+        console.log(`[camera-exposure-apply-skip] reason=pending latest=${valueMs}`);
+        return;
+      }
+      if (exposureLastSentValueRef.current === valueMs) {
+        // Duplicate of last sent — don't re-emit.
         return;
       }
       exposureInFlightRef.current = true;
+      exposureLastSentValueRef.current = valueMs;
+      exposureLastSentAtRef.current = Date.now();
+      // eslint-disable-next-line no-console
+      console.log(`[camera-exposure-apply-start] value=${valueMs}`);
       void (async () => {
         let next: number | null = valueMs;
         while (next !== null) {
           const v = next;
           next = null;
           await sendExposure(v);
+          // eslint-disable-next-line no-console
+          console.log(`[camera-exposure-apply-success] value=${v}`);
           if (exposurePendingRef.current !== null) {
             next = exposurePendingRef.current;
             exposurePendingRef.current = null;
+            exposureLastSentValueRef.current = next;
+            exposureLastSentAtRef.current = Date.now();
           }
         }
         exposureInFlightRef.current = false;
       })();
     },
-    [liveAvailable, sendExposure]
+    [sendExposure]
+  );
+
+  const applyExposureLive = useCallback(
+    (valueMs: number) => {
+      if (!liveAvailable) return;
+      // While the user is dragging, throttle IPC sends to one per
+      // EXPOSURE_DRAG_THROTTLE_MS. The final value is forced through by
+      // handleExposureCommit on pointer release.
+      if (exposureDraggingRef.current) {
+        const sinceLast = Date.now() - exposureLastSentAtRef.current;
+        if (sinceLast < EXPOSURE_DRAG_THROTTLE_MS) {
+          // Coalesce into a trailing-edge send.
+          exposurePendingRef.current = valueMs;
+          if (exposureThrottleTimerRef.current === null) {
+            const wait = EXPOSURE_DRAG_THROTTLE_MS - sinceLast;
+            exposureThrottleTimerRef.current = window.setTimeout(() => {
+              exposureThrottleTimerRef.current = null;
+              const pending = exposurePendingRef.current;
+              exposurePendingRef.current = null;
+              if (pending !== null) flushExposureLive(pending);
+            }, wait);
+          }
+          return;
+        }
+      }
+      flushExposureLive(valueMs);
+    },
+    [liveAvailable, flushExposureLive]
   );
 
   const handleGainChange = useCallback(
     (_: Event, value: number | number[]) => {
       if (typeof value !== 'number') return;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-setting-change] gain=${value}`);
       setAnalogGain(value);
       applyGainLive(value);
     },
@@ -254,6 +331,13 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const handleExposureChange = useCallback(
     (_: Event, value: number | number[]) => {
       if (typeof value !== 'number') return;
+      // Mark a drag in progress on the first onChange. onChangeCommitted
+      // clears it. While set, IPC replies do not overwrite the local value.
+      exposureDraggingRef.current = true;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-setting-change] exposure=${value}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-exposure-ui] value=${value}`);
       setExposureMs(value);
       applyExposureLive(value);
     },
@@ -262,10 +346,30 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   const handleExposureCommit = useCallback(
     (_: unknown, value: number | number[]) => {
-      if (typeof value === 'number') applyExposureLive(value);
+      exposureDraggingRef.current = false;
+      if (typeof value !== 'number') return;
+      // Cancel any pending throttled send — the commit value is authoritative.
+      if (exposureThrottleTimerRef.current !== null) {
+        window.clearTimeout(exposureThrottleTimerRef.current);
+        exposureThrottleTimerRef.current = null;
+      }
+      exposurePendingRef.current = null;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-exposure-apply-final] value=${value}`);
+      flushExposureLive(value);
     },
-    [applyExposureLive]
+    [flushExposureLive]
   );
+
+  // Clean up any pending throttle timer on unmount or dialog close.
+  useEffect(() => {
+    return () => {
+      if (exposureThrottleTimerRef.current !== null) {
+        window.clearTimeout(exposureThrottleTimerRef.current);
+        exposureThrottleTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const handleSave = useCallback(async () => {
     try {
@@ -306,12 +410,100 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     onClose();
   }, [data, liveAvailable, onClose]);
 
+  const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const panel = event.currentTarget.parentElement as HTMLElement | null;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      lastLogAt: 0,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPosition({ x: rect.left, y: rect.top });
+  }, []);
+
+  const handleHeaderPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const maxX = window.innerWidth - 80;
+    const maxY = window.innerHeight - 40;
+    const nextX = Math.max(0, Math.min(maxX, event.clientX - drag.offsetX));
+    const nextY = Math.max(0, Math.min(maxY, event.clientY - drag.offsetY));
+    setPosition({ x: nextX, y: nextY });
+    const now = performance.now();
+    if (now - drag.lastLogAt > 100) {
+      drag.lastLogAt = now;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-settings-drag] x=${Math.round(nextX)} y=${Math.round(nextY)}`);
+    }
+  }, []);
+
+  const handleHeaderPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragStateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  if (!open) return null;
+
+  const anchoredStyle: React.CSSProperties = position
+    ? { left: position.x, top: position.y }
+    : { right: 24, top: 80 };
+
   return (
-    <Dialog open={open} onClose={busy ? undefined : handleCancel} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 }}>
-        Camera Setting
-      </DialogTitle>
-      <DialogContent dividers>
+    <Paper
+      elevation={8}
+      sx={{
+        position: 'fixed',
+        ...anchoredStyle,
+        width: 420,
+        maxWidth: 'calc(100vw - 32px)',
+        zIndex: (theme) => theme.zIndex.modal,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      <Box
+        onPointerDown={handleHeaderPointerDown}
+        onPointerMove={handleHeaderPointerMove}
+        onPointerUp={handleHeaderPointerUp}
+        onPointerCancel={handleHeaderPointerUp}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          px: 1.5,
+          py: 1,
+          bgcolor: colors.headingPrimary,
+          color: '#FFFFFF',
+          cursor: 'grab',
+          userSelect: 'none',
+          touchAction: 'none',
+          '&:active': { cursor: 'grabbing' },
+        }}
+      >
+        <DragIndicatorIcon fontSize="small" sx={{ opacity: 0.85 }} />
+        <Typography variant="subtitle1" sx={{ flex: 1, fontWeight: 600 }}>
+          Camera Setting
+        </Typography>
+        <IconButton
+          size="small"
+          onClick={handleCancel}
+          disabled={busy}
+          sx={{ color: '#FFFFFF' }}
+          aria-label="Close camera settings"
+        >
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+      <Box sx={{ p: 2, overflowY: 'auto', maxHeight: 'calc(100vh - 160px)' }}>
         <Stack spacing={2.5}>
           <Box>
             <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 0.5 }}>
@@ -375,16 +567,20 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
             </Alert>
           ) : null}
         </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button variant="contained" onClick={() => void handleSave()} disabled={busy}>
+      </Box>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{ px: 2, py: 1.25, borderTop: 1, borderColor: 'divider', justifyContent: 'flex-end' }}
+      >
+        <Button variant="contained" size="small" onClick={() => void handleSave()} disabled={busy}>
           Save
         </Button>
-        <Button onClick={handleCancel} disabled={busy}>
+        <Button onClick={handleCancel} disabled={busy} size="small">
           Cancel
         </Button>
-      </DialogActions>
-    </Dialog>
+      </Stack>
+    </Paper>
   );
 }
 

@@ -1,6 +1,8 @@
-import { Fragment, memo, useCallback, type ComponentType } from 'react';
+import { Fragment, memo, useCallback, useState, type ComponentType } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
 import Tooltip from '@mui/material/Tooltip';
 import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -21,6 +23,7 @@ import BackspaceIcon from '@mui/icons-material/Backspace';
 import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import LineWeightIcon from '@mui/icons-material/LineWeight';
 
 type ToolbarItemDef = {
   action: ToolbarActionId;
@@ -46,7 +49,17 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'tools:magnifier', label: 'Magnifier', icon: SearchIcon, groupEnd: true },
 
   { action: 'tools:resumeImage', label: 'Resume Image', icon: RestartAltIcon },
-  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon },
+  { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon, groupEnd: true },
+];
+
+const LINE_THICKNESS_MENU: ReadonlyArray<{
+  action: Extract<ToolbarActionId, 'tools:lineThin' | 'tools:lineNormal' | 'tools:lineThick'>;
+  label: string;
+  px: number;
+}> = [
+  { action: 'tools:lineThin', label: 'Thin', px: 1 },
+  { action: 'tools:lineNormal', label: 'Normal', px: 2 },
+  { action: 'tools:lineThick', label: 'Thick', px: 4 },
 ];
 
 const BAR_SX: SxProps<Theme> = {
@@ -109,6 +122,63 @@ const ToolbarButton = memo(function ToolbarButton({ item, onSelect }: ToolbarBut
   );
 });
 
+type LineThicknessMenuProps = {
+  onSelect: (action: ToolbarActionId) => void;
+};
+
+const LineThicknessMenuButton = memo(function LineThicknessMenuButton({
+  onSelect,
+}: LineThicknessMenuProps) {
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const open = anchorEl !== null;
+
+  const handleOpen = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    setAnchorEl(event.currentTarget);
+    // eslint-disable-next-line no-console
+    console.log('[line-thickness-dropdown-open]');
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setAnchorEl(null);
+  }, []);
+
+  const handlePick = useCallback(
+    (action: ToolbarActionId) => {
+      onSelect(action);
+      setAnchorEl(null);
+    },
+    [onSelect]
+  );
+
+  return (
+    <>
+      <Tooltip title="Lines" arrow placement="bottom" enterDelay={300} disableInteractive>
+        <IconButton
+          size="small"
+          onClick={handleOpen}
+          aria-label="Lines"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          sx={ICON_BUTTON_SX}
+        >
+          <LineWeightIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+      <Menu anchorEl={anchorEl} open={open} onClose={handleClose}>
+        {LINE_THICKNESS_MENU.map((item) => (
+          <MenuItem
+            key={item.action}
+            dense
+            onClick={() => handlePick(item.action)}
+          >
+            {item.label}
+          </MenuItem>
+        ))}
+      </Menu>
+    </>
+  );
+});
+
 type Props = {
   onSelect: (action: ToolbarActionId) => void;
 };
@@ -122,6 +192,7 @@ function ToolbarImpl({ onSelect }: Props) {
           {item.groupEnd && <Box sx={SPACER_SX} />}
         </Fragment>
       ))}
+      <LineThicknessMenuButton onSelect={onSelect} />
     </Box>
   );
 }

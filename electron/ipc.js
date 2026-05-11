@@ -264,6 +264,13 @@ function registerIpc() {
   ipcMain.handle('camera:set-trigger-mode', (_e, payload) =>
     cameraService.setTriggerMode(!!(payload && payload.value))
   );
+  ipcMain.handle('camera:frame-ack', (_e, payload) => {
+    return cameraService.ackFrame(payload && payload.frameId);
+  });
+  ipcMain.handle('camera:flush-stream', (_e, payload) => {
+    const reason = payload && typeof payload.reason === 'string' ? payload.reason : undefined;
+    return cameraService.flushStream(reason);
+  });
   ipcMain.handle('camera:measure-vickers-auto', (_e, payload) => {
     const safePayload = validateAutoMeasurePayload(payload);
     if (process.env.AUTO_MEASURE_DEBUG === 'true') {

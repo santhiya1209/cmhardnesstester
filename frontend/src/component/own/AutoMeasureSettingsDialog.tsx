@@ -1,20 +1,19 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogTitle from '@mui/material/DialogTitle';
 import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
+import Paper from '@mui/material/Paper';
 import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Slider from '@mui/material/Slider';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { SxProps, Theme } from '@mui/material/styles';
+import CloseIcon from '@mui/icons-material/Close';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useSaveAutoMeasureSettings } from '@/hooks/mutations/useSaveAutoMeasureSettings';
@@ -44,22 +43,8 @@ function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsP
   return normalizeAutoMeasureSettings(settings);
 }
 
-const TITLE_SX = { bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 };
-const SECTION_HEADING_SX = { color: colors.headingSecondary, fontWeight: 600, mb: 1 };
-const ROW_LABEL_SX = { minWidth: 160 };
-const SLIDER_VALUE_SX = {
-  minWidth: 40,
-  textAlign: 'right' as const,
-  fontVariantNumeric: 'tabular-nums',
-};
-const RIGHT_PANEL_DIALOG_PAPER_SX: SxProps<Theme> = {
-  position: 'fixed',
-  top: 11,
-  right: 2,
-  m: 0,
-  width: 560,
-  maxWidth: 'calc(100vw - 32px)',
-};
+const PANEL_WIDTH = 560;
+const DRAG_LOG_THROTTLE_MS = 100;
 
 type SliderField = 'smoothing' | 'threshold';
 
@@ -76,13 +61,27 @@ function AutoMeasureSettingsDialogImpl({
   const [savedBaseline, setSavedBaseline] = useState<AutoMeasureSettingsPayload>(
     DEFAULT_AUTO_MEASURE_SETTINGS
   );
+  // Initial position: top-right area, matching the previous Dialog placement so
+  // muscle memory is preserved. Stays at this anchor until the user drags.
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const dragStateRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+    lastLogAt: number;
+  } | null>(null);
 
   const busy = loading || saving;
   const errorMessage = loadError ?? saveError;
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-settings-open]');
       void refetch();
+    } else {
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-settings-close]');
     }
   }, [open, refetch]);
 
@@ -98,6 +97,8 @@ function AutoMeasureSettingsDialogImpl({
     (updater: (current: AutoMeasureSettingsPayload) => AutoMeasureSettingsPayload) => {
       setForm((current) => {
         const next = normalizeAutoMeasureSettings(updater(current));
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-settings-preview-update]');
         onPreviewChange?.(next);
         return next;
       });
@@ -155,6 +156,57 @@ function AutoMeasureSettingsDialogImpl({
     }
   }, [data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
+  // Drag handlers — pointer events give us automatic capture across the entire
+  // window, so we don't need a global mousemove listener and the panel keeps
+  // tracking the cursor even if it briefly leaves the header.
+  const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const panel = event.currentTarget.parentElement as HTMLElement | null;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      lastLogAt: 0,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    // Convert anchored position to absolute on first drag so subsequent moves
+    // are stable and don't fight CSS `right` anchoring.
+    setPosition({ x: rect.left, y: rect.top });
+  }, []);
+
+  const handleHeaderPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const maxX = window.innerWidth - 80; // keep at least a slice on screen
+    const maxY = window.innerHeight - 40;
+    const nextX = Math.max(0, Math.min(maxX, event.clientX - drag.offsetX));
+    const nextY = Math.max(0, Math.min(maxY, event.clientY - drag.offsetY));
+    setPosition({ x: nextX, y: nextY });
+    const now = performance.now();
+    if (now - drag.lastLogAt > DRAG_LOG_THROTTLE_MS) {
+      drag.lastLogAt = now;
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-settings-drag] x=${Math.round(nextX)} y=${Math.round(nextY)}`);
+    }
+  }, []);
+
+  const handleHeaderPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragStateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  if (!open) return null;
+
+  const anchoredStyle: React.CSSProperties = position
+    ? { left: position.x, top: position.y }
+    : { right: 2, top: 11 };
+
   const sliderRow = (
     label: string,
     field: SliderField,
@@ -162,7 +214,7 @@ function AutoMeasureSettingsDialogImpl({
     max: number
   ) => (
     <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', mb: 1 }}>
-      <Typography variant="body2" sx={ROW_LABEL_SX}>
+      <Typography variant="body2" sx={{ minWidth: 160 }}>
         {label}
       </Typography>
       <Slider
@@ -174,29 +226,79 @@ function AutoMeasureSettingsDialogImpl({
         disabled={busy}
         sx={{ flex: 1 }}
       />
-      <Typography variant="body2" sx={SLIDER_VALUE_SX}>
+      <Typography
+        variant="body2"
+        sx={{ minWidth: 40, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+      >
         {form[field]}
       </Typography>
     </Stack>
   );
 
   return (
-    <Dialog
-      open={open}
-      onClose={busy ? undefined : handleCancel}
-      maxWidth={false}
-      slotProps={{ paper: { sx: RIGHT_PANEL_DIALOG_PAPER_SX } }}
+    <Paper
+      elevation={8}
+      sx={{
+        position: 'fixed',
+        ...anchoredStyle,
+        width: PANEL_WIDTH,
+        maxWidth: 'calc(100vw - 32px)',
+        zIndex: (theme) => theme.zIndex.modal,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        // Important: no backdrop, no scrim. The live camera below stays at
+        // full brightness — only this panel's own pointer events are captured.
+      }}
     >
-      <DialogTitle sx={TITLE_SX}>Auto Measure Setting</DialogTitle>
-      <DialogContent dividers>
-        <Typography variant="subtitle2" sx={SECTION_HEADING_SX}>
+      <Box
+        onPointerDown={handleHeaderPointerDown}
+        onPointerMove={handleHeaderPointerMove}
+        onPointerUp={handleHeaderPointerUp}
+        onPointerCancel={handleHeaderPointerUp}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          px: 1.5,
+          py: 1,
+          bgcolor: colors.headingPrimary,
+          color: '#FFFFFF',
+          cursor: 'grab',
+          userSelect: 'none',
+          touchAction: 'none',
+          '&:active': { cursor: 'grabbing' },
+        }}
+      >
+        <DragIndicatorIcon fontSize="small" sx={{ opacity: 0.85 }} />
+        <Typography variant="subtitle1" sx={{ flex: 1, fontWeight: 600 }}>
+          Auto Measure Setting
+        </Typography>
+        <IconButton
+          size="small"
+          onClick={handleCancel}
+          disabled={busy}
+          sx={{ color: '#FFFFFF' }}
+          aria-label="Close auto measure settings"
+        >
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+      <Box sx={{ p: 2, overflowY: 'auto', maxHeight: 'calc(100vh - 120px)' }}>
+        <Typography
+          variant="subtitle2"
+          sx={{ color: colors.headingSecondary, fontWeight: 600, mb: 1 }}
+        >
           Auto Measure Correct
         </Typography>
 
         {sliderRow('Smoothing', 'smoothing', SMOOTHING_MIN, SMOOTHING_MAX)}
         {sliderRow('Threshold', 'threshold', THRESHOLD_MIN, THRESHOLD_MAX)}
 
-        <Typography variant="subtitle2" sx={{ ...SECTION_HEADING_SX, mt: 2 }}>
+        <Typography
+          variant="subtitle2"
+          sx={{ color: colors.headingSecondary, fontWeight: 600, mt: 2, mb: 1 }}
+        >
           Auto Measure
         </Typography>
         <Stack direction="row" spacing={2} sx={{ pl: 1, mb: 2 }}>
@@ -225,7 +327,7 @@ function AutoMeasureSettingsDialogImpl({
         </Stack>
 
         <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
-          <Typography variant="body2" sx={ROW_LABEL_SX}>
+          <Typography variant="body2" sx={{ minWidth: 160 }}>
             Objective For Measure
           </Typography>
           <FormControl size="small" sx={{ flex: 1 }}>
@@ -248,20 +350,24 @@ function AutoMeasureSettingsDialogImpl({
             {errorMessage}
           </Alert>
         ) : null}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={handleDefault} disabled={busy}>
+      </Box>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{ px: 2, py: 1.25, borderTop: 1, borderColor: 'divider', alignItems: 'center' }}
+      >
+        <Button onClick={handleDefault} disabled={busy} size="small">
           Default
         </Button>
         <Box sx={{ flex: 1 }} />
-        <Button variant="contained" onClick={() => void handleSave()} disabled={busy}>
+        <Button variant="contained" onClick={() => void handleSave()} disabled={busy} size="small">
           Save
         </Button>
-        <Button onClick={handleCancel} disabled={busy}>
+        <Button onClick={handleCancel} disabled={busy} size="small">
           Cancel
         </Button>
-      </DialogActions>
-    </Dialog>
+      </Stack>
+    </Paper>
   );
 }
 

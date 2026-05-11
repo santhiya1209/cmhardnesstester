@@ -28,6 +28,22 @@ class CameraService {
     this.loadError = null;
     this.lastStatus = { sdkLoaded: false, open: false, streaming: false };
     this.latestFrame = null;
+    // Ack-based main-process drop policy. Native pushes frames into our
+    // onFrame callback at full FPS; without backpressure they all get sent
+    // over IPC and pile up in the renderer's channel queue. Policy:
+    //   - At most ONE in-flight frame (sent but not yet ack'd by renderer).
+    //   - New frame arrives in flight → keep it as `pending`, drop older
+    //     pending.
+    //   - Ack arrives → if pending exists, send it now. If no ack within
+    //     IN_FLIGHT_TIMEOUT_MS, force-clear the flag (renderer reload, etc).
+    this._frameSeq = 0;
+    this._inFlightSeq = 0;
+    this._inFlightSentAt = 0;
+    this._lastAckedSeq = 0;
+    this._pendingFrame = null;
+    this._lastLatencyLogAt = 0;
+    this._lastDropLogAt = 0;
+    this._lastFlushUntilAt = 0;
   }
 
   attach(webContents) {
@@ -72,10 +88,67 @@ class CameraService {
   close() {
     return this._call('cameraClose').finally(() => {
       this.latestFrame = null;
+      this._resetFlowControl();
     });
   }
   startStream() {
+    // The Do3think DVP SDK as exposed via dvp_dll does not surface a
+    // buffer-count / latency-mode knob; the SDK manages its own internal
+    // queue (default is several frames deep). Logging the constraint here
+    // so the diagnostic trail is explicit.
+    // eslint-disable-next-line no-console
+    console.log('[camera-buffer-config] bufferCount=sdk-default-unconfigurable');
+    // eslint-disable-next-line no-console
+    console.log('[camera-render-latest-only] frameId=mainprocess-drop-enabled');
+    this._resetFlowControl();
     return this._call('cameraStartStream');
+  }
+  ackFrame(seq) {
+    const n = Number(seq);
+    if (!Number.isFinite(n) || n <= 0) return { ok: false };
+    if (n > this._lastAckedSeq) this._lastAckedSeq = n;
+    if (n >= this._inFlightSeq) {
+      this._inFlightSeq = 0;
+      this._inFlightSentAt = 0;
+    }
+    this._drainPending();
+    return { ok: true };
+  }
+  flushStream(reason) {
+    this._lastFlushUntilAt = Date.now();
+    if (this._pendingFrame) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=sdk-flush`
+      );
+      this._pendingFrame = null;
+    }
+    // Ask the native addon to drain the SDK ring AND bump the stream
+    // generation so any frames already in flight through TSF get dropped on
+    // arrival. Falls back silently to the JS-layer guard if the rebuilt
+    // addon isn't deployed yet (older binary without cameraFlushStream).
+    let nativeResult = null;
+    if (this.addon && this.addon.camera && typeof this.addon.camera.cameraFlushStream === 'function') {
+      try {
+        nativeResult = this.addon.camera.cameraFlushStream({ reason: reason || 'objective-change' });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[camera-sdk-flush] native flush threw:', err && err.message ? err.message : err);
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-sdk-flush] reason=${reason || 'objective-change'} drained=${nativeResult && nativeResult.drained != null ? nativeResult.drained : 'n/a'}`
+    );
+    return { ok: true, flushUntilAt: this._lastFlushUntilAt };
+  }
+  _resetFlowControl() {
+    this._frameSeq = 0;
+    this._inFlightSeq = 0;
+    this._inFlightSentAt = 0;
+    this._lastAckedSeq = 0;
+    this._pendingFrame = null;
+    this._lastFlushUntilAt = 0;
   }
   stopStream() {
     return this._call('cameraStopStream');
@@ -445,17 +518,81 @@ class CameraService {
     // for Buffer→Buffer it can keep referencing the external backing store on
     // some Node versions. Allocate + .set forces a real byte copy.
     const payload = toOwnedBuffer(data);
-    const safeMeta = sanitizeMeta(meta);
+    const capturedAt = Date.now();
+    this._frameSeq += 1;
+    const frameId = this._frameSeq;
+    const safeMeta = {
+      ...sanitizeMeta(meta),
+      frameId,
+      capturedAt,
+    };
     this.latestFrame = {
       meta: safeMeta,
       data: payload,
-      capturedAt: Date.now(),
+      capturedAt,
     };
+
+    // Layer-1 latency: native capture timestamp → ready to send. Throttled.
+    if (capturedAt - this._lastLatencyLogAt > 1000) {
+      this._lastLatencyLogAt = capturedAt;
+      const sdkTs = Number(safeMeta.timestamp) || 0;
+      // SDK timestamp is in 100ns ticks on many DVP cameras; surface raw
+      // delta and let the renderer normalize. We just emit our wall-clock.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-latency] captureToSendMs=0 frameId=${frameId} sdkTimestamp=${sdkTs}`
+      );
+    }
+
+    // In-flight drop: if previous send hasn't been ack'd and the timeout
+    // hasn't elapsed, defer this frame as pending (replacing any older
+    // pending — older = "newer-frame-available" reason).
+    const IN_FLIGHT_TIMEOUT_MS = 200;
+    const inFlight =
+      this._inFlightSeq > 0 &&
+      this._lastAckedSeq < this._inFlightSeq &&
+      capturedAt - this._inFlightSentAt < IN_FLIGHT_TIMEOUT_MS;
+
+    if (inFlight) {
+      if (this._pendingFrame) {
+        if (capturedAt - this._lastDropLogAt > 250) {
+          this._lastDropLogAt = capturedAt;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=newer-frame-available`
+          );
+        }
+      }
+      this._pendingFrame = { meta: safeMeta, data: payload };
+      return;
+    }
+
+    this._sendFrame(safeMeta, payload);
+  }
+
+  _sendFrame(safeMeta, payload) {
+    const sentAt = Date.now();
+    safeMeta.sentAt = sentAt;
+    this._inFlightSeq = safeMeta.frameId;
+    this._inFlightSentAt = sentAt;
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
     } catch (_e) {
       this.rendererReady = false;
+      this._inFlightSeq = 0;
+      this._inFlightSentAt = 0;
     }
+  }
+
+  _drainPending() {
+    if (!this._pendingFrame) return;
+    if (!this._canSend()) {
+      this._pendingFrame = null;
+      return;
+    }
+    const { meta, data } = this._pendingFrame;
+    this._pendingFrame = null;
+    this._sendFrame(meta, data);
   }
 
   _broadcastStatus(payload) {

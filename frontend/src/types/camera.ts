@@ -22,6 +22,12 @@ export type CameraFrameMeta = {
   timestamp: number;
   seq: number;
   bytes: number;
+  /** Main-process monotonic id used for ack-based flow control. */
+  frameId?: number;
+  /** Date.now() when the main process received this frame from native. */
+  capturedAt?: number;
+  /** Date.now() when the main process called webContents.send(). */
+  sentAt?: number;
 };
 
 export type CameraDevice = { index: number; name: string };

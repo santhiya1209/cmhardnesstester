@@ -93,6 +93,8 @@ export type IpcInvokeChannel =
   | 'camera:get-gain-range'
   | 'camera:set-trigger-mode'
   | 'camera:measure-vickers-auto'
+  | 'camera:frame-ack'
+  | 'camera:flush-stream'
   | 'device:open'
   | 'device:close'
   | 'dialog:openImage'
@@ -148,6 +150,14 @@ export type IpcInvokeMap = {
   'camera:measure-vickers-auto': {
     request: VickersAutoMeasureParameters;
     response: VickersAutoMeasureResult;
+  };
+  'camera:frame-ack': {
+    request: { frameId: number };
+    response: { ok: boolean };
+  };
+  'camera:flush-stream': {
+    request: { reason?: string } | void;
+    response: { ok: boolean; flushUntilAt: number };
   };
   'camera:get-exposure-range': {
     request: void;

@@ -44,6 +44,18 @@ struct State {
   Napi::ThreadSafeFunction tsfFrame;   // called from stream thread
   Napi::ThreadSafeFunction tsfStatus;  // called for state transitions
 
+  // Latest-frame-only flow control between the native stream thread and the
+  // JS callback. The stream thread increments pendingTsfFrames when it pushes
+  // a frame into the TSF queue; the JS-side trampoline decrements it after
+  // dispatching to JS. While pendingTsfFrames > 0 the stream thread STILL
+  // pulls from the SDK (so the SDK ring drains) but DROPS the frame instead
+  // of allocating + copying + queueing it. This matches the behavior of a
+  // vendor in-process viewer that simply paints the newest frame and lets
+  // older ones fall off the floor when the painter is busy.
+  std::atomic<int>       pendingTsfFrames{0};
+  std::atomic<uint64_t>  droppedFrames{0};
+  std::atomic<uint64_t>  streamGeneration{0};
+
   int                    lastWidth = 0;
   int                    lastHeight = 0;
   std::string            lastError;
@@ -292,12 +304,21 @@ void StreamLoop() {
       break;
     }
 
+    s.lastWidth = frame.iWidth;
+    s.lastHeight = frame.iHeight;
+
+    // Latest-frame-only drop at the native source. If JS hasn't drained the
+    // previous frame from the TSF queue, skip this one entirely — no alloc,
+    // no memcpy, no TSF push. The SDK buffer is already consumed (we called
+    // dvpGetFrame), so the SDK ring advances and we don't backlog there.
+    if (s.pendingTsfFrames.load(std::memory_order_acquire) > 0) {
+      s.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+
     // Copy the SDK buffer because it is reused on the next call.
     auto* bytes = new uint8_t[frame.uBytes];
     std::memcpy(bytes, pBuffer, frame.uBytes);
-
-    s.lastWidth = frame.iWidth;
-    s.lastHeight = frame.iHeight;
 
     struct FramePayload {
       uint8_t*     bytes;
@@ -308,6 +329,7 @@ void StreamLoop() {
       int          bits;
       uint64_t     timestamp;
       uint64_t     seq;
+      uint64_t     generation;
     };
     auto* fp = new FramePayload{
         bytes, frame.uBytes,
@@ -316,10 +338,28 @@ void StreamLoop() {
         frame.bits == BITS_16 ? 16 : 8,
         frame.uTimestamp,
         frame.uFrameID,
+        s.streamGeneration.load(std::memory_order_acquire),
     };
 
     if (s.tsfFrame) {
-      s.tsfFrame.NonBlockingCall(fp, [](Napi::Env env, Napi::Function fn, FramePayload* p) {
+      s.pendingTsfFrames.fetch_add(1, std::memory_order_acq_rel);
+      auto status = s.tsfFrame.NonBlockingCall(fp, [](Napi::Env env, Napi::Function fn, FramePayload* p) {
+        auto& st = S();
+        // Decrement the in-flight counter no matter what happens below —
+        // exceptions, drops, anything. RAII via a tiny guard.
+        struct Decrement {
+          ~Decrement() { S().pendingTsfFrames.fetch_sub(1, std::memory_order_acq_rel); }
+        } _dec;
+
+        // If a flush bumped the generation while this frame was queued, drop
+        // it before paying the JS dispatch cost.
+        if (p->generation < st.streamGeneration.load(std::memory_order_acquire)) {
+          delete[] p->bytes;
+          delete p;
+          st.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+
         // V8-owned copy. Electron's IPC structured-clone refuses external
         // buffers ("External buffers are not allowed"), so we cannot hand the
         // renderer a Buffer that wraps our heap allocation via a finalizer.
@@ -333,9 +373,17 @@ void StreamLoop() {
         meta.Set("timestamp", Napi::Number::New(env, static_cast<double>(p->timestamp)));
         meta.Set("seq", Napi::Number::New(env, static_cast<double>(p->seq)));
         meta.Set("bytes", Napi::Number::New(env, static_cast<double>(p->size)));
+        meta.Set("generation", Napi::Number::New(env, static_cast<double>(p->generation)));
         fn.Call({meta, u8});
         delete p;
       });
+      // If TSF enqueue failed (queue closed, env shutdown), reverse the
+      // increment and free the buffer ourselves.
+      if (status != napi_ok) {
+        s.pendingTsfFrames.fetch_sub(1, std::memory_order_acq_rel);
+        delete[] bytes;
+        delete fp;
+      }
     } else {
       // No subscriber — drop the buffer to avoid leaks.
       delete[] bytes;
@@ -354,6 +402,8 @@ void StopStreamLocked() {
   if (s.streamThread.joinable()) s.streamThread.join();
   s.isStreaming.store(false);
   s.stopRequested.store(false);
+  s.pendingTsfFrames.store(0, std::memory_order_release);
+  s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
 Napi::Value CameraStartStream(const Napi::CallbackInfo& info) {
@@ -372,9 +422,47 @@ Napi::Value CameraStartStream(const Napi::CallbackInfo& info) {
   }
   s.stopRequested.store(false);
   s.isStreaming.store(true);
+  s.pendingTsfFrames.store(0, std::memory_order_release);
+  s.droppedFrames.store(0, std::memory_order_release);
+  s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
   s.streamThread = std::thread(StreamLoop);
   EmitStatus("event", "streaming");
   return MakeReply(env, true);
+}
+
+// cameraFlushStream({ reason }) — drain the SDK's internal ring buffer of
+// pre-objective-change frames. Bumps the stream generation so any frame that
+// was already queued into the TSF callback gets dropped on arrival in JS.
+// Then pulls frames from the SDK with a short timeout until the ring is
+// empty, discarding them without queueing to TSF.
+Napi::Value CameraFlushStream(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  auto& s = S();
+  // No mutex — flush is called from the same JS thread as start/stop, and
+  // the stream thread reads streamGeneration with acquire ordering.
+  if (!s.isStreaming.load()) {
+    auto r = MakeReply(env, true);
+    r.Set("notStreaming", Napi::Boolean::New(env, true));
+    return r;
+  }
+  const uint64_t newGen = s.streamGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+  // Best-effort drain. We don't hold the SDK long; a few pops is enough to
+  // discard the typical 2–4 deep DVP ring. The stream thread is concurrent
+  // and will pick up after we return — the generation bump guarantees any
+  // already-queued TSF frames get dropped on the JS side.
+  int drained = 0;
+  for (int i = 0; i < 8; ++i) {
+    dvpFrame f{};
+    void* p = nullptr;
+    dvpStatus rs = s.dll.GetFrame(s.handle, &f, &p, 10);
+    if (rs != DVP_STATUS_OK) break;
+    drained++;
+  }
+  auto r = MakeReply(env, true);
+  r.Set("generation", Napi::Number::New(env, static_cast<double>(newGen)));
+  r.Set("drained", Napi::Number::New(env, drained));
+  return r;
 }
 
 Napi::Value CameraStopStream(const Napi::CallbackInfo& info) {
@@ -666,6 +754,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   cam.Set("cameraClose",        Napi::Function::New(env, CameraClose));
   cam.Set("cameraStartStream",  Napi::Function::New(env, CameraStartStream));
   cam.Set("cameraStopStream",   Napi::Function::New(env, CameraStopStream));
+  cam.Set("cameraFlushStream",  Napi::Function::New(env, CameraFlushStream));
   cam.Set("cameraGetFrame",     Napi::Function::New(env, CameraGetFrame));
   cam.Set("cameraGetStatus",    Napi::Function::New(env, CameraGetStatus));
   cam.Set("cameraSetExposure",  Napi::Function::New(env, CameraSetExposure));

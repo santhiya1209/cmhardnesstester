@@ -22,12 +22,17 @@ type DrawArgs = {
   guides: ManualGuideLines | null;
   hoverGuide: ManualGuideLineKey | null;
   dragGuide: ManualGuideLineKey | null;
+  /**
+   * Base stroke width in CSS px for the yellow guide lines. Hover/drag lines
+   * render at strokeWidth + 0.5 to preserve the existing affordance. Defaults
+   * to 2 (legacy "normal").
+   */
+  strokeWidth?: number;
 };
 
 const HIT_DISTANCE = 10;
 const YELLOW = '#FFFF00';
-const LINE_WIDTH = 2;
-const LINE_WIDTH_ACTIVE = 2.5;
+const DEFAULT_LINE_WIDTH = 2;
 
 export function pointerToDisplayPoint(
   event: { clientX: number; clientY: number },
@@ -111,6 +116,7 @@ export function drawManualMeasureOverlay({
   hoverGuide,
   imageSize,
   wrap,
+  strokeWidth,
 }: DrawArgs) {
   const ctx = canvas.getContext('2d');
   if (!ctx) {
@@ -144,8 +150,10 @@ export function drawManualMeasureOverlay({
   ctx.lineCap = 'butt';
   ctx.setLineDash([]);
 
+  const baseWidth = typeof strokeWidth === 'number' && strokeWidth > 0 ? strokeWidth : DEFAULT_LINE_WIDTH;
+  const activeWidth = baseWidth + 0.5;
   const lineWidth = (key: ManualGuideLineKey) =>
-    key === hoverGuide || key === dragGuide ? LINE_WIDTH_ACTIVE : LINE_WIDTH;
+    key === hoverGuide || key === dragGuide ? activeWidth : baseWidth;
 
   // Four full-extent solid yellow guides framing the indentation —
   // matches the reference industrial Vickers overlay.

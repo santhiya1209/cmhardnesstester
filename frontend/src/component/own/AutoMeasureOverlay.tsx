@@ -31,6 +31,8 @@ type Props = {
   source?: AutoMeasureOverlaySource;
   /** Called while/after the user drags. Corners are in IMAGE coords. */
   onAdjusted?: (corners: AutoMeasureCorners) => void;
+  /** Yellow-line base stroke width in CSS px. Shared with Manual Measure. */
+  strokeWidth?: number;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -109,6 +111,7 @@ function AutoMeasureOverlayImpl({
   interactive: interactiveProp = true,
   source = 'auto',
   onAdjusted,
+  strokeWidth,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -239,12 +242,13 @@ function AutoMeasureOverlayImpl({
         guides,
         hoverGuide: hover ? hover.line : null,
         dragGuide: dragRef.current ? dragRef.current.line : null,
+        strokeWidth,
       });
 
       // eslint-disable-next-line no-console
       console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
     });
-  }, [corners, imageSize, source, hover]);
+  }, [corners, imageSize, source, hover, strokeWidth]);
 
   useEffect(() => {
     const wrap = wrapRef.current;

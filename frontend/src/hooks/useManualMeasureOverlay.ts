@@ -26,6 +26,7 @@ type Args = {
   objective?: string | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  strokeWidth?: number;
 };
 
 function normalizeGuides(
@@ -68,6 +69,7 @@ export function useManualMeasureOverlay({
   objective,
   onCursor,
   onMeasurementUpdated,
+  strokeWidth,
 }: Args) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -126,9 +128,10 @@ export function useManualMeasureOverlay({
         hoverGuide,
         imageSize,
         wrap,
+        strokeWidth,
       });
     });
-  }, [active, dragGuide, hoverGuide, imageSize]);
+  }, [active, dragGuide, hoverGuide, imageSize, strokeWidth]);
 
   useEffect(() => {
     const wrap = wrapRef.current;

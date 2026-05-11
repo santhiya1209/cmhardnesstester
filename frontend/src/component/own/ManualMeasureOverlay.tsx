@@ -13,6 +13,7 @@ type Props = {
   objective?: string | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  strokeWidth?: number;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -35,6 +36,7 @@ function ManualMeasureOverlayImpl({
   objective,
   onCursor,
   onMeasurementUpdated,
+  strokeWidth,
 }: Props) {
   const {
     canvasRef,
@@ -51,6 +53,7 @@ function ManualMeasureOverlayImpl({
     objective,
     onCursor,
     onMeasurementUpdated,
+    strokeWidth,
   });
 
   return (

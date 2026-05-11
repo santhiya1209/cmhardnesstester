@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef } from 'react';
 import type { Point } from '@/types/tool';
+import { getImagePlacement } from '@/utils/manualMeasure';
 
 const LENS_SIZE = 140;
 const LENS_ZOOM = 2.5;
@@ -9,17 +10,34 @@ type Props = {
   cursor: Point | null;
   containerWidth: number;
   containerHeight: number;
+  imageSize: { width: number; height: number } | null;
 };
 
-function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight }: Props) {
+function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, imageSize }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     const out = canvasRef.current;
-    if (!out || !source || !cursor) return;
+    if (!out || !source || !cursor || !imageSize) return;
     if (containerWidth === 0 || containerHeight === 0) return;
     if (source.width === 0 || source.height === 0) return;
+
+    const placement = getImagePlacement(containerWidth, containerHeight, imageSize);
+    if (!placement) return;
+
+    // Cursor is in CSS px relative to the container. Reject anything outside
+    // the actual image area (letterbox bars / black side bars).
+    if (
+      cursor.x < placement.offsetX ||
+      cursor.x > placement.offsetX + placement.width ||
+      cursor.y < placement.offsetY ||
+      cursor.y > placement.offsetY + placement.height
+    ) {
+      const ctx = out.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, out.width, out.height);
+      return;
+    }
 
     const draw = () => {
       const dpr = window.devicePixelRatio || 1;
@@ -34,11 +52,14 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight }: 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, LENS_SIZE, LENS_SIZE);
 
-      // Map cursor (CSS px in container) → source bitmap pixels.
-      const sx = (cursor.x / containerWidth) * source.width;
-      const sy = (cursor.y / containerHeight) * source.height;
-      const halfSrc = LENS_SIZE / (2 * LENS_ZOOM) *
-        (source.width / containerWidth);
+      // Map cursor → image-space pixel, then → source bitmap pixel. This
+      // accounts for object-fit: contain letterboxing where the displayed
+      // image is centered inside the container with black side bars.
+      const imgX = (cursor.x - placement.offsetX) / placement.scale;
+      const imgY = (cursor.y - placement.offsetY) / placement.scale;
+      const sx = (imgX / imageSize.width) * source.width;
+      const sy = (imgY / imageSize.height) * source.height;
+      const halfSrc = (LENS_SIZE / (2 * LENS_ZOOM)) * (source.width / placement.width);
 
       const sxClamped = Math.max(halfSrc, Math.min(source.width - halfSrc, sx));
       const syClamped = Math.max(halfSrc, Math.min(source.height - halfSrc, sy));
@@ -70,7 +91,7 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight }: 
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [source, cursor, containerWidth, containerHeight]);
+  }, [source, cursor, containerWidth, containerHeight, imageSize]);
 
   if (!cursor) return null;
 

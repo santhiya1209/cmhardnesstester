@@ -49,6 +49,7 @@ import {
   resetCameraSession,
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
+import { useLineThickness } from '@/hooks/useLineThickness';
 import { openImageDialog } from '@/api/openImageDialog';
 import { saveImageDialog } from '@/api/saveImageDialog';
 import { exitApp } from '@/api/exitApp';
@@ -302,6 +303,7 @@ function App() {
   const manualMeasurementIdRef = useRef<string | null>(null);
   const { activeTool, setActiveTool } = useActiveTool('pointer');
   const overlay = useImageOverlay();
+  const lineThickness = useLineThickness();
   const cameraRef = useRef<CameraWindowHandle | null>(null);
   const autoMeasureInFlightRef = useRef(false);
   // Set true between Impress TX and the FINISH RX so any concurrent Auto
@@ -326,6 +328,10 @@ function App() {
   const [trimMeasureOpen, setTrimMeasureOpen] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
+  // Magnifier is an independent helper overlay (not a mode). It can be on
+  // alongside Manual Measure for precision diamond-tip placement, and turns
+  // off when the user switches to Pointer/Auto Measure (see handleToolbarSelect).
+  const [magnifierEnabled, setMagnifierEnabled] = useState(false);
   const [committedAutoMeasureOverlay, setCommittedAutoMeasureOverlay] =
     useState<AutoMeasureGraphics | null>(null);
   const [previewAutoMeasureOverlay, setPreviewAutoMeasureOverlay] =
@@ -694,8 +700,25 @@ function App() {
     setManualMeasureResetKey((current) => current + 1);
   }, []);
 
+  // Clears all Auto Measure overlay/session state. Used when switching to
+  // Manual Measure so Auto and Manual modes are mutually exclusive.
+  const clearAutoMeasureOverlayState = useCallback(() => {
+    setCommittedAutoMeasureOverlay(null);
+    setPreviewAutoMeasureOverlay(null);
+    autoMeasurePreviewSnapshotRef.current = null;
+    committedAutoMeasureFrameRef.current = null;
+    autoMeasurementIdRef.current = null;
+  }, []);
+
   const handleManualMeasurementUpdated = useCallback(
     (result: ManualMeasureDragResult) => {
+      // Spec-format drag trace: fires every time the manual overlay emits a
+      // new diagonal — i.e. on every handle drag commit. Coordinates are in
+      // image-space (the manual overlay already maps client→image).
+      // eslint-disable-next-line no-console
+      console.log(
+        `[manual-handle-drag] points=${result.points.length} imageX=${result.points[0].x.toFixed(2)} imageY=${result.points[0].y.toFixed(2)} d1Px=${result.d1Px.toFixed(3)} d2Px=${result.d2Px.toFixed(3)}`
+      );
       void (async () => {
         try {
           // eslint-disable-next-line no-console
@@ -1779,8 +1802,16 @@ function App() {
   }, [activeTool, getMachineStateSnapshot, manualMeasureResetKey]);
 
   const handleAutoMeasure = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[measure-mode-change] mode=auto');
+    if (activeTool === 'manualMeasure') {
+      // eslint-disable-next-line no-console
+      console.log('[measure-mode-clear] reason=switch-mode prev=manual');
+      setActiveTool('pointer');
+      resetManualMeasure();
+    }
     runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
-  }, [autoMeasurePreviewSettings, runAutoMeasure]);
+  }, [activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
 
   // Live recompute when the user drags edges/corners on the auto-measure
   // overlay. We coalesce rapid drag events with a 90ms trailing debounce so
@@ -2015,6 +2046,21 @@ function App() {
         resetManualMeasure();
       },
       autoMeasure: handleAutoMeasure,
+      setLineThickness: lineThickness.setThickness,
+      toggleMagnifier: () => {
+        setMagnifierEnabled((prev) => {
+          const next = !prev;
+          // eslint-disable-next-line no-console
+          if (next) {
+            // eslint-disable-next-line no-console
+            console.log(`[magnifier-open] mode=${activeTool}`);
+          } else {
+            // eslint-disable-next-line no-console
+            console.log('[magnifier-close] reason=toggle-off');
+          }
+          return next;
+        });
+      },
       trimLastMeasurement: overlay.trimLast,
       openTrimMeasure: () => setTrimMeasureOpen(true),
       toggleCenterCrossLine: overlay.toggleCrossLine,
@@ -2283,6 +2329,8 @@ function App() {
       },
     }),
     [
+      activeTool,
+      lineThickness.setThickness,
       overlay.clearAll,
       overlay.trimLast,
       overlay.toggleCrossLine,
@@ -2342,25 +2390,49 @@ function App() {
     (action: ToolbarActionId) => {
       const enteringMagnifier = action === 'tools:magnifier';
       const mappedTool = TOOL_ACTION_TO_TOOL[action];
-      const isModeSwitch = mappedTool !== undefined;
+
+      // Manual Measure must clear any active Auto Measure overlay/session so
+      // the two modes are mutually exclusive (only one set of yellow lines /
+      // crosshair on screen at a time).
+      if (action === 'tools:manualMeasure') {
+        // eslint-disable-next-line no-console
+        console.log('[measure-mode-change] mode=manual');
+        if (committedAutoMeasureOverlay || previewAutoMeasureOverlay) {
+          // eslint-disable-next-line no-console
+          console.log('[measure-mode-clear] reason=switch-mode prev=auto');
+          clearAutoMeasureOverlayState();
+        }
+        // eslint-disable-next-line no-console
+        console.log('[manual-measure-start]');
+      }
       // eslint-disable-next-line no-console
       console.log(
         `[toolbar] selected tool=${mappedTool ?? action} magnifier=${enteringMagnifier}`
       );
+      // eslint-disable-next-line no-console
+      console.log(`[toolbar-tool-change] from=${activeTool} to=${mappedTool ?? action}`);
 
-      // Magnifier must turn off the moment any other toolbar action runs.
-      // Mode-switch actions clear it via setActiveTool inside the dispatcher;
-      // one-shot actions do not, so we drop magnifier explicitly here.
-      if (!enteringMagnifier && !isModeSwitch && activeTool === 'magnifier') {
+      // Drawing tools (Measure Length / Measure Angle) leave persistent
+      // shapes. When the user switches AWAY to another tool, drop those
+      // shapes so the camera window doesn't carry stale measurement lines
+      // into the next mode.
+      if (activeTool === 'measureLength' && mappedTool !== 'measureLength') {
         // eslint-disable-next-line no-console
-        console.log('[magnifier] disabled reason=tool-change');
-        setActiveTool('pointer');
-      } else if (!enteringMagnifier && isModeSwitch && activeTool === 'magnifier') {
+        console.log('[measure-length-reset] reason=tool-switch');
+        overlay.clearByKind('length');
+      }
+      if (activeTool === 'measureAngle' && mappedTool !== 'measureAngle') {
+        overlay.clearByKind('angle');
+      }
+
+      // Magnifier is now an overlay toggle (handled in dispatcher via
+      // toggleMagnifier). When the user switches to a tool other than
+      // Manual Measure, force the magnifier off so it does not bleed into
+      // Pointer/Auto Measure/calibration.
+      if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure') {
         // eslint-disable-next-line no-console
-        console.log('[magnifier] disabled reason=tool-change');
-      } else if (enteringMagnifier) {
-        // eslint-disable-next-line no-console
-        console.log('[magnifier] enabled');
+        console.log('[magnifier-close] reason=tool-switch');
+        setMagnifierEnabled(false);
       }
 
       dispatchToolbarAction(action, buildSharedCtx());
@@ -2379,6 +2451,11 @@ function App() {
     [
       activeTool,
       buildSharedCtx,
+      clearAutoMeasureOverlayState,
+      committedAutoMeasureOverlay,
+      magnifierEnabled,
+      overlay,
+      previewAutoMeasureOverlay,
       refetchToolbarState,
       saveToolbarState,
       setActiveTool,
@@ -2434,6 +2511,9 @@ function App() {
           objectiveRefreshKey={objectiveRefreshKey}
           onManualMeasurementUpdated={handleManualMeasurementUpdated}
           onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
+          magnifierEnabled={magnifierEnabled}
+          onClearShapeKind={overlay.clearByKind}
+          lineStrokeWidth={lineThickness.strokeWidth}
         />
         <RightPanel
           measurements={measurements}

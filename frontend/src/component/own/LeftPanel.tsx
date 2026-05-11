@@ -29,6 +29,9 @@ type Props = {
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: AutoMeasureCorners) => void;
+  magnifierEnabled: boolean;
+  onClearShapeKind?: (kind: OverlayShape['kind']) => void;
+  lineStrokeWidth?: number;
 };
 
 function LeftPanelImpl(
@@ -44,6 +47,9 @@ function LeftPanelImpl(
     objectiveRefreshKey,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
+    magnifierEnabled,
+    onClearShapeKind,
+    lineStrokeWidth,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -62,6 +68,9 @@ function LeftPanelImpl(
         objectiveRefreshKey={objectiveRefreshKey}
         onManualMeasurementUpdated={onManualMeasurementUpdated}
         onAutoMeasureAdjusted={onAutoMeasureAdjusted}
+        magnifierEnabled={magnifierEnabled}
+        onClearShapeKind={onClearShapeKind}
+        lineStrokeWidth={lineStrokeWidth}
       />
     </Box>
   );
