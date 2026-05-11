@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -10,6 +10,9 @@ import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import FormControl from '@mui/material/FormControl';
 import Divider from '@mui/material/Divider';
 import Stack from '@mui/material/Stack';
+import Dialog from '@mui/material/Dialog';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 import type { SxProps, Theme } from '@mui/material/styles';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
@@ -26,7 +29,11 @@ type MachineControlTabProps = {
 };
 
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
-const OBJECTIVE_OPTIONS = ['2.5X', '5X', '10X', '20X', '40X', '50X'];
+// Real machine turret slots (per machine notes):
+//   UL1 -> 10X, UL2 -> IND (indenter), UL3 -> 40X.
+// Other zoom values exist in the calibration table for legacy reasons but the
+// physical turret on this tester only addresses these three slots.
+const OBJECTIVE_OPTIONS = ['10X', 'IND', '40X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
 const LIGHTNESS_INPUT_PROPS = { min: 0, max: 10, step: 1 } as const;
 const LOAD_TIME_INPUT_PROPS = { min: 1, max: 99, step: 1 } as const;
@@ -322,6 +329,33 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     [pushChange]
   );
 
+  // Impress progress popup. Opens on click, transitions to "done" after the
+  // machine reports indentStatus='completed', or to "error" on indent failure
+  // / ACK timeout. Auto-closes 1.5 s after done, 4 s after error.
+  const [impressPopup, setImpressPopup] = useState<{
+    open: boolean;
+    status: 'running' | 'done' | 'error';
+    message: string;
+  }>({ open: false, status: 'running', message: '' });
+  const impressAutoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastIndentStatusRef = useRef<IndentStatus>(machineState?.indentStatus ?? 'idle');
+
+  const closeImpressPopup = useCallback(() => {
+    if (impressAutoCloseTimerRef.current !== null) {
+      clearTimeout(impressAutoCloseTimerRef.current);
+      impressAutoCloseTimerRef.current = null;
+    }
+    setImpressPopup((current) => ({ ...current, open: false }));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (impressAutoCloseTimerRef.current !== null) {
+        clearTimeout(impressAutoCloseTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleIndentClick = useCallback(() => {
     // Source-of-truth resolution: confirmed lens position first, optimistic
     // activeObjective only when no confirmation has arrived yet. Mirrors the
@@ -339,7 +373,31 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     console.log(
       `[impress-command-context] objective=${objectiveForCommand} force=${formState.force} loadTime=${formState.loadTime}`
     );
-    void startIndent();
+    if (impressAutoCloseTimerRef.current !== null) {
+      clearTimeout(impressAutoCloseTimerRef.current);
+      impressAutoCloseTimerRef.current = null;
+    }
+    setImpressPopup({ open: true, status: 'running', message: 'Impress process is running...' });
+    // eslint-disable-next-line no-console
+    console.log('[impress-popup] open');
+    // eslint-disable-next-line no-console
+    console.log('[impress-popup] status=running');
+    void startIndent().catch((err) => {
+      const reason = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.log(`[impress-popup] status=error reason=${reason}`);
+      setImpressPopup({
+        open: true,
+        status: 'error',
+        message: `Impress failed: ${reason}`,
+      });
+      impressAutoCloseTimerRef.current = setTimeout(() => {
+        impressAutoCloseTimerRef.current = null;
+        setImpressPopup((current) => ({ ...current, open: false }));
+        // eslint-disable-next-line no-console
+        console.log('[impress-popup] auto-close');
+      }, 4000);
+    });
   }, [
     formState.force,
     formState.loadTime,
@@ -348,6 +406,52 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     machineState?.objective,
     startIndent,
   ]);
+
+  // Watch machine indent status transitions to drive popup state. Real machine
+  // status only — no optimistic "done" on click.
+  useEffect(() => {
+    const prev = lastIndentStatusRef.current;
+    const next: IndentStatus = machineState?.indentStatus ?? 'idle';
+    if (prev === next) return;
+    lastIndentStatusRef.current = next;
+    if (!impressPopup.open) return;
+    if (impressPopup.status !== 'running') return;
+
+    if (next === 'completed') {
+      // eslint-disable-next-line no-console
+      console.log('[impress-popup] status=done');
+      setImpressPopup({ open: true, status: 'done', message: 'Impress is done' });
+      if (impressAutoCloseTimerRef.current !== null) {
+        clearTimeout(impressAutoCloseTimerRef.current);
+      }
+      impressAutoCloseTimerRef.current = setTimeout(() => {
+        impressAutoCloseTimerRef.current = null;
+        setImpressPopup((current) => ({ ...current, open: false }));
+        // eslint-disable-next-line no-console
+        console.log('[impress-popup] auto-close');
+      }, 1500);
+      return;
+    }
+    if (next === 'error') {
+      const reason = machineState?.lastError ?? 'machine reported error';
+      // eslint-disable-next-line no-console
+      console.log(`[impress-popup] status=error reason=${reason}`);
+      setImpressPopup({
+        open: true,
+        status: 'error',
+        message: `Impress failed: ${reason}`,
+      });
+      if (impressAutoCloseTimerRef.current !== null) {
+        clearTimeout(impressAutoCloseTimerRef.current);
+      }
+      impressAutoCloseTimerRef.current = setTimeout(() => {
+        impressAutoCloseTimerRef.current = null;
+        setImpressPopup((current) => ({ ...current, open: false }));
+        // eslint-disable-next-line no-console
+        console.log('[impress-popup] auto-close');
+      }, 4000);
+    }
+  }, [impressPopup.open, impressPopup.status, machineState?.indentStatus, machineState?.lastError]);
 
   const handleTurretClick = useCallback(
     (direction: TurretDirection) => () => {
@@ -400,7 +504,7 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         <Button
           variant="outlined"
           sx={INDENT_BUTTON_SX}
-          disabled={!connected || isIndentInFlight || isBusy}
+          disabled={!connected || isIndentInFlight || isBusy || impressPopup.open}
           onClick={handleIndentClick}
         >
           {indentLabel(indentStatus)}
@@ -525,6 +629,36 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
           {errorMessage}
         </Alert>
       ) : null}
+
+      <Dialog
+        open={impressPopup.open}
+        onClose={impressPopup.status === 'running' ? undefined : closeImpressPopup}
+        maxWidth="xs"
+      >
+        <DialogContent sx={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 280 }}>
+          {impressPopup.status === 'running' ? <CircularProgress size={20} /> : null}
+          <Typography
+            sx={{
+              fontSize: 14,
+              color:
+                impressPopup.status === 'error'
+                  ? 'error.main'
+                  : impressPopup.status === 'done'
+                    ? 'success.main'
+                    : 'text.primary',
+            }}
+          >
+            {impressPopup.message}
+          </Typography>
+        </DialogContent>
+        {impressPopup.status === 'error' ? (
+          <DialogActions>
+            <Button size="small" onClick={closeImpressPopup}>
+              Close
+            </Button>
+          </DialogActions>
+        ) : null}
+      </Dialog>
     </>
   );
 }

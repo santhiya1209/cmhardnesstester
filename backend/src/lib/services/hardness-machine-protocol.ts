@@ -11,7 +11,9 @@
 //                   or an AV-state batch, or a bare OK — all accepted as ACK.
 //                   The earlier "UC08\r"/"C08" pair was inferred but proved silent
 //                   on the real machine; do not reintroduce it.
-//   objective 40X -> TX "UL2\r",  machine RX echo/status "L2OK"
+//   objective 10X -> TX "UL1\r",  machine RX echo/status "L1OK"
+//   objective IND -> TX "UL2\r",  machine RX echo/status "L2OK"
+//   objective 40X -> TX "UL3\r",  machine RX echo/status "L3OK"
 //   lightness 5   -> TX "UK0005\r", machine RX echo/status "K0005"
 //   load time 5   -> TX "UT05\r", machine RX echo/status "T05"
 //   indent        -> TX "UV{scale}{force*1000:D7}{loadTime:D6}{P|X}\r",
@@ -151,13 +153,17 @@ const FORCE_VALUE_BY_SCALE_CODE: Record<string, string> = Object.fromEntries(
   Object.entries(FORCE_SCALE_CODE_BY_VALUE).map(([value, code]) => [code, value])
 );
 
-// Current connected tester mapping confirmed from live RX captures:
-//   L1OK -> 10X, L2OK -> 40X. The DLL confirms UL<n>\r as the turret TX
-// shape, but objective-per-turret is machine configuration, so do not add
-// L3/20X/other values until captured from this machine.
+// Current connected tester mapping confirmed from machine notes:
+//   UL1 -> 10X (reply L1OK)
+//   UL2 -> IND (reply L2OK) — indenter slot, not an objective lens
+//   UL3 -> 40X (reply L3OK)
+// The DLL confirms UL<n>\r as the turret TX shape; objective-per-turret is
+// machine configuration. Earlier code mapped 40X to UL2 — that was wrong and
+// has been replaced with the values above.
 const OBJECTIVE_TURRET_CODE_BY_VALUE: Record<string, string> = {
   '10X': '1',
-  '40X': '2',
+  IND: '2',
+  '40X': '3',
 };
 
 const OBJECTIVE_VALUE_BY_TURRET_CODE: Record<string, string> = Object.fromEntries(

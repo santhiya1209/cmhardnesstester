@@ -791,6 +791,10 @@ class HardnessMachineSerialService extends EventEmitter {
             );
             // eslint-disable-next-line no-console
             console.log(
+              `[machine-objective-rx] raw=${rxAscii} confirmedObjective=${frame.objective}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
               `[machine-sync][objective] source=machine confirmedObjective=${frame.objective}`
             );
             // eslint-disable-next-line no-console
@@ -1127,11 +1131,15 @@ class HardnessMachineSerialService extends EventEmitter {
         `[machine-objective-tx] objective=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
       );
       // Spec-format companion log: explicit value/code/hex split for diffing
-      // 10X (UL1) vs 40X (UL2) traces side-by-side.
+      // 10X (UL1), IND (UL2), 40X (UL3) traces side-by-side.
       const codeAscii = frame.toString('ascii').replace(/\r$/, '');
       // eslint-disable-next-line no-console
       console.log(
         `[machine-objective-tx] value=${opts.expectedValue ?? 'unknown'} code=${codeAscii} hex=${frame.toString('hex')}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-objective-tx] objective=${opts.expectedValue ?? 'unknown'} command=${codeAscii}`
       );
       // eslint-disable-next-line no-console
       console.log(

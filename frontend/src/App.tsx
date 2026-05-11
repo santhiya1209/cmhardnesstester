@@ -63,7 +63,7 @@ import type {
 } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
-import type { MachineState } from '@/types/machine';
+import type { IndentStatus, MachineState } from '@/types/machine';
 import {
   calculateVickersFromPixels,
   calculateManualDiagonalsFromPixels,
@@ -304,6 +304,12 @@ function App() {
   const overlay = useImageOverlay();
   const cameraRef = useRef<CameraWindowHandle | null>(null);
   const autoMeasureInFlightRef = useRef(false);
+  // Set true between Impress TX and the FINISH RX so any concurrent Auto
+  // Measure entry point (manual click, settings preview, drag-recompute) is
+  // refused — the indenter is still over the workpiece, the live frame is
+  // mid-motion, and any detection would commit a row for the wrong instant.
+  const impressInProgressRef = useRef(false);
+  const lastSeenIndentStatusRef = useRef<IndentStatus>('idle');
   // Latest preview settings that arrived while a detection was in flight.
   // Why: Slider drags fire faster than the native detection completes
   // (~60–200ms). Without coalescing, the user's final slider position can be
@@ -1174,6 +1180,14 @@ function App() {
     logUnexpectedAutoMeasureCall(callSource);
     const requestedAt = performance.now();
 
+    if (impressInProgressRef.current) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-blocked] reason=impress-in-progress source=${callSource} preview=${preview}`
+      );
+      return;
+    }
+
     if (autoMeasureInFlightRef.current) {
       // Coalesce: remember the latest preview settings so the trailing run
       // after the in-flight detection picks up the user's final slider value.
@@ -1659,6 +1673,86 @@ function App() {
     liveMachineState?.confirmedObjectiveFromMachine,
     calibrationSettingsList,
     refetchCalibrationSettings,
+  ]);
+
+  // Impress lifecycle. Drives:
+  //  - overlay clear at TX time (so old yellow lines disappear before motion),
+  //  - block on Auto Measure during the run (impressInProgressRef),
+  //  - auto-trigger Auto Measure on a FRESH frame after FINISH so the new
+  //    indentation is detected without an operator click.
+  // Driven entirely by the machine's confirmed indentStatus so we never flag
+  // "done" before the machine actually finishes.
+  useEffect(() => {
+    const prev = lastSeenIndentStatusRef.current;
+    const next: IndentStatus = liveMachineState?.indentStatus ?? 'idle';
+    if (prev === next) return;
+    lastSeenIndentStatusRef.current = next;
+
+    const enteringRun =
+      (next === 'started' || next === 'running') && prev !== 'started' && prev !== 'running';
+    if (enteringRun) {
+      impressInProgressRef.current = true;
+      setCommittedAutoMeasureOverlay(null);
+      setPreviewAutoMeasureOverlay(null);
+      autoMeasurePreviewSnapshotRef.current = null;
+      committedAutoMeasureFrameRef.current = null;
+      previewMeasurementRef.current = null;
+      autoMeasurementIdRef.current = null;
+      setManualMeasureResetKey((current) => current + 1);
+      // eslint-disable-next-line no-console
+      console.log('[overlay-clear] reason=impress-start');
+      // eslint-disable-next-line no-console
+      console.log(`[impress-started] timestamp=${Date.now()} indentStatus=${next}`);
+      return;
+    }
+
+    if (next === 'completed' && (prev === 'started' || prev === 'running')) {
+      const completedAt = Date.now();
+      // eslint-disable-next-line no-console
+      console.log(`[impress-complete] timestamp=${completedAt}`);
+      void (async () => {
+        // eslint-disable-next-line no-console
+        console.log('[camera-wait-fresh-frame] reason=after-impress');
+        const camera = cameraRef.current;
+        const fresh = camera ? await camera.waitForFreshFrame(2500) : false;
+        if (!fresh) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[camera-fresh-frame] reason=after-impress result=timeout — auto-detect skipped, user can re-run Auto Measure manually'
+          );
+          impressInProgressRef.current = false;
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-fresh-frame] frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
+        );
+        // Reset the duplicate-fingerprint guard so the post-impress detection
+        // can write a row even if pixel coordinates happen to land near the
+        // last committed values. The new indentation is, by definition, a
+        // new measurement.
+        lastCommittedFingerprintRef.current = null;
+        impressInProgressRef.current = false;
+        // eslint-disable-next-line no-console
+        console.log(`[auto-measure-after-impress-start] frameId=${getLastPaintEpoch()}`);
+        // eslint-disable-next-line no-console
+        console.log('[measurement-row-create] method=Auto impress=completed');
+        runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
+      })();
+      return;
+    }
+
+    if (next === 'error' || next === 'idle') {
+      if (impressInProgressRef.current) {
+        impressInProgressRef.current = false;
+        // eslint-disable-next-line no-console
+        console.log(`[impress-flag-clear] reason=indentStatus=${next}`);
+      }
+    }
+  }, [
+    autoMeasurePreviewSettings,
+    liveMachineState?.indentStatus,
+    runAutoMeasure,
   ]);
 
   // When Manual Measure activates, refresh the live objective so the initial
