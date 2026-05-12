@@ -21,6 +21,15 @@ const { app } = require('electron');
 const ADDON_RELATIVE = path.join('build', 'Release', 'hardness_addon.node');
 const DEFAULT_OPENCV_DIR = 'C:\\Users\\SANTHIYA\\opencv\\build';
 
+// Industrial live-view stale threshold. Originally 50ms to catch IPC-stall
+// bursts, but the camera's real-world FPS is exposure-bound — at e.g. 200ms
+// exposure the slot is naturally 200ms old between frames and a 50ms gate
+// drops EVERY frame, blanking the live view. Set high enough that healthy
+// low-FPS operation passes through; only truly broken pipelines (>1s lag)
+// trigger a drop. The atomic-slot in native already guarantees "freshest
+// available" so a slightly old frame is the best the SDK can give us.
+const STALE_AGE_MS = 2000;
+
 class CameraService {
   constructor() {
     this.webContents = null;
@@ -46,6 +55,10 @@ class CameraService {
     this._latestGrabbedFrameId = 0;
     this._droppedSinceLastFrame = 0;
     this._lastPixelFormatLogged = '';
+    this._lastIpcSendLogAt = 0;
+    this._lastSendOkLogAt = 0;
+    this._lastBusySkipLogAt = 0;
+    this._lastMainRecvLogAt = 0;
   }
 
   attach(webContents) {
@@ -574,23 +587,37 @@ class CameraService {
     }
     this._inFlightSeq = 0;
     this._inFlightSentAt = 0;
+    // Native restarts the SDK stream on exposure/gain/objective change and
+    // its frame counter may reset. If we keep the old high value here,
+    // every fresh frame after restart would look "older by frameId" — the
+    // exact false-positive that surfaced as the persistent stale-native-send
+    // log. Wall-clock age is the authority; this is just a max-tracker.
+    this._latestGrabbedFrameId = 0;
+    this._lastAckedSeq = 0;
     return ts;
   }
 
-  _dropStaleNativeSend(frameId, grabTs) {
-    const droppedAt = Date.now();
-    const ageMs = grabTs > 0 ? Math.max(0, droppedAt - grabTs) : 0;
-    this._droppedSinceLastFrame += 1;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-frame-drop] frameId=${frameId} reason=stale-native-send ageMs=${ageMs}`);
-  }
-
   _broadcastFrame(meta, data) {
-    if (!this._canSend()) return;
     const capturedAt = Date.now();
+    if (capturedAt - this._lastMainRecvLogAt >= 1000) {
+      this._lastMainRecvLogAt = capturedAt;
+      const grabTsLog = Number((meta && meta.grabTs) || 0);
+      const ageMs = grabTsLog > 0 ? Math.max(0, capturedAt - grabTsLog) : 0;
+      const frameIdLog =
+        meta && Number.isFinite(Number(meta.frameId)) ? Number(meta.frameId) : 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-main-recv] frameId=${frameIdLog} ageMs=${ageMs} canSend=${this._canSend()}`
+      );
+    }
+    if (!this._canSend()) return;
     this._frameSeq += 1;
     const rawFrameId = meta && Number.isFinite(Number(meta.frameId)) ? Number(meta.frameId) : 0;
     const frameId = rawFrameId > 0 ? rawFrameId : this._frameSeq;
+    // Track only the maximum observed frameId for diagnostics. We do NOT
+    // drop on frameId<latest anymore — the SDK frame counter can reset on
+    // stream restarts (exposure/gain/objective change) and a counter-reset
+    // does NOT mean the frame is stale. Wall-clock age is the authority.
     if (frameId > this._latestGrabbedFrameId) {
       this._latestGrabbedFrameId = frameId;
     }
@@ -600,13 +627,22 @@ class CameraService {
       capturedAt,
     };
     const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
-    if (frameId < this._latestGrabbedFrameId) {
-      this._dropStaleNativeSend(frameId, grabTs);
-      return;
-    }
     if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
       this._droppedSinceLastFrame += 1;
       return;
+    }
+    // Age gate (main process inbound). Wall-clock age is the only authority
+    // for "stale". If the grab happened > STALE_AGE_MS ago, the physical
+    // machine has already moved past what this frame depicts. Drop now —
+    // a fresher frame is on its way from native.
+    if (grabTs > 0) {
+      const ageMs = Math.max(0, capturedAt - grabTs);
+      if (ageMs > STALE_AGE_MS) {
+        this._droppedSinceLastFrame += 1;
+        // eslint-disable-next-line no-console
+        console.log(`[camera-stale-drop] frameId=${frameId} ageMs=${ageMs} stage=main-inbound`);
+        return;
+      }
     }
     // The native addon hands us an EXTERNAL buffer (zero-copy view over the
     // SDK's pixel memory). Electron's structured-clone IPC refuses external
@@ -632,15 +668,33 @@ class CameraService {
       );
     }
 
-    // In-flight drop: never queue multiple Electron IPC live frames.
-    // While one frame awaits renderer ack, keep only the newest replacement.
+    // Single-slot, latest-only. NEVER queue multiple frames. While a send
+    // is in flight (sent to renderer but not yet ack'd), keep at most one
+    // pending frame — the newest. A new arrival overwrites any older
+    // pending without queueing it.
     const inFlight =
       this._inFlightSeq > 0 &&
       this._lastAckedSeq < this._inFlightSeq;
 
     if (inFlight) {
+      const newFrameId = safeMeta.frameId;
       if (this._pendingFrame) {
+        const oldFrameId = this._pendingFrame.meta.frameId;
         this._droppedSinceLastFrame += 1;
+        // The older pending frame is being skipped because a newer one
+        // arrived while the renderer is still busy with the in-flight send.
+        // Always log overwrites — they're the signal of how far the
+        // renderer is falling behind the SDK.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-latest-overwrite] oldFrameId=${oldFrameId} newFrameId=${newFrameId}`
+        );
+      } else if (capturedAt - this._lastBusySkipLogAt >= 1000) {
+        // First overwrite-less pending of this 1Hz window — useful as a
+        // signal that the IPC pipeline is saturating without being noisy.
+        this._lastBusySkipLogAt = capturedAt;
+        // eslint-disable-next-line no-console
+        console.log(`[camera-send-busy-skip] frameId=${newFrameId}`);
       }
       this._pendingFrame = { meta: safeMeta, data: payload };
       return;
@@ -652,8 +706,18 @@ class CameraService {
   _sendFrame(safeMeta, payload) {
     const sentAt = Date.now();
     const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
-    if (safeMeta.frameId < this._latestGrabbedFrameId) {
-      this._dropStaleNativeSend(safeMeta.frameId, grabTs);
+    const ageMs = grabTs > 0 ? Math.max(0, sentAt - grabTs) : 0;
+    // Final age check at the IPC boundary. Frames cannot age between here
+    // and `_broadcastFrame` (microseconds apart on the same call stack)
+    // except via _drainPending which calls us after an ack — and ack
+    // latency CAN push us past STALE_AGE_MS. Drop instead of sending; the
+    // next native frame will take the in-flight slot.
+    if (grabTs > 0 && ageMs > STALE_AGE_MS) {
+      this._droppedSinceLastFrame += 1;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-stale-drop] frameId=${safeMeta.frameId} ageMs=${ageMs} stage=main-send`
+      );
       return;
     }
     safeMeta.sentAt = sentAt;
@@ -667,6 +731,15 @@ class CameraService {
       this.rendererReady = false;
       this._inFlightSeq = 0;
       this._inFlightSentAt = 0;
+      return;
+    }
+    // Successful IPC send. Throttle to 1Hz so the log line is a steady
+    // heartbeat, not per-frame spam. The ageMs is the user-visible
+    // "native grab → handed to renderer IPC" latency.
+    if (sentAt - this._lastSendOkLogAt >= 1000) {
+      this._lastSendOkLogAt = sentAt;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-send-ok] frameId=${safeMeta.frameId} ageMs=${ageMs}`);
     }
   }
 
@@ -679,13 +752,22 @@ class CameraService {
     const { meta, data } = this._pendingFrame;
     this._pendingFrame = null;
     const grabTs = Number(meta.grabTs || meta.capturedAt || 0);
-    if (meta.frameId < this._latestGrabbedFrameId) {
-      this._dropStaleNativeSend(meta.frameId, grabTs);
-      return;
-    }
     if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
       this._droppedSinceLastFrame += 1;
       return;
+    }
+    // Age gate on the queued newest-pending. While we were waiting for the
+    // renderer ack, this frame may have aged out. Drop without sending —
+    // native is producing live frames and the next _broadcastFrame will hand
+    // us a fresh one (inFlight is already cleared by ackFrame above).
+    if (grabTs > 0) {
+      const ageMs = Math.max(0, Date.now() - grabTs);
+      if (ageMs > STALE_AGE_MS) {
+        this._droppedSinceLastFrame += 1;
+        // eslint-disable-next-line no-console
+        console.log(`[camera-stale-drop] frameId=${meta.frameId} ageMs=${ageMs} stage=main-pending-drain`);
+        return;
+      }
     }
     this._sendFrame(meta, data);
   }

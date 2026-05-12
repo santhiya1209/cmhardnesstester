@@ -53,10 +53,23 @@ contextBridge.exposeInMainWorld('api', {
   },
   on: (channel, listener) => {
     if (!ALLOWED_EVENTS.has(channel)) return () => {};
+    let lastCamLogAt = 0;
     const wrapped = (_event, ...args) => {
       if (channel === 'micrometer:state') {
         // eslint-disable-next-line no-console
         console.log('[micrometer][preload-received] payload=', args[0]);
+      } else if (channel === 'camera:frame') {
+        const now = Date.now();
+        if (now - lastCamLogAt >= 1000) {
+          lastCamLogAt = now;
+          const meta = args[0] || {};
+          const body = args[1];
+          const bytes = body && typeof body.byteLength === 'number' ? body.byteLength : 0;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[camera-preload-recv] frameId=${meta.frameId} bytes=${bytes} w=${meta.width} h=${meta.height}`
+          );
+        }
       }
       listener(...args);
     };

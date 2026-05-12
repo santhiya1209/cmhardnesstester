@@ -25,6 +25,11 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace hardness_camera {
 
 namespace {
@@ -45,18 +50,54 @@ struct State {
   Napi::ThreadSafeFunction tsfFrame;   // called from stream thread
   Napi::ThreadSafeFunction tsfStatus;  // called for state transitions
 
-  // Latest-frame-only flow control between the native stream thread and the
-  // JS callback. The stream thread increments pendingTsfFrames when it pushes
-  // a frame into the TSF queue; the JS-side trampoline decrements it after
-  // dispatching to JS. While pendingTsfFrames > 0 the stream thread STILL
-  // pulls from the SDK (so the SDK ring drains) but DROPS the frame instead
-  // of allocating + copying + queueing it. This matches the behavior of a
-  // vendor in-process viewer that simply paints the newest frame and lets
-  // older ones fall off the floor when the painter is busy.
-  std::atomic<int>       pendingTsfFrames{0};
+  // Atomic LATEST-FRAME-ONLY slot between the native stream thread and the
+  // JS callback. The stream thread ALWAYS overwrites the slot with the newest
+  // pixels; the TSF task carries no payload. When JS finally dispatches the
+  // TSF callback, it pulls *whatever is currently in the slot* — that is
+  // ALWAYS the freshest grab, never a stale one that was queued seconds ago
+  // while the event loop was blocked. This kills the prior failure mode
+  // where TSF would deliver an N00ms-old frame and we'd drop it as
+  // "stale-native-send", losing one full SDK→JS round trip.
+  struct LatestSlot {
+    std::mutex            mu;
+    std::vector<uint8_t>  bytes;       // pixel buffer; capacity is reused
+    int                   width = 0;
+    int                   height = 0;
+    const char*           pixelFormat = "raw";
+    int                   bits = 8;
+    uint64_t              timestamp = 0;
+    uint64_t              seq = 0;
+    uint64_t              grabTs = 0;
+    uint64_t              generation = 0;
+    bool                  hasFrame = false;
+  };
+  LatestSlot             latestSlot;
+  // Buffer reused by DispatchLatest. On each dispatch we SWAP slot.bytes
+  // with this buffer instead of MOVE'ing — preserves capacity across calls
+  // so vector::assign on the stream-thread hot path never reallocates
+  // after the first few frames. Accessed only from the JS thread inside
+  // DispatchLatest (protected indirectly by tsfDispatchPending exclusion).
+  std::vector<uint8_t>   dispatchSpare;
+  // True iff a TSF task is currently queued / executing. CAS'd false→true
+  // by the stream thread when it queues a dispatch, set back to false by
+  // the TSF callback after it has taken its snapshot from the slot.
+  std::atomic<bool>      tsfDispatchPending{false};
+
   std::atomic<uint64_t>  latestGrabbedFrameId{0};
   std::atomic<uint64_t>  droppedFrames{0};
   std::atomic<uint64_t>  streamGeneration{0};
+
+  // 1Hz throttle anchors for per-stage diagnostic logs. Per-frame logs at
+  // full FPS flood stderr and themselves add latency (stdio is line-buffered).
+  // Drops are ALWAYS logged (not throttled) — they are the signal.
+  std::atomic<uint64_t>  lastGrabLogMs{0};
+  std::atomic<uint64_t>  lastAgeLogMs{0};
+  std::atomic<uint64_t>  lastSendLogMs{0};
+  std::atomic<uint64_t>  lastLoopLogMs{0};
+  std::atomic<uint64_t>  lastSlotAgeLogMs{0};
+  // Wallclock of previous stream-loop slot write — used to compute the
+  // actual native cycle interval (SDK delivery cadence + drain + copy).
+  std::atomic<uint64_t>  lastSlotWriteMs{0};
 
   int                    lastWidth = 0;
   int                    lastHeight = 0;
@@ -384,12 +425,39 @@ Napi::Value CameraClose(const Napi::CallbackInfo& info) {
 /* ------------------------------------------------------------------ */
 /* Stream worker                                                        */
 /* ------------------------------------------------------------------ */
+
+// Forward declaration: TSF callback that pulls the latest frame from the slot.
+void DispatchLatest(Napi::Env env, Napi::Function fn);
+
+// Native age threshold (ms). A frame older than this at TSF dispatch time
+// is dropped before crossing into JS. Mirrors STALE_AGE_MS on the JS side.
+constexpr uint64_t kNativeStaleAgeMs = 50;
+
 void StreamLoop() {
   auto& s = S();
+
+#ifdef _WIN32
+  // Boost the grab thread above normal so the OS doesn't preempt us for
+  // background work between SDK frames. HIGHEST is enough — TIME_CRITICAL
+  // risks starving the JS event loop. Stream thread spends most of its
+  // time blocked inside dvpGetFrame, so this priority is not abusive.
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#endif
+
+  // Thread-local staging buffer. memcpy happens INTO this OUTSIDE the slot
+  // lock; we then swap pointers under the lock (sub-microsecond). After
+  // the swap, staging holds whatever was previously in the slot — its
+  // capacity is preserved, so subsequent assign() calls do not reallocate.
+  std::vector<uint8_t> streamStaging;
+
   while (!s.stopRequested.load()) {
     dvpFrame frame{};
     void* pBuffer = nullptr;
-    dvpStatus rs = s.dll.GetFrame(s.handle, &frame, &pBuffer, 4000);
+    // 500ms timeout (was 4000ms). Shorter timeout means a stalled camera
+    // is detected — and stopRequested re-checked — within 0.5s instead of
+    // 4s. Does NOT affect steady-state FPS: GetFrame returns as soon as a
+    // frame arrives. TIME_OUT just causes a loop continue.
+    dvpStatus rs = s.dll.GetFrame(s.handle, &frame, &pBuffer, 500);
     if (rs == DVP_STATUS_TIME_OUT) continue;
     if (rs != DVP_STATUS_OK || !pBuffer || frame.uBytes == 0) {
       s.lastError = "dvpGetFrame status=" + std::to_string(rs);
@@ -436,119 +504,242 @@ void StreamLoop() {
         static_cast<uint64_t>(frame.uFrameID),
         std::memory_order_release);
 
-    // Latest-frame-only drop at the native source. If JS hasn't drained the
-    // previous frame from the TSF queue, skip this one entirely — no alloc,
-    // no memcpy, no TSF push. The SDK buffer is already consumed (we called
-    // dvpGetFrame), so the SDK ring advances and we don't backlog there.
-    if (s.pendingTsfFrames.load(std::memory_order_acquire) > 0) {
-      s.droppedFrames.fetch_add(1, std::memory_order_relaxed);
-      continue;
-    }
-
     const uint64_t grabTs = NowMs();
 
-    // Copy the SDK buffer because it is reused on the next call.
-    auto* bytes = new uint8_t[frame.uBytes];
-    std::memcpy(bytes, pBuffer, frame.uBytes);
-
-    struct FramePayload {
-      uint8_t*     bytes;
-      size_t       size;
-      int          width;
-      int          height;
-      const char*  pixelFormat;
-      int          bits;
-      uint64_t     timestamp;
-      uint64_t     seq;
-      uint64_t     grabTs;
-      uint64_t     generation;
-    };
-    auto* fp = new FramePayload{
-        bytes, frame.uBytes,
-        frame.iWidth, frame.iHeight,
-        FormatToString(frame.format),
-        frame.bits == BITS_16 ? 16 : 8,
-        frame.uTimestamp,
-        frame.uFrameID,
-        grabTs,
-        s.streamGeneration.load(std::memory_order_acquire),
-    };
-
-    if (s.tsfFrame) {
-      s.pendingTsfFrames.fetch_add(1, std::memory_order_acq_rel);
-      auto status = s.tsfFrame.NonBlockingCall(fp, [](Napi::Env env, Napi::Function fn, FramePayload* p) {
-        auto& st = S();
-        // Decrement the in-flight counter no matter what happens below —
-        // exceptions, drops, anything. RAII via a tiny guard.
-        struct Decrement {
-          ~Decrement() { S().pendingTsfFrames.fetch_sub(1, std::memory_order_acq_rel); }
-        } _dec;
-
-        // If a flush bumped the generation while this frame was queued, drop
-        // it before paying the JS dispatch cost.
-        if (p->generation < st.streamGeneration.load(std::memory_order_acquire)) {
-          fprintf(
-              stderr,
-              "[camera-frame-drop] frameId=%llu reason=stale-pre-objective-change\n",
-              static_cast<unsigned long long>(p->seq));
-          fflush(stderr);
-          delete[] p->bytes;
-          delete p;
-          st.droppedFrames.fetch_add(1, std::memory_order_relaxed);
-          return;
-        }
-
-        const uint64_t sendTs = NowMs();
-        const uint64_t ageMs = sendTs >= p->grabTs ? sendTs - p->grabTs : 0;
-        const uint64_t latestGrabbedFrameId =
-            st.latestGrabbedFrameId.load(std::memory_order_acquire);
-        if (latestGrabbedFrameId > 0 && p->seq < latestGrabbedFrameId) {
-          fprintf(
-              stderr,
-              "[camera-frame-drop] frameId=%llu reason=stale-native-send ageMs=%llu\n",
-              static_cast<unsigned long long>(p->seq),
-              static_cast<unsigned long long>(ageMs));
-          fflush(stderr);
-          delete[] p->bytes;
-          delete p;
-          st.droppedFrames.fetch_add(1, std::memory_order_relaxed);
-          return;
-        }
-
-        // V8-owned copy. Electron's IPC structured-clone refuses external
-        // buffers ("External buffers are not allowed"), so we cannot hand the
-        // renderer a Buffer that wraps our heap allocation via a finalizer.
-        auto u8 = Napi::Buffer<uint8_t>::Copy(env, p->bytes, p->size);
-        delete[] p->bytes;
-        auto meta = Napi::Object::New(env);
-        meta.Set("width", Napi::Number::New(env, p->width));
-        meta.Set("height", Napi::Number::New(env, p->height));
-        meta.Set("pixelFormat", Napi::String::New(env, p->pixelFormat));
-        meta.Set("bits", Napi::Number::New(env, p->bits));
-        meta.Set("timestamp", Napi::Number::New(env, static_cast<double>(p->timestamp)));
-        meta.Set("seq", Napi::Number::New(env, static_cast<double>(p->seq)));
-        meta.Set("frameId", Napi::Number::New(env, static_cast<double>(p->seq)));
-        meta.Set("grabTs", Napi::Number::New(env, static_cast<double>(p->grabTs)));
-        meta.Set("bytes", Napi::Number::New(env, static_cast<double>(p->size)));
-        meta.Set("generation", Napi::Number::New(env, static_cast<double>(p->generation)));
-        fn.Call({meta, u8});
-        delete p;
-      });
-      // If TSF enqueue failed (queue closed, env shutdown), reverse the
-      // increment and free the buffer ourselves.
-      if (status != napi_ok) {
-        s.pendingTsfFrames.fetch_sub(1, std::memory_order_acq_rel);
-        delete[] bytes;
-        delete fp;
+    // [camera-sdk-grab] — throttled 1Hz.
+    {
+      const uint64_t last = s.lastGrabLogMs.load(std::memory_order_relaxed);
+      if (grabTs - last >= 1000) {
+        s.lastGrabLogMs.store(grabTs, std::memory_order_relaxed);
+        fprintf(stderr,
+                "[camera-sdk-grab] frameId=%llu ts=%llu drainedExtra=%d\n",
+                static_cast<unsigned long long>(frame.uFrameID),
+                static_cast<unsigned long long>(grabTs),
+                extraFramesDrained);
+        fflush(stderr);
       }
-    } else {
-      // No subscriber — drop the buffer to avoid leaks.
-      delete[] bytes;
-      delete fp;
+    }
+
+    // memcpy OUTSIDE the slot mutex. vector::assign on a buffer whose
+    // capacity already matches is just a memcpy; on the first frame after
+    // a buffer rotation it may reallocate, but capacity stabilizes after
+    // ~3 frames and stays put.
+    {
+      const uint8_t* src = static_cast<const uint8_t*>(pBuffer);
+      streamStaging.assign(src, src + frame.uBytes);
+    }
+
+    // Lock + swap. Hold time is sub-microsecond: a metadata write plus a
+    // std::vector pointer-swap. Previously this section memcpy'd 15MB
+    // under the lock for ~5–10ms per frame; that contention is gone.
+    {
+      std::lock_guard<std::mutex> lk(s.latestSlot.mu);
+      if (s.latestSlot.hasFrame) {
+        const uint64_t prevAgeMs =
+            grabTs > s.latestSlot.grabTs ? grabTs - s.latestSlot.grabTs : 0;
+        if (prevAgeMs > kNativeStaleAgeMs) {
+          fprintf(stderr,
+                  "[camera-latest-replace-after-stale] oldFrameId=%llu newFrameId=%llu ageMs=%llu\n",
+                  static_cast<unsigned long long>(s.latestSlot.seq),
+                  static_cast<unsigned long long>(frame.uFrameID),
+                  static_cast<unsigned long long>(prevAgeMs));
+          fflush(stderr);
+        }
+        s.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+      }
+      std::swap(s.latestSlot.bytes, streamStaging);
+      s.latestSlot.width = frame.iWidth;
+      s.latestSlot.height = frame.iHeight;
+      s.latestSlot.pixelFormat = FormatToString(frame.format);
+      s.latestSlot.bits = frame.bits == BITS_16 ? 16 : 8;
+      s.latestSlot.timestamp = frame.uTimestamp;
+      s.latestSlot.seq = frame.uFrameID;
+      s.latestSlot.grabTs = grabTs;
+      s.latestSlot.generation = s.streamGeneration.load(std::memory_order_acquire);
+      s.latestSlot.hasFrame = true;
+    }
+
+    // Track and log the stream-loop interval — the actual cadence at which
+    // we are able to write fresh frames into the slot. If this is, say,
+    // 150ms, then the slot CAN be 150ms old at peak and there is nothing
+    // the JS side can do about it. This number is the floor of live
+    // latency; everything above must come from JS/IPC/render.
+    {
+      const uint64_t prevLoopMs =
+          s.lastSlotWriteMs.exchange(grabTs, std::memory_order_acq_rel);
+      const uint64_t lastLog = s.lastLoopLogMs.load(std::memory_order_relaxed);
+      if (prevLoopMs > 0 && grabTs - lastLog >= 1000) {
+        s.lastLoopLogMs.store(grabTs, std::memory_order_relaxed);
+        const uint64_t intervalMs = grabTs > prevLoopMs ? grabTs - prevLoopMs : 0;
+        const double fps = intervalMs > 0 ? 1000.0 / static_cast<double>(intervalMs) : 0.0;
+        // Pull current exposure live so the FPS-limit correlation is
+        // visible in the same line — if exposureUs / 1000 ≈ intervalMs,
+        // the bottleneck is the camera sensor, not the software.
+        double exposureMs = -1.0;
+        if (s.dll.GetExposure && s.handle) {
+          double cur = 0.0;
+          if (s.dll.GetExposure(s.handle, &cur) == DVP_STATUS_OK) {
+            exposureMs = cur;
+          }
+        }
+        const double fpsLimit =
+            exposureMs > 0.0 ? 1000.0 / exposureMs : -1.0;
+        fprintf(stderr,
+                "[camera-native-send-loop] frameId=%llu intervalMs=%llu fps=%.1f exposureMs=%.2f fpsLimit=%.1f drainedExtra=%d\n",
+                static_cast<unsigned long long>(frame.uFrameID),
+                static_cast<unsigned long long>(intervalMs),
+                fps,
+                exposureMs,
+                fpsLimit,
+                extraFramesDrained);
+        fprintf(stderr,
+                "[camera-frame-interval] frameId=%llu intervalMs=%llu\n",
+                static_cast<unsigned long long>(frame.uFrameID),
+                static_cast<unsigned long long>(intervalMs));
+        fprintf(stderr,
+                "[camera-fps-current] fps=%.1f\n", fps);
+        fflush(stderr);
+      }
+    }
+
+    // Ensure one TSF dispatch is queued. If pending=true a callback is
+    // already in flight (or queued) and will pick up the slot — no need
+    // to enqueue another. If pending=false, CAS to true and post the task.
+    bool expected = false;
+    if (s.tsfDispatchPending.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+      if (s.tsfFrame) {
+        auto status = s.tsfFrame.NonBlockingCall(DispatchLatest);
+        if (status != napi_ok) {
+          // Couldn't enqueue (queue closed / shutting down). Clear the
+          // pending flag so a later attempt can retry; the slot data is
+          // already safe in the mutex-protected slot — no leak.
+          s.tsfDispatchPending.store(false, std::memory_order_release);
+        }
+      } else {
+        s.tsfDispatchPending.store(false, std::memory_order_release);
+      }
     }
   }
   s.isStreaming.store(false);
   EmitStatus("event", "streaming-stopped");
+}
+
+// TSF callback. Pulls the LATEST frame currently in the slot — not whatever
+// was newest when this task was queued. This is the entire point of the
+// atomic-slot design: when the JS event loop unblocks after a long pause,
+// we deliver fresh pixels (1–5ms old), never the stale frame that was
+// queued 200+ms ago.
+void DispatchLatest(Napi::Env env, Napi::Function fn) {
+  auto& st = S();
+  int width = 0, height = 0, bits = 8;
+  const char* pixelFormat = "raw";
+  uint64_t timestamp = 0, seq = 0, grabTs = 0, generation = 0;
+  bool valid = false;
+  {
+    std::lock_guard<std::mutex> lk(st.latestSlot.mu);
+    if (st.latestSlot.hasFrame) {
+      // Swap (not move) so slot.bytes inherits dispatchSpare's preserved
+      // capacity. Lock hold time is one pointer-swap + metadata copy.
+      std::swap(st.latestSlot.bytes, st.dispatchSpare);
+      width = st.latestSlot.width;
+      height = st.latestSlot.height;
+      pixelFormat = st.latestSlot.pixelFormat;
+      bits = st.latestSlot.bits;
+      timestamp = st.latestSlot.timestamp;
+      seq = st.latestSlot.seq;
+      grabTs = st.latestSlot.grabTs;
+      generation = st.latestSlot.generation;
+      st.latestSlot.hasFrame = false;
+      valid = true;
+    }
+  }
+  // Reference to the just-swapped-out buffer for the V8 copy below. The
+  // V8 Buffer::Copy memcpy happens OUTSIDE the slot lock.
+  std::vector<uint8_t>& bytes = st.dispatchSpare;
+  // Release the pending flag BEFORE the (long) V8 copy + fn.Call. If the
+  // stream thread writes a new frame after this point, it will see
+  // pending=false and CAS in a fresh dispatch — at most one extra TSF task
+  // queued in parallel, which is fine (next dispatch will find an empty
+  // slot and exit cheaply).
+  st.tsfDispatchPending.store(false, std::memory_order_release);
+  if (!valid) return;
+
+  // Flush guard — discard frames captured before the most recent generation.
+  if (generation < st.streamGeneration.load(std::memory_order_acquire)) {
+    fprintf(stderr,
+            "[camera-frame-drop] frameId=%llu reason=stale-pre-objective-change\n",
+            static_cast<unsigned long long>(seq));
+    fflush(stderr);
+    st.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+
+  const uint64_t sendTs = NowMs();
+  const uint64_t ageMs = sendTs >= grabTs ? sendTs - grabTs : 0;
+
+  // [camera-native-slot-age] — the wallclock age of the frame currently in
+  // the slot at dispatch time. ALWAYS log when > 50ms (rare, important
+  // signal that the stream loop interval is the bottleneck). Otherwise
+  // throttle to 1Hz as a heartbeat.
+  {
+    const bool stale = ageMs > kNativeStaleAgeMs;
+    const uint64_t lastSlot = st.lastSlotAgeLogMs.load(std::memory_order_relaxed);
+    if (stale || sendTs - lastSlot >= 1000) {
+      st.lastSlotAgeLogMs.store(sendTs, std::memory_order_relaxed);
+      fprintf(stderr, "[camera-native-slot-age] frameId=%llu ageMs=%llu%s\n",
+              static_cast<unsigned long long>(seq),
+              static_cast<unsigned long long>(ageMs),
+              stale ? " stale=true" : "");
+      fflush(stderr);
+    }
+  }
+  // NOTE: We do NOT drop here on age. The slot IS the newest available
+  // frame — dropping it produces no fresher replacement, only a longer gap
+  // until the next SDK delivery. The JS-side age gate still applies for
+  // the live render path; the snapshot pool (latestFullFrame) accepts
+  // whatever native delivers so Auto Measure is never starved.
+
+  // [camera-sdk-age] — throttled 1Hz.
+  {
+    const uint64_t lastAge = st.lastAgeLogMs.load(std::memory_order_relaxed);
+    if (sendTs - lastAge >= 1000) {
+      st.lastAgeLogMs.store(sendTs, std::memory_order_relaxed);
+      fprintf(stderr, "[camera-sdk-age] frameId=%llu ageMs=%llu\n",
+              static_cast<unsigned long long>(seq),
+              static_cast<unsigned long long>(ageMs));
+      fflush(stderr);
+    }
+  }
+
+  // V8-owned copy. Electron's IPC structured-clone refuses external buffers.
+  auto u8 = Napi::Buffer<uint8_t>::Copy(env, bytes.data(), bytes.size());
+  auto meta = Napi::Object::New(env);
+  meta.Set("width", Napi::Number::New(env, width));
+  meta.Set("height", Napi::Number::New(env, height));
+  meta.Set("pixelFormat", Napi::String::New(env, pixelFormat));
+  meta.Set("bits", Napi::Number::New(env, bits));
+  meta.Set("timestamp", Napi::Number::New(env, static_cast<double>(timestamp)));
+  meta.Set("seq", Napi::Number::New(env, static_cast<double>(seq)));
+  meta.Set("frameId", Napi::Number::New(env, static_cast<double>(seq)));
+  meta.Set("grabTs", Napi::Number::New(env, static_cast<double>(grabTs)));
+  meta.Set("bytes", Napi::Number::New(env, static_cast<double>(bytes.size())));
+  meta.Set("generation", Napi::Number::New(env, static_cast<double>(generation)));
+
+  // [camera-frame-send] — throttled 1Hz.
+  {
+    const uint64_t lastSend = st.lastSendLogMs.load(std::memory_order_relaxed);
+    if (sendTs - lastSend >= 1000) {
+      st.lastSendLogMs.store(sendTs, std::memory_order_relaxed);
+      fprintf(stderr,
+              "[camera-frame-send] frameId=%llu ageMs=%llu stage=native-to-js\n",
+              static_cast<unsigned long long>(seq),
+              static_cast<unsigned long long>(ageMs));
+      fflush(stderr);
+    }
+  }
+
+  fn.Call({meta, u8});
 }
 
 void StopStreamLocked() {
@@ -559,8 +750,14 @@ void StopStreamLocked() {
   if (s.streamThread.joinable()) s.streamThread.join();
   s.isStreaming.store(false);
   s.stopRequested.store(false);
-  s.pendingTsfFrames.store(0, std::memory_order_release);
+  s.tsfDispatchPending.store(false, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lk(s.latestSlot.mu);
+    s.latestSlot.hasFrame = false;
+    s.latestSlot.bytes.clear();
+  }
   s.latestGrabbedFrameId.store(0, std::memory_order_release);
+  s.lastSlotWriteMs.store(0, std::memory_order_release);
   s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -586,9 +783,30 @@ Napi::Value CameraStartStream(const Napi::CallbackInfo& info) {
   }
   s.stopRequested.store(false);
   s.isStreaming.store(true);
-  s.pendingTsfFrames.store(0, std::memory_order_release);
+  s.tsfDispatchPending.store(false, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lk(s.latestSlot.mu);
+    s.latestSlot.hasFrame = false;
+    s.latestSlot.bytes.clear();
+  }
   s.latestGrabbedFrameId.store(0, std::memory_order_release);
+  s.lastSlotWriteMs.store(0, std::memory_order_release);
   s.droppedFrames.store(0, std::memory_order_release);
+
+  // Log the exposure → FPS-cap relationship at stream start. This is the
+  // single most important line for diagnosing "live view is slow": if
+  // exposureUs is large, no software change can deliver higher FPS.
+  if (s.dll.GetExposure) {
+    double curMs = 0.0;
+    if (s.dll.GetExposure(s.handle, &curMs) == DVP_STATUS_OK) {
+      const double exposureUs = curMs * 1000.0;
+      const double fpsLimit = curMs > 0.0 ? 1000.0 / curMs : -1.0;
+      fprintf(stderr,
+              "[camera-exposure-current] exposureUs=%.0f exposureMs=%.2f fpsLimit=%.1f\n",
+              exposureUs, curMs, fpsLimit);
+      fflush(stderr);
+    }
+  }
   s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
   s.streamThread = std::thread(StreamLoop);
   EmitStatus("event", "streaming");
@@ -619,6 +837,19 @@ Napi::Value CameraFlushStream(const Napi::CallbackInfo& info) {
   }
   const uint64_t newGen = s.streamGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   s.latestGrabbedFrameId.store(0, std::memory_order_release);
+
+  // Drop any frame currently sitting in the atomic slot — it belongs to the
+  // previous objective. The TSF callback's generation check would also
+  // catch it on arrival, but clearing here means JS never even gets the
+  // dispatch wakeup.
+  {
+    std::lock_guard<std::mutex> lk(s.latestSlot.mu);
+    if (s.latestSlot.hasFrame) {
+      s.latestSlot.hasFrame = false;
+      s.latestSlot.bytes.clear();
+      s.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
 
   // Best-effort drain. The stream thread is concurrent and will pick up after
   // we return — the generation bump guarantees already-queued TSF frames drop.
@@ -929,6 +1160,9 @@ Napi::Value Shutdown(const Napi::CallbackInfo& info) {
   if (s.isOpen.load() && s.dll.Close && s.handle) s.dll.Close(s.handle);
   s.handle = 0;
   s.isOpen.store(false);
+  // Release the recycled buffer pool at process shutdown.
+  s.dispatchSpare.clear();
+  s.dispatchSpare.shrink_to_fit();
   if (s.tsfFrame) { s.tsfFrame.Release(); s.tsfFrame = Napi::ThreadSafeFunction(); }
   if (s.tsfStatus) { s.tsfStatus.Release(); s.tsfStatus = Napi::ThreadSafeFunction(); }
   DvpDll_Unload(s.dll);

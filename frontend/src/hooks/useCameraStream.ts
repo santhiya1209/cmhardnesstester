@@ -13,6 +13,13 @@ import type { CameraFrameMeta, CameraPixelFormat } from '@/types/camera';
 // preview resolution, edit this constant — must be an integer ≥1.
 const PREVIEW_SCALE = 2;
 
+// Stale-frame age threshold (grab→renderer-receive). Lenient enough not to
+// drop frames that are naturally old because the camera runs at low FPS
+// (e.g. 200ms exposure → 5 FPS, slot age up to 200ms is normal). The
+// native atomic-slot already delivers the freshest available frame; this
+// gate only catches truly broken pipelines, not normal low-FPS operation.
+const STALE_AGE_MS = 2000;
+
 /**
  * Owns the camera-stream worker. Subscribes to `camera:frame` events on
  * window.api and forwards the binary buffer to the worker as a transferable
@@ -76,6 +83,11 @@ let inFlightFrameId = 0;
 let inFlightGrabTs = 0;
 let frameIdCounter = 0;
 let lastLatencyLogAt = 0;
+let lastRenderLogAt = 0;
+let lastRendererRecvLogAt = 0;
+let lastWorkerRecvLogAt = 0;
+let lastCanvasDrawLogAt = 0;
+let lastCanvasPresentLogAt = 0;
 let latencyDroppedSinceLastSummary = 0;
 let staleFramesBeforeTs = 0;
 // Pending paint for rAF coalescing. The 2D paint path receives 'paint'
@@ -137,6 +149,15 @@ function installMainThreadPaintHandler() {
     'message',
     (e: MessageEvent<{ type: string; imageData?: ImageData; epoch?: number; seq?: number; frameId?: number }>) => {
       if (!e.data || e.data.type !== 'paint' || !e.data.imageData) return;
+      const drawNow = Date.now();
+      if (drawNow - lastCanvasDrawLogAt >= 1000) {
+        lastCanvasDrawLogAt = drawNow;
+        const img = e.data.imageData;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-canvas-draw] frameId=${e.data.frameId ?? 0} w=${img.width} h=${img.height}`
+        );
+      }
       const paintEpoch = typeof e.data.epoch === 'number' ? e.data.epoch : 0;
       // Prefer the echoed frameId from the worker — it's the EXACT frame that
       // was just decoded, not whichever post happened to come in between.
@@ -208,6 +229,20 @@ function schedulePaintRaf() {
       ackCameraFrame(p.frameId);
       return;
     }
+    // Final age gate at paint time. A frame can pass the renderer-inbound
+    // gate, then sit through worker decode + rAF (~15–30ms). If the total
+    // elapsed since grab now exceeds threshold, skip putImageData — the
+    // pixels would be visibly behind the machine.
+    if (p.grabTs > 0) {
+      const ageAtPaint = Date.now() - p.grabTs;
+      if (ageAtPaint > STALE_AGE_MS * 2) {
+        recordCameraFrameDrop();
+        // eslint-disable-next-line no-console
+        console.log(`[camera-stale-drop] frameId=${p.frameId} ageMs=${ageAtPaint} stage=renderer-paint`);
+        if (p.frameId > 0) ackCameraFrame(p.frameId);
+        return;
+      }
+    }
     if (!attached || !attached.fallbackCtx) {
       if (p.frameId > 0) ackCameraFrame(p.frameId);
       return;
@@ -222,6 +257,21 @@ function schedulePaintRaf() {
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
+    if (lastPaintAt - lastCanvasPresentLogAt >= 1000) {
+      lastCanvasPresentLogAt = lastPaintAt;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-canvas-present] frameId=${p.frameId} w=${img.width} h=${img.height}`
+      );
+    }
+    // [camera-render] — grab→pixels-on-canvas latency, throttled 1Hz. This is
+    // the number the user actually sees. Stage labels: native, ipc, render.
+    if (lastPaintAt - lastRenderLogAt > 1000) {
+      lastRenderLogAt = lastPaintAt;
+      const renderLatency = p.grabTs > 0 ? lastPaintAt - p.grabTs : 0;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-render] frameId=${p.frameId} latencyMs=${renderLatency}`);
+    }
     if (!firstPaintLoggedThisSession) {
       firstPaintLoggedThisSession = true;
       // eslint-disable-next-line no-console
@@ -248,6 +298,16 @@ function subscribeIpcOnce() {
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
     const receivedAt = Date.now();
     lastFrameAt = receivedAt;
+    if (receivedAt - lastRendererRecvLogAt >= 1000) {
+      lastRendererRecvLogAt = receivedAt;
+      const grabTsLog = (meta && meta.grabTs) ?? 0;
+      const ageMs = grabTsLog > 0 ? receivedAt - grabTsLog : 0;
+      const bytes = (body as { byteLength?: number }).byteLength ?? 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-renderer-recv] frameId=${meta.frameId} ageMs=${ageMs} bytes=${bytes} w=${meta.width} h=${meta.height}`
+      );
+    }
     frameIdCounter += 1;
     // Explicit type-and-value check: `meta.frameId ?? counter` falls through
     // on null/undefined only, NOT on the integer 0. If main ever sent 0 (or
@@ -278,11 +338,10 @@ function subscribeIpcOnce() {
     }
     latestFrameIdRef.current = frameId;
     latestFrameRef.current = { meta, body, frameId, receivedAt };
-    // Hold the FULL-resolution raw IPC body in renderer memory. The body is a
-    // Buffer (Uint8Array view) that was structured-cloned into the renderer
-    // by Electron — it owns its backing store and is GC'd independently of
-    // the worker-transferred slice. Auto Measure reads from here, NOT the
-    // visible canvas (which the worker now paints at PREVIEW_SCALE).
+    // Hold the FULL-resolution raw IPC body in renderer memory BEFORE the
+    // live-stale gate. Auto Measure clicks read latestFullFrame synchronously;
+    // even a "stale for live preview" frame is still a valid measurement
+    // snapshot (the user's click is the freeze point, not the live paint).
     latestFullFrame = {
       body,
       width: meta.width,
@@ -293,6 +352,20 @@ function subscribeIpcOnce() {
       grabTs: meta.grabTs,
       frameId,
     };
+    // Age gate for the LIVE paint path only. By the time IPC delivered this
+    // frame, the machine may have moved further — never paint stale pixels
+    // to the live canvas. Ack so main releases its in-flight slot, and let
+    // a fresher frame from native drive the next paint.
+    if (grabTs > 0) {
+      const ageMs = receivedAt - grabTs;
+      if (ageMs > STALE_AGE_MS) {
+        recordCameraFrameDrop();
+        // eslint-disable-next-line no-console
+        console.log(`[camera-stale-drop] frameId=${frameId} ageMs=${ageMs} stage=renderer-inbound`);
+        ackCameraFrame(frameId);
+        return;
+      }
+    }
     if (!firstFrameLoggedThisSession) {
       firstFrameLoggedThisSession = true;
       const bytes = (body as { byteLength?: number }).byteLength ?? 0;
@@ -365,6 +438,14 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId
   inFlightCapturedAt = meta.capturedAt ?? Date.now();
   inFlightGrabTs = meta.grabTs ?? inFlightCapturedAt;
   inFlightFrameId = frameId;
+  const nowPost = Date.now();
+  if (nowPost - lastWorkerRecvLogAt >= 1000) {
+    lastWorkerRecvLogAt = nowPost;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-worker-recv] frameId=${frameId} w=${meta.width} h=${meta.height} bytes=${ab.byteLength}`
+    );
+  }
   worker.postMessage(
     {
       type: 'frame',
@@ -462,19 +543,23 @@ export function getLastPaintedFrameId(): number {
 
 export function dropPendingCameraFrames(reason = 'stale'): number {
   const ts = Date.now();
-  void reason;
+  let dropped = 0;
   staleFramesBeforeTs = ts;
   latestFrameRef.current = null;
   if (pendingFrame) {
     recordCameraFrameDrop();
     ackCameraFrame(pendingFrame.frameId);
     pendingFrame = null;
+    dropped += 1;
   }
   if (pendingPaint) {
     recordCameraFrameDrop();
     ackCameraFrame(pendingPaint.frameId);
     pendingPaint = null;
+    dropped += 1;
   }
+  // eslint-disable-next-line no-console
+  console.log(`[camera-pre-switch-drop] reason=${reason} dropped=${dropped} ts=${ts}`);
   return ts;
 }
 
@@ -490,6 +575,8 @@ export function dropPendingCameraFrames(reason = 'stale'): number {
  */
 export function bumpFrameEpochOnCanvasClear(): number {
   frameEpoch += 1;
+  // eslint-disable-next-line no-console
+  console.log(`[camera-objective-flush] newEpoch=${frameEpoch}`);
   dropPendingCameraFrames('objective-change');
   // Ask main process to drop SDK-buffered frames captured before this point.
   flushCameraStream('objective-change');
@@ -509,10 +596,18 @@ export function waitForFreshCameraFrame(timeoutMs = 1500): Promise<boolean> {
       // pixels; baselinePaint guards against an old paint that already
       // happened before this call.
       if (lastPaintEpoch >= targetEpoch && lastPaintAt > baselinePaint) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-post-switch-ready] epoch=${targetEpoch} elapsedMs=${Date.now() - startedAt}`
+        );
         resolve(true);
         return;
       }
       if (Date.now() - startedAt >= timeoutMs) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-post-switch-ready] epoch=${targetEpoch} elapsedMs=${Date.now() - startedAt} timeout=true`
+        );
         resolve(false);
         return;
       }
