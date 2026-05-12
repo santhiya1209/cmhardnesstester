@@ -34,8 +34,7 @@ class CameraService {
     //   - At most ONE in-flight frame (sent but not yet ack'd by renderer).
     //   - New frame arrives in flight → keep it as `pending`, drop older
     //     pending.
-    //   - Ack arrives → if pending exists, send it now. If no ack within
-    //     IN_FLIGHT_TIMEOUT_MS, force-clear the flag (renderer reload, etc).
+    //   - Ack arrives → if pending exists, send the newest pending frame.
     this._frameSeq = 0;
     this._inFlightSeq = 0;
     this._inFlightSentAt = 0;
@@ -43,13 +42,9 @@ class CameraService {
     this._pendingFrame = null;
     this._dropFramesBeforeTs = 0;
     this._staleDropReason = 'stale';
-    this._lastLatencyLogAt = 0;
-    this._lastDropLogAt = 0;
     this._lastFlushUntilAt = 0;
-    this._fpsWindowStart = 0;
-    this._fpsDelivered = 0;
-    this._fpsDropped = 0;
-    this._fpsArrived = 0;
+    this._latestGrabbedFrameId = 0;
+    this._droppedSinceLastFrame = 0;
     this._lastPixelFormatLogged = '';
   }
 
@@ -126,9 +121,8 @@ class CameraService {
     // toggled it. (The native struct has GetTriggerState but no JS wrapper.)
     triggerMode = 'continuous';
     const exposureUs = typeof exposureMs === 'number' ? Math.round(exposureMs * 1000) : 'unknown';
-    // pixelFormat / actual fps will be filled by the first frame; logged
-    // separately from [camera-frame-capture]. bufferCount / grabMode are SDK
-    // constants we cannot query.
+    // pixelFormat is filled by the first frame; bufferCount / grabMode are
+    // SDK constants we cannot query here.
     // eslint-disable-next-line no-console
     console.log(
       `[camera-sdk-runtime] pixelFormat=tbd-first-frame exposureUs=${exposureUs} fps=tbd-first-second triggerMode=${triggerMode} bufferCount=sdk-default grabMode=continuous`
@@ -150,10 +144,7 @@ class CameraService {
   flushStream(reason) {
     this._lastFlushUntilAt = this._markFrameBoundary(reason || 'objective-change');
     if (this._pendingFrame) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=${this._staleDropReason}`
-      );
+      this._droppedSinceLastFrame += 1;
       this._pendingFrame = null;
     }
     this._inFlightSeq = 0;
@@ -186,10 +177,8 @@ class CameraService {
     this._lastFlushUntilAt = 0;
     this._dropFramesBeforeTs = 0;
     this._staleDropReason = 'stale';
-    this._fpsWindowStart = 0;
-    this._fpsDelivered = 0;
-    this._fpsDropped = 0;
-    this._fpsArrived = 0;
+    this._latestGrabbedFrameId = 0;
+    this._droppedSinceLastFrame = 0;
     this._lastPixelFormatLogged = '';
   }
   stopStream() {
@@ -580,10 +569,7 @@ class CameraService {
     this._dropFramesBeforeTs = ts;
     this._staleDropReason = dropReason;
     if (this._pendingFrame) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=${dropReason}`
-      );
+      this._droppedSinceLastFrame += 1;
       this._pendingFrame = null;
     }
     this._inFlightSeq = 0;
@@ -591,25 +577,35 @@ class CameraService {
     return ts;
   }
 
+  _dropStaleNativeSend(frameId, grabTs) {
+    const droppedAt = Date.now();
+    const ageMs = grabTs > 0 ? Math.max(0, droppedAt - grabTs) : 0;
+    this._droppedSinceLastFrame += 1;
+    // eslint-disable-next-line no-console
+    console.log(`[camera-frame-drop] frameId=${frameId} reason=stale-native-send ageMs=${ageMs}`);
+  }
+
   _broadcastFrame(meta, data) {
     if (!this._canSend()) return;
-    this._fpsArrived += 1;
     const capturedAt = Date.now();
     this._frameSeq += 1;
     const rawFrameId = meta && Number.isFinite(Number(meta.frameId)) ? Number(meta.frameId) : 0;
     const frameId = rawFrameId > 0 ? rawFrameId : this._frameSeq;
+    if (frameId > this._latestGrabbedFrameId) {
+      this._latestGrabbedFrameId = frameId;
+    }
     const safeMeta = {
       ...sanitizeMeta(meta),
       frameId,
       capturedAt,
     };
     const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
+    if (frameId < this._latestGrabbedFrameId) {
+      this._dropStaleNativeSend(frameId, grabTs);
+      return;
+    }
     if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
-      this._fpsDropped += 1;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-drop] frameId=${frameId} reason=${this._staleDropReason}`
-      );
+      this._droppedSinceLastFrame += 1;
       return;
     }
     // The native addon hands us an EXTERNAL buffer (zero-copy view over the
@@ -619,53 +615,13 @@ class CameraService {
     // when x is an ArrayBuffer it returns a VIEW (still external), and even
     // for Buffer→Buffer it can keep referencing the external backing store on
     // some Node versions. Allocate + .set forces a real byte copy.
-    const copyStart = process.hrtime.bigint();
     const payload = toOwnedBuffer(data);
-    const copyNs = Number(process.hrtime.bigint() - copyStart);
     this.latestFrame = {
       meta: safeMeta,
       data: payload,
       capturedAt,
     };
 
-    // Per-layer trace at the native→main hand-off. Throttled to ~1 Hz so
-    // logging itself doesn't add latency. The previous
-    // `[camera-latency] captureToSendMs=0` line was removed because
-    // `captureToSendMs` is computed as `capturedAt - capturedAt = 0` by
-    // construction and was noise.
-    if (capturedAt - this._lastLatencyLogAt > 1000) {
-      this._lastLatencyLogAt = capturedAt;
-      const sdkTs = Number(safeMeta.timestamp) || 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-capture] frameId=${frameId} ts=${capturedAt} sdkTs=${sdkTs} memcpyUs=${Math.round(copyNs / 1000)} bytes=${payload.byteLength}`
-      );
-      // [camera-sdk-age]: prints the SDK's own frame timestamp alongside the
-      // wall-clock arrival time. Units of `uTimestamp` are SDK-internal (often
-      // microseconds or hardware ticks) — we don't normalize here. The DELTA
-      // between consecutive sdkTs values vs wall-clock delta is what reveals
-      // SDK buffer delay: if sdkTs jumps backwards relative to nowMs, the SDK
-      // is handing us a frame whose capture moment is older than expected.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-sdk-age] frameId=${frameId} sdkTs=${sdkTs} nowMs=${capturedAt} pixelFormat=${safeMeta.pixelFormat || 'unknown'}`
-      );
-    }
-    // [camera-fps] actual=N delivered=M dropped=K — emitted once per second.
-    // arrived = frames received from native; delivered = frames forwarded over
-    // IPC; dropped = arrived - delivered. Lets us see if FPS itself is the
-    // bottleneck (low SDK FPS = nothing we can do at the IPC layer).
-    if (this._fpsWindowStart === 0) this._fpsWindowStart = capturedAt;
-    if (capturedAt - this._fpsWindowStart >= 1000) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-fps] actual=${this._fpsArrived} delivered=${this._fpsDelivered} dropped=${this._fpsDropped} windowMs=${capturedAt - this._fpsWindowStart}`
-      );
-      this._fpsWindowStart = capturedAt;
-      this._fpsArrived = 0;
-      this._fpsDelivered = 0;
-      this._fpsDropped = 0;
-    }
     // First-frame pixelFormat snapshot — closes the loop on the
     // [camera-sdk-runtime] line that started the session with "tbd-first-frame".
     if (safeMeta.pixelFormat && safeMeta.pixelFormat !== this._lastPixelFormatLogged) {
@@ -676,24 +632,15 @@ class CameraService {
       );
     }
 
-    // In-flight drop: if previous send hasn't been ack'd and the timeout
-    // hasn't elapsed, defer this frame as pending (replacing any older
-    // pending — older = "newer-frame-available" reason).
-    // 50ms tracks one frame at 20fps and is below the 50ms industrial-feel
-    // budget the user is targeting. The previous 200ms allowed up to 6 frames
-    // of buffer at 30fps when an ack was delayed; now the next fresh frame
-    // force-sends within one frame interval even if the renderer stalls.
+    // In-flight drop: never queue multiple Electron IPC live frames.
+    // While one frame awaits renderer ack, keep only the newest replacement.
     const inFlight =
       this._inFlightSeq > 0 &&
       this._lastAckedSeq < this._inFlightSeq;
 
     if (inFlight) {
       if (this._pendingFrame) {
-        this._fpsDropped += 1;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=stale`
-        );
+        this._droppedSinceLastFrame += 1;
       }
       this._pendingFrame = { meta: safeMeta, data: payload };
       return;
@@ -704,23 +651,18 @@ class CameraService {
 
   _sendFrame(safeMeta, payload) {
     const sentAt = Date.now();
+    const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
+    if (safeMeta.frameId < this._latestGrabbedFrameId) {
+      this._dropStaleNativeSend(safeMeta.frameId, grabTs);
+      return;
+    }
     safeMeta.sentAt = sentAt;
+    safeMeta.droppedBeforeSend = this._droppedSinceLastFrame;
+    this._droppedSinceLastFrame = 0;
     this._inFlightSeq = safeMeta.frameId;
     this._inFlightSentAt = sentAt;
-    const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
-    const ageMs = grabTs > 0 ? Math.max(0, sentAt - grabTs) : 0;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-ipc-send] frameId=${safeMeta.frameId} sendTs=${sentAt} ageMs=${ageMs}`);
-    // Throttled per-frame send trace (1Hz). Reuses _lastLatencyLogAt as a
-    // shared throttle so the capture+send pair lands close in the log.
-    if (sentAt - (this._lastSendLogAt || 0) > 1000) {
-      this._lastSendLogAt = sentAt;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-frame-send] frameId=${safeMeta.frameId} ts=${sentAt}`);
-    }
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
-      this._fpsDelivered += 1;
     } catch (_e) {
       this.rendererReady = false;
       this._inFlightSeq = 0;
@@ -737,10 +679,12 @@ class CameraService {
     const { meta, data } = this._pendingFrame;
     this._pendingFrame = null;
     const grabTs = Number(meta.grabTs || meta.capturedAt || 0);
+    if (meta.frameId < this._latestGrabbedFrameId) {
+      this._dropStaleNativeSend(meta.frameId, grabTs);
+      return;
+    }
     if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
-      this._fpsDropped += 1;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-frame-drop] frameId=${meta.frameId} reason=${this._staleDropReason}`);
+      this._droppedSinceLastFrame += 1;
       return;
     }
     this._sendFrame(meta, data);

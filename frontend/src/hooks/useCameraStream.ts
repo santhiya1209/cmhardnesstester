@@ -54,24 +54,30 @@ let lastPaintEpoch = 0;
 // Auto Measure click reads this to tag its snapshot log with the exact frame
 // it captured from. inFlightFrameId resets after ack, so it can't be used.
 let lastPaintedFrameId = 0;
-let liveFrameLogSeq = 0;
-let lastLiveFrameOverlayLogAt = 0;
 // Latest-frame-only backpressure. The worker decodes serially; without this,
 // frames pile up in its message-port queue and the user sees a delayed replay
 // of physical machine movement. Policy: at most ONE frame in-flight in the
 // worker + ONE pending frame on the main thread. A newer frame replaces the
 // pending one (older queued frames are dropped). The worker's 'paint' echo is
 // the "decoder idle" signal that flushes the pending frame.
+type LiveFrame = {
+  meta: CameraFrameMeta;
+  body: ArrayBufferLike;
+  frameId: number;
+  receivedAt: number;
+};
+
 let decoderBusy = false;
-let pendingFrame: { meta: CameraFrameMeta; body: ArrayBufferLike; frameId: number } | null = null;
+let pendingFrame: LiveFrame | null = null;
+const latestFrameRef: { current: LiveFrame | null } = { current: null };
+const latestFrameIdRef = { current: 0 };
 let inFlightCapturedAt = 0;
 let inFlightFrameId = 0;
-let inFlightSentAt = 0;
-let inFlightReceivedAt = 0;
-let inFlightPostedAt = 0;
+let inFlightGrabTs = 0;
 let frameIdCounter = 0;
 let lastLatencyLogAt = 0;
-let objectiveChangedAt = 0;
+let latencyDroppedSinceLastSummary = 0;
+let staleFramesBeforeTs = 0;
 // Pending paint for rAF coalescing. The 2D paint path receives 'paint'
 // messages serially from the worker; on a hot loop we could call
 // putImageData N times per rAF tick. Coalescing means only the most recent
@@ -83,6 +89,7 @@ let pendingPaint: {
   seq: number;
   frameId: number;
   capturedAt: number;
+  grabTs: number;
 } | null = null;
 let rafScheduled = false;
 let fallbackTimer: number | null = null;
@@ -105,6 +112,8 @@ let latestFullFrame: {
   pixelFormat: CameraPixelFormat;
   bits: 8 | 16;
   capturedAt: number;
+  grabTs?: number;
+  frameId?: number;
 } | null = null;
 
 export function getLatestFullFrame() {
@@ -114,6 +123,10 @@ export function getLatestFullFrame() {
 function getWorker(): Worker {
   if (!sharedWorker) sharedWorker = new CameraStreamWorker();
   return sharedWorker;
+}
+
+function recordCameraFrameDrop(): void {
+  latencyDroppedSinceLastSummary += 1;
 }
 
 function installMainThreadPaintHandler() {
@@ -140,14 +153,18 @@ function installMainThreadPaintHandler() {
       // those pixels belong to the previous objective and would re-pollute
       // the freshly-cleared canvas.
       if (paintEpoch < frameEpoch) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-frame-drop] reason=stale-epoch paintEpoch=${paintEpoch} currentEpoch=${frameEpoch} seq=${e.data.seq ?? 'n/a'}`
-        );
+        recordCameraFrameDrop();
         decoderBusy = false;
         // Still ack so main process releases its slot — the frame was
         // delivered + decoded; main shouldn't be stuck waiting.
-        if (inFlightFrameId > 0) ackCameraFrame(inFlightFrameId);
+        if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
+        flushPendingFrame();
+        return;
+      }
+      if (resolvedFrameId > 0 && resolvedFrameId < latestFrameIdRef.current) {
+        recordCameraFrameDrop();
+        decoderBusy = false;
+        ackCameraFrame(resolvedFrameId);
         flushPendingFrame();
         return;
       }
@@ -155,10 +172,8 @@ function installMainThreadPaintHandler() {
       // putImageData per frame. If a newer paint arrives before rAF fires,
       // it replaces this one — the older pixels never touch the canvas.
       if (pendingPaint) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-frame-drop] frameId=${pendingPaint.frameId} reason=newer-frame-available`
-        );
+        recordCameraFrameDrop();
+        ackCameraFrame(pendingPaint.frameId);
       }
       pendingPaint = {
         imageData: e.data.imageData,
@@ -166,6 +181,7 @@ function installMainThreadPaintHandler() {
         seq: e.data.seq ?? 0,
         frameId: resolvedFrameId,
         capturedAt: inFlightCapturedAt,
+        grabTs: inFlightGrabTs,
       };
       decoderBusy = false;
       flushPendingFrame();
@@ -182,6 +198,16 @@ function schedulePaintRaf() {
     const p = pendingPaint;
     pendingPaint = null;
     if (!p) return;
+    if (staleFramesBeforeTs > 0 && p.grabTs > 0 && p.grabTs < staleFramesBeforeTs) {
+      recordCameraFrameDrop();
+      if (p.frameId > 0) ackCameraFrame(p.frameId);
+      return;
+    }
+    if (p.frameId > 0 && p.frameId < latestFrameIdRef.current) {
+      recordCameraFrameDrop();
+      ackCameraFrame(p.frameId);
+      return;
+    }
     if (!attached || !attached.fallbackCtx) {
       if (p.frameId > 0) ackCameraFrame(p.frameId);
       return;
@@ -192,9 +218,7 @@ function schedulePaintRaf() {
       el.width = img.width;
       el.height = img.height;
     }
-    const drawStart = performance.now();
     fallbackCtx.putImageData(img, 0, 0);
-    const drawMs = Math.round(performance.now() - drawStart);
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
@@ -203,29 +227,14 @@ function schedulePaintRaf() {
       // eslint-disable-next-line no-console
       console.log('[camera-ui] first-paint-after-open ok=true');
     }
-    const totalMs = p.capturedAt > 0 ? lastPaintAt - p.capturedAt : 0;
-    const slow = totalMs > 50;
-    // Always log slow frames so a stage-move event surfaces every offending
-    // frame, not the throttled 1Hz sample. Fast frames still throttle to 1Hz
-    // to keep the log readable.
-    if (slow || lastPaintAt - lastLatencyLogAt > 1000) {
+    const latencyStartTs = p.grabTs > 0 ? p.grabTs : p.capturedAt;
+    const totalMs = latencyStartTs > 0 ? lastPaintAt - latencyStartTs : 0;
+    if (lastPaintAt - lastLatencyLogAt > 1000) {
       lastLatencyLogAt = lastPaintAt;
-      const sendToRendererMs =
-        inFlightSentAt > 0 && inFlightReceivedAt > 0
-          ? inFlightReceivedAt - inFlightSentAt
-          : 0;
-      const rendererQueueMs =
-        inFlightReceivedAt > 0 && inFlightPostedAt > 0
-          ? inFlightPostedAt - inFlightReceivedAt
-          : 0;
+      const dropped = latencyDroppedSinceLastSummary;
+      latencyDroppedSinceLastSummary = 0;
       // eslint-disable-next-line no-console
-      console.log(
-        `[camera-latency] frameId=${p.frameId} sendToRendererMs=${sendToRendererMs} rendererQueueMs=${rendererQueueMs} drawMs=${drawMs} totalMs=${totalMs}${slow ? ' SLOW' : ''}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[camera-frame-render] frameId=${p.frameId} latencyMs=${totalMs}`);
-      // eslint-disable-next-line no-console
-      console.log(`[camera-latency-total] frameId=${p.frameId} totalMs=${totalMs}${slow ? ' SLOW' : ''}`);
+      console.log(`[camera-latency-total] latestFrameId=${p.frameId} totalMs=${totalMs} dropped=${dropped}`);
     }
     if (p.frameId > 0) ackCameraFrame(p.frameId);
   });
@@ -239,7 +248,6 @@ function subscribeIpcOnce() {
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
     const receivedAt = Date.now();
     lastFrameAt = receivedAt;
-    liveFrameLogSeq += 1;
     frameIdCounter += 1;
     // Explicit type-and-value check: `meta.frameId ?? counter` falls through
     // on null/undefined only, NOT on the integer 0. If main ever sent 0 (or
@@ -249,6 +257,27 @@ function subscribeIpcOnce() {
     const metaIdRaw = (meta as { frameId?: unknown }).frameId;
     const metaId = typeof metaIdRaw === 'number' && metaIdRaw > 0 ? metaIdRaw : 0;
     const frameId = metaId > 0 ? metaId : frameIdCounter;
+    if (metaId > 0) frameIdCounter = Math.max(frameIdCounter, metaId);
+    const grabTs = meta.grabTs ?? meta.capturedAt ?? 0;
+    if (meta.droppedBeforeSend && meta.droppedBeforeSend > 0) {
+      latencyDroppedSinceLastSummary += meta.droppedBeforeSend;
+    }
+    // Objective-change guard: drop frames captured before the most recent
+    // objective swap — they are SDK-buffered pixels of the previous lens.
+    const frameTs = grabTs || meta.capturedAt || 0;
+    if (staleFramesBeforeTs > 0 && frameTs > 0 && frameTs < staleFramesBeforeTs) {
+      recordCameraFrameDrop();
+      // Still ack so main releases its in-flight slot.
+      ackCameraFrame(frameId);
+      return;
+    }
+    if (frameId < latestFrameIdRef.current) {
+      recordCameraFrameDrop();
+      ackCameraFrame(frameId);
+      return;
+    }
+    latestFrameIdRef.current = frameId;
+    latestFrameRef.current = { meta, body, frameId, receivedAt };
     // Hold the FULL-resolution raw IPC body in renderer memory. The body is a
     // Buffer (Uint8Array view) that was structured-cloned into the renderer
     // by Electron — it owns its backing store and is GC'd independently of
@@ -261,6 +290,8 @@ function subscribeIpcOnce() {
       pixelFormat: meta.pixelFormat,
       bits: meta.bits,
       capturedAt: meta.capturedAt ?? receivedAt,
+      grabTs: meta.grabTs,
+      frameId,
     };
     if (!firstFrameLoggedThisSession) {
       firstFrameLoggedThisSession = true;
@@ -270,73 +301,47 @@ function subscribeIpcOnce() {
         `[camera-frame] first-frame-after-open width=${meta.width} height=${meta.height} bytes=${bytes}`
       );
     }
-    // Objective-change guard: drop frames captured before the most recent
-    // objective swap — they are SDK-buffered pixels of the previous lens.
-    const capturedAt = meta.capturedAt ?? 0;
-    if (objectiveChangedAt > 0 && capturedAt > 0 && capturedAt < objectiveChangedAt) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-drop] frameId=${frameId} reason=stale-pre-objective-change capturedAt=${capturedAt} objectiveChangedAt=${objectiveChangedAt}`
-      );
-      // Still ack so main releases its in-flight slot.
-      ackCameraFrame(frameId);
-      return;
-    }
-    if (lastFrameAt - lastLiveFrameOverlayLogAt > 1000) {
-      lastLiveFrameOverlayLogAt = lastFrameAt;
-      // eslint-disable-next-line no-console
-      console.log(`[live-frame] frameId=${liveFrameLogSeq} overlayUnchanged=true`);
-      const sentAt = meta.sentAt ?? 0;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-frame-recv] frameId=${frameId} ts=${receivedAt}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-recv-detail] frameId=${frameId} timestamp=${meta.timestamp} sentAt=${sentAt} receivedAt=${receivedAt}`
-      );
-      if (sentAt > 0) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-latency] frameId=${frameId} sendToRendererMs=${receivedAt - sentAt}`
-        );
-      }
-      // eslint-disable-next-line no-console
-      console.log(`[camera-queue] size=${pendingFrame ? 1 : 0}`);
-    }
     // Latest-frame-only policy: if the worker is still decoding a previous
     // frame, replace any pending frame with this one and drop the older
     // pending. This bounds the queue to 1 in-flight + 1 pending and keeps
     // the visible canvas tracking the freshest physical state of the machine.
     if (decoderBusy) {
       if (pendingFrame) {
-        // eslint-disable-next-line no-console
-        console.log(`[camera-frame-drop] frameId=${pendingFrame.frameId} reason=newer-frame-available`);
+        recordCameraFrameDrop();
         // Older pending will never reach decode/paint — ack so main process
         // doesn't keep it in flight forever.
         ackCameraFrame(pendingFrame.frameId);
       }
-      pendingFrame = { meta, body, frameId };
-      // Stash receivedAt on the held frame so we can measure rendererQueueMs
-      // accurately when it finally posts.
-      (pendingFrame as unknown as { receivedAt: number }).receivedAt = receivedAt;
+      pendingFrame = { meta, body, frameId, receivedAt };
       return;
     }
-    inFlightReceivedAt = receivedAt;
     postFrameToWorker(meta, body, frameId);
   });
 }
 
 function flushPendingFrame() {
   if (!pendingFrame || decoderBusy) return;
-  const held = pendingFrame as unknown as { receivedAt: number };
-  if (held.receivedAt) inFlightReceivedAt = held.receivedAt;
   const { meta, body, frameId } = pendingFrame;
   pendingFrame = null;
+  if (frameId < latestFrameIdRef.current) {
+    recordCameraFrameDrop();
+    ackCameraFrame(frameId);
+    return;
+  }
   postFrameToWorker(meta, body, frameId);
 }
 
 export function resetCameraSession() {
   firstFrameLoggedThisSession = false;
   firstPaintLoggedThisSession = false;
+  latestFrameRef.current = null;
+  latestFrameIdRef.current = 0;
+  pendingFrame = null;
+  pendingPaint = null;
+  decoderBusy = false;
+  staleFramesBeforeTs = 0;
+  lastLatencyLogAt = 0;
+  latencyDroppedSinceLastSummary = 0;
 }
 
 function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
@@ -346,33 +351,20 @@ function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
 }
 
 function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId: number) {
-  const worker = getWorker();
-  const copyStart = performance.now();
-  const ab = toArrayBuffer(body);
-  const copyMs = performance.now() - copyStart;
-  // Surface the renderer-side copy cost. toArrayBuffer slices if `body` is a
-  // Uint8Array view (it is — main forwards an owned Buffer), which is a third
-  // full-image memcpy on the JS thread. Logged at 1Hz to keep noise down.
-  if (copyMs > 2 || (frameId && frameId % 60 === 0)) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-renderer-copy] frameId=${frameId} copyMs=${copyMs.toFixed(2)} bytes=${ab.byteLength}`
-    );
+  if (frameId < latestFrameIdRef.current) {
+    recordCameraFrameDrop();
+    ackCameraFrame(frameId);
+    return;
   }
+  const worker = getWorker();
+  const ab = toArrayBuffer(body);
   decoderBusy = true;
   // Track capture time end-to-end (main-process capturedAt is the most
   // authoritative reference for totalMs — closer to the native callback
   // than anything we can measure in the renderer).
   inFlightCapturedAt = meta.capturedAt ?? Date.now();
-  inFlightSentAt = meta.sentAt ?? 0;
+  inFlightGrabTs = meta.grabTs ?? inFlightCapturedAt;
   inFlightFrameId = frameId;
-  inFlightPostedAt = Date.now();
-  if (frameId && frameId % 60 === 0) {
-    // eslint-disable-next-line no-console
-    console.log(`[camera-frame-send] frameId=${frameId} timestamp=${meta.timestamp}`);
-    // eslint-disable-next-line no-console
-    console.log(`[camera-queue] size=${pendingFrame ? 1 : 0}`);
-  }
   worker.postMessage(
     {
       type: 'frame',
@@ -412,9 +404,17 @@ function startSnapshotFallback() {
           return;
         }
         lastFrameAt = Date.now();
-        // Snapshot fallback has no main-process frameId — assign one from the
-        // shared counter so logs still show a monotonic value (never 0).
-        frameIdCounter += 1;
+        // Snapshot fallback may come without a streamed frameId; fall back to
+        // the shared counter so logs still show a monotonic value (never 0).
+        const replyFrameId =
+          typeof reply.frameId === 'number' && reply.frameId > 0 ? reply.frameId : 0;
+        if (replyFrameId > 0) {
+          frameIdCounter = Math.max(frameIdCounter, replyFrameId);
+        } else {
+          frameIdCounter += 1;
+        }
+        const frameId = replyFrameId > 0 ? replyFrameId : frameIdCounter;
+        latestFrameIdRef.current = Math.max(latestFrameIdRef.current, frameId);
         postFrameToWorker(
           {
             width: reply.width,
@@ -424,9 +424,11 @@ function startSnapshotFallback() {
             timestamp: reply.timestamp,
             seq: reply.seq,
             bytes: reply.bytes,
+            frameId,
+            grabTs: reply.grabTs,
           },
           reply.data,
-          frameIdCounter
+          frameId
         );
       })
       .catch(() => {
@@ -458,6 +460,24 @@ export function getLastPaintedFrameId(): number {
   return lastPaintedFrameId;
 }
 
+export function dropPendingCameraFrames(reason = 'stale'): number {
+  const ts = Date.now();
+  void reason;
+  staleFramesBeforeTs = ts;
+  latestFrameRef.current = null;
+  if (pendingFrame) {
+    recordCameraFrameDrop();
+    ackCameraFrame(pendingFrame.frameId);
+    pendingFrame = null;
+  }
+  if (pendingPaint) {
+    recordCameraFrameDrop();
+    ackCameraFrame(pendingPaint.frameId);
+    pendingPaint = null;
+  }
+  return ts;
+}
+
 /**
  * Bumps the frame epoch and resets paint tracking. Call this immediately
  * AFTER clearing the live canvas (objective change). Effect:
@@ -470,23 +490,7 @@ export function getLastPaintedFrameId(): number {
  */
 export function bumpFrameEpochOnCanvasClear(): number {
   frameEpoch += 1;
-  objectiveChangedAt = Date.now();
-  // Drop any frame that was queued behind the in-flight decode but had not
-  // been posted yet — it was captured before the canvas clear and would
-  // repaint stale pixels of the previous objective. The in-flight frame
-  // itself is tagged with the old epoch (assigned at post time) and is
-  // already dropped by the paintEpoch < frameEpoch guard.
-  if (pendingFrame) {
-    // eslint-disable-next-line no-console
-    console.log(`[camera-frame-drop] frameId=${pendingFrame.frameId} reason=stale`);
-    pendingFrame = null;
-  }
-  // Drop any pending paint too — it was decoded from a pre-clear frame.
-  if (pendingPaint) {
-    // eslint-disable-next-line no-console
-    console.log(`[camera-frame-drop] frameId=${pendingPaint.frameId} reason=stale-epoch-paint`);
-    pendingPaint = null;
-  }
+  dropPendingCameraFrames('objective-change');
   // Ask main process to drop SDK-buffered frames captured before this point.
   flushCameraStream('objective-change');
   // lastPaintAt deliberately NOT zeroed — guards compare lastPaintEpoch,

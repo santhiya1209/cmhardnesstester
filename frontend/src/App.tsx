@@ -47,6 +47,7 @@ import {
   getLastCameraFramePaintAt,
   getLastPaintEpoch,
   getLastPaintedFrameId,
+  dropPendingCameraFrames,
   resetCameraSession,
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
@@ -191,6 +192,21 @@ function logUnexpectedAutoMeasureCall(source: string) {
   );
 }
 
+// Per-objective Auto Measure defaults. The user's machine-tuned values.
+// These override whatever is currently in the Auto Measure Settings UI
+// when a detection runs, and reset the UI when the objective changes.
+const AUTO_MEASURE_OBJECTIVE_DEFAULTS: Record<string, { smoothing: number; threshold: number }> = {
+  '10X': { smoothing: 4, threshold: 44 },
+  '40X': { smoothing: 6, threshold: 71 },
+};
+
+function autoMeasureDefaultsForObjective(
+  objective: string | null | undefined
+): { smoothing: number; threshold: number } | null {
+  const key = String(objective ?? '').trim().toUpperCase();
+  return AUTO_MEASURE_OBJECTIVE_DEFAULTS[key] ?? null;
+}
+
 function smoothingToPreviewKernel(smoothing: number): number {
   if (smoothing <= 0) return 1;
   const bucket = Math.min(5, Math.max(1, Math.ceil(smoothing / 4)));
@@ -232,22 +248,15 @@ function graphicsFromAutoMeasureResult(
   result: VickersAutoMeasureSuccess,
   objective?: string | null
 ): AutoMeasureGraphics {
-  // 10X uses the simplified two-diagonal layout (D1 = left↔right,
-  // D2 = top↔bottom). 40X+ keeps the legacy four-guides layout. The
-  // native addon already runs the simplified detection branch for 10X
-  // (see vickers_auto_measure.cpp `twoLineMode`); this just selects the
-  // matching renderer.
+  // All objectives — 10X included — now use the four-guides layout that
+  // 40X has always used. The native addon runs the same 4-edge side-fit +
+  // intersection pipeline for every objective (`twoLineMode` is disabled),
+  // and the frontend renders the same yellow edge/guide overlay.
   const norm = (objective ?? '').trim().toUpperCase();
-  const lineLayout: 'four-guides' | 'two-diagonals' =
-    norm === '10X' ? 'two-diagonals' : 'four-guides';
-  if (lineLayout === 'two-diagonals') {
-    const c = result.corners;
+  const lineLayout: 'four-guides' | 'two-diagonals' = 'four-guides';
+  if (norm === '10X') {
     // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-10x-lines] d1Start=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) d1End=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) d2Start=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) d2End=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[overlay-set] objective=10X mode=two-line`);
+    console.log(`[overlay-set] objective=10X mode=four-edge`);
   }
   if (result.lines.length === 4) {
     return { corners: result.corners, lines: result.lines, lineLayout };
@@ -398,6 +407,25 @@ function App() {
   // - There is NO silent fallback to a hardcoded default. If this is ever
   //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
+
+  // Whenever the active objective changes (UI click OR machine echo), snap
+  // Auto Measure smoothing/threshold to that objective's tuned defaults so
+  // the Settings dialog and the next detection run pick them up. Also
+  // emits the defaults log so we can verify in the console.
+  useEffect(() => {
+    const defaults = autoMeasureDefaultsForObjective(activeObjective);
+    if (!defaults) return;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-defaults] objective=${activeObjective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
+    setAutoMeasurePreviewSettings((prev) => {
+      if (prev.smoothing === defaults.smoothing && prev.threshold === defaults.threshold) {
+        return prev;
+      }
+      return { ...prev, smoothing: defaults.smoothing, threshold: defaults.threshold };
+    });
+  }, [activeObjective]);
   // Last manual-measure pixel diagonals (d1Px = horizontal, d2Px = vertical).
   // Captured in handleManualMeasurementUpdated and passed to CalibrationDialog
   // so opening the dialog auto-fills Pixel Length X / Y. State (not ref) so
@@ -445,6 +473,20 @@ function App() {
     setActiveObjective(objective);
     // eslint-disable-next-line no-console
     console.log('[objective] changed →', objective);
+    // Snap Auto Measure smoothing/threshold to the objective-tuned defaults
+    // so the Settings dialog and any next preview run use the right values.
+    const defaults = autoMeasureDefaultsForObjective(objective);
+    if (defaults) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-defaults] objective=${objective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+      );
+      setAutoMeasurePreviewSettings((prev) => ({
+        ...prev,
+        smoothing: defaults.smoothing,
+        threshold: defaults.threshold,
+      }));
+    }
     // Clear the yellow Auto Measure overlay immediately on the user's
     // request — do not wait for the L#OK confirmation — so the live camera
     // never shows D1/D2 from the previous magnification during the
@@ -488,9 +530,16 @@ function App() {
           : settings.objectiveForMeasure;
       const minConfidence =
         settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
+      const calibObjectiveDefaults = autoMeasureDefaultsForObjective(liveObjectiveForNative);
+      const calibSmoothing = calibObjectiveDefaults?.smoothing ?? settings.smoothing;
+      const calibThreshold = calibObjectiveDefaults?.threshold ?? settings.threshold;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-run] objective=${liveObjectiveForNative} smoothing=${calibSmoothing} threshold=${calibThreshold} source=calibration`
+      );
       const result = await measureVickersAuto({
-        smoothing: settings.smoothing,
-        threshold: settings.threshold,
+        smoothing: calibSmoothing,
+        threshold: calibThreshold,
         objectiveForMeasure: liveObjectiveForNative,
         frameBuffer: frame.buffer,
         width: frame.width,
@@ -1504,9 +1553,19 @@ function App() {
           `[auto-measure-start] objective=${liveObjectiveForNative} frameId=${displayedFrame.source}-${displayedFrame.width}x${displayedFrame.height}-${getCurrentFrameEpoch()}`
         );
         const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
+        // Force objective-tuned defaults for smoothing/threshold so the
+        // detector always uses the values calibrated for that magnification,
+        // regardless of any stale UI value.
+        const objectiveDefaults = autoMeasureDefaultsForObjective(liveObjectiveForNative);
+        const runSmoothing = objectiveDefaults?.smoothing ?? settings.smoothing;
+        const runThreshold = objectiveDefaults?.threshold ?? settings.threshold;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-run] objective=${liveObjectiveForNative} smoothing=${runSmoothing} threshold=${runThreshold}`
+        );
         const result = await measureFn({
-          smoothing: settings.smoothing,
-          threshold: settings.threshold,
+          smoothing: runSmoothing,
+          threshold: runThreshold,
           objectiveForMeasure: liveObjectiveForNative,
           frameBuffer: displayedFrame.buffer,
           width: displayedFrame.width,
@@ -2418,6 +2477,7 @@ function App() {
                   updatedAt: saved.updatedAt,
                 });
                 try {
+                  dropPendingCameraFrames('gain-change');
                   const gainReply = await window.hardnessCamera.setGain(saved.analogGain);
                   // eslint-disable-next-line no-console
                   console.log('[camera-settings] apply analogGain ok=', !!gainReply?.ok, gainReply);
@@ -2426,6 +2486,7 @@ function App() {
                   console.error('[camera-settings] apply analogGain threw', gainErr);
                 }
                 try {
+                  dropPendingCameraFrames('exposure-change');
                   const expReply = await window.hardnessCamera.setExposure(saved.exposureTimeMs);
                   // eslint-disable-next-line no-console
                   console.log('[camera-settings] apply exposure ok=', !!expReply?.ok, expReply);

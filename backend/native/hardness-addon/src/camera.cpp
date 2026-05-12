@@ -54,6 +54,7 @@ struct State {
   // vendor in-process viewer that simply paints the newest frame and lets
   // older ones fall off the floor when the painter is busy.
   std::atomic<int>       pendingTsfFrames{0};
+  std::atomic<uint64_t>  latestGrabbedFrameId{0};
   std::atomic<uint64_t>  droppedFrames{0};
   std::atomic<uint64_t>  streamGeneration{0};
 
@@ -321,6 +322,7 @@ Napi::Value CameraOpen(const Napi::CallbackInfo& info) {
   }
   s.handle = h;
   s.isOpen.store(true);
+  s.latestGrabbedFrameId.store(0, std::memory_order_release);
   s.lastError.clear();
 
   // Default to continuous streaming mode (trigger off).
@@ -331,6 +333,7 @@ Napi::Value CameraOpen(const Napi::CallbackInfo& info) {
   // a few frames later, and the user sees the slider have no effect.
   s.dll.SetAeOperation(h, AE_OP_OFF);
   ConfigureLowLatencyBufferLocked("open");
+  fprintf(stderr, "[camera-sdk-flush] reason=open drained=%d\n", DrainSdkFrames(0, 16));
   fprintf(stderr, "[dvp] cameraOpen ok handle=%u, AE forced OFF\n", h);
   fflush(stderr);
 
@@ -373,6 +376,7 @@ Napi::Value CameraClose(const Napi::CallbackInfo& info) {
   if (s.dll.Close && s.handle) s.dll.Close(s.handle);
   s.handle = 0;
   s.isOpen.store(false);
+  s.latestGrabbedFrameId.store(0, std::memory_order_release);
   EmitStatus("event", "closed");
   return MakeReply(env, true);
 }
@@ -428,6 +432,10 @@ void StreamLoop() {
     }
     // ─────────────────────────────────────────────────────────────────
 
+    s.latestGrabbedFrameId.store(
+        static_cast<uint64_t>(frame.uFrameID),
+        std::memory_order_release);
+
     // Latest-frame-only drop at the native source. If JS hasn't drained the
     // previous frame from the TSF queue, skip this one entirely — no alloc,
     // no memcpy, no TSF push. The SDK buffer is already consumed (we called
@@ -438,14 +446,6 @@ void StreamLoop() {
     }
 
     const uint64_t grabTs = NowMs();
-    fprintf(
-        stderr,
-        "[camera-native-grab] frameId=%llu grabTs=%llu width=%d height=%d\n",
-        static_cast<unsigned long long>(frame.uFrameID),
-        static_cast<unsigned long long>(grabTs),
-        frame.iWidth,
-        frame.iHeight);
-    fflush(stderr);
 
     // Copy the SDK buffer because it is reused on the next call.
     auto* bytes = new uint8_t[frame.uBytes];
@@ -499,13 +499,21 @@ void StreamLoop() {
         }
 
         const uint64_t sendTs = NowMs();
-        fprintf(
-            stderr,
-            "[camera-native-send] frameId=%llu sendTs=%llu ageMs=%llu\n",
-            static_cast<unsigned long long>(p->seq),
-            static_cast<unsigned long long>(sendTs),
-            static_cast<unsigned long long>(sendTs >= p->grabTs ? sendTs - p->grabTs : 0));
-        fflush(stderr);
+        const uint64_t ageMs = sendTs >= p->grabTs ? sendTs - p->grabTs : 0;
+        const uint64_t latestGrabbedFrameId =
+            st.latestGrabbedFrameId.load(std::memory_order_acquire);
+        if (latestGrabbedFrameId > 0 && p->seq < latestGrabbedFrameId) {
+          fprintf(
+              stderr,
+              "[camera-frame-drop] frameId=%llu reason=stale-native-send ageMs=%llu\n",
+              static_cast<unsigned long long>(p->seq),
+              static_cast<unsigned long long>(ageMs));
+          fflush(stderr);
+          delete[] p->bytes;
+          delete p;
+          st.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
 
         // V8-owned copy. Electron's IPC structured-clone refuses external
         // buffers ("External buffers are not allowed"), so we cannot hand the
@@ -552,6 +560,7 @@ void StopStreamLocked() {
   s.isStreaming.store(false);
   s.stopRequested.store(false);
   s.pendingTsfFrames.store(0, std::memory_order_release);
+  s.latestGrabbedFrameId.store(0, std::memory_order_release);
   s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -578,6 +587,7 @@ Napi::Value CameraStartStream(const Napi::CallbackInfo& info) {
   s.stopRequested.store(false);
   s.isStreaming.store(true);
   s.pendingTsfFrames.store(0, std::memory_order_release);
+  s.latestGrabbedFrameId.store(0, std::memory_order_release);
   s.droppedFrames.store(0, std::memory_order_release);
   s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
   s.streamThread = std::thread(StreamLoop);
@@ -608,6 +618,7 @@ Napi::Value CameraFlushStream(const Napi::CallbackInfo& info) {
     return r;
   }
   const uint64_t newGen = s.streamGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  s.latestGrabbedFrameId.store(0, std::memory_order_release);
 
   // Best-effort drain. The stream thread is concurrent and will pick up after
   // we return — the generation bump guarantees already-queued TSF frames drop.
@@ -675,19 +686,6 @@ Napi::Value CameraGetFrame(const Napi::CallbackInfo& info) {
     pBuffer = np;
   }
   const uint64_t grabTs = NowMs();
-  fprintf(
-      stderr,
-      "[camera-native-grab] frameId=%llu grabTs=%llu width=%d height=%d\n",
-      static_cast<unsigned long long>(frame.uFrameID),
-      static_cast<unsigned long long>(grabTs),
-      frame.iWidth,
-      frame.iHeight);
-  fprintf(
-      stderr,
-      "[camera-native-send] frameId=%llu sendTs=%llu ageMs=0\n",
-      static_cast<unsigned long long>(frame.uFrameID),
-      static_cast<unsigned long long>(grabTs));
-  fflush(stderr);
   auto data = Napi::Buffer<uint8_t>::Copy(env, static_cast<const uint8_t*>(pBuffer), frame.uBytes);
   auto r = MakeReply(env, true);
   r.Set("data", data);
@@ -769,6 +767,7 @@ Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
       }
       s.stopRequested.store(false);
       s.isStreaming.store(true);
+      s.latestGrabbedFrameId.store(0, std::memory_order_release);
       s.streamThread = std::thread(StreamLoop);
       EmitStatus("event", "streaming");
     }
@@ -856,6 +855,7 @@ Napi::Value CameraSetGain(const Napi::CallbackInfo& info) {
       }
       s.stopRequested.store(false);
       s.isStreaming.store(true);
+      s.latestGrabbedFrameId.store(0, std::memory_order_release);
       s.streamThread = std::thread(StreamLoop);
       EmitStatus("event", "streaming");
     }

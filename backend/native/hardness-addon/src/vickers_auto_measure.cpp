@@ -2697,11 +2697,24 @@ double ComputeConfidence(
 void RefineTipsForTwoLineMode(
   const std::vector<cv::Point>& contour,
   const cv::Mat& gradMag,
+  const cv::Mat& blurred,
   const cv::RotatedRect& initialRect,
   const Params& params,
   OrderedCorners& corners
 ) {
   if (contour.empty()) return;
+
+  // rawTop/rawBottom = corners as passed in (before any refinement). Logged
+  // so we can compare against contour-extreme and final tip positions.
+  const cv::Point2f rawTopIn = corners.top;
+  const cv::Point2f rawBottomIn = corners.bottom;
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] rawTop=(%.2f,%.2f)\n",
+    rawTopIn.x, rawTopIn.y);
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] rawBottom=(%.2f,%.2f)\n",
+    rawBottomIn.x, rawBottomIn.y);
+  std::fflush(stderr);
 
   std::fprintf(stderr,
     "[auto-measure-refine] initialRect=center(%.2f,%.2f) size(%.2fx%.2f) angle=%.2f\n",
@@ -2743,7 +2756,163 @@ void RefineTipsForTwoLineMode(
   std::fprintf(stderr,
     "[auto-measure-refine] contourExtremes=top(%.2f,%.2f) bottom(%.2f,%.2f) left(%.2f,%.2f) right(%.2f,%.2f)\n",
     topPt.x, topPt.y, botPt.x, botPt.y, leftPt.x, leftPt.y, rightPt.x, rightPt.y);
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] contourTop=(%.2f,%.2f)\n", topPt.x, topPt.y);
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] contourBottom=(%.2f,%.2f)\n", botPt.x, botPt.y);
   std::fflush(stderr);
+
+  // ---------- Edge-fit refinement (real geometric corners) ----------
+  // Split the contour into the 4 diamond sides by angle around the center,
+  // fit a line through each side, and intersect adjacent sides to obtain the
+  // 4 geometric corners. This lands on the true tips even when the diamond
+  // is slightly rotated — extremes alone can drift sideways and produce a
+  // skewed D2. If the fit fails or drifts unreasonably, we keep topPt/botPt/
+  // leftPt/rightPt as the extreme contour points (fallback path below uses
+  // the Sobel + top-edge snap).
+  std::fprintf(stderr,
+    "[auto-measure-10x-refine-start] contourIndex=0 area=%.2f points=%d\n",
+    cv::contourArea(contour), static_cast<int>(contour.size()));
+  std::fflush(stderr);
+
+  bool usedEdgeFit = false;
+  {
+    auto angleFromCenter = [&](const cv::Point2f& p) -> float {
+      return std::atan2(p.y - center.y, p.x - center.x);
+    };
+    // atan2 in image coords (y-down): top ≈ -π/2, right ≈ 0, bottom ≈ π/2,
+    // left ≈ ±π. Going clockwise: top → right → bottom → left → top.
+    const float aTop = angleFromCenter(topPt);
+    const float aRight = angleFromCenter(rightPt);
+    const float aBottom = angleFromCenter(botPt);
+    const float aLeft = angleFromCenter(leftPt);
+
+    auto angleInArc = [](float a, float lo, float hi) {
+      // Arc from lo to hi going in the direction of increasing atan2 value.
+      if (lo <= hi) return a >= lo && a <= hi;
+      // Wraps through ±π (e.g. left → top side).
+      return a >= lo || a <= hi;
+    };
+
+    // Side buckets, clockwise from top:
+    //   0 = top→right (top-right edge of diamond)
+    //   1 = right→bottom (bottom-right edge)
+    //   2 = bottom→left (bottom-left edge)
+    //   3 = left→top (top-left edge)
+    std::vector<cv::Point2f> sides[4];
+    for (const auto& ip : contour) {
+      const cv::Point2f p(static_cast<float>(ip.x), static_cast<float>(ip.y));
+      const float a = angleFromCenter(p);
+      if (angleInArc(a, aTop, aRight)) sides[0].push_back(p);
+      else if (angleInArc(a, aRight, aBottom)) sides[1].push_back(p);
+      else if (angleInArc(a, aBottom, aLeft)) sides[2].push_back(p);
+      else sides[3].push_back(p);
+    }
+
+    static const char* kSideName[4] = {"topRight", "bottomRight", "bottomLeft", "topLeft"};
+    const int MIN_PER_SIDE = 4;
+    cv::Vec4f fitted[4];
+    bool fitOk = true;
+    for (int i = 0; i < 4; ++i) {
+      const int n = static_cast<int>(sides[i].size());
+      if (n < MIN_PER_SIDE) {
+        std::fprintf(stderr,
+          "[auto-measure-10x-edge-fit] side=%s points=%d ok=false\n",
+          kSideName[i], n);
+        fitOk = false;
+        continue;
+      }
+      cv::fitLine(sides[i], fitted[i], cv::DIST_L2, 0, 0.01, 0.01);
+      std::fprintf(stderr,
+        "[auto-measure-10x-edge-fit] side=%s points=%d ok=true\n",
+        kSideName[i], n);
+    }
+    std::fflush(stderr);
+
+    auto intersectLines = [](const cv::Vec4f& L1, const cv::Vec4f& L2,
+                             cv::Point2f& out) -> bool {
+      const float vx1 = L1[0], vy1 = L1[1], x01 = L1[2], y01 = L1[3];
+      const float vx2 = L2[0], vy2 = L2[1], x02 = L2[2], y02 = L2[3];
+      const float det = vx2 * vy1 - vx1 * vy2;
+      if (std::abs(det) < 1e-6f) return false;
+      const float t = (vx2 * (y02 - y01) - vy2 * (x02 - x01)) / det;
+      out.x = x01 + t * vx1;
+      out.y = y01 + t * vy1;
+      return true;
+    };
+
+    cv::Point2f refTop, refRight, refBottom, refLeft;
+    bool intersectOk = false;
+    if (fitOk) {
+      // Corner = intersection of the two adjacent fitted sides.
+      //   top    = topRight ∩ topLeft   (sides 0 & 3)
+      //   right  = topRight ∩ bottomRight (0 & 1)
+      //   bottom = bottomRight ∩ bottomLeft (1 & 2)
+      //   left   = bottomLeft ∩ topLeft (2 & 3)
+      intersectOk =
+        intersectLines(fitted[0], fitted[3], refTop) &&
+        intersectLines(fitted[0], fitted[1], refRight) &&
+        intersectLines(fitted[1], fitted[2], refBottom) &&
+        intersectLines(fitted[2], fitted[3], refLeft);
+    }
+
+    if (intersectOk) {
+      // Clamp to image bounds.
+      auto clampPt = [&](cv::Point2f& p) {
+        p.x = std::clamp(p.x, 0.0f, static_cast<float>(params.width - 1));
+        p.y = std::clamp(p.y, 0.0f, static_cast<float>(params.height - 1));
+      };
+      clampPt(refTop); clampPt(refRight); clampPt(refBottom); clampPt(refLeft);
+
+      // Reject impossible geometry: corner order wrong, diagonal too small,
+      // unreasonable ratio, or any tip too far from its extreme.
+      const bool orderOk =
+        refTop.y < refBottom.y - 4.0f &&
+        refLeft.x < refRight.x - 4.0f;
+      const double d1 = std::hypot(refRight.x - refLeft.x, refRight.y - refLeft.y);
+      const double d2 = std::hypot(refBottom.x - refTop.x, refBottom.y - refTop.y);
+      const double minD = std::min(d1, d2);
+      const double maxD = std::max(d1, d2);
+      const double ratio = minD > 0.0 ? maxD / minD : 1e9;
+      const bool sizeOk = minD >= 8.0 && ratio <= 1.45;
+
+      const float halfDiag = 0.5f * std::hypot(rectW, rectH);
+      const float driftCap = std::max(24.0f, halfDiag * 0.35f);
+      auto driftOk = [&](const cv::Point2f& a, const cv::Point2f& b) {
+        return std::hypot(a.x - b.x, a.y - b.y) <= driftCap;
+      };
+      const bool neighborhoodOk =
+        driftOk(refTop, topPt) && driftOk(refRight, rightPt) &&
+        driftOk(refBottom, botPt) && driftOk(refLeft, leftPt);
+
+      if (!orderOk) {
+        std::fprintf(stderr, "[auto-measure-10x-fallback] reason=corner-order\n");
+      } else if (!sizeOk) {
+        std::fprintf(stderr,
+          "[auto-measure-10x-fallback] reason=size-or-ratio d1=%.2f d2=%.2f ratio=%.2f\n",
+          d1, d2, ratio);
+      } else if (!neighborhoodOk) {
+        std::fprintf(stderr,
+          "[auto-measure-10x-fallback] reason=drift-exceeds-cap cap=%.2f\n",
+          driftCap);
+      } else {
+        topPt = refTop; rightPt = refRight; botPt = refBottom; leftPt = refLeft;
+        usedEdgeFit = true;
+      }
+
+      std::fprintf(stderr,
+        "[auto-measure-10x-intersections] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) used=%s\n",
+        refTop.x, refTop.y, refRight.x, refRight.y,
+        refBottom.x, refBottom.y, refLeft.x, refLeft.y,
+        usedEdgeFit ? "true" : "false");
+      std::fflush(stderr);
+    } else {
+      std::fprintf(stderr,
+        "[auto-measure-10x-fallback] reason=%s\n",
+        fitOk ? "intersection-failed" : "side-fit-insufficient-points");
+      std::fflush(stderr);
+    }
+  }
 
   // Local Sobel-magnitude edge snap. Sweep a small window along the outward
   // axis (Y for top/bottom, X for left/right) at the band-center coordinate.
@@ -2790,27 +2959,519 @@ void RefineTipsForTwoLineMode(
     tip.x = static_cast<float>(bestX);
   };
 
-  if (!gradMag.empty()) {
-    snapY(topPt, snapCapV, true);
+  if (!usedEdgeFit && !gradMag.empty()) {
+    // Bottom/left/right keep the bulk outward-biased snap — those tips are
+    // already correct per user report. Skipped when edge-fit succeeded: the
+    // intersection points are already on the geometric corners.
     snapY(botPt, snapCapV, false);
     snapX(leftPt, snapCapH, true);
     snapX(rightPt, snapCapH, false);
   }
+
+  // -------- TOP-ONLY targeted refinement (fallback only) --------
+  // Bug: the generic outward-biased snap pulled the top tip ABOVE the real
+  // diamond corner into the bright background (the dark→bright transition's
+  // strongest |∇I| point sits a couple of px outside the corner). For the
+  // top tip only we (a) drop the outward bias, (b) clamp so the refined Y
+  // cannot rise above the contour extreme by more than 1 px, and (c) apply
+  // a geometric-consistency snap toward the mirror prediction from the
+  // bottom tip if the candidate is wildly off-axis.
+  //
+  // Skipped when edge-fit already produced geometric corners.
+  if (!usedEdgeFit) {
+  const cv::Point2f rawTopForLog = topPt;
+  cv::Point2f edgeCandidate = topPt;
+  if (!gradMag.empty()) {
+    const int x = static_cast<int>(std::round(topPt.x));
+    const int yc = static_cast<int>(std::round(topPt.y));
+    // Allow searching a few px inward (toward center) and AT MOST 1 px
+    // outward — this is the no-overshoot clamp.
+    const int outwardLimit = 1;
+    const int inwardLimit = std::clamp(static_cast<int>(std::round(rectH * 0.12f)), 4, 12);
+    const int y0 = std::max(0, yc - outwardLimit);
+    const int y1 = std::min((gradMag.empty() ? params.height : gradMag.rows) - 1,
+                            yc + inwardLimit);
+    float bestG = -1.0f;
+    int bestY = yc;
+    for (int y = y0; y <= y1; ++y) {
+      // No outward bias. Slight INWARD preference (favor staying on the
+      // dark side of the dark→bright transition, i.e. on the diamond edge).
+      const float bias = static_cast<float>(y - yc) * 0.03f;
+      const float g = sampleGrad(x, y) + bias;
+      if (g > bestG) { bestG = g; bestY = y; }
+    }
+    edgeCandidate.y = static_cast<float>(bestY);
+  }
+
+  std::fprintf(stderr,
+    "[auto-measure-top-refine] rawTop=(%.2f,%.2f)\n",
+    rawTopForLog.x, rawTopForLog.y);
+  std::fprintf(stderr,
+    "[auto-measure-top-refine] edgeCandidate=(%.2f,%.2f)\n",
+    edgeCandidate.x, edgeCandidate.y);
+  std::fflush(stderr);
+
+  // Geometric-consistency check: the top tip should sit roughly opposite the
+  // bottom tip across the diamond center. If the edge candidate deviates by
+  // more than ~30% of the diamond half-height from this mirror prediction
+  // (caused by a bright speckle above the corner), snap halfway toward the
+  // prediction. Never below center.
+  cv::Point2f topPredict = topPt;
+  {
+    const float expectedY = 2.0f * center.y - botPt.y;
+    const float halfH = std::max(8.0f, std::abs(botPt.y - center.y));
+    const float deviation = std::abs(edgeCandidate.y - expectedY);
+    const float deviationTol = halfH * 0.30f;
+    if (deviation > deviationTol) {
+      // Pull halfway toward the mirror prediction — keeps a real off-axis
+      // detection if it's only slightly off, but rejects gross outliers.
+      topPredict.y = 0.5f * (edgeCandidate.y + expectedY);
+    } else {
+      topPredict.y = edgeCandidate.y;
+    }
+    // Hard guard: never let top cross center.
+    if (topPredict.y > center.y - 2.0f) topPredict.y = center.y - 2.0f;
+  }
+  topPt = topPredict;
+
+  const float topCorrectionPx = topPt.y - rawTopForLog.y;
+
+  std::fprintf(stderr,
+    "[auto-measure-top-refine] finalTop=(%.2f,%.2f)\n",
+    topPt.x, topPt.y);
+  std::fprintf(stderr,
+    "[auto-measure-top-refine] correctionPx=%.2f\n",
+    topCorrectionPx);
+  std::fflush(stderr);
+
+  } // end if (!usedEdgeFit) — top-only refinement block
 
   std::fprintf(stderr,
     "[auto-measure-refine] edgeRefinedTips=top(%.2f,%.2f) bottom(%.2f,%.2f) left(%.2f,%.2f) right(%.2f,%.2f)\n",
     topPt.x, topPt.y, botPt.x, botPt.y, leftPt.x, leftPt.y, rightPt.x, rightPt.y);
   std::fflush(stderr);
 
-  // Collapse onto shared center axes — D1 perfectly horizontal, D2 perfectly
-  // vertical, both crossing the same (midX, midY) center.
-  const float midY = (leftPt.y + rightPt.y) * 0.5f;
-  const float midX = (topPt.x + botPt.x) * 0.5f;
+  cv::Point2f beforeTop;
+  cv::Point2f beforeBottom;
 
-  corners.left = {leftPt.x, midY};
-  corners.right = {rightPt.x, midY};
-  corners.top = {midX, topPt.y};
-  corners.bottom = {midX, botPt.y};
+  if (usedEdgeFit) {
+    // Edge-fit succeeded: use the real geometric corners directly. Do NOT
+    // force axis alignment — the 4 intersection points already share a
+    // single geometric center by construction, and a rotated diamond's true
+    // tips should not be snapped onto a forced horizontal/vertical axis.
+    beforeTop = topPt;
+    beforeBottom = botPt;
+    corners.top = topPt;
+    corners.right = rightPt;
+    corners.bottom = botPt;
+    corners.left = leftPt;
+    const float centerX = (leftPt.x + rightPt.x) * 0.5f;
+    const float centerY = (leftPt.y + rightPt.y) * 0.5f;
+    std::fprintf(stderr,
+      "[auto-measure-10x-center] centerX=%.2f centerY=%.2f source=edge-fit\n",
+      centerX, centerY);
+    std::fflush(stderr);
+  } else {
+    // Fallback path: tips came from extreme + Sobel + top-edge. These are
+    // noisier in X, so collapse D1/D2 onto the D1-derived center to keep
+    // them crossing at a single point.
+    const float centerX = (leftPt.x + rightPt.x) * 0.5f;
+    const float centerY = (leftPt.y + rightPt.y) * 0.5f;
+    std::fprintf(stderr,
+      "[auto-measure-10x-center] centerX=%.2f centerY=%.2f source=fallback-d1\n",
+      centerX, centerY);
+    std::fflush(stderr);
+    beforeTop = topPt;
+    beforeBottom = botPt;
+    corners.left = {leftPt.x, centerY};
+    corners.right = {rightPt.x, centerY};
+    corners.top = {centerX, topPt.y};
+    corners.bottom = {centerX, botPt.y};
+  }
+
+  std::fprintf(stderr,
+    "[auto-measure-d2-align] beforeTop=(%.2f,%.2f) beforeBottom=(%.2f,%.2f) afterTop=(%.2f,%.2f) afterBottom=(%.2f,%.2f)\n",
+    beforeTop.x, beforeTop.y, beforeBottom.x, beforeBottom.y,
+    corners.top.x, corners.top.y, corners.bottom.x, corners.bottom.y);
+  std::fflush(stderr);
+
+  // -------- Contour-snap for left / right / bottom --------
+  // Edge-fit intersections can land a couple of px outside the actual
+  // contour boundary (the fitted lines are extrapolated past the curved
+  // tip). Snap each of left/right/bottom to the nearest real contour point
+  // within a local window so the yellow dots sit exactly on the visible
+  // diamond corner. TOP is intentionally untouched per requirements — its
+  // current refinement is correct.
+  {
+    const float halfDiag = 0.5f * std::hypot(rectW, rectH);
+    const float searchRadius = std::max(6.0f, halfDiag * 0.18f);
+    const float searchRadiusSq = searchRadius * searchRadius;
+
+    auto snapToContour = [&](cv::Point2f tip) -> cv::Point2f {
+      cv::Point2f best = tip;
+      float bestDistSq = std::numeric_limits<float>::infinity();
+      for (const auto& ip : contour) {
+        const float dx = static_cast<float>(ip.x) - tip.x;
+        const float dy = static_cast<float>(ip.y) - tip.y;
+        const float dsq = dx * dx + dy * dy;
+        if (dsq > searchRadiusSq) continue;
+        if (dsq < bestDistSq) {
+          bestDistSq = dsq;
+          best = cv::Point2f(static_cast<float>(ip.x), static_cast<float>(ip.y));
+        }
+      }
+      return best;
+    };
+
+    // Accept the snap only when the correction is small. Edge-fit
+    // intersections already land on the geometric corner; a large snap
+    // distance means the nearest contour pixel is on the wrong side of the
+    // tip (a curved indent edge), which pulls the dot inward off the
+    // visible corner. 4 px is the working threshold — anything larger,
+    // keep the edge-fit point.
+    const float MAX_SNAP_PX = 4.0f;
+    auto refineTip = [&](const char* name, cv::Point2f raw) -> cv::Point2f {
+      const cv::Point2f candidate = snapToContour(raw);
+      const float correction = std::hypot(candidate.x - raw.x, candidate.y - raw.y);
+      const bool accept = correction <= MAX_SNAP_PX;
+      const char* reason = accept ? "within-threshold" : "exceeds-threshold-keep-edge-fit";
+      const cv::Point2f chosen = accept ? candidate : raw;
+      std::fprintf(stderr,
+        "[auto-measure-tip-refine] tip=%s raw=(%.2f,%.2f) refined=(%.2f,%.2f) correctionPx=%.2f\n",
+        name, raw.x, raw.y, chosen.x, chosen.y, correction);
+      std::fprintf(stderr,
+        "[auto-measure-tip-refine-confidence] tip=%s correctionPx=%.2f accepted=%s reason=%s\n",
+        name, correction, accept ? "true" : "false", reason);
+      std::fprintf(stderr,
+        "[auto-measure-final-source-tip] tip=%s source=%s\n",
+        name, accept ? "contour-snap" : "edge-fit");
+      return chosen;
+    };
+
+    const cv::Point2f rawLeft = corners.left;
+    const cv::Point2f rawRight = corners.right;
+    const cv::Point2f rawBottom = corners.bottom;
+
+    corners.left = refineTip("left", rawLeft);
+    corners.right = refineTip("right", rawRight);
+    corners.bottom = refineTip("bottom", rawBottom);
+    std::fflush(stderr);
+  }
+
+  // ---------- 10X final geometry source selection ----------
+  // Edge-fit corners (from `usedEdgeFit`) sit on the real intersection of
+  // the 4 fitted diamond sides, which lands closer to the true visible
+  // corners than the axis-bounds snap (the latter forces alignment and
+  // moves dots off the actual tips when the diamond is slightly rotated).
+  // So: keep edge-fit corners when they're valid; only fall back to the
+  // axis-aligned bounds snap if edge-fit was rejected earlier.
+  if (usedEdgeFit) {
+    std::fprintf(stderr,
+      "[auto-measure-10x-final-source] source=edge-fit reason=edge-fit-valid\n");
+    std::fprintf(stderr,
+      "[auto-measure-10x-axis-final] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+      corners.top.x, corners.top.y, corners.right.x, corners.right.y,
+      corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
+    std::fflush(stderr);
+  } else {
+    std::fprintf(stderr,
+      "[auto-measure-10x-final-source] source=axis-bounds-fallback reason=edge-fit-rejected\n");
+    std::fflush(stderr);
+  // ---------- 10X axis-aligned final geometry (fallback only) ----------
+  // Used when edge-fit was rejected: D1 horizontal through a single shared
+  // center, D2 vertical through that same center, dots sitting on actual
+  // contour boundary at the centerlines. The locked coord (Y for left/right,
+  // X for top/bottom) is preserved during the contour snap, so D1 cannot
+  // drift up/down and D2 cannot drift left/right.
+  {
+    cv::Point2f leftMost(0, 0), rightMost(0, 0), topMost(0, 0), bottomMost(0, 0);
+    float minX = std::numeric_limits<float>::infinity();
+    float maxX = -std::numeric_limits<float>::infinity();
+    float minY = std::numeric_limits<float>::infinity();
+    float maxY = -std::numeric_limits<float>::infinity();
+    for (const auto& ip : contour) {
+      const float x = static_cast<float>(ip.x);
+      const float y = static_cast<float>(ip.y);
+      if (x < minX) { minX = x; leftMost = {x, y}; }
+      if (x > maxX) { maxX = x; rightMost = {x, y}; }
+      if (y < minY) { minY = y; topMost = {x, y}; }
+      if (y > maxY) { maxY = y; bottomMost = {x, y}; }
+    }
+    std::fprintf(stderr,
+      "[auto-measure-10x-bounds] leftMost=(%.2f,%.2f) rightMost=(%.2f,%.2f) topMost=(%.2f,%.2f) bottomMost=(%.2f,%.2f)\n",
+      leftMost.x, leftMost.y, rightMost.x, rightMost.y,
+      topMost.x, topMost.y, bottomMost.x, bottomMost.y);
+
+    const float axisCenterX = (leftMost.x + rightMost.x) * 0.5f;
+    const float axisCenterY = (topMost.y + bottomMost.y) * 0.5f;
+    std::fprintf(stderr,
+      "[auto-measure-10x-center] centerX=%.2f centerY=%.2f source=axis-bounds\n",
+      axisCenterX, axisCenterY);
+
+    // Narrow centerline bands: snap each tip to the contour extreme at the
+    // shared axis. Wide enough to tolerate a few px of noise, narrow enough
+    // that the opposite axis's tips never enter the search.
+    const float bandH = std::max(4.0f, 0.10f * (rightMost.x - leftMost.x));
+    const float bandV = std::max(4.0f, 0.10f * (bottomMost.y - topMost.y));
+
+    float bestLeftX = leftMost.x;
+    float bestRightX = rightMost.x;
+    float bestTopY = topMost.y;
+    float bestBottomY = bottomMost.y;
+    for (const auto& ip : contour) {
+      const float x = static_cast<float>(ip.x);
+      const float y = static_cast<float>(ip.y);
+      if (std::abs(y - axisCenterY) <= bandV) {
+        if (x < bestLeftX) bestLeftX = x;
+        if (x > bestRightX) bestRightX = x;
+      }
+      if (std::abs(x - axisCenterX) <= bandH) {
+        if (y < bestTopY) bestTopY = y;
+        if (y > bestBottomY) bestBottomY = y;
+      }
+    }
+
+    // Force axis alignment: left/right share Y = axisCenterY (D1 horizontal),
+    // top/bottom share X = axisCenterX (D2 vertical).
+    corners.left = {bestLeftX, axisCenterY};
+    corners.right = {bestRightX, axisCenterY};
+    corners.top = {axisCenterX, bestTopY};
+    corners.bottom = {axisCenterX, bestBottomY};
+
+    std::fprintf(stderr,
+      "[auto-measure-10x-axis-final] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+      corners.top.x, corners.top.y, corners.right.x, corners.right.y,
+      corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
+    std::fflush(stderr);
+  }
+  } // end else (axis-bounds fallback)
+
+  // Snapshot the chosen prior corners (edge-fit or axis-bounds-fallback).
+  // The clean-blob block below may override these; if it's rejected, we
+  // explicitly restore from this snapshot so corners can never drift back
+  // to noisy minAreaRect / earlier-pipeline values.
+  const cv::Point2f priorTop = corners.top;
+  const cv::Point2f priorRight = corners.right;
+  const cv::Point2f priorBottom = corners.bottom;
+  const cv::Point2f priorLeft = corners.left;
+  const char* priorSource = usedEdgeFit ? "edge-fit" : "axis-bounds-fallback";
+
+  // ---------- 10X ROI clean-blob final refinement ----------
+  // Crop a tight ROI around the selected diamond, re-threshold ONLY the
+  // darkest pixels there, clean with morphology, and pick the largest dark
+  // blob nearest the selected center. The blob's contour extremes (min/max
+  // x and y) are the true visible indentation corners — but only when the
+  // blob is genuinely the indent and not a larger surrounding shadow / rim
+  // region. Validation gates below reject blobs that don't fit.
+  const double selectedContourArea = cv::contourArea(contour);
+  const cv::Rect selectedBbox = cv::boundingRect(contour);
+  bool cleanBlobAccepted = false;
+  const char* finalSource = priorSource;
+  const char* finalReason = "blob-not-attempted";
+  if (!blurred.empty()) {
+    cv::Rect bbox = cv::boundingRect(contour);
+    const int margin = std::max(8, static_cast<int>(std::round(0.18 *
+      std::max(bbox.width, bbox.height))));
+    cv::Rect roi(bbox.x - margin, bbox.y - margin,
+                 bbox.width + 2 * margin, bbox.height + 2 * margin);
+    roi &= cv::Rect(0, 0, blurred.cols, blurred.rows);
+
+    std::fprintf(stderr,
+      "[auto-measure-10x-roi-refine] roi=(%d,%d %dx%d)\n",
+      roi.x, roi.y, roi.width, roi.height);
+    std::fflush(stderr);
+
+    if (roi.width >= 8 && roi.height >= 8) {
+      const cv::Mat roiImg = blurred(roi);
+      cv::Mat darkMask;
+      // Otsu on the ROI alone — adapts to the local dark/light split rather
+      // than a global threshold that includes background pixels.
+      cv::threshold(roiImg, darkMask, 0, 255,
+                    cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+      cv::Mat kClose = cv::getStructuringElement(cv::MORPH_RECT, {5, 5});
+      cv::Mat kOpen = cv::getStructuringElement(cv::MORPH_RECT, {3, 3});
+      cv::morphologyEx(darkMask, darkMask, cv::MORPH_CLOSE, kClose);
+      cv::morphologyEx(darkMask, darkMask, cv::MORPH_OPEN, kOpen);
+
+      std::vector<std::vector<cv::Point>> blobContours;
+      cv::findContours(darkMask, blobContours, cv::RETR_EXTERNAL,
+                       cv::CHAIN_APPROX_NONE);
+
+      const cv::Point2f roiCenter(
+        static_cast<float>(initialRect.center.x - roi.x),
+        static_cast<float>(initialRect.center.y - roi.y));
+
+      int bestIdx = -1;
+      double bestScore = -1.0;
+      double bestArea = 0.0;
+      cv::Point2f bestCenter;
+      for (size_t i = 0; i < blobContours.size(); ++i) {
+        const auto& c = blobContours[i];
+        if (c.size() < 8) continue;
+        const double area = cv::contourArea(c);
+        if (area < 40.0) continue;
+        cv::Moments m = cv::moments(c);
+        if (m.m00 <= 0.0) continue;
+        const cv::Point2f bc(
+          static_cast<float>(m.m10 / m.m00),
+          static_cast<float>(m.m01 / m.m00));
+        const float dx = bc.x - roiCenter.x;
+        const float dy = bc.y - roiCenter.y;
+        const double dist = std::sqrt(dx * dx + dy * dy);
+        // Prefer larger blobs closer to the selected center.
+        const double score = area / (1.0 + dist);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = static_cast<int>(i);
+          bestArea = area;
+          bestCenter = bc;
+        }
+      }
+
+      if (bestIdx >= 0) {
+        const auto& blob = blobContours[bestIdx];
+        const cv::Point2f imgCenter(
+          bestCenter.x + roi.x, bestCenter.y + roi.y);
+        std::fprintf(stderr,
+          "[auto-measure-10x-dark-blob] area=%.2f center=(%.2f,%.2f)\n",
+          bestArea, imgCenter.x, imgCenter.y);
+
+        cv::Point2f cleanTop, cleanRight, cleanBottom, cleanLeft;
+        int bestTopY = INT_MAX, bestBottomY = INT_MIN;
+        int bestLeftX = INT_MAX, bestRightX = INT_MIN;
+        for (const auto& p : blob) {
+          if (p.y < bestTopY)    { bestTopY = p.y;    cleanTop    = {static_cast<float>(p.x), static_cast<float>(p.y)}; }
+          if (p.y > bestBottomY) { bestBottomY = p.y; cleanBottom = {static_cast<float>(p.x), static_cast<float>(p.y)}; }
+          if (p.x < bestLeftX)   { bestLeftX = p.x;   cleanLeft   = {static_cast<float>(p.x), static_cast<float>(p.y)}; }
+          if (p.x > bestRightX)  { bestRightX = p.x;  cleanRight  = {static_cast<float>(p.x), static_cast<float>(p.y)}; }
+        }
+        // Translate from ROI to image coordinates.
+        cleanTop.x    += roi.x; cleanTop.y    += roi.y;
+        cleanRight.x  += roi.x; cleanRight.y  += roi.y;
+        cleanBottom.x += roi.x; cleanBottom.y += roi.y;
+        cleanLeft.x   += roi.x; cleanLeft.y   += roi.y;
+
+        std::fprintf(stderr,
+          "[auto-measure-10x-clean-corners] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+          cleanTop.x, cleanTop.y, cleanRight.x, cleanRight.y,
+          cleanBottom.x, cleanBottom.y, cleanLeft.x, cleanLeft.y);
+        std::fflush(stderr);
+
+        // Validate the clean blob produced sane geometry AND lies inside
+        // the selected diamond's neighborhood. The killer case from logs:
+        // a wrong huge blob with area >> selected contour area covers part
+        // of the surrounding shadow and produces corners outside the real
+        // diamond. We must reject it.
+        const bool orderOk =
+          cleanTop.y < cleanBottom.y - 4.0f &&
+          cleanLeft.x < cleanRight.x - 4.0f;
+        const double cd1 = std::hypot(cleanRight.x - cleanLeft.x,
+                                      cleanRight.y - cleanLeft.y);
+        const double cd2 = std::hypot(cleanBottom.x - cleanTop.x,
+                                      cleanBottom.y - cleanTop.y);
+        const double cMin = std::min(cd1, cd2);
+        const double cMax = std::max(cd1, cd2);
+        const double cRatio = cMin > 0.0 ? cMax / cMin : 1e9;
+        const bool sizeOk = cMin >= 8.0 && cRatio <= 1.5;
+
+        // Area ratio: blob must not exceed 1.20× the selected contour area
+        // (anything larger is the surrounding shadow region, not the indent).
+        // Also reject blobs smaller than 0.55× (truncated detection).
+        const double areaRatio = selectedContourArea > 0.0
+          ? bestArea / selectedContourArea : 1e9;
+        const bool areaOk = areaRatio <= 1.20 && areaRatio >= 0.55;
+
+        // Neighborhood: every clean corner must lie within a tolerance of
+        // the selected contour's bounding box. Tolerance = max(8, 0.15·box
+        // longest side).
+        const float nbTol = std::max(8.0f, 0.15f *
+          static_cast<float>(std::max(selectedBbox.width, selectedBbox.height)));
+        auto insideBbox = [&](const cv::Point2f& p) -> bool {
+          return p.x >= selectedBbox.x - nbTol &&
+                 p.x <= selectedBbox.x + selectedBbox.width + nbTol &&
+                 p.y >= selectedBbox.y - nbTol &&
+                 p.y <= selectedBbox.y + selectedBbox.height + nbTol;
+        };
+        const bool neighborhoodOk =
+          insideBbox(cleanTop) && insideBbox(cleanRight) &&
+          insideBbox(cleanBottom) && insideBbox(cleanLeft);
+
+        std::fprintf(stderr,
+          "[auto-measure-10x-clean-blob-validate] areaRatio=%.3f areaOk=%d orderOk=%d sizeOk=%d neighborhoodOk=%d\n",
+          areaRatio, areaOk ? 1 : 0, orderOk ? 1 : 0,
+          sizeOk ? 1 : 0, neighborhoodOk ? 1 : 0);
+        std::fflush(stderr);
+
+        if (orderOk && sizeOk && areaOk && neighborhoodOk) {
+          corners.top = cleanTop;
+          corners.right = cleanRight;
+          corners.bottom = cleanBottom;
+          corners.left = cleanLeft;
+          cleanBlobAccepted = true;
+          finalSource = "clean-blob";
+          finalReason = "blob-valid";
+          std::fprintf(stderr,
+            "[auto-measure-10x-final-source] source=clean-blob reason=blob-valid\n");
+          std::fflush(stderr);
+        } else {
+          const char* r = !areaOk ? "blob-area-out-of-range"
+                          : !neighborhoodOk ? "blob-corner-outside-selected-bbox"
+                          : !orderOk ? "blob-order-invalid"
+                          : "blob-size-or-ratio-invalid";
+          finalReason = r;
+          std::fprintf(stderr,
+            "[auto-measure-10x-final-source] source=prior reason=%s areaRatio=%.3f d1=%.2f d2=%.2f ratio=%.2f\n",
+            r, areaRatio, cd1, cd2, cRatio);
+          std::fflush(stderr);
+        }
+      } else {
+        finalReason = "no-dark-blob-found";
+        std::fprintf(stderr,
+          "[auto-measure-10x-final-source] source=prior reason=no-dark-blob-found\n");
+        std::fflush(stderr);
+      }
+    } else {
+      finalReason = "roi-too-small";
+      std::fprintf(stderr,
+        "[auto-measure-10x-final-source] source=prior reason=roi-too-small\n");
+      std::fflush(stderr);
+    }
+  } else {
+    finalReason = "blurred-empty";
+  }
+
+  // ---------- FINAL ASSIGNMENT BEFORE RETURN ----------
+  // Explicit: if clean-blob was rejected, restore prior (edge-fit /
+  // axis-bounds-fallback) corners. Guarantees corners can never silently
+  // hold a half-overwritten state and can never revert further back to old
+  // minAreaRect values.
+  if (!cleanBlobAccepted) {
+    corners.top = priorTop;
+    corners.right = priorRight;
+    corners.bottom = priorBottom;
+    corners.left = priorLeft;
+  }
+  std::fprintf(stderr,
+    "[auto-measure-final-source] source=%s reason=%s\n",
+    finalSource, finalReason);
+  std::fprintf(stderr,
+    "[auto-measure-final-tips-before-return] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+    corners.top.x, corners.top.y, corners.right.x, corners.right.y,
+    corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
+  std::fflush(stderr);
+
+  const double d2PxFinal = std::hypot(
+    static_cast<double>(corners.bottom.x - corners.top.x),
+    static_cast<double>(corners.bottom.y - corners.top.y));
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] finalTop=(%.2f,%.2f)\n",
+    corners.top.x, corners.top.y);
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] finalBottom=(%.2f,%.2f)\n",
+    corners.bottom.x, corners.bottom.y);
+  std::fprintf(stderr,
+    "[auto-measure-d2-refine] d2Px=%.2f\n", d2PxFinal);
+  std::fflush(stderr);
 }
 
 Napi::Object PointObject(Napi::Env env, cv::Point2f point) {
@@ -3201,28 +3862,24 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // and D2 (top↔bottom) — exactly the "only D1 + D2 lines" mode requested.
     // 40X+ continues to run the full ExtractAxisTipsFromContour +
     // TryRefineCorners pipeline.
-    const bool twoLineMode = params.objectiveForMeasure == "10X";
+    // 10X now uses the SAME pipeline as 40X (ExtractAxisTipsFromContour +
+    // TryRefineCorners) so the 4 yellow edge lines / dots come from the
+    // same proven side-fit + intersection logic. The previous two-line
+    // refinement is disabled.
+    const bool twoLineMode = false;
+    const bool isTenX = params.objectiveForMeasure == "10X";
     OrderedCorners contourCorners;
-    if (twoLineMode) {
+    if (isTenX) {
       std::fprintf(stderr,
-        "[auto-measure-mode] objective=10X mode=two-line\n");
+        "[auto-measure-mode] objective=10X mode=four-edge\n");
       std::fflush(stderr);
-      contourCorners = best->corners;
-      RefineTipsForTwoLineMode(
-        best->contour,
-        pre.gradMag,
-        best->rect,
-        params,
-        contourCorners
-      );
-    } else {
-      contourCorners = ExtractAxisTipsFromContour(
-        best->contour,
-        best->hull,
-        best->corners,
-        best->center
-      );
     }
+    contourCorners = ExtractAxisTipsFromContour(
+      best->contour,
+      best->hull,
+      best->corners,
+      best->center
+    );
     std::fprintf(stderr,
       "[auto-measure-corners] top=%.2f,%.2f right=%.2f,%.2f bottom=%.2f,%.2f left=%.2f,%.2f\n",
       contourCorners.top.x, contourCorners.top.y,
@@ -3246,14 +3903,31 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       return Failure(env, contourRejectReason, debug);
     }
 
-    // Side-fit refinement is for hardened edges + 40X-tuned scan bands.
-    // At 10X it tends to drag corners off the soft indent edges into
-    // background texture, undoing the simpler minAreaRect estimate.
-    if (!twoLineMode) {
-      TryRefineCorners(pre.blurred, contourCorners, params);
-    }
+    // Side-fit refinement (formerly 40X-only). 10X now runs through this
+    // path too — the user reports 40X corner detection is reliable and
+    // wants the same behavior at 10X.
+    TryRefineCorners(pre.blurred, contourCorners, params);
     const ShapeMetrics contourMetrics = ComputeShapeMetrics(contourCorners);
-    if (twoLineMode) {
+    if (isTenX) {
+      // 4 edge lines = sides of the diamond polygon (corner→corner).
+      std::fprintf(stderr,
+        "[auto-measure-10x-edge-lines] topLeft=(%.2f,%.2f)->(%.2f,%.2f) topRight=(%.2f,%.2f)->(%.2f,%.2f) bottomRight=(%.2f,%.2f)->(%.2f,%.2f) bottomLeft=(%.2f,%.2f)->(%.2f,%.2f)\n",
+        contourCorners.left.x, contourCorners.left.y, contourCorners.top.x, contourCorners.top.y,
+        contourCorners.top.x, contourCorners.top.y, contourCorners.right.x, contourCorners.right.y,
+        contourCorners.right.x, contourCorners.right.y, contourCorners.bottom.x, contourCorners.bottom.y,
+        contourCorners.bottom.x, contourCorners.bottom.y, contourCorners.left.x, contourCorners.left.y);
+      std::fprintf(stderr,
+        "[auto-measure-10x-intersections] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+        contourCorners.top.x, contourCorners.top.y,
+        contourCorners.right.x, contourCorners.right.y,
+        contourCorners.bottom.x, contourCorners.bottom.y,
+        contourCorners.left.x, contourCorners.left.y);
+      std::fprintf(stderr,
+        "[auto-measure-final-tips] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+        contourCorners.top.x, contourCorners.top.y,
+        contourCorners.right.x, contourCorners.right.y,
+        contourCorners.bottom.x, contourCorners.bottom.y,
+        contourCorners.left.x, contourCorners.left.y);
       std::fprintf(stderr,
         "[auto-measure-d1] lengthPx=%.2f\n", contourMetrics.d1);
       std::fprintf(stderr,

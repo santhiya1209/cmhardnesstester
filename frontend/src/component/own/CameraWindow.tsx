@@ -20,6 +20,7 @@ import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
 import MagnifierLens from '@/component/own/MagnifierLens';
 import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
+import type { CameraPixelFormat } from '@/types/camera';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
 import { displayToImage, getImagePlacement } from '@/utils/manualMeasure';
@@ -79,6 +80,15 @@ function keepImageSizeIfSame(current: ImageSize | null, next: ImageSize | null):
   return current?.width === next.width && current.height === next.height ? current : next;
 }
 
+function toOwnedArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
+  if (body instanceof ArrayBuffer) return body;
+  const possibleView = body as unknown;
+  if (ArrayBuffer.isView(possibleView)) {
+    return (possibleView as Uint8Array).slice().buffer as ArrayBuffer;
+  }
+  return new Uint8Array(body).slice().buffer as ArrayBuffer;
+}
+
 type Props = {
   activeTool: ToolId;
   overlayShapes: OverlayShape[];
@@ -112,8 +122,8 @@ export type CameraWindowHandle = {
     buffer: ArrayBuffer;
     width: number;
     height: number;
-    pixelFormat: 'rgb32';
-    bits: 8;
+    pixelFormat: CameraPixelFormat;
+    bits: 8 | 16;
     source: 'live-camera' | 'uploaded-image';
   } | { ok: false; error: string };
   loadImageFromBuffer: (buffer: ArrayBufferLike) => Promise<{ ok: boolean; error?: string }>;
@@ -272,11 +282,7 @@ function CameraWindowImpl(
     if (!frozen) {
       const full = getLatestFullFrame();
       if (full && full.body) {
-        const u8 = full.body as Uint8Array;
-        const buffer =
-          full.body instanceof ArrayBuffer
-            ? full.body
-            : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+        const buffer = toOwnedArrayBuffer(full.body);
         if (options?.freeze) {
           // Visual freeze only — copies the (downscaled) live canvas onto
           // the snap canvas so the user sees the frozen preview. The native

@@ -30,6 +30,8 @@ export type CameraFrameMeta = {
   capturedAt?: number;
   /** Date.now() when the main process called webContents.send(). */
   sentAt?: number;
+  /** Frames dropped by native/main before this latest frame was sent. */
+  droppedBeforeSend?: number;
 };
 
 export type CameraDevice = { index: number; name: string };

@@ -13,6 +13,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useSaveCameraSetting } from '@/hooks/mutations/useSaveCameraSetting';
 import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
+import { dropPendingCameraFrames } from '@/hooks/useCameraStream';
 import {
   ANALOG_GAIN_MAX,
   ANALOG_GAIN_MIN,
@@ -162,6 +163,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       // eslint-disable-next-line no-console
       console.log('[camera-settings][frontend] gain changed:', value);
       try {
+        dropPendingCameraFrames('gain-change');
         const reply = await window.hardnessCamera.setGain(value);
         // eslint-disable-next-line no-console
         console.log('[camera-settings][frontend] setGain reply:', reply);
@@ -190,6 +192,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       // eslint-disable-next-line no-console
       console.log('[camera-settings][frontend] exposure changed:', valueMs);
       try {
+        dropPendingCameraFrames('exposure-change');
         const reply = await window.hardnessCamera.setExposure(valueMs);
         // eslint-disable-next-line no-console
         console.log('[camera-settings][frontend] setExposure reply:', reply);
@@ -404,7 +407,9 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   const handleCancel = useCallback(() => {
     if (liveAvailable && data) {
+      dropPendingCameraFrames('gain-change');
       void window.hardnessCamera.setGain(data.analogGain).catch(() => {});
+      dropPendingCameraFrames('exposure-change');
       void window.hardnessCamera.setExposure(data.exposureTimeMs).catch(() => {});
     }
     onClose();
