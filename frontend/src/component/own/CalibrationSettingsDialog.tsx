@@ -138,7 +138,7 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
 
     // eslint-disable-next-line no-console
     console.log(
-      `[calibration-save] objective=${payload.objective} umPerPixel=${payload.pixelToMicron}`
+      `[calibration-save] objective=${payload.objective} xUmPerPixel=${payload.pixelToMicron} yUmPerPixel=${payload.pixelToMicron} umPerPixel=${payload.pixelToMicron}`
     );
 
     onStatusChange?.(`Calibration saved for ${payload.objective}.`);

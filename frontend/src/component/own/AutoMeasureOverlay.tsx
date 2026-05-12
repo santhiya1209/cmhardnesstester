@@ -4,8 +4,11 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import { displayToImage, getImagePlacement, imageToDisplay } from '@/utils/manualMeasure';
 import {
+  clampPointToImage,
   drawManualMeasureOverlay,
+  drawTwoIndependentLines,
   type ManualMeasureImageSize,
+  type TwoLinesHandle,
 } from '@/utils/manualMeasureOverlayCanvas';
 import type { Point } from '@/types/tool';
 
@@ -20,6 +23,14 @@ const VERTICAL_LINES: LineKey[] = ['left', 'right'];
 const HORIZONTAL_LINES: LineKey[] = ['top', 'bottom'];
 
 const CORNER_HIT_RADIUS = 12;
+// Small radius around the diamond centroid that grabs the whole cross and
+// translates it. Kept smaller than CORNER_HIT_RADIUS so it never wins against
+// a corner handle on a tiny detection.
+const CENTER_HIT_RADIUS = 10;
+// Perpendicular hit distance from a D1/D2 line body (10X two-diagonals
+// layout). Kept slightly larger than the corner radius so the user can grab
+// a line on its midsection without precise aim.
+const LINE_BODY_HIT_DISTANCE = 8;
 
 export type AutoMeasureOverlaySource = 'auto' | 'preview' | 'save';
 
@@ -48,13 +59,30 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
+type DragHandle = LineKey | 'center' | 'd1-body' | 'd2-body';
+
+type DragKind = 'line' | 'corner' | 'center' | 'd1-body' | 'd2-body';
+
 type DragState = {
-  kind: 'line' | 'corner';
+  kind: DragKind;
   line: LineKey;
   pointerId: number;
   startCorners: AutoMeasureCorners;
   startPointerImage: Point;
 };
+
+// Perpendicular distance from point P to segment AB (display coords).
+function distancePointToSegment(p: Point, a: Point, b: Point): number {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const len2 = vx * vx + vy * vy;
+  if (len2 <= 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = a.x + t * vx;
+  const cy = a.y + t * vy;
+  return Math.hypot(p.x - cx, p.y - cy);
+}
 
 function clonePoint(p: Point): Point {
   return { x: p.x, y: p.y };
@@ -121,7 +149,7 @@ function AutoMeasureOverlayImpl({
   const tweenFrameRef = useRef<number | null>(null);
   const [localCorners, setLocalCorners] = useState<AutoMeasureCorners | null>(null);
   const localCornersRef = useRef<AutoMeasureCorners | null>(null);
-  const [hover, setHover] = useState<{ kind: 'line' | 'corner'; line: LineKey } | null>(null);
+  const [hover, setHover] = useState<{ kind: DragKind; line: LineKey } | null>(null);
 
   const writeCorners = useCallback((c: AutoMeasureCorners | null) => {
     localCornersRef.current = c;
@@ -130,12 +158,27 @@ function AutoMeasureOverlayImpl({
 
   useEffect(() => {
     if (dragRef.current) return;
+    const target = graphics ? cloneCorners(graphics.corners) : null;
+    const current = localCornersRef.current;
+    // Same-values fast path. If the parent re-renders and passes a new
+    // `graphics` object reference with identical corner values, do NOT
+    // restart the tween — restarting would call writeCorners every rAF tick
+    // for 120ms, mutating state with a fresh object each frame, which
+    // causes the `draw` useCallback to recreate and the redraw useEffect to
+    // re-fire. Net effect: overlay redrew at 60fps whenever the parent
+    // re-rendered, even though no visual change was needed.
+    if (
+      target &&
+      current &&
+      tweenFrameRef.current === null &&
+      cornersKey(target) === cornersKey(current)
+    ) {
+      return;
+    }
     if (tweenFrameRef.current !== null) {
       window.cancelAnimationFrame(tweenFrameRef.current);
       tweenFrameRef.current = null;
     }
-    const target = graphics ? cloneCorners(graphics.corners) : null;
-    const current = localCornersRef.current;
     if (source === 'auto' && target) {
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-detected] corners=${cornersKey(target)}`);
@@ -222,47 +265,94 @@ function AutoMeasureOverlayImpl({
       // eslint-disable-next-line no-console
       console.log(`[overlay-redraw] source=${source}`);
 
-      // Reuse Manual Measure's clean rendering pipeline: two solid yellow
-      // corner-to-corner D1/D2 lines + 4 corner dots + labels. No dashed or
-      // full-extent guides. Auto-detected diamond tips map to:
-      //   leftX/rightX = left/right tips, topY/bottomY = top/bottom tips.
-      const guides = corners
-        ? {
-            leftX: corners.left.x,
-            rightX: corners.right.x,
-            topY: corners.top.y,
-            bottomY: corners.bottom.y,
-          }
-        : null;
-      drawManualMeasureOverlay({
-        canvas,
-        wrap,
-        active: !!corners && !!imageSize,
-        imageSize,
-        guides,
-        hoverGuide: hover ? hover.line : null,
-        dragGuide: dragRef.current ? dragRef.current.line : null,
-        strokeWidth,
-      });
+      if (graphics?.lineLayout === 'two-diagonals') {
+        // 10X: two independent yellow segments — D1 (left tip ↔ right tip)
+        // and D2 (top tip ↔ bottom tip). Endpoints carry their own (x, y)
+        // so neither line is forced through the other's midpoint, and each
+        // line is independently translatable.
+        const dragHandle = dragRef.current
+          ? (dragRef.current.kind === 'd1-body'
+              ? 'd1-body'
+              : dragRef.current.kind === 'd2-body'
+              ? 'd2-body'
+              : (dragRef.current.line as TwoLinesHandle))
+          : null;
+        const hoverHandle = hover
+          ? (hover.kind === 'd1-body'
+              ? 'd1-body'
+              : hover.kind === 'd2-body'
+              ? 'd2-body'
+              : (hover.line as TwoLinesHandle))
+          : null;
+        drawTwoIndependentLines({
+          canvas,
+          wrap,
+          active: !!corners && !!imageSize,
+          imageSize,
+          d1Start: corners?.left ?? null,
+          d1End: corners?.right ?? null,
+          d2Start: corners?.top ?? null,
+          d2End: corners?.bottom ?? null,
+          hover: hoverHandle,
+          drag: dragHandle,
+          strokeWidth,
+        });
+      } else {
+        // 40X+: four full-extent guides + 4 corner handles (legacy layout).
+        const guides = corners
+          ? {
+              leftX: corners.left.x,
+              rightX: corners.right.x,
+              topY: corners.top.y,
+              bottomY: corners.bottom.y,
+            }
+          : null;
+        drawManualMeasureOverlay({
+          canvas,
+          wrap,
+          active: !!corners && !!imageSize,
+          imageSize,
+          guides,
+          hoverGuide: hover ? hover.line : null,
+          dragGuide: dragRef.current ? dragRef.current.line : null,
+          strokeWidth,
+          lineLayout: graphics?.lineLayout,
+        });
+      }
 
       // eslint-disable-next-line no-console
       console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
     });
-  }, [corners, imageSize, source, hover, strokeWidth]);
+  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout]);
+
+  // Latest `draw` reference for the ResizeObserver callback. The observer
+  // is installed once with `[]` deps; without this ref it would either
+  // capture a stale closure or have to be reinstalled every time `draw`'s
+  // identity changed (which was the original cause of the redraw spam).
+  const drawRef = useRef(draw);
+  useEffect(() => {
+    drawRef.current = draw;
+  }, [draw]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
-    draw();
-    const resizeObserver = new ResizeObserver(draw);
-    resizeObserver.observe(wrap);
+    const ro = new ResizeObserver(() => drawRef.current());
+    ro.observe(wrap);
     return () => {
-      resizeObserver.disconnect();
+      ro.disconnect();
       if (frameRef.current !== null) {
         window.cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
       }
     };
+  }, []);
+
+  // Redraw when visual deps change. The rAF skip-gate inside `draw` still
+  // bails out if drawKey is unchanged, so this is harmless even when called
+  // with no real change.
+  useEffect(() => {
+    draw();
   }, [draw]);
 
   const getDisplayPoint = useCallback((event: React.PointerEvent<HTMLDivElement>): Point => {
@@ -283,8 +373,10 @@ function AutoMeasureOverlayImpl({
     [imageSize]
   );
 
+  const isTwoDiagonals = graphics?.lineLayout === 'two-diagonals';
+
   const hitTest = useCallback(
-    (display: Point): { kind: 'line' | 'corner'; line: LineKey } | null => {
+    (display: Point): { kind: DragKind; line: LineKey } | null => {
       if (!corners || !imageSize) return null;
       const wrap = wrapRef.current;
       if (!wrap) return null;
@@ -302,7 +394,7 @@ function AutoMeasureOverlayImpl({
         bottom,
       };
 
-      // Handles win over guide lines when overlapping.
+      // Corner handles always win.
       for (const key of CORNER_KEYS) {
         const p = handles[key];
         if (Math.hypot(display.x - p.x, display.y - p.y) <= CORNER_HIT_RADIUS) {
@@ -310,9 +402,124 @@ function AutoMeasureOverlayImpl({
         }
       }
 
+      if (isTwoDiagonals) {
+        // 10X: D1-body and D2-body translate their own line only. No center
+        // handle in this layout — D1 and D2 are independent objects.
+        const d1Dist = distancePointToSegment(display, left, right);
+        const d2Dist = distancePointToSegment(display, top, bottom);
+        if (d1Dist <= LINE_BODY_HIT_DISTANCE && d1Dist <= d2Dist) {
+          return { kind: 'd1-body', line: 'left' };
+        }
+        if (d2Dist <= LINE_BODY_HIT_DISTANCE) {
+          return { kind: 'd2-body', line: 'top' };
+        }
+        return null;
+      }
+
+      // 40X: center hit zone — translates all 4 tips together.
+      const cx = (left.x + right.x) / 2;
+      const cy = (top.y + bottom.y) / 2;
+      if (Math.hypot(display.x - cx, display.y - cy) <= CENTER_HIT_RADIUS) {
+        return { kind: 'center', line: 'left' };
+      }
+
       return null;
     },
-    [corners, imageSize]
+    [corners, imageSize, isTwoDiagonals]
+  );
+
+  // Translate all 4 corners by (dxImg, dyImg), clamped so no corner exits
+  // the image bounds. Used by the center-drag handle to slide the whole
+  // D1/D2 cross over the diamond without changing the diagonals.
+  const applyCenterDelta = useCallback(
+    (dxImg: number, dyImg: number, base: AutoMeasureCorners): AutoMeasureCorners => {
+      const w = imageSize?.width ?? Number.POSITIVE_INFINITY;
+      const h = imageSize?.height ?? Number.POSITIVE_INFINITY;
+      const xs = [base.left.x, base.right.x, base.top.x, base.bottom.x];
+      const ys = [base.left.y, base.right.y, base.top.y, base.bottom.y];
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      let ddx = dxImg;
+      let ddy = dyImg;
+      if (minX + ddx < 0) ddx = -minX;
+      if (maxX + ddx > w) ddx = w - maxX;
+      if (minY + ddy < 0) ddy = -minY;
+      if (maxY + ddy > h) ddy = h - maxY;
+      const next = cloneCorners(base);
+      next.left.x += ddx; next.left.y += ddy;
+      next.right.x += ddx; next.right.y += ddy;
+      next.top.x += ddx; next.top.y += ddy;
+      next.bottom.x += ddx; next.bottom.y += ddy;
+      return next;
+    },
+    [imageSize]
+  );
+
+  // Two-diagonals (10X) corner drag: move the chosen tip freely in 2D and
+  // clamp to image bounds. D1 and D2 share no axis — left.y is not coupled
+  // to right.y, top.x not coupled to bottom.x. Emits [line-clamp] when the
+  // requested position is outside the image and was pulled back.
+  const applyCornerDelta2D = useCallback(
+    (line: LineKey, dxImg: number, dyImg: number, base: AutoMeasureCorners): AutoMeasureCorners => {
+      const next = cloneCorners(base);
+      if (!imageSize) {
+        const target = base[line];
+        next[line] = { x: target.x + dxImg, y: target.y + dyImg };
+        return next;
+      }
+      const target = base[line];
+      const requested = { x: target.x + dxImg, y: target.y + dyImg };
+      const { point: clamped, clamped: wasClamped } = clampPointToImage(requested, imageSize);
+      if (wasClamped) {
+        const lineLabel = line === 'left' || line === 'right' ? 'D1' : 'D2';
+        // eslint-disable-next-line no-console
+        console.log(
+          `[line-clamp] line=${lineLabel} endpoint=${line} before=(${requested.x.toFixed(2)},${requested.y.toFixed(2)}) after=(${clamped.x.toFixed(2)},${clamped.y.toFixed(2)})`
+        );
+      }
+      next[line] = clamped;
+      return next;
+    },
+    [imageSize]
+  );
+
+  // Two-diagonals line-body drag: translate D1 (left+right) or D2 (top+bottom)
+  // together without touching the other line. Clamps the translation so no
+  // endpoint exits the image bounds.
+  const applyLineBodyDelta = useCallback(
+    (
+      which: 'd1' | 'd2',
+      dxImg: number,
+      dyImg: number,
+      base: AutoMeasureCorners
+    ): AutoMeasureCorners => {
+      const next = cloneCorners(base);
+      const w = imageSize?.width ?? Number.POSITIVE_INFINITY;
+      const h = imageSize?.height ?? Number.POSITIVE_INFINITY;
+      const a = which === 'd1' ? base.left : base.top;
+      const b = which === 'd1' ? base.right : base.bottom;
+      let ddx = dxImg;
+      let ddy = dyImg;
+      const minX = Math.min(a.x, b.x);
+      const maxX = Math.max(a.x, b.x);
+      const minY = Math.min(a.y, b.y);
+      const maxY = Math.max(a.y, b.y);
+      if (minX + ddx < 0) ddx = -minX;
+      if (maxX + ddx > w) ddx = w - maxX;
+      if (minY + ddy < 0) ddy = -minY;
+      if (maxY + ddy > h) ddy = h - maxY;
+      if (which === 'd1') {
+        next.left = { x: a.x + ddx, y: a.y + ddy };
+        next.right = { x: b.x + ddx, y: b.y + ddy };
+      } else {
+        next.top = { x: a.x + ddx, y: a.y + ddy };
+        next.bottom = { x: b.x + ddx, y: b.y + ddy };
+      }
+      return next;
+    },
+    [imageSize]
   );
 
   // Apply a 1-D drag offset (image coords) to the chosen line, recomputing all
@@ -359,13 +566,42 @@ function AutoMeasureOverlayImpl({
         if (!nowImg) return;
         const dx = nowImg.x - drag.startPointerImage.x;
         const dy = nowImg.y - drag.startPointerImage.y;
-        const next = applyLineDelta(drag.line, dx, dy, drag.startCorners);
+        let next: AutoMeasureCorners;
+        if (drag.kind === 'center') {
+          next = applyCenterDelta(dx, dy, drag.startCorners);
+        } else if (drag.kind === 'd1-body') {
+          next = applyLineBodyDelta('d1', dx, dy, drag.startCorners);
+        } else if (drag.kind === 'd2-body') {
+          next = applyLineBodyDelta('d2', dx, dy, drag.startCorners);
+        } else if (isTwoDiagonals && drag.kind === 'corner') {
+          next = applyCornerDelta2D(drag.line, dx, dy, drag.startCorners);
+        } else {
+          next = applyLineDelta(drag.line, dx, dy, drag.startCorners);
+        }
         writeCorners(next);
         const d1 = Math.hypot(next.right.x - next.left.x, next.right.y - next.left.y);
         const d2 = Math.hypot(next.bottom.x - next.top.x, next.bottom.y - next.top.y);
+        const handleLabel: DragHandle =
+          drag.kind === 'center'
+            ? 'center'
+            : drag.kind === 'd1-body'
+            ? 'd1-body'
+            : drag.kind === 'd2-body'
+            ? 'd2-body'
+            : drag.line;
+        if (isTwoDiagonals) {
+          const lineLabel =
+            drag.kind === 'd1-body' || (drag.kind === 'corner' && (drag.line === 'left' || drag.line === 'right'))
+              ? 'D1'
+              : 'D2';
+          // eslint-disable-next-line no-console
+          console.log(
+            `[line-adjust-update] line=${lineLabel} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
+          );
+        }
         // eslint-disable-next-line no-console
         console.log(
-          `[overlay-drag-move] corner=${drag.line} dx=${dx.toFixed(2)} dy=${dy.toFixed(2)}`
+          `[overlay-drag-move] corner=${handleLabel} dx=${dx.toFixed(2)} dy=${dy.toFixed(2)}`
         );
         // eslint-disable-next-line no-console
         console.log(
@@ -373,7 +609,7 @@ function AutoMeasureOverlayImpl({
         );
         // eslint-disable-next-line no-console
         console.log(
-          `[auto-measure][drag-update] handle=${drag.line} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
+          `[auto-measure][drag-update] handle=${handleLabel} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
         );
         onAdjusted?.(next);
         return;
@@ -388,7 +624,18 @@ function AutoMeasureOverlayImpl({
         setHover({ kind: hit.kind, line: hit.line });
       }
     },
-    [applyLineDelta, getDisplayPoint, hitTest, hover, onAdjusted, toImagePoint]
+    [
+      applyCenterDelta,
+      applyCornerDelta2D,
+      applyLineBodyDelta,
+      applyLineDelta,
+      getDisplayPoint,
+      hitTest,
+      hover,
+      isTwoDiagonals,
+      onAdjusted,
+      toImagePoint,
+    ]
   );
 
   const handlePointerDown = useCallback(
@@ -402,16 +649,30 @@ function AutoMeasureOverlayImpl({
       if (!startPointerImage) return;
       event.preventDefault();
       wrapRef.current?.setPointerCapture(event.pointerId);
+      const handleLabel: DragHandle =
+        hit.kind === 'center'
+          ? 'center'
+          : hit.kind === 'd1-body'
+          ? 'd1-body'
+          : hit.kind === 'd2-body'
+          ? 'd2-body'
+          : hit.line;
       // eslint-disable-next-line no-console
       console.log('[auto-measure] adjust start', {
         kind: hit.kind,
-        line: hit.line,
+        line: handleLabel,
         corners,
       });
       // eslint-disable-next-line no-console
-      console.log(`[overlay-drag-start] corner=${hit.line} from=${cornersKey(corners)}`);
+      console.log(`[overlay-drag-start] corner=${handleLabel} from=${cornersKey(corners)}`);
       // eslint-disable-next-line no-console
-      console.log(`[auto-measure][drag-start] handle=${hit.line}`);
+      console.log(`[auto-measure][drag-start] handle=${handleLabel}`);
+      // Mirror for the calibration flow — App.tsx gates calibration-mode
+      // behavior on calibrationManualModeRef, but the start event originates
+      // here; emitting this log unconditionally keeps the overlay component
+      // simple (no calibration-mode prop) and the log is cheap.
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-cross-adjust-start] handle=${handleLabel}`);
       dragRef.current = {
         kind: hit.kind,
         line: hit.line,
@@ -476,6 +737,16 @@ function AutoMeasureOverlayImpl({
   // Cursor: vertical lines → ew-resize, horizontal lines → ns-resize, corners →
   // resize indicator matching the line they belong to.
   const cursor = (() => {
+    const dragKind = dragRef.current?.kind ?? null;
+    const hoverKind = hover?.kind ?? null;
+    if (
+      dragKind === 'center' ||
+      hoverKind === 'center' ||
+      dragKind === 'd1-body' ||
+      hoverKind === 'd1-body' ||
+      dragKind === 'd2-body' ||
+      hoverKind === 'd2-body'
+    ) return 'move';
     const active = dragRef.current ? { line: dragRef.current.line } : hover ? { line: hover.line } : null;
     if (!active) return 'default';
     if (VERTICAL_LINES.includes(active.line)) return 'ew-resize';

@@ -10,6 +10,7 @@ import {
   getCurrentFrameEpoch,
   getLastCameraFramePaintAt,
   getLastPaintEpoch,
+  getLatestFullFrame,
   useCameraStream,
   waitForFreshCameraFrame,
 } from '@/hooks/useCameraStream';
@@ -261,6 +262,53 @@ function CameraWindowImpl(
         `[camera-frame-guard] reason=awaiting-fresh-frame currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()} lastPaintAt=${getLastCameraFramePaintAt()} clearedAt=${liveCanvasClearedAtRef.current}`
       );
       return { ok: false, error: 'awaiting-fresh-frame' };
+    }
+
+    // FAST PATH for live capture: the visible canvas is now painted at
+    // PREVIEW_SCALE (downscaled) for latency reasons; reading its pixels
+    // would hand the native detector a downscaled image. Use the FULL-RES
+    // raw mono8 buffer that useCameraStream holds in memory instead. No
+    // canvas getImageData required → also saves a ~5MB memcpy on click.
+    if (!frozen) {
+      const full = getLatestFullFrame();
+      if (full && full.body) {
+        const u8 = full.body as Uint8Array;
+        const buffer =
+          full.body instanceof ArrayBuffer
+            ? full.body
+            : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+        if (options?.freeze) {
+          // Visual freeze only — copies the (downscaled) live canvas onto
+          // the snap canvas so the user sees the frozen preview. The native
+          // detector receives the full-res buffer above; this is purely UI.
+          if (snap && live && live.width > 0 && live.height > 0) {
+            snap.width = live.width;
+            snap.height = live.height;
+            const snapCtx = snap.getContext('2d');
+            if (snapCtx) {
+              snapCtx.drawImage(live, 0, 0);
+              imageSourceRef.current = 'live-camera';
+              setFrozen(true);
+            }
+          }
+          // eslint-disable-next-line no-console
+          console.log('[opencv-auto] frame captured (full-res fast-path)');
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          '[frame] captured timestamp=', Date.now(),
+          'source=live-camera-fullres size=', full.width, 'x', full.height
+        );
+        return {
+          ok: true,
+          buffer,
+          width: full.width,
+          height: full.height,
+          pixelFormat: full.pixelFormat,
+          bits: full.bits,
+          source: 'live-camera',
+        };
+      }
     }
 
     const ctx = source.getContext('2d', { willReadFrequently: true });
@@ -581,6 +629,16 @@ function CameraWindowImpl(
   useEffect(() => {
     if (canvasRef.current) attachCanvas(canvasRef.current);
   }, [attachCanvas]);
+
+  useEffect(() => {
+    // Architectural beacon: ImageOverlay / AutoMeasureOverlay /
+    // ManualMeasureOverlay are rendered as SIBLINGS of canvasRef in the JSX
+    // below (lines ~702-735). They are independent DOM elements with their
+    // own React subtrees and do not paint on the live camera canvas, so
+    // overlay rerenders cannot stall the camera frame loop.
+    // eslint-disable-next-line no-console
+    console.log('[overlay-render] separate-layer=true');
+  }, []);
 
   useEffect(() => {
     if (frozen) {

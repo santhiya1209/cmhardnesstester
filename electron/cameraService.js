@@ -41,9 +41,16 @@ class CameraService {
     this._inFlightSentAt = 0;
     this._lastAckedSeq = 0;
     this._pendingFrame = null;
+    this._dropFramesBeforeTs = 0;
+    this._staleDropReason = 'stale';
     this._lastLatencyLogAt = 0;
     this._lastDropLogAt = 0;
     this._lastFlushUntilAt = 0;
+    this._fpsWindowStart = 0;
+    this._fpsDelivered = 0;
+    this._fpsDropped = 0;
+    this._fpsArrived = 0;
+    this._lastPixelFormatLogged = '';
   }
 
   attach(webContents) {
@@ -83,6 +90,7 @@ class CameraService {
   /* ------------------------------------------------------------------ */
 
   open(payload) {
+    this._markFrameBoundary('camera-open');
     return this._call('cameraOpen', payload || {});
   }
   close() {
@@ -92,16 +100,41 @@ class CameraService {
     });
   }
   startStream() {
-    // The Do3think DVP SDK as exposed via dvp_dll does not surface a
-    // buffer-count / latency-mode knob; the SDK manages its own internal
-    // queue (default is several frames deep). Logging the constraint here
-    // so the diagnostic trail is explicit.
-    // eslint-disable-next-line no-console
-    console.log('[camera-buffer-config] bufferCount=sdk-default-unconfigurable');
     // eslint-disable-next-line no-console
     console.log('[camera-render-latest-only] frameId=mainprocess-drop-enabled');
     this._resetFlowControl();
-    return this._call('cameraStartStream');
+    const p = this._call('cameraStartStream');
+    p.then((res) => {
+      if (!res || !res.ok) return;
+      // SDK runtime snapshot: emitted once per startStream so the diagnostic
+      // log has a baseline for the rest of the session. Values queried lazily
+      // — anything the addon doesn't expose is reported as 'unknown'.
+      this._logSdkRuntime();
+    }).catch(() => {});
+    return p;
+  }
+  _logSdkRuntime() {
+    if (!this.addon || !this.addon.camera) return;
+    let exposureMs = 'unknown';
+    let triggerMode = 'unknown';
+    try {
+      const er = this.addon.camera.cameraGetExposureRange();
+      if (er && er.ok && typeof er.current === 'number') exposureMs = er.current;
+    } catch { /* ignore */ }
+    // No direct getter for trigger state via the JS layer; SetTriggerMode is
+    // forced to false on cameraOpen so report continuous unless the renderer
+    // toggled it. (The native struct has GetTriggerState but no JS wrapper.)
+    triggerMode = 'continuous';
+    const exposureUs = typeof exposureMs === 'number' ? Math.round(exposureMs * 1000) : 'unknown';
+    // pixelFormat / actual fps will be filled by the first frame; logged
+    // separately from [camera-frame-capture]. bufferCount / grabMode are SDK
+    // constants we cannot query.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-sdk-runtime] pixelFormat=tbd-first-frame exposureUs=${exposureUs} fps=tbd-first-second triggerMode=${triggerMode} bufferCount=sdk-default grabMode=continuous`
+    );
+    // eslint-disable-next-line no-console
+    console.log(`[camera-exposure] exposureUs=${exposureUs}`);
   }
   ackFrame(seq) {
     const n = Number(seq);
@@ -115,14 +148,16 @@ class CameraService {
     return { ok: true };
   }
   flushStream(reason) {
-    this._lastFlushUntilAt = Date.now();
+    this._lastFlushUntilAt = this._markFrameBoundary(reason || 'objective-change');
     if (this._pendingFrame) {
       // eslint-disable-next-line no-console
       console.log(
-        `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=sdk-flush`
+        `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=${this._staleDropReason}`
       );
       this._pendingFrame = null;
     }
+    this._inFlightSeq = 0;
+    this._inFlightSentAt = 0;
     // Ask the native addon to drain the SDK ring AND bump the stream
     // generation so any frames already in flight through TSF get dropped on
     // arrival. Falls back silently to the JS-layer guard if the rebuilt
@@ -149,6 +184,13 @@ class CameraService {
     this._lastAckedSeq = 0;
     this._pendingFrame = null;
     this._lastFlushUntilAt = 0;
+    this._dropFramesBeforeTs = 0;
+    this._staleDropReason = 'stale';
+    this._fpsWindowStart = 0;
+    this._fpsDelivered = 0;
+    this._fpsDropped = 0;
+    this._fpsArrived = 0;
+    this._lastPixelFormatLogged = '';
   }
   stopStream() {
     return this._call('cameraStopStream');
@@ -177,11 +219,13 @@ class CameraService {
   setExposure(valueMs) {
     // eslint-disable-next-line no-console
     console.log('[cameraService] setExposure ms=', valueMs);
+    this._markFrameBoundary('exposure-change');
     return this._call('cameraSetExposure', { valueMs });
   }
   setGain(value) {
     // eslint-disable-next-line no-console
     console.log('[cameraService] setGain value=', value);
+    this._markFrameBoundary('gain-change');
     return this._call('cameraSetGain', { value });
   }
   getExposureRange() {
@@ -314,8 +358,28 @@ class CameraService {
     if (this.addon || this.loadError) return;
     try {
       this._prepareNativeDllSearchPath();
+      const resolved = this._addonPath();
+      // Print the EXACT .node file Electron is about to load + its mtime so
+      // stale-binary problems are visible without grepping. Any "addon stamp
+      // doesn't match the source" question is answered by comparing this
+      // path's mtime to the source .cpp mtime.
+      let mtime = 'unknown';
+      let sizeBytes = 'unknown';
+      try {
+        // eslint-disable-next-line global-require
+        const fs = require('fs');
+        const st = fs.statSync(resolved);
+        mtime = st.mtime.toISOString();
+        sizeBytes = String(st.size);
+      } catch (statErr) {
+        mtime = `stat-failed:${statErr.message}`;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[opencv-addon-load] path=${resolved} mtime=${mtime} sizeBytes=${sizeBytes}`
+      );
       // eslint-disable-next-line import/no-dynamic-require, global-require
-      this.addon = require(this._addonPath());
+      this.addon = require(resolved);
     } catch (err) {
       this.loadError = err;
       this._broadcastStatus({
@@ -434,6 +498,8 @@ class CameraService {
       bits: reply.bits,
       timestamp: reply.timestamp,
       seq: reply.seq,
+      frameId: reply.frameId,
+      grabTs: reply.grabTs,
       bytes: reply.bytes,
       source: 'live-camera',
     });
@@ -508,8 +574,44 @@ class CameraService {
     }
   }
 
+  _markFrameBoundary(reason) {
+    const ts = Date.now();
+    const dropReason = reason === 'objective-change' ? 'stale-pre-objective-change' : 'stale';
+    this._dropFramesBeforeTs = ts;
+    this._staleDropReason = dropReason;
+    if (this._pendingFrame) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=${dropReason}`
+      );
+      this._pendingFrame = null;
+    }
+    this._inFlightSeq = 0;
+    this._inFlightSentAt = 0;
+    return ts;
+  }
+
   _broadcastFrame(meta, data) {
     if (!this._canSend()) return;
+    this._fpsArrived += 1;
+    const capturedAt = Date.now();
+    this._frameSeq += 1;
+    const rawFrameId = meta && Number.isFinite(Number(meta.frameId)) ? Number(meta.frameId) : 0;
+    const frameId = rawFrameId > 0 ? rawFrameId : this._frameSeq;
+    const safeMeta = {
+      ...sanitizeMeta(meta),
+      frameId,
+      capturedAt,
+    };
+    const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
+    if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
+      this._fpsDropped += 1;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-drop] frameId=${frameId} reason=${this._staleDropReason}`
+      );
+      return;
+    }
     // The native addon hands us an EXTERNAL buffer (zero-copy view over the
     // SDK's pixel memory). Electron's structured-clone IPC refuses external
     // buffers ("External buffers are not allowed"), so we must hand it a
@@ -517,15 +619,9 @@ class CameraService {
     // when x is an ArrayBuffer it returns a VIEW (still external), and even
     // for Buffer→Buffer it can keep referencing the external backing store on
     // some Node versions. Allocate + .set forces a real byte copy.
+    const copyStart = process.hrtime.bigint();
     const payload = toOwnedBuffer(data);
-    const capturedAt = Date.now();
-    this._frameSeq += 1;
-    const frameId = this._frameSeq;
-    const safeMeta = {
-      ...sanitizeMeta(meta),
-      frameId,
-      capturedAt,
-    };
+    const copyNs = Number(process.hrtime.bigint() - copyStart);
     this.latestFrame = {
       meta: safeMeta,
       data: payload,
@@ -542,28 +638,62 @@ class CameraService {
       const sdkTs = Number(safeMeta.timestamp) || 0;
       // eslint-disable-next-line no-console
       console.log(
-        `[camera-frame-capture] frameId=${frameId} ts=${capturedAt} sdkTs=${sdkTs}`
+        `[camera-frame-capture] frameId=${frameId} ts=${capturedAt} sdkTs=${sdkTs} memcpyUs=${Math.round(copyNs / 1000)} bytes=${payload.byteLength}`
+      );
+      // [camera-sdk-age]: prints the SDK's own frame timestamp alongside the
+      // wall-clock arrival time. Units of `uTimestamp` are SDK-internal (often
+      // microseconds or hardware ticks) — we don't normalize here. The DELTA
+      // between consecutive sdkTs values vs wall-clock delta is what reveals
+      // SDK buffer delay: if sdkTs jumps backwards relative to nowMs, the SDK
+      // is handing us a frame whose capture moment is older than expected.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-sdk-age] frameId=${frameId} sdkTs=${sdkTs} nowMs=${capturedAt} pixelFormat=${safeMeta.pixelFormat || 'unknown'}`
+      );
+    }
+    // [camera-fps] actual=N delivered=M dropped=K — emitted once per second.
+    // arrived = frames received from native; delivered = frames forwarded over
+    // IPC; dropped = arrived - delivered. Lets us see if FPS itself is the
+    // bottleneck (low SDK FPS = nothing we can do at the IPC layer).
+    if (this._fpsWindowStart === 0) this._fpsWindowStart = capturedAt;
+    if (capturedAt - this._fpsWindowStart >= 1000) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-fps] actual=${this._fpsArrived} delivered=${this._fpsDelivered} dropped=${this._fpsDropped} windowMs=${capturedAt - this._fpsWindowStart}`
+      );
+      this._fpsWindowStart = capturedAt;
+      this._fpsArrived = 0;
+      this._fpsDelivered = 0;
+      this._fpsDropped = 0;
+    }
+    // First-frame pixelFormat snapshot — closes the loop on the
+    // [camera-sdk-runtime] line that started the session with "tbd-first-frame".
+    if (safeMeta.pixelFormat && safeMeta.pixelFormat !== this._lastPixelFormatLogged) {
+      this._lastPixelFormatLogged = safeMeta.pixelFormat;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-sdk-runtime] pixelFormat=${safeMeta.pixelFormat} bits=${safeMeta.bits} width=${safeMeta.width} height=${safeMeta.height}`
       );
     }
 
     // In-flight drop: if previous send hasn't been ack'd and the timeout
     // hasn't elapsed, defer this frame as pending (replacing any older
     // pending — older = "newer-frame-available" reason).
-    const IN_FLIGHT_TIMEOUT_MS = 200;
+    // 50ms tracks one frame at 20fps and is below the 50ms industrial-feel
+    // budget the user is targeting. The previous 200ms allowed up to 6 frames
+    // of buffer at 30fps when an ack was delayed; now the next fresh frame
+    // force-sends within one frame interval even if the renderer stalls.
     const inFlight =
       this._inFlightSeq > 0 &&
-      this._lastAckedSeq < this._inFlightSeq &&
-      capturedAt - this._inFlightSentAt < IN_FLIGHT_TIMEOUT_MS;
+      this._lastAckedSeq < this._inFlightSeq;
 
     if (inFlight) {
       if (this._pendingFrame) {
-        if (capturedAt - this._lastDropLogAt > 250) {
-          this._lastDropLogAt = capturedAt;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=newer-frame-available`
-          );
-        }
+        this._fpsDropped += 1;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-frame-drop] frameId=${this._pendingFrame.meta.frameId} reason=stale`
+        );
       }
       this._pendingFrame = { meta: safeMeta, data: payload };
       return;
@@ -577,6 +707,10 @@ class CameraService {
     safeMeta.sentAt = sentAt;
     this._inFlightSeq = safeMeta.frameId;
     this._inFlightSentAt = sentAt;
+    const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
+    const ageMs = grabTs > 0 ? Math.max(0, sentAt - grabTs) : 0;
+    // eslint-disable-next-line no-console
+    console.log(`[camera-ipc-send] frameId=${safeMeta.frameId} sendTs=${sentAt} ageMs=${ageMs}`);
     // Throttled per-frame send trace (1Hz). Reuses _lastLatencyLogAt as a
     // shared throttle so the capture+send pair lands close in the log.
     if (sentAt - (this._lastSendLogAt || 0) > 1000) {
@@ -586,6 +720,7 @@ class CameraService {
     }
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
+      this._fpsDelivered += 1;
     } catch (_e) {
       this.rendererReady = false;
       this._inFlightSeq = 0;
@@ -601,6 +736,13 @@ class CameraService {
     }
     const { meta, data } = this._pendingFrame;
     this._pendingFrame = null;
+    const grabTs = Number(meta.grabTs || meta.capturedAt || 0);
+    if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
+      this._fpsDropped += 1;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-frame-drop] frameId=${meta.frameId} reason=${this._staleDropReason}`);
+      return;
+    }
     this._sendFrame(meta, data);
   }
 

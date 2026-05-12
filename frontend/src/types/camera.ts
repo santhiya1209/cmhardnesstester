@@ -24,6 +24,8 @@ export type CameraFrameMeta = {
   bytes: number;
   /** Main-process monotonic id used for ack-based flow control. */
   frameId?: number;
+  /** Date.now() from the native addon immediately after dvpGetFrame. */
+  grabTs?: number;
   /** Date.now() when the main process received this frame from native. */
   capturedAt?: number;
   /** Date.now() when the main process called webContents.send(). */

@@ -46,6 +46,7 @@ import {
   getCurrentFrameEpoch,
   getLastCameraFramePaintAt,
   getLastPaintEpoch,
+  getLastPaintedFrameId,
   resetCameraSession,
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
@@ -227,9 +228,29 @@ function hasValidAutoMeasureCorners(result: VickersAutoMeasureSuccess): boolean 
   );
 }
 
-function graphicsFromAutoMeasureResult(result: VickersAutoMeasureSuccess): AutoMeasureGraphics {
+function graphicsFromAutoMeasureResult(
+  result: VickersAutoMeasureSuccess,
+  objective?: string | null
+): AutoMeasureGraphics {
+  // 10X uses the simplified two-diagonal layout (D1 = left↔right,
+  // D2 = top↔bottom). 40X+ keeps the legacy four-guides layout. The
+  // native addon already runs the simplified detection branch for 10X
+  // (see vickers_auto_measure.cpp `twoLineMode`); this just selects the
+  // matching renderer.
+  const norm = (objective ?? '').trim().toUpperCase();
+  const lineLayout: 'four-guides' | 'two-diagonals' =
+    norm === '10X' ? 'two-diagonals' : 'four-guides';
+  if (lineLayout === 'two-diagonals') {
+    const c = result.corners;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-10x-lines] d1Start=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) d1End=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) d2Start=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) d2End=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
+    );
+    // eslint-disable-next-line no-console
+    console.log(`[overlay-set] objective=10X mode=two-line`);
+  }
   if (result.lines.length === 4) {
-    return { corners: result.corners, lines: result.lines };
+    return { corners: result.corners, lines: result.lines, lineLayout };
   }
   const { top, right, bottom, left } = result.corners;
   return {
@@ -240,6 +261,7 @@ function graphicsFromAutoMeasureResult(result: VickersAutoMeasureSuccess): AutoM
       { p1: bottom, p2: left },
       { p1: left, p2: top },
     ],
+    lineLayout,
   };
 }
 
@@ -337,12 +359,21 @@ function App() {
   const [previewAutoMeasureOverlay, setPreviewAutoMeasureOverlay] =
     useState<AutoMeasureGraphics | null>(null);
   const [, setAutoMeasuring] = useState(false);
+  // Strict lifecycle gate. Yellow Auto Measure overlay must never be visible
+  // when the camera is not actively streaming — even if a stale graphics
+  // state lingers in React. Flipped true only after a successful openDevice
+  // reply, flipped false at closeDevice.
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
-  const displayedAutoMeasureGraphics =
+  const rawDisplayedAutoMeasureGraphics =
     activeDialog === 'autoMeasure'
       ? previewAutoMeasureOverlay ?? committedAutoMeasureOverlay
       : committedAutoMeasureOverlay;
+  // Hard render gate: never show yellow lines/dots unless the camera is
+  // streaming. Stops any stale graphics from re-appearing on app start,
+  // between camera close and re-open, etc.
+  const displayedAutoMeasureGraphics = cameraOpen ? rawDisplayedAutoMeasureGraphics : null;
   const displayedAutoMeasureSource: 'auto' | 'preview' | 'save' =
     activeDialog === 'autoMeasure' && previewAutoMeasureOverlay ? 'preview' : 'auto';
   const displayedAutoMeasureGraphicsRef = useRef<AutoMeasureGraphics | null>(null);
@@ -387,12 +418,39 @@ function App() {
   // even when the confirmed value is identical (e.g. user re-selects same lens).
   const [objectiveRefreshKey, setObjectiveRefreshKey] = useState<number>(0);
   const lastSyncedObjectiveRef = useRef<string | null>(null);
+  // Clears all Auto Measure overlay/session state. Used whenever the
+  // displayed camera image is no longer guaranteed to match the cached
+  // detection (objective change, camera open/refresh, auto-measure start,
+  // auto-measure reject, manual-mode switch).
+  const clearAutoMeasureOverlay = useCallback((reason: string) => {
+    setCommittedAutoMeasureOverlay((prev) => {
+      if (!prev) {
+        // eslint-disable-next-line no-console
+        console.log(`[overlay-skip] reason=no-active-measurement-overlay trigger=${reason}`);
+      }
+      return null;
+    });
+    setPreviewAutoMeasureOverlay(null);
+    autoMeasurePreviewSnapshotRef.current = null;
+    committedAutoMeasureFrameRef.current = null;
+    previewMeasurementRef.current = null;
+    autoMeasurementIdRef.current = null;
+    lastCommittedFingerprintRef.current = null;
+    // eslint-disable-next-line no-console
+    console.log(`[overlay-clear] reason=${reason}`);
+  }, []);
+
   const handleObjectiveChangeFromUI = useCallback((objective: '10X' | '40X') => {
     lastObjectiveClickAtRef.current = Date.now();
     setActiveObjective(objective);
     // eslint-disable-next-line no-console
     console.log('[objective] changed →', objective);
-  }, []);
+    // Clear the yellow Auto Measure overlay immediately on the user's
+    // request — do not wait for the L#OK confirmation — so the live camera
+    // never shows D1/D2 from the previous magnification during the
+    // turret-switch window.
+    clearAutoMeasureOverlay('objective-change');
+  }, [clearAutoMeasureOverlay]);
 
   // Calibration-mode Auto Measure: runs the same native detector used by
   // normal Auto Measure but does NOT save a measurement row. Returns the
@@ -410,6 +468,8 @@ function App() {
         return null;
       }
       let frame = camera.captureDisplayedFrame({ freeze: true });
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-snapshot] frameId=${getLastPaintedFrameId()}`);
       if (frame && !frame.ok && frame.error === 'awaiting-fresh-frame') {
         const fresh = await camera.waitForFreshFrame(2000);
         if (fresh) frame = camera.captureDisplayedFrame({ freeze: true });
@@ -452,11 +512,24 @@ function App() {
       }
       // Draw the detected diamond on the camera overlay so the user sees the
       // detection result after closing the calibration dialog.
-      setCommittedAutoMeasureOverlay(graphicsFromAutoMeasureResult(result));
+      setCommittedAutoMeasureOverlay(graphicsFromAutoMeasureResult(result, objective));
       // eslint-disable-next-line no-console
       console.log(
         `[calibration-auto-measure-success] pixelX=${result.d1Pixels} pixelY=${result.d2Pixels}`
       );
+      if (liveObjectiveForNative === '10X' && hasValidAutoMeasureCorners(result)) {
+        const c = result.corners;
+        const centerX = (c.left.x + c.right.x) / 2;
+        const centerY = (c.top.y + c.bottom.y) / 2;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-auto-measure-10x] center=(${centerX.toFixed(2)},${centerY.toFixed(2)}) d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-10x-lines] d1Start=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) d1End=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) d2Start=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) d2End=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
+        );
+      }
       return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
     },
     [autoMeasureSettings]
@@ -700,15 +773,6 @@ function App() {
     setManualMeasureResetKey((current) => current + 1);
   }, []);
 
-  // Clears all Auto Measure overlay/session state. Used when switching to
-  // Manual Measure so Auto and Manual modes are mutually exclusive.
-  const clearAutoMeasureOverlayState = useCallback(() => {
-    setCommittedAutoMeasureOverlay(null);
-    setPreviewAutoMeasureOverlay(null);
-    autoMeasurePreviewSnapshotRef.current = null;
-    committedAutoMeasureFrameRef.current = null;
-    autoMeasurementIdRef.current = null;
-  }, []);
 
   const handleManualMeasurementUpdated = useCallback(
     (result: ManualMeasureDragResult) => {
@@ -775,16 +839,27 @@ function App() {
           // eslint-disable-next-line no-console
           console.log('[measurement-commit-start] method=Manual');
 
-          // SINGLE SOURCE OF TRUTH: activeObjective (set by lens click) → SSE
-          // snapshot. NO silent fallback to dialog default — if neither is
-          // set, surface a clear warning instead of saving a wrong value.
-          const targetObjective =
-            (activeObjective && activeObjective.trim()) ||
-            (machineState?.objective?.trim() ?? null);
+          // SINGLE SOURCE OF TRUTH (priority order, mirrors Auto Measure):
+          //   1) confirmedObjectiveFromMachine (real L<n>OK echo from hardware)
+          //   2) activeObjective (optimistic lens click — UI-only)
+          //   3) machineState.objective (last persisted echo)
+          // After app restart, activeObjective is null until the user clicks a
+          // lens; without the machine-confirmed value the manual measure was
+          // silently falling back to a stale machineState.objective and
+          // applying the wrong calibration row from SQLite.
+          const confirmedFromMachine =
+            machineState?.confirmedObjectiveFromMachine?.trim() || null;
+          const optimisticActive = (activeObjective && activeObjective.trim()) || null;
+          const lastEchoed = machineState?.objective?.trim() || null;
+          const targetObjective = confirmedFromMachine || optimisticActive || lastEchoed;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[frontend-objective-sync] method=Manual confirmedObjectiveFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'} machineObjective=${lastEchoed ?? 'null'}`
+          );
           if (!targetObjective) {
             // eslint-disable-next-line no-console
             console.warn(
-              `[measurement-commit-blocked] method=Manual reason=no-active-objective activeObjective=${activeObjective ?? 'null'} machineObjective=${machineState?.objective ?? 'null'}`
+              `[measurement-commit-blocked] method=Manual reason=no-active-objective confirmedFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'} machineObjective=${lastEchoed ?? 'null'}`
             );
             setUnavailableMsg(
               'No active objective. Please click 10X or 40X in Machine Control before measuring.'
@@ -1029,6 +1104,16 @@ function App() {
         console.log(
           `[auto-overlay-set] source=${source} lines=${graphics.lines.length} corners=4 force=${forceOverlayRefresh}`
         );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay-draw] source=auto-measure d1=${result.d1Pixels.toFixed(2)}px d2=${result.d2Pixels.toFixed(2)}px objective=${objectiveForCalibration ?? 'unknown'}`
+        );
+        if (source === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[overlay-show] reason=auto-measure-success objective=${objectiveForCalibration ?? 'unknown'}`
+          );
+        }
         return { ...graphics, corners: { ...graphics.corners } };
       });
       setPreviewAutoMeasureOverlay(null);
@@ -1228,9 +1313,23 @@ function App() {
     void (async () => {
       const settings = normalizeAutoMeasureSettings(settingsInput);
       if (!preview) {
-        autoMeasurementIdRef.current = null;
-        autoMeasurePreviewSnapshotRef.current = null;
+        // Drop the previously-committed yellow lines before running a new
+        // detection — old D1/D2 must never linger over a fresh detection
+        // attempt. The new overlay will be set only if detection succeeds.
+        // We keep `lastCommittedFingerprintRef` alive so the duplicate-row
+        // guard still fires on a repeat click against an unchanged frame.
+        setCommittedAutoMeasureOverlay((prev) => {
+          if (!prev) {
+            // eslint-disable-next-line no-console
+            console.log('[overlay-skip] reason=no-active-measurement-overlay trigger=auto-measure-start');
+          }
+          return null;
+        });
         setPreviewAutoMeasureOverlay(null);
+        autoMeasurePreviewSnapshotRef.current = null;
+        autoMeasurementIdRef.current = null;
+        // eslint-disable-next-line no-console
+        console.log('[overlay-clear] reason=auto-measure-start');
       }
 
       autoMeasureInFlightRef.current = true;
@@ -1306,6 +1405,10 @@ function App() {
           callSource === 'auto-click'
             ? cameraRef.current?.captureDisplayedFrame({ freeze: true })
             : committedAutoMeasureFrameRef.current;
+        if (callSource === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.log(`[auto-measure-snapshot] frameId=${getLastPaintedFrameId()}`);
+        }
 
         // After an objective change the live canvas is cleared and the next
         // worker frame typically lands within ~33ms. If the user clicks Auto
@@ -1343,8 +1446,19 @@ function App() {
             // eslint-disable-next-line no-console
             console.log('[auto-measure-click] detection-complete ok=false confidence=0 D1_px=0 D2_px=0');
           }
-          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
-          setStatusMessage(`System Status: Auto Measure rejected: ${displayedFrame?.error ?? 'no displayed image'}`);
+          {
+            const stale = displayedFrame?.error ?? 'no-displayed-image (stale-frame)';
+            setUnavailableMsg(`Auto Measure rejected: ${stale}. Please use manual measure.`);
+            setStatusMessage(`System Status: Auto Measure rejected: ${stale}`);
+            clearAutoMeasureOverlay('auto-measure-failed');
+            // liveObjectiveForNative is declared further down — this branch
+            // fires before it's computed (no displayed image), so log it as
+            // 'unknown'.
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-result] success=false reason=${stale} objective=unknown nativeObjective=n/a`
+            );
+          }
           return;
         }
 
@@ -1383,6 +1497,12 @@ function App() {
         console.log(
           `[auto-measure-fresh-check] objective=${liveObjectiveForNative} confirmedFromMachine=${confirmedFromMachine ?? 'null'} currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()} lastPaintAt=${getLastCameraFramePaintAt()} now=${Date.now()} frameSource=${displayedFrame.source} frameSize=${displayedFrame.width}x${displayedFrame.height}`
         );
+        // Spec-format start log — also stamps a frameId we can grep for in
+        // the native [auto-measure-start ...] line in the terminal.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-start] objective=${liveObjectiveForNative} frameId=${displayedFrame.source}-${displayedFrame.width}x${displayedFrame.height}-${getCurrentFrameEpoch()}`
+        );
         const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
         const result = await measureFn({
           smoothing: settings.smoothing,
@@ -1414,11 +1534,33 @@ function App() {
         }
 
         if (!result.ok || result.confidence < minConfidence || !hasValidAutoMeasureCorners(result)) {
-          const reason = result.ok
+          const baseReason = result.ok
             ? result.confidence < minConfidence
               ? 'low confidence'
               : 'invalid corner coordinates'
             : result.reason;
+
+          // Step 1 runtime sanity check: if the operator asked for 10X but
+          // the native debug echo doesn't say "10X", the rebuilt .node
+          // didn't load (or string normalisation diverged). Surface this as
+          // a distinct reason rather than masking it under the normal
+          // detection-failure message.
+          const debugObj = (result.debug ?? {}) as { objectiveForMeasure?: unknown };
+          const nativeObjective =
+            typeof debugObj.objectiveForMeasure === 'string'
+              ? debugObj.objectiveForMeasure
+              : '';
+          let reason = baseReason;
+          if (
+            liveObjectiveForNative === '10X' &&
+            nativeObjective !== '10X' &&
+            nativeObjective !== ''
+          ) {
+            reason = `native-branch-not-used (requested=10X native=${nativeObjective})`;
+          } else if (liveObjectiveForNative === '10X' && nativeObjective === '') {
+            reason = `native-branch-not-used (native objective missing — addon likely stale; rebuild required)`;
+          }
+
           if (preview) {
             // Preview rejection: keep last valid overlay; no log spam.
             // eslint-disable-next-line no-console
@@ -1431,8 +1573,15 @@ function App() {
             );
             return;
           }
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-result] success=false reason=${reason} objective=${liveObjectiveForNative} nativeObjective=${nativeObjective || 'missing'}`
+          );
           setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
-          setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+          // Surface the actual reason in the toast instead of the generic
+          // "Auto detection not reliable" line so the operator sees WHY.
+          setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
+          clearAutoMeasureOverlay('auto-measure-failed');
           // eslint-disable-next-line no-console
           console.log(
             `[auto-measure:validate] ok=false reason=${reason} D1_px=0 D2_px=0`
@@ -1460,9 +1609,16 @@ function App() {
           console.log(
             `[auto-measure:validate] ok=true reason=accepted D1_px=${result.d1Pixels.toFixed(3)} D2_px=${result.d2Pixels.toFixed(3)}`
           );
+          const debugObjOk = (result.debug ?? {}) as { objectiveForMeasure?: unknown };
+          const nativeObjectiveOk =
+            typeof debugObjOk.objectiveForMeasure === 'string' ? debugObjOk.objectiveForMeasure : '';
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-result] success=true reason=accepted objective=${liveObjectiveForNative} nativeObjective=${nativeObjectiveOk || 'missing'} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)}`
+          );
         }
 
-        const graphics = graphicsFromAutoMeasureResult(result);
+        const graphics = graphicsFromAutoMeasureResult(result, activeObjective);
         if (!preview && callSource === 'auto-click') {
           const c = result.corners;
           // eslint-disable-next-line no-console
@@ -1541,6 +1697,9 @@ function App() {
           setStatusMessage('System Status: Auto Measure preview detection failed');
         } else {
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
+          // The overlay was already cleared at start; ensure no stale state
+          // resurrects after a thrown detection error.
+          clearAutoMeasureOverlay('auto-measure-failed');
         }
       } finally {
         autoMeasureInFlightRef.current = false;
@@ -1559,6 +1718,7 @@ function App() {
     calibrationSettings,
     calibrationSettingsList,
     calibrations,
+    clearAutoMeasureOverlay,
     commitAutoMeasureSnapshot,
     getMachineStateSnapshot,
     activeObjective,
@@ -1653,6 +1813,8 @@ function App() {
     setActiveObjective(confirmed);
 
     // eslint-disable-next-line no-console
+    console.log(`[objective-confirmed] objective=${confirmed}`);
+    // eslint-disable-next-line no-console
     console.log(`[camera-objective-sync] objective=${confirmed}`);
     // eslint-disable-next-line no-console
     console.log(`[camera-refresh] reason=objective-change`);
@@ -1679,12 +1841,7 @@ function App() {
     // 5) Clear any stale Auto Measure state from the previous magnification —
     //    snapshot frame, frozen overlay, preview overlay, and preview snapshot.
     //    Without this, a 40X frame/overlay can survive into a 10X session.
-    committedAutoMeasureFrameRef.current = null;
-    autoMeasurePreviewSnapshotRef.current = null;
-    setCommittedAutoMeasureOverlay(null);
-    setPreviewAutoMeasureOverlay(null);
-    autoMeasurementIdRef.current = null;
-    lastCommittedFingerprintRef.current = null;
+    clearAutoMeasureOverlay('objective-change-confirmed');
     // eslint-disable-next-line no-console
     console.log('[measurement-session-reset] reason=objective-change');
     // eslint-disable-next-line no-console
@@ -1695,6 +1852,7 @@ function App() {
   }, [
     liveMachineState?.confirmedObjectiveFromMachine,
     calibrationSettingsList,
+    clearAutoMeasureOverlay,
     refetchCalibrationSettings,
   ]);
 
@@ -1832,6 +1990,38 @@ function App() {
         setCommittedAutoMeasureOverlay(applyAdjustedCorners);
       }
 
+      // Calibration mode: the calibration panel's Pixel X / Pixel Y inputs
+      // are bound to latestManualPixels. Push the new diagonals through
+      // immediately so the form reflects every drag, and skip the
+      // measurement-row debounce below — calibration must not create a row
+      // until the user clicks Add Calibration.
+      if (calibrationManualModeRef.current) {
+        const d1Px = Math.hypot(
+          newCorners.right.x - newCorners.left.x,
+          newCorners.right.y - newCorners.left.y
+        );
+        const d2Px = Math.hypot(
+          newCorners.bottom.x - newCorners.top.x,
+          newCorners.bottom.y - newCorners.top.y
+        );
+        const centerX = (newCorners.left.x + newCorners.right.x) / 2;
+        const centerY = (newCorners.top.y + newCorners.bottom.y) / 2;
+        setLatestManualPixels({ d1Px, d2Px });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-cross-adjust-update] center=(${centerX.toFixed(2)},${centerY.toFixed(2)}) d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-pixel-update] pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`
+        );
+        if (adjustSaveTimerRef.current !== null) {
+          window.clearTimeout(adjustSaveTimerRef.current);
+          adjustSaveTimerRef.current = null;
+        }
+        return;
+      }
+
       if (adjustSaveTimerRef.current !== null) {
         window.clearTimeout(adjustSaveTimerRef.current);
       }
@@ -1863,6 +2053,10 @@ function App() {
             const d2Px = Math.hypot(
               corners.bottom.x - corners.top.x,
               corners.bottom.y - corners.top.y
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-adjust] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)}`
             );
 
             const targetId = autoMeasurementIdRef.current ?? undefined;
@@ -1907,6 +2101,10 @@ function App() {
             // eslint-disable-next-line no-console
             console.log(
               `[auto-measure][save] source=auto-corrected d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv ?? 'n/a'}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-adjust-update] d1Px=${values.d1Px.toFixed(2)} d2Px=${values.d2Px.toFixed(2)} hv=${values.hv ?? 'n/a'}`
             );
             // eslint-disable-next-line no-console
             console.log(
@@ -2157,6 +2355,17 @@ function App() {
             // Reset per-session log flags so the next first-frame / first-paint
             // events log again after a close→open cycle.
             resetCameraSession();
+            // Reload calibration list from SQLite so a saved 40X (or any other
+            // objective) calibration is picked up after a camera close/open —
+            // without this, calibrationSettingsList stays at whatever was
+            // fetched on app mount and Auto Measure can't find the calibration.
+            // eslint-disable-next-line no-console
+            console.log('[camera-open] reloadCalibration=true');
+            try {
+              await refetchCalibrationSettings();
+            } catch {
+              /* non-fatal — calibration-confirm path will retry */
+            }
             // eslint-disable-next-line no-console
             console.log('[ipc] device:open →');
             const reply = await window.hardnessCamera.openDevice({ index: 0 });
@@ -2180,6 +2389,11 @@ function App() {
               return;
             }
             setStatusMessage('System Status: Camera streaming');
+            // Stale overlays from a previous camera session must not paint
+            // over the new live stream.
+            clearAutoMeasureOverlay('camera-open');
+            resetManualMeasure();
+            setCameraOpen(true);
 
             // Apply previously-saved camera settings (exposure / analog gain)
             // to the SDK now that the handle is valid. Without this, every app
@@ -2295,6 +2509,7 @@ function App() {
             // actually appears empty after close.
             await cameraRef.current?.refetchStatus();
             cameraRef.current?.clearLiveImage();
+            setCameraOpen(false);
             setCommittedAutoMeasureOverlay(null);
             setPreviewAutoMeasureOverlay(null);
             autoMeasurePreviewSnapshotRef.current = null;
@@ -2303,11 +2518,30 @@ function App() {
             autoMeasurementIdRef.current = null;
             lastCommittedFingerprintRef.current = null;
             // eslint-disable-next-line no-console
+            console.log('[overlay-clear] reason=camera-close');
+            // eslint-disable-next-line no-console
+            console.log('[overlay-clear] reason=device-closed');
+            // eslint-disable-next-line no-console
             console.log('[measurement-session-reset] reason=camera-reopen');
             resetManualMeasure();
+            // Drop the active measure mode so the manual-measure overlay
+            // hook stops re-creating default yellow guides on the cleared
+            // canvas. Without this, bumping the reset key only clears once —
+            // the next effect re-initializes guides because active stays true
+            // and imageSize is still cached.
+            setActiveTool('pointer');
+            // eslint-disable-next-line no-console
+            console.log('[measure-mode-clear] reason=camera-close');
+            // eslint-disable-next-line no-console
+            console.log('[overlay-visibility] visible=false reason=idle');
             // Reset per-session log flags so the next open re-fires
             // [camera-frame] first-frame-after-open and the paint log.
             resetCameraSession();
+            // Drop the last-synced objective so re-confirming the SAME
+            // objective after reopen re-runs the calibration sync effect
+            // (otherwise the equality guard early-returns and Auto Measure
+            // sees a stale calibration view).
+            lastSyncedObjectiveRef.current = null;
             // eslint-disable-next-line no-console
             console.log('[camera-close] canvas-cleared=true frameCleared=true overlayCleared=true');
             setStatusMessage('System Status: Device closed');
@@ -2335,12 +2569,14 @@ function App() {
       overlay.trimLast,
       overlay.toggleCrossLine,
       resetManualMeasure,
+      clearAutoMeasureOverlay,
       handleAutoMeasure,
       setActiveTool,
       serialPortSetting,
       connectMachineFn,
       disconnectMachineFn,
       refetchCameraSetting,
+      refetchCalibrationSettings,
     ]
   );
 
@@ -2400,7 +2636,7 @@ function App() {
         if (committedAutoMeasureOverlay || previewAutoMeasureOverlay) {
           // eslint-disable-next-line no-console
           console.log('[measure-mode-clear] reason=switch-mode prev=auto');
-          clearAutoMeasureOverlayState();
+          clearAutoMeasureOverlay('manual-mode-switch');
         }
         // eslint-disable-next-line no-console
         console.log('[manual-measure-start]');
@@ -2451,7 +2687,7 @@ function App() {
     [
       activeTool,
       buildSharedCtx,
-      clearAutoMeasureOverlayState,
+      clearAutoMeasureOverlay,
       committedAutoMeasureOverlay,
       magnifierEnabled,
       overlay,

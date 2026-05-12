@@ -27,6 +27,10 @@ struct DvpDll {
   pfn_dvpSetAeOperation  SetAeOperation  = nullptr;
   pfn_dvpGetCameraInfo   GetCameraInfo   = nullptr;
   pfn_dvpGetRoi          GetRoi          = nullptr;
+  pfn_dvpGetBufferQueueSize GetBufferQueueSize = nullptr;
+  pfn_dvpSetBufferQueueSize SetBufferQueueSize = nullptr;
+  pfn_dvpGetBufferConfig GetBufferConfig = nullptr;
+  pfn_dvpSetBufferConfig SetBufferConfig = nullptr;
 
   bool loaded() const { return hModule != nullptr && Open != nullptr && GetFrame != nullptr; }
 };

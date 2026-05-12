@@ -57,4 +57,17 @@ export type VickersAutoMeasureResult =
   | VickersAutoMeasureSuccess
   | VickersAutoMeasureFailure;
 
-export type AutoMeasureGraphics = Pick<VickersAutoMeasureSuccess, 'corners' | 'lines'>;
+/**
+ * Overlay rendering mode for Auto Measure results.
+ *  - 'four-guides'   : legacy 4 full-extent yellow guides (top/bottom/left/right).
+ *                      Used for 40X / 50X / 100X where the 4-corner refined
+ *                      detection is reliable.
+ *  - 'two-diagonals' : 2 corner-to-corner diagonal segments (D1 = left↔right,
+ *                      D2 = top↔bottom). Used for 10X where the simplified
+ *                      two-line detection runs in the native addon.
+ */
+export type AutoMeasureLineLayout = 'four-guides' | 'two-diagonals';
+
+export type AutoMeasureGraphics = Pick<VickersAutoMeasureSuccess, 'corners' | 'lines'> & {
+  lineLayout?: AutoMeasureLineLayout;
+};

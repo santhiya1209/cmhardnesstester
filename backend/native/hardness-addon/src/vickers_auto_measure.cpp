@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -274,6 +275,16 @@ bool AutoMeasureDebugEnabled() {
   normalized = Lower(normalized);
   return normalized == "true" || normalized == "1" || normalized == "yes";
 }
+
+// Forward declarations for objective-aware helpers defined later in the
+// file. BuildParams (above the helpers) calls ObjectivePixelScale to
+// rescale 40X-tuned defaults at low magnification; without these
+// declarations the call is unresolved at compile time.
+double ObjectivePixelScale(const std::string& objective);
+double ObjectiveLowMagLooseness(const std::string& objective);
+double ObjectiveExpectedAreaRatio(const std::string& objective);
+double ObjectiveMaxAreaRatio(const std::string& objective);
+double PeakedAreaScore(double contourArea, double expectedArea);
 
 void DebugLog(const char* format, ...) {
   if (!AutoMeasureDebugEnabled()) return;
@@ -820,6 +831,24 @@ double ObjectiveLowMagLooseness(const std::string& objective) {
   return 1.00; // 40X / 50X / 100X / unknown: unchanged
 }
 
+// Case/whitespace-insensitive "10X" check. Live logs showed the area gate
+// rejecting at threshold≈15116 (= minAreaRatio*imageArea) instead of the 10X
+// constant floor, which means `objectiveForMeasure == "10X"` was failing for
+// some payloads (e.g. "10x", " 10X "). All 10X-specific branches go through
+// this helper now so a casing/trim mismatch can never silently route a 10X
+// frame through the 40X-tuned area gate.
+bool IsObjective10X(const std::string& objective) {
+  size_t begin = 0;
+  size_t end = objective.size();
+  while (begin < end && std::isspace(static_cast<unsigned char>(objective[begin]))) ++begin;
+  while (end > begin && std::isspace(static_cast<unsigned char>(objective[end - 1]))) --end;
+  if (end - begin != 3) return false;
+  const char c0 = static_cast<char>(std::toupper(static_cast<unsigned char>(objective[begin + 0])));
+  const char c1 = static_cast<char>(std::toupper(static_cast<unsigned char>(objective[begin + 1])));
+  const char c2 = static_cast<char>(std::toupper(static_cast<unsigned char>(objective[begin + 2])));
+  return c0 == '1' && c1 == '0' && c2 == 'X';
+}
+
 // Pixel-scale factor for objective-aware default tuning. The pixel size of a
 // Vickers indent is proportional to the optical magnification. The default
 // `morphologyKernelSize` (5) and `sideFitRoiWidth` (28) are tuned for 40X.
@@ -840,7 +869,25 @@ double ObjectivePixelScale(const std::string& objective) {
 
 double MinIndentationAreaPixels(const Params& params) {
   const double imageArea = static_cast<double>(params.width) * params.height;
-  return std::max(120.0, imageArea * params.minAreaRatio);
+  // 10X: at low magnification the indent is physically small in pixels and
+  // the JS-side `minAreaRatio` (tuned for the *expected* indent area) was
+  // rejecting every real contour because it sits ~6x above the actual indent
+  // size on visible frames. Use a low absolute floor so the area gate only
+  // rejects obvious noise; the shape / diagonal / angle gates downstream
+  // still filter non-diamond candidates.
+  if (IsObjective10X(params.objectiveForMeasure)) {
+    std::fprintf(stderr,
+      "[auto-measure-min-area] objective=\"%s\" resolved=10X minArea=200.0 reason=low-mag-floor\n",
+      params.objectiveForMeasure.c_str());
+    std::fflush(stderr);
+    return 200.0;
+  }
+  const double v = std::max(120.0, imageArea * params.minAreaRatio);
+  std::fprintf(stderr,
+    "[auto-measure-min-area] objective=\"%s\" resolved=other minArea=%.2f reason=ratio*imageArea minAreaRatio=%.6f imageArea=%.0f\n",
+    params.objectiveForMeasure.c_str(), v, params.minAreaRatio, imageArea);
+  std::fflush(stderr);
+  return v;
 }
 
 // Expected indent area as fraction of full-frame area for each objective.
@@ -929,6 +976,10 @@ std::optional<Candidate> SelectBestContour(
 
   const cv::Point2f imageCenter(params.width * 0.5f, params.height * 0.5f);
   const double maxCenterDistance = std::min(params.width, params.height) * params.maxCenterDistanceRatio;
+  // 10X mode: the live indent is small and often offset because the operator
+  // positions the test by hand. Treat center proximity as a ranking factor
+  // only, not a hard reject. 40X+ keeps the legacy gate bit-for-bit.
+  const bool tenXMode = params.objectiveForMeasure == "10X";
 
   std::optional<Candidate> best;
   // Per-contour index for log correlation. Logging is gated on
@@ -937,9 +988,51 @@ std::optional<Candidate> SelectBestContour(
   // reproduces, and reads which filter fired without algorithm changes.
   const bool debugLog = AutoMeasureDebugEnabled();
   int contourIndex = -1;
+  int usableCount = 0;
+  // Per-iteration captured metrics — reject10x reads these so every rejection
+  // line carries the full snapshot the operator needs without grepping
+  // multiple log lines. Fields not yet computed at the point of rejection
+  // stay at -1 ("not-yet-evaluated"). Reset at the top of each iteration.
+  double curArea = -1.0;
+  double curCenterDist = -1.0;
+  double curSolidity = -1.0;
+  double curRatio = -1.0;        // diagonalRatio (or rectLong/rectShort pre-corner-estimate)
+  double curAspect = -1.0;       // rect aspect ratio (rectLong/rectShort) — preserved across corner estimation
+  double curDarkness = -1.0;     // mean intensity inside the contour, lower=darker
+  double curDiamondScore = -1.0; // composite candidate score
+  auto reject10x = [&](const char* reason, double metric, double threshold) {
+    if (tenXMode) {
+      std::fprintf(stderr,
+        "[auto-measure-reject] contour=%d reason=%s metric=%.4f threshold=%.4f "
+        "area=%.2f centerDist=%.2f solidity=%.4f ratio=%.4f darkness=%.4f diamondScore=%.4f\n",
+        contourIndex, reason, metric, threshold,
+        curArea, curCenterDist, curSolidity, curRatio, curDarkness, curDiamondScore);
+      // Spec-format per-candidate trace — emitted for every rejected
+      // candidate so the operator can see WHICH gate fired and what the
+      // raw metrics looked like. `aspect` is rectLong/rectShort (preserved
+      // even after corner estimation overwrites curRatio with the diamond
+      // diagonal ratio). Fields not yet computed at the point of rejection
+      // are -1 ("not-yet-evaluated").
+      std::fprintf(stderr,
+        "[opencv-auto] candidate index=%d area=%.2f centerDist=%.2f solidity=%.4f "
+        "aspect=%.4f diagRatio=%.4f darkness=%.4f score=%.4f rejectReason=%s\n",
+        contourIndex, curArea, curCenterDist, curSolidity,
+        curAspect, curRatio, curDarkness, curDiamondScore, reason);
+      std::fflush(stderr);
+    }
+  };
+  if (tenXMode) {
+    std::fprintf(stderr,
+      "[auto-measure-10x-contours] mode=%s totalContours=%d\n",
+      thresholdMode.c_str(), static_cast<int>(contours.size()));
+    std::fflush(stderr);
+  }
   for (const auto& contour : contours) {
     ++contourIndex;
+    curArea = -1.0; curCenterDist = -1.0; curSolidity = -1.0;
+    curRatio = -1.0; curAspect = -1.0; curDarkness = -1.0; curDiamondScore = -1.0;
     const double area = std::abs(cv::contourArea(contour));
+    curArea = area;
 
     std::vector<cv::Point> hull;
     cv::convexHull(contour, hull);
@@ -963,6 +1056,22 @@ std::optional<Candidate> SelectBestContour(
     const double preRectShort = std::min(preRect.size.width, preRect.size.height);
     const double preRectLong = std::max(preRect.size.width, preRect.size.height);
     const double preRatio = preRectShort > 1e-6 ? preRectLong / preRectShort : 0.0;
+    curCenterDist = preCenterDistance;
+    curRatio = preRatio;
+    curAspect = preRatio;
+    // Darkness: mean pixel intensity inside the contour mask. Lower=darker
+    // indent, higher=light region. Cheap snapshot via boundingRect ROI so it
+    // works even when the contour is rejected at an early gate.
+    {
+      const cv::Rect bbDark = cv::boundingRect(contour);
+      if (bbDark.width > 0 && bbDark.height > 0 && !mask.empty()) {
+        const cv::Mat roi = mask(bbDark);
+        const double meanMask = cv::mean(roi)[0];
+        // Mask is 0/255 (foreground=indent). Convert to a 0..1 "darkness"
+        // proxy where 1.0 = entire ROI is mask-positive.
+        curDarkness = meanMask / 255.0;
+      }
+    }
 
     if (debugLog) {
       DebugLog(
@@ -977,6 +1086,7 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=area-too-small validationArea=%.2f min=%.2f\n",
         thresholdMode.c_str(), contourIndex, validationArea, minArea
       );
+      reject10x("area-too-small", validationArea, minArea);
       continue;
     }
     if (validationArea > maxArea) {
@@ -984,6 +1094,7 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=area-too-large validationArea=%.2f max=%.2f\n",
         thresholdMode.c_str(), contourIndex, validationArea, maxArea
       );
+      reject10x("area-too-large", validationArea, maxArea);
       continue;
     }
 
@@ -993,11 +1104,12 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=zero-moment m00=%.6f\n",
         thresholdMode.c_str(), contourIndex, m.m00
       );
+      reject10x("zero-moment", m.m00, 0.0);
       continue;
     }
     const cv::Point2f center(static_cast<float>(m.m10 / m.m00), static_cast<float>(m.m01 / m.m00));
     const double centerDistance = Distance(center, imageCenter);
-    if (centerDistance > maxCenterDistance) {
+    if (!tenXMode && centerDistance > maxCenterDistance) {
       if (debugLog) DebugLog(
         "[auto-measure-reject] mode=%s contour=%d reason=not-centered dx=%.2f dy=%.2f distance=%.2f tolerance=%.2f\n",
         thresholdMode.c_str(), contourIndex,
@@ -1008,13 +1120,31 @@ std::optional<Candidate> SelectBestContour(
       continue;
     }
 
+    // 10X: reject only if the contour touches the image border (incomplete
+    // diamond). Off-center but fully visible diamonds remain candidates and
+    // are penalised by centerScore only.
+    if (tenXMode) {
+      const cv::Rect bbox = cv::boundingRect(contour);
+      if (bbox.x <= 1 || bbox.y <= 1 ||
+          bbox.x + bbox.width >= params.width - 1 ||
+          bbox.y + bbox.height >= params.height - 1) {
+        std::fprintf(stderr,
+          "[auto-measure-reject] reason=candidate-touches-border contour=%d bboxX=%d bboxY=%d bboxW=%d bboxH=%d\n",
+          contourIndex, bbox.x, bbox.y, bbox.width, bbox.height);
+        std::fflush(stderr);
+        continue;
+      }
+    }
+
     const double solidity = hullArea > 1e-6 ? area / hullArea : 0.0;
+    curSolidity = solidity;
     const double solidityMin = edgeMaskMode ? 0.035 : 0.52;
     if (solidity < solidityMin) {
       if (debugLog) DebugLog(
         "[auto-measure-reject] mode=%s contour=%d reason=solidity-too-low solidity=%.4f min=%.4f edgeMaskMode=%d\n",
         thresholdMode.c_str(), contourIndex, solidity, solidityMin, edgeMaskMode ? 1 : 0
       );
+      reject10x("solidity-too-low", solidity, solidityMin);
       continue;
     }
 
@@ -1026,6 +1156,7 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=rect-too-small rectShort=%.2f rectLong=%.2f minShort=8.00 minLong=12.00\n",
         thresholdMode.c_str(), contourIndex, rectShort, rectLong
       );
+      reject10x("rect-too-small", rectShort, 8.0);
       continue;
     }
 
@@ -1036,6 +1167,7 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=initial-corners-not-4 cornerCount=%zu approxPointCount=%d\n",
         thresholdMode.c_str(), contourIndex, initial.size(), approxPointCount
       );
+      reject10x("initial-corners-not-4", static_cast<double>(initial.size()), 4.0);
       continue;
     }
 
@@ -1046,6 +1178,7 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=side-ratio-invalid sideRatio=%.4f max=%.4f\n",
         thresholdMode.c_str(), contourIndex, metrics.sideRatio, params.maxSideLengthRatio * 1.25
       );
+      reject10x("side-ratio-invalid", metrics.sideRatio, params.maxSideLengthRatio * 1.25);
       continue;
     }
     if (!std::isfinite(metrics.diagonalRatio)) {
@@ -1053,14 +1186,17 @@ std::optional<Candidate> SelectBestContour(
         "[auto-measure-reject] mode=%s contour=%d reason=diagonal-ratio-non-finite\n",
         thresholdMode.c_str(), contourIndex
       );
+      reject10x("diagonal-ratio-non-finite", 0.0, 0.0);
       continue;
     }
+    curRatio = metrics.diagonalRatio;
     if (metrics.diagonalRatio > params.maxDiagonalRatio || (1.0 / metrics.diagonalRatio) < params.minDiagonalRatio) {
       if (debugLog) DebugLog(
         "[auto-measure-reject] mode=%s contour=%d reason=diagonal-ratio-out-of-range diagonalRatio=%.4f min=%.4f max=%.4f\n",
         thresholdMode.c_str(), contourIndex,
         metrics.diagonalRatio, params.minDiagonalRatio, params.maxDiagonalRatio
       );
+      reject10x("diagonal-ratio-out-of-range", metrics.diagonalRatio, params.maxDiagonalRatio);
       continue;
     }
 
@@ -1074,6 +1210,7 @@ std::optional<Candidate> SelectBestContour(
         thresholdMode.c_str(), contourIndex,
         maxAngleError, params.angleToleranceDeg + 16.0
       );
+      reject10x("angle-error-too-large", maxAngleError, params.angleToleranceDeg + 16.0);
       continue;
     }
 
@@ -1122,17 +1259,58 @@ std::optional<Candidate> SelectBestContour(
       "[auto-measure-candidate] index=%d area=%.2f centerX=%.2f centerY=%.2f rectShort=%.2f rectLong=%.2f darkness=%.4f diamondScore=%.4f score=%.4f areaScore=%.4f\n",
       contourIndex, validationArea, center.x, center.y, rectShort, rectLong,
       solidity, shapeScore, score, areaScore);
+    if (tenXMode) {
+      std::fprintf(stderr,
+        "[auto-measure-10x-candidate] centerX=%.2f centerY=%.2f area=%.2f centerScore=%.4f totalScore=%.4f\n",
+        center.x, center.y, validationArea, centerScore, score);
+      // Spec-format per-candidate trace — accepted side. Paired with the
+      // rejection variant emitted by reject10x; same field order so the
+      // operator can grep `[opencv-auto] candidate` and see EVERY contour's
+      // disposition + raw metrics in one pass.
+      std::fprintf(stderr,
+        "[opencv-auto] candidate index=%d area=%.2f centerDist=%.2f solidity=%.4f "
+        "aspect=%.4f diagRatio=%.4f darkness=%.4f score=%.4f rejectReason=accepted\n",
+        contourIndex, validationArea, centerDistance, solidity,
+        curAspect, metrics.diagonalRatio, curDarkness, score);
+    }
     std::fflush(stderr);
 
+    curDiamondScore = score;
+    ++usableCount;
     if (!best || candidate.score > best->score) {
       best = candidate;
     }
+  }
+
+  if (tenXMode) {
+    std::fprintf(stderr,
+      "[opencv-auto] contours total=%d usable=%d mode=%s objective=10X\n",
+      static_cast<int>(contours.size()), usableCount, thresholdMode.c_str());
+    std::fflush(stderr);
   }
 
   if (best) {
     std::fprintf(stderr,
       "[auto-measure-selected] index=%d area=%.2f centerX=%.2f centerY=%.2f reason=best-dark-diamond score=%.4f\n",
       best->approxPointCount, best->contourArea, best->center.x, best->center.y, best->score);
+    if (tenXMode) {
+      const double d1Px = Distance(best->corners.left, best->corners.right);
+      const double d2Px = Distance(best->corners.top, best->corners.bottom);
+      std::fprintf(stderr,
+        "[auto-measure-10x-selected] centerX=%.2f centerY=%.2f d1Px=%.2f d2Px=%.2f\n",
+        best->center.x, best->center.y, d1Px, d2Px);
+      // Spec-format selected trace — matches `[opencv-auto] candidate ...`
+      // family so the operator can see which candidate index won. Corners
+      // are in native image coordinates (the same coords the frontend
+      // overlay maps via getImagePlacement).
+      std::fprintf(stderr,
+        "[opencv-auto] selected area=%.2f score=%.4f corners=(top=%.2f,%.2f|right=%.2f,%.2f|bottom=%.2f,%.2f|left=%.2f,%.2f)\n",
+        best->contourArea, best->score,
+        best->corners.top.x, best->corners.top.y,
+        best->corners.right.x, best->corners.right.y,
+        best->corners.bottom.x, best->corners.bottom.y,
+        best->corners.left.x, best->corners.left.y);
+    }
     std::fflush(stderr);
   }
 
@@ -2494,6 +2672,147 @@ double ComputeConfidence(
   );
 }
 
+// Industrial-style 4-tip refinement for the 10X two-line mode.
+//
+// Pipeline (matches Clemex/Halcon overlays):
+//   1. Per-axis contour extremes inside a center band — top/bottom are the
+//      contour points with min/max Y within ±bandX of the rect center X;
+//      left/right are the min/max X points within ±bandY of center Y. This
+//      replaces using minAreaRect corners directly so we land on the actual
+//      darkest indent corners, not the rotated bounding box.
+//   2. Local Sobel-gradient (pre.gradMag) edge snap — for each tip we sweep
+//      a short 1-D window along the tip's outward axis and snap to the
+//      strongest gradient transition. Gives sub-rect accuracy on soft 10X
+//      edges where the contour boundary has a few px of fuzz.
+//   3. Force D1 (left↔right) onto a single horizontal line and D2
+//      (top↔bottom) onto a single vertical line through the shared center.
+//      This is what eliminates the "slightly tilted / off-center D1" the
+//      user reported while still respecting per-tip refinement for the tip
+//      *lengths* (only the orthogonal coord is collapsed onto the axis).
+//
+// Each tip is refined independently; if a tip's refinement drifts more than
+// the allowed cap it falls back to the contour extreme (and ultimately the
+// original rect corner via the validation clamp). No mutation if the
+// contour is empty.
+void RefineTipsForTwoLineMode(
+  const std::vector<cv::Point>& contour,
+  const cv::Mat& gradMag,
+  const cv::RotatedRect& initialRect,
+  const Params& params,
+  OrderedCorners& corners
+) {
+  if (contour.empty()) return;
+
+  std::fprintf(stderr,
+    "[auto-measure-refine] initialRect=center(%.2f,%.2f) size(%.2fx%.2f) angle=%.2f\n",
+    initialRect.center.x, initialRect.center.y,
+    initialRect.size.width, initialRect.size.height, initialRect.angle);
+  std::fflush(stderr);
+
+  const cv::Point2f center = initialRect.center;
+  const float rectW = std::max(initialRect.size.width, initialRect.size.height);
+  const float rectH = std::min(initialRect.size.width, initialRect.size.height);
+  // Bands are tight (≈18% of the half-extent) so we only consider points that
+  // are genuinely "near the axis" of each tip — wider bands let oblique
+  // diamond edge points win as extremes and reproduce the tilt the user
+  // reported.
+  const float bandX = std::max(6.0f, rectW * 0.18f);
+  const float bandY = std::max(6.0f, rectH * 0.18f);
+
+  cv::Point2f topPt = corners.top;
+  cv::Point2f botPt = corners.bottom;
+  cv::Point2f leftPt = corners.left;
+  cv::Point2f rightPt = corners.right;
+  float bestTopY = std::numeric_limits<float>::infinity();
+  float bestBotY = -std::numeric_limits<float>::infinity();
+  float bestLeftX = std::numeric_limits<float>::infinity();
+  float bestRightX = -std::numeric_limits<float>::infinity();
+
+  for (const auto& ip : contour) {
+    const cv::Point2f p(static_cast<float>(ip.x), static_cast<float>(ip.y));
+    if (std::abs(p.x - center.x) <= bandX) {
+      if (p.y < bestTopY) { bestTopY = p.y; topPt = p; }
+      if (p.y > bestBotY) { bestBotY = p.y; botPt = p; }
+    }
+    if (std::abs(p.y - center.y) <= bandY) {
+      if (p.x < bestLeftX) { bestLeftX = p.x; leftPt = p; }
+      if (p.x > bestRightX) { bestRightX = p.x; rightPt = p; }
+    }
+  }
+
+  std::fprintf(stderr,
+    "[auto-measure-refine] contourExtremes=top(%.2f,%.2f) bottom(%.2f,%.2f) left(%.2f,%.2f) right(%.2f,%.2f)\n",
+    topPt.x, topPt.y, botPt.x, botPt.y, leftPt.x, leftPt.y, rightPt.x, rightPt.y);
+  std::fflush(stderr);
+
+  // Local Sobel-magnitude edge snap. Sweep a small window along the outward
+  // axis (Y for top/bottom, X for left/right) at the band-center coordinate.
+  // The strongest gradient cell is the dark→light transition at the indent
+  // corner. We CAP the snap distance so we never jump off the contour.
+  auto sampleGrad = [&](int x, int y) -> float {
+    if (gradMag.empty() || x < 0 || y < 0 || x >= gradMag.cols || y >= gradMag.rows) return 0.0f;
+    return gradMag.at<float>(y, x);
+  };
+
+  const int snapCapV = std::clamp(static_cast<int>(std::round(rectH * 0.10f)), 3, 10);
+  const int snapCapH = std::clamp(static_cast<int>(std::round(rectW * 0.10f)), 3, 10);
+
+  auto snapY = [&](cv::Point2f& tip, int cap, bool outwardUp) {
+    const int x = static_cast<int>(std::round(tip.x));
+    const int yc = static_cast<int>(std::round(tip.y));
+    int y0 = std::max(0, yc - cap);
+    int y1 = std::min((gradMag.empty() ? params.height : gradMag.rows) - 1, yc + cap);
+    float bestG = -1.0f;
+    int bestY = yc;
+    for (int y = y0; y <= y1; ++y) {
+      // Slight bias toward the outward direction so we pick the outer edge
+      // transition (real corner) over the inner shoulder.
+      const float bias = outwardUp ? static_cast<float>(yc - y) * 0.04f
+                                   : static_cast<float>(y - yc) * 0.04f;
+      const float g = sampleGrad(x, y) + bias;
+      if (g > bestG) { bestG = g; bestY = y; }
+    }
+    tip.y = static_cast<float>(bestY);
+  };
+  auto snapX = [&](cv::Point2f& tip, int cap, bool outwardLeft) {
+    const int y = static_cast<int>(std::round(tip.y));
+    const int xc = static_cast<int>(std::round(tip.x));
+    int x0 = std::max(0, xc - cap);
+    int x1 = std::min((gradMag.empty() ? params.width : gradMag.cols) - 1, xc + cap);
+    float bestG = -1.0f;
+    int bestX = xc;
+    for (int x = x0; x <= x1; ++x) {
+      const float bias = outwardLeft ? static_cast<float>(xc - x) * 0.04f
+                                     : static_cast<float>(x - xc) * 0.04f;
+      const float g = sampleGrad(x, y) + bias;
+      if (g > bestG) { bestG = g; bestX = x; }
+    }
+    tip.x = static_cast<float>(bestX);
+  };
+
+  if (!gradMag.empty()) {
+    snapY(topPt, snapCapV, true);
+    snapY(botPt, snapCapV, false);
+    snapX(leftPt, snapCapH, true);
+    snapX(rightPt, snapCapH, false);
+  }
+
+  std::fprintf(stderr,
+    "[auto-measure-refine] edgeRefinedTips=top(%.2f,%.2f) bottom(%.2f,%.2f) left(%.2f,%.2f) right(%.2f,%.2f)\n",
+    topPt.x, topPt.y, botPt.x, botPt.y, leftPt.x, leftPt.y, rightPt.x, rightPt.y);
+  std::fflush(stderr);
+
+  // Collapse onto shared center axes — D1 perfectly horizontal, D2 perfectly
+  // vertical, both crossing the same (midX, midY) center.
+  const float midY = (leftPt.y + rightPt.y) * 0.5f;
+  const float midX = (topPt.x + botPt.x) * 0.5f;
+
+  corners.left = {leftPt.x, midY};
+  corners.right = {rightPt.x, midY};
+  corners.top = {midX, topPt.y};
+  corners.bottom = {midX, botPt.y};
+}
+
 Napi::Object PointObject(Napi::Env env, cv::Point2f point) {
   auto object = Napi::Object::New(env);
   object.Set("x", Napi::Number::New(env, point.x));
@@ -2637,6 +2956,17 @@ Napi::Object Success(Napi::Env env, const Params& params, const OrderedCorners& 
     params.testForceKgf > 0.0 && debug.averageMm > 0.0
       ? kVickersConstant * params.testForceKgf / (debug.averageMm * debug.averageMm)
       : 0.0;
+
+  // Unconditional spec-format trace at the success boundary. The drag-
+  // correction path in App.tsx emits [auto-measure-adjust] when the user
+  // drags an endpoint; the live D1/D2 are recomputed there from the new
+  // corner positions and the measurement row is updated.
+  if (params.objectiveForMeasure == "10X") {
+    std::fprintf(stderr, "[auto-measure-hv] hv=%.2f mode=two-line\n", hv);
+  } else {
+    std::fprintf(stderr, "[auto-measure-hv] hv=%.2f mode=full\n", hv);
+  }
+  std::fflush(stderr);
 
   auto object = Napi::Object::New(env);
   object.Set("ok", Napi::Boolean::New(env, true));
@@ -2798,6 +3128,17 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       params.threshold,
       params.thresholdMode == "manual" ? "fixed" : params.thresholdMode.c_str()
     );
+    if (params.objectiveForMeasure == "10X") {
+      std::fprintf(stderr,
+        "[opencv-auto] preprocess smoothing=%d kernel=%d threshold=%d mode=%s objective=10X masks=%zu\n",
+        params.smoothing,
+        pre.gaussianKernel,
+        params.threshold,
+        params.thresholdMode == "manual" ? "fixed" : params.thresholdMode.c_str(),
+        pre.masks.size()
+      );
+      std::fflush(stderr);
+    }
 
     std::optional<Candidate> best;
     if (!pre.masks.empty()) {
@@ -2814,8 +3155,16 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     }
 
     if (!best) {
-      DebugLog("[opencv-auto] reject reason=no valid centered diamond indentation contour found\n");
-      return Failure(env, "no valid centered diamond indentation contour found", debug);
+      const bool isTenX = params.objectiveForMeasure == "10X";
+      const char* msg = isTenX
+        ? "no valid dark diamond indentation found"
+        : "no valid centered diamond indentation contour found";
+      if (isTenX) {
+        std::fprintf(stderr, "[auto-measure-reject] reason=no-valid-dark-diamond objective=10X\n");
+        std::fflush(stderr);
+      }
+      DebugLog("[opencv-auto] reject reason=%s\n", msg);
+      return Failure(env, msg, debug);
     }
 
     debug.hasCandidate = true;
@@ -2840,12 +3189,40 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       std::fflush(stderr);
     }
 
-    OrderedCorners contourCorners = ExtractAxisTipsFromContour(
-      best->contour,
-      best->hull,
-      best->corners,
-      best->center
-    );
+    // 10X simplified path: at low magnification the indent is small and
+    // edge gradients are soft, so the full 4-corner contour-tip extraction
+    // + side-fit refinement frequently picks wrong tips or extrapolates
+    // outside the frame. Instead, take the candidate's already-ordered
+    // diamond corners (from OrderDiamondCorners on the minAreaRect / approx
+    // poly), soft-clamp them in-frame, and stop. The user can still drag-
+    // correct any endpoint via the existing overlay.
+    //
+    // Net result for the operator: the overlay still renders D1 (left↔right)
+    // and D2 (top↔bottom) — exactly the "only D1 + D2 lines" mode requested.
+    // 40X+ continues to run the full ExtractAxisTipsFromContour +
+    // TryRefineCorners pipeline.
+    const bool twoLineMode = params.objectiveForMeasure == "10X";
+    OrderedCorners contourCorners;
+    if (twoLineMode) {
+      std::fprintf(stderr,
+        "[auto-measure-mode] objective=10X mode=two-line\n");
+      std::fflush(stderr);
+      contourCorners = best->corners;
+      RefineTipsForTwoLineMode(
+        best->contour,
+        pre.gradMag,
+        best->rect,
+        params,
+        contourCorners
+      );
+    } else {
+      contourCorners = ExtractAxisTipsFromContour(
+        best->contour,
+        best->hull,
+        best->corners,
+        best->center
+      );
+    }
     std::fprintf(stderr,
       "[auto-measure-corners] top=%.2f,%.2f right=%.2f,%.2f bottom=%.2f,%.2f left=%.2f,%.2f\n",
       contourCorners.top.x, contourCorners.top.y,
@@ -2860,11 +3237,36 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     }
     if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
       DebugLog("[opencv-auto] reject reason=%s\n", contourRejectReason.c_str());
+      if (params.objectiveForMeasure == "10X") {
+        std::fprintf(stderr,
+          "[auto-measure-reject] objective=10X reason=%s\n",
+          contourRejectReason.c_str());
+        std::fflush(stderr);
+      }
       return Failure(env, contourRejectReason, debug);
     }
 
-    TryRefineCorners(pre.blurred, contourCorners, params);
+    // Side-fit refinement is for hardened edges + 40X-tuned scan bands.
+    // At 10X it tends to drag corners off the soft indent edges into
+    // background texture, undoing the simpler minAreaRect estimate.
+    if (!twoLineMode) {
+      TryRefineCorners(pre.blurred, contourCorners, params);
+    }
     const ShapeMetrics contourMetrics = ComputeShapeMetrics(contourCorners);
+    if (twoLineMode) {
+      std::fprintf(stderr,
+        "[auto-measure-d1] lengthPx=%.2f\n", contourMetrics.d1);
+      std::fprintf(stderr,
+        "[auto-measure-d2] lengthPx=%.2f\n", contourMetrics.d2);
+      std::fprintf(stderr,
+        "[auto-measure-final] d1=%.3f d2=%.3f top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+        contourMetrics.d1, contourMetrics.d2,
+        contourCorners.top.x, contourCorners.top.y,
+        contourCorners.right.x, contourCorners.right.y,
+        contourCorners.bottom.x, contourCorners.bottom.y,
+        contourCorners.left.x, contourCorners.left.y);
+      std::fflush(stderr);
+    }
     debug.finalCorners = contourCorners;
     debug.finalMetrics = contourMetrics;
     debug.hasFinalCorners = true;
@@ -2912,9 +3314,21 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
 
     if (debug.confidence < params.minConfidence) {
       DebugLog("[opencv-auto] reject reason=confidence score is low\n");
+      if (params.objectiveForMeasure == "10X") {
+        std::fprintf(stderr,
+          "[auto-measure-reject] objective=10X reason=confidence-too-low confidence=%.4f minConfidence=%.4f\n",
+          debug.confidence, params.minConfidence);
+        std::fflush(stderr);
+      }
       return Failure(env, "confidence score is low", debug);
     }
 
+    if (params.objectiveForMeasure == "10X") {
+      std::fprintf(stderr,
+        "[auto-measure-success] objective=10X d1Px=%.3f d2Px=%.3f\n",
+        debug.d1Pixels, debug.d2Pixels);
+      std::fflush(stderr);
+    }
     return Success(env, params, contourCorners, debug);
   } catch (const cv::Exception& ex) {
     return Failure(env, std::string("OpenCV error: ") + ex.what(), debug);

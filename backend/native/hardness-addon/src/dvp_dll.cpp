@@ -29,6 +29,11 @@ static std::string FormatLastError(DWORD code) {
     }                                                                                      \
   } while (0)
 
+#define LOAD_OPTIONAL_PFN(field, name)                                                     \
+  do {                                                                                     \
+    dll.field = reinterpret_cast<pfn_##name>(GetProcAddress(dll.hModule, #name));          \
+  } while (0)
+
 bool DvpDll_Load(DvpDll& dll, const std::wstring& searchDir) {
   if (dll.loaded()) return true;
 
@@ -88,6 +93,10 @@ bool DvpDll_Load(DvpDll& dll, const std::wstring& searchDir) {
   LOAD_PFN(SetAeOperation,  dvpSetAeOperation);
   LOAD_PFN(GetCameraInfo,   dvpGetCameraInfo);
   LOAD_PFN(GetRoi,          dvpGetRoi);
+  LOAD_OPTIONAL_PFN(GetBufferQueueSize, dvpGetBufferQueueSize);
+  LOAD_OPTIONAL_PFN(SetBufferQueueSize, dvpSetBufferQueueSize);
+  LOAD_OPTIONAL_PFN(GetBufferConfig,    dvpGetBufferConfig);
+  LOAD_OPTIONAL_PFN(SetBufferConfig,    dvpSetBufferConfig);
 
   return true;
 }
@@ -115,4 +124,8 @@ void DvpDll_Unload(DvpDll& dll) {
   dll.SetAeOperation = nullptr;
   dll.GetCameraInfo = nullptr;
   dll.GetRoi = nullptr;
+  dll.GetBufferQueueSize = nullptr;
+  dll.SetBufferQueueSize = nullptr;
+  dll.GetBufferConfig = nullptr;
+  dll.SetBufferConfig = nullptr;
 }

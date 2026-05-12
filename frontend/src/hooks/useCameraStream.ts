@@ -3,7 +3,15 @@ import CameraStreamWorker from '@/workers/cameraStream.worker.ts?worker';
 import { getCameraFrame } from '@/api/getCameraFrame';
 import { ackCameraFrame } from '@/api/ackCameraFrame';
 import { flushCameraStream } from '@/api/flushCameraStream';
-import type { CameraFrameMeta } from '@/types/camera';
+import type { CameraFrameMeta, CameraPixelFormat } from '@/types/camera';
+
+// Live-preview subsample factor. The worker decodes a (W/SCALE)×(H/SCALE)
+// RGBA ImageData instead of the full sensor resolution. For a 2592×1944 mono8
+// source, scale=2 drops conversion work + transfer from 20MB to 5MB. Auto
+// Measure does NOT use the downscaled output — it reads the full-resolution
+// raw buffer kept in `latestFullFrame` via getLatestFullFrame(). To change the
+// preview resolution, edit this constant — must be an integer ≥1.
+const PREVIEW_SCALE = 2;
 
 /**
  * Owns the camera-stream worker. Subscribes to `camera:frame` events on
@@ -42,6 +50,10 @@ let lastPaintAt = 0;
 // before the clear cannot repaint stale pixels of the previous objective.
 let frameEpoch = 0;
 let lastPaintEpoch = 0;
+// frameId of the most recent paint that actually landed on the canvas. The
+// Auto Measure click reads this to tag its snapshot log with the exact frame
+// it captured from. inFlightFrameId resets after ack, so it can't be used.
+let lastPaintedFrameId = 0;
 let liveFrameLogSeq = 0;
 let lastLiveFrameOverlayLogAt = 0;
 // Latest-frame-only backpressure. The worker decodes serially; without this,
@@ -81,6 +93,24 @@ let fallbackInFlight = false;
 let firstFrameLoggedThisSession = false;
 let firstPaintLoggedThisSession = false;
 
+// Most recent FULL-RESOLUTION raw frame, retained for Auto Measure. The body
+// reference is the Buffer received over IPC — held without copying. The
+// worker only sees a sliced ArrayBuffer (transferred, separate backing
+// store), so this reference stays valid across the worker post. Replaced on
+// each IPC arrival; the previous body is GC'd once no consumer references it.
+let latestFullFrame: {
+  body: ArrayBufferLike;
+  width: number;
+  height: number;
+  pixelFormat: CameraPixelFormat;
+  bits: 8 | 16;
+  capturedAt: number;
+} | null = null;
+
+export function getLatestFullFrame() {
+  return latestFullFrame;
+}
+
 function getWorker(): Worker {
   if (!sharedWorker) sharedWorker = new CameraStreamWorker();
   return sharedWorker;
@@ -92,9 +122,20 @@ function installMainThreadPaintHandler() {
   const worker = getWorker();
   worker.addEventListener(
     'message',
-    (e: MessageEvent<{ type: string; imageData?: ImageData; epoch?: number; seq?: number }>) => {
+    (e: MessageEvent<{ type: string; imageData?: ImageData; epoch?: number; seq?: number; frameId?: number }>) => {
       if (!e.data || e.data.type !== 'paint' || !e.data.imageData) return;
       const paintEpoch = typeof e.data.epoch === 'number' ? e.data.epoch : 0;
+      // Prefer the echoed frameId from the worker — it's the EXACT frame that
+      // was just decoded, not whichever post happened to come in between.
+      // inFlightFrameId can race with a newer post that ran after worker
+      // posted 'paint' but before this handler observed it. Strict positive
+      // check; ?? would let an actual 0 through and `||` already does the
+      // right thing but we want clarity at the diagnostic step.
+      const echoedRaw = (e.data as { frameId?: unknown }).frameId;
+      const echoedFrameId =
+        typeof echoedRaw === 'number' && echoedRaw > 0 ? echoedRaw : 0;
+      const resolvedFrameId =
+        echoedFrameId > 0 ? echoedFrameId : inFlightFrameId;
       // Drop paints from a frame received before the latest canvas clear —
       // those pixels belong to the previous objective and would re-pollute
       // the freshly-cleared canvas.
@@ -123,7 +164,7 @@ function installMainThreadPaintHandler() {
         imageData: e.data.imageData,
         epoch: paintEpoch,
         seq: e.data.seq ?? 0,
-        frameId: inFlightFrameId,
+        frameId: resolvedFrameId,
         capturedAt: inFlightCapturedAt,
       };
       decoderBusy = false;
@@ -156,14 +197,19 @@ function schedulePaintRaf() {
     const drawMs = Math.round(performance.now() - drawStart);
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
+    lastPaintedFrameId = p.frameId;
     if (!firstPaintLoggedThisSession) {
       firstPaintLoggedThisSession = true;
       // eslint-disable-next-line no-console
       console.log('[camera-ui] first-paint-after-open ok=true');
     }
-    if (lastPaintAt - lastLatencyLogAt > 1000) {
+    const totalMs = p.capturedAt > 0 ? lastPaintAt - p.capturedAt : 0;
+    const slow = totalMs > 50;
+    // Always log slow frames so a stage-move event surfaces every offending
+    // frame, not the throttled 1Hz sample. Fast frames still throttle to 1Hz
+    // to keep the log readable.
+    if (slow || lastPaintAt - lastLatencyLogAt > 1000) {
       lastLatencyLogAt = lastPaintAt;
-      const totalMs = p.capturedAt > 0 ? lastPaintAt - p.capturedAt : 0;
       const sendToRendererMs =
         inFlightSentAt > 0 && inFlightReceivedAt > 0
           ? inFlightReceivedAt - inFlightSentAt
@@ -174,12 +220,12 @@ function schedulePaintRaf() {
           : 0;
       // eslint-disable-next-line no-console
       console.log(
-        `[camera-latency] frameId=${p.frameId} sendToRendererMs=${sendToRendererMs} rendererQueueMs=${rendererQueueMs} drawMs=${drawMs} totalMs=${totalMs}`
+        `[camera-latency] frameId=${p.frameId} sendToRendererMs=${sendToRendererMs} rendererQueueMs=${rendererQueueMs} drawMs=${drawMs} totalMs=${totalMs}${slow ? ' SLOW' : ''}`
       );
       // eslint-disable-next-line no-console
       console.log(`[camera-frame-render] frameId=${p.frameId} latencyMs=${totalMs}`);
       // eslint-disable-next-line no-console
-      console.log(`[camera-latency-total] frameId=${p.frameId} totalMs=${totalMs}`);
+      console.log(`[camera-latency-total] frameId=${p.frameId} totalMs=${totalMs}${slow ? ' SLOW' : ''}`);
     }
     if (p.frameId > 0) ackCameraFrame(p.frameId);
   });
@@ -195,7 +241,27 @@ function subscribeIpcOnce() {
     lastFrameAt = receivedAt;
     liveFrameLogSeq += 1;
     frameIdCounter += 1;
-    const frameId = meta.frameId ?? frameIdCounter;
+    // Explicit type-and-value check: `meta.frameId ?? counter` falls through
+    // on null/undefined only, NOT on the integer 0. If main ever sent 0 (or
+    // any non-positive), we'd silently keep using it. Same idea for the seq
+    // backup — it should never be 0 once the SDK has streamed at least one
+    // frame, but guard anyway.
+    const metaIdRaw = (meta as { frameId?: unknown }).frameId;
+    const metaId = typeof metaIdRaw === 'number' && metaIdRaw > 0 ? metaIdRaw : 0;
+    const frameId = metaId > 0 ? metaId : frameIdCounter;
+    // Hold the FULL-resolution raw IPC body in renderer memory. The body is a
+    // Buffer (Uint8Array view) that was structured-cloned into the renderer
+    // by Electron — it owns its backing store and is GC'd independently of
+    // the worker-transferred slice. Auto Measure reads from here, NOT the
+    // visible canvas (which the worker now paints at PREVIEW_SCALE).
+    latestFullFrame = {
+      body,
+      width: meta.width,
+      height: meta.height,
+      pixelFormat: meta.pixelFormat,
+      bits: meta.bits,
+      capturedAt: meta.capturedAt ?? receivedAt,
+    };
     if (!firstFrameLoggedThisSession) {
       firstFrameLoggedThisSession = true;
       const bytes = (body as { byteLength?: number }).byteLength ?? 0;
@@ -279,9 +345,20 @@ function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
   return u8.slice().buffer as ArrayBuffer;
 }
 
-function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId = 0) {
+function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId: number) {
   const worker = getWorker();
+  const copyStart = performance.now();
   const ab = toArrayBuffer(body);
+  const copyMs = performance.now() - copyStart;
+  // Surface the renderer-side copy cost. toArrayBuffer slices if `body` is a
+  // Uint8Array view (it is — main forwards an owned Buffer), which is a third
+  // full-image memcpy on the JS thread. Logged at 1Hz to keep noise down.
+  if (copyMs > 2 || (frameId && frameId % 60 === 0)) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-renderer-copy] frameId=${frameId} copyMs=${copyMs.toFixed(2)} bytes=${ab.byteLength}`
+    );
+  }
   decoderBusy = true;
   // Track capture time end-to-end (main-process capturedAt is the most
   // authoritative reference for totalMs — closer to the native callback
@@ -306,6 +383,8 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId
       bits: meta.bits,
       epoch: frameEpoch,
       seq: meta.seq,
+      frameId,
+      previewScale: PREVIEW_SCALE,
     },
     [ab]
   );
@@ -333,6 +412,9 @@ function startSnapshotFallback() {
           return;
         }
         lastFrameAt = Date.now();
+        // Snapshot fallback has no main-process frameId — assign one from the
+        // shared counter so logs still show a monotonic value (never 0).
+        frameIdCounter += 1;
         postFrameToWorker(
           {
             width: reply.width,
@@ -343,7 +425,8 @@ function startSnapshotFallback() {
             seq: reply.seq,
             bytes: reply.bytes,
           },
-          reply.data
+          reply.data,
+          frameIdCounter
         );
       })
       .catch(() => {
@@ -369,6 +452,10 @@ export function getCurrentFrameEpoch(): number {
 
 export function getLastPaintEpoch(): number {
   return lastPaintEpoch;
+}
+
+export function getLastPaintedFrameId(): number {
+  return lastPaintedFrameId;
 }
 
 /**

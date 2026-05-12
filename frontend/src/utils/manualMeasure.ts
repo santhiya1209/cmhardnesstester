@@ -519,6 +519,10 @@ export function calculateVickersFromPixels({
   );
   // eslint-disable-next-line no-console
   console.log(
+    `[measurement-scale] objective=${normalizedObjective} xUmPerPixel=${xUmPerPixel} yUmPerPixel=${yUmPerPixel}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(
     `[measurement-convert]\nd1Px=${d1Px}\nd2Px=${d2Px}\nxUmPerPixel=${xUmPerPixel}\nyUmPerPixel=${yUmPerPixel}\nd1Um=${d1Um}\nd2Um=${d2Um}\ndavgUm=${avgDUm}\nhv=${hv ?? 'n/a'}`
   );
   // eslint-disable-next-line no-console

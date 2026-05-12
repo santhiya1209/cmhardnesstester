@@ -91,6 +91,11 @@ typedef enum dvpOpenMode {
   HIGH_PRIORITY = 1 << 4,
 } dvpOpenMode;
 
+typedef enum dvpBufferMode {
+  BUFFER_MODE_NEWEST = 0,
+  BUFFER_MODE_FIFO   = 1,
+} dvpBufferMode;
+
 typedef enum dvpAeOperation {
   AE_OP_OFF        = 0,
   AE_OP_ONCE       = 1,
@@ -164,6 +169,14 @@ typedef struct dvpCameraInfo {
   dvpString64  reserved;
 } dvpCameraInfo;
 
+typedef struct dvpBufferConfig {
+  enum dvpBufferMode mode;
+  dvpUint32          uQueueSize;
+  bool               bDropNew;
+  bool               bLite;
+  dvpReserved        reserved;
+} dvpBufferConfig;
+
 /* ---------------- Function pointer typedefs (cdecl on Windows) ---------------- */
 typedef dvpStatus (*pfn_dvpRefresh)(dvpUint32 *pCount);
 typedef dvpStatus (*pfn_dvpOpen)(dvpUint32 index, dvpOpenMode mode, dvpHandle *pHandle);
@@ -183,5 +196,9 @@ typedef dvpStatus (*pfn_dvpSetTriggerState)(dvpHandle handle, bool TriggerState)
 typedef dvpStatus (*pfn_dvpSetAeOperation)(dvpHandle handle, dvpAeOperation AeOperation);
 typedef dvpStatus (*pfn_dvpGetCameraInfo)(dvpHandle handle, dvpCameraInfo *pInfo);
 typedef dvpStatus (*pfn_dvpGetRoi)(dvpHandle handle, dvpRegion *pRoi);
+typedef dvpStatus (*pfn_dvpGetBufferQueueSize)(dvpHandle handle, dvpInt32 *pBufferQueueSize);
+typedef dvpStatus (*pfn_dvpSetBufferQueueSize)(dvpHandle handle, dvpInt32 BufferQueueSize);
+typedef dvpStatus (*pfn_dvpGetBufferConfig)(dvpHandle handle, dvpBufferConfig *pBufferConfig);
+typedef dvpStatus (*pfn_dvpSetBufferConfig)(dvpHandle handle, dvpBufferConfig BufferConfig);
 
 #endif /* HARDNESS_DVP_H_ */
