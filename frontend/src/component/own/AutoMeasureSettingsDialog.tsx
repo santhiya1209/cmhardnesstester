@@ -18,6 +18,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useSaveAutoMeasureSettings } from '@/hooks/mutations/useSaveAutoMeasureSettings';
 import {
+  AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE,
   DEFAULT_AUTO_MEASURE_SETTINGS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
   SMOOTHING_MAX,
@@ -37,7 +38,18 @@ type Props = {
   onPreviewChange?: (settings: AutoMeasureSettingsPayload) => void;
   onSaved?: (settings: AutoMeasureSettingsPayload) => void;
   onStatusChange?: (message: string) => void;
+  // Currently active objective in the app. Drives the dropdown value and the
+  // smoothing/threshold defaults so this panel never lags behind a machine- or
+  // PC-initiated objective change.
+  activeObjective?: string | null;
 };
+
+function normalizeObjectiveKey(value: string | null | undefined): ObjectiveForMeasure | null {
+  const key = String(value ?? '').trim().toUpperCase();
+  return (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(key)
+    ? (key as ObjectiveForMeasure)
+    : null;
+}
 
 function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsPayload {
   return normalizeAutoMeasureSettings(settings);
@@ -54,6 +66,7 @@ function AutoMeasureSettingsDialogImpl({
   onPreviewChange,
   onSaved,
   onStatusChange,
+  activeObjective,
 }: Props) {
   const { data, error: loadError, loading, refetch } = useAutoMeasureSettings();
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
@@ -88,10 +101,59 @@ function AutoMeasureSettingsDialogImpl({
   useEffect(() => {
     if (open && !loading) {
       const next = toFormState(data);
+      const synced = normalizeObjectiveKey(activeObjective);
+      if (synced) {
+        const defaults = AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE[synced];
+        next.objectiveForMeasure = synced;
+        next.smoothing = defaults.smoothing;
+        next.threshold = defaults.threshold;
+        // eslint-disable-next-line no-console
+        console.log(`[auto-measure-settings-sync] objective=${synced}`);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+        );
+      }
       setForm(next);
       setSavedBaseline(next);
     }
-  }, [data, loading, open]);
+  }, [data, loading, open, activeObjective]);
+
+  // Live sync: while the dialog is already open, react to objective changes
+  // coming from the machine (L1OK/L2OK) or from a PC-driven toggle so the
+  // operator never has to re-pick the objective by hand.
+  useEffect(() => {
+    if (!open) return;
+    const synced = normalizeObjectiveKey(activeObjective);
+    if (!synced) return;
+    const defaults = AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE[synced];
+    setForm((current) => {
+      if (
+        current.objectiveForMeasure === synced &&
+        current.smoothing === defaults.smoothing &&
+        current.threshold === defaults.threshold
+      ) {
+        return current;
+      }
+      const next = normalizeAutoMeasureSettings({
+        ...current,
+        objectiveForMeasure: synced,
+        smoothing: defaults.smoothing,
+        threshold: defaults.threshold,
+      });
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-settings-sync] objective=${synced}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+      );
+      // Intentionally do NOT call onPreviewChange here. App-level state is
+      // already mirroring the objective-driven defaults; firing a preview
+      // through this path would repaint yellow lines on objective change,
+      // which violates the "lines only on Auto Measure click" rule.
+      return next;
+    });
+  }, [open, activeObjective]);
 
   const updateForm = useCallback(
     (updater: (current: AutoMeasureSettingsPayload) => AutoMeasureSettingsPayload) => {

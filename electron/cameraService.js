@@ -28,8 +28,10 @@ const DEFAULT_OPENCV_DIR = 'C:\\Users\\SANTHIYA\\opencv\\build';
 // low-FPS operation passes through; only truly broken pipelines (>1s lag)
 // trigger a drop. The atomic-slot in native already guarantees "freshest
 // available" so a slightly old frame is the best the SDK can give us.
-const STALE_AGE_MS = 2000;
-
+// Temporarily lenient (was 100ms) so post-stream-restart frames at 8 FPS
+// don't all get dropped while we debug the display pipeline. Tighten
+// back to ~50–100ms once the pipeline is verified end-to-end.
+const STALE_AGE_MS = 500;
 class CameraService {
   constructor() {
     this.webContents = null;
@@ -59,6 +61,7 @@ class CameraService {
     this._lastSendOkLogAt = 0;
     this._lastBusySkipLogAt = 0;
     this._lastMainRecvLogAt = 0;
+    this._lastCanSendFalseResetAt = 0;
   }
 
   attach(webContents) {
@@ -86,7 +89,14 @@ class CameraService {
   _canSend() {
     const wc = this.webContents;
     if (!wc || wc.isDestroyed()) return false;
-    if (!this.rendererReady) return false;
+    if (!this.rendererReady) {
+      try {
+        if (typeof wc.isLoading === 'function' && wc.isLoading()) return false;
+      } catch {
+        return false;
+      }
+      this.rendererReady = true;
+    }
     try {
       if (!wc.mainFrame) return false;
     } catch { return false; }
@@ -111,6 +121,8 @@ class CameraService {
     // eslint-disable-next-line no-console
     console.log('[camera-render-latest-only] frameId=mainprocess-drop-enabled');
     this._resetFlowControl();
+    this.rendererReady = false;
+    this._canSend();
     const p = this._call('cameraStartStream');
     p.then((res) => {
       if (!res || !res.ok) return;
@@ -156,12 +168,6 @@ class CameraService {
   }
   flushStream(reason) {
     this._lastFlushUntilAt = this._markFrameBoundary(reason || 'objective-change');
-    if (this._pendingFrame) {
-      this._droppedSinceLastFrame += 1;
-      this._pendingFrame = null;
-    }
-    this._inFlightSeq = 0;
-    this._inFlightSentAt = 0;
     // Ask the native addon to drain the SDK ring AND bump the stream
     // generation so any frames already in flight through TSF get dropped on
     // arrival. Falls back silently to the JS-layer guard if the rebuilt
@@ -172,21 +178,19 @@ class CameraService {
         nativeResult = this.addon.camera.cameraFlushStream({ reason: reason || 'objective-change' });
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn('[camera-sdk-flush] native flush threw:', err && err.message ? err.message : err);
+        console.warn('[camera-sdk-buffer-flush] native flush threw:', err && err.message ? err.message : err);
       }
     }
     // eslint-disable-next-line no-console
     console.log(
-      `[camera-sdk-flush] reason=${reason || 'objective-change'} drained=${nativeResult && nativeResult.drained != null ? nativeResult.drained : 'n/a'}`
+      `[camera-sdk-buffer-flush] reason=${reason || 'objective-change'} drained=${nativeResult && nativeResult.drained != null ? nativeResult.drained : 'n/a'}`
     );
     return { ok: true, flushUntilAt: this._lastFlushUntilAt };
   }
   _resetFlowControl() {
+    this._resetMainPending('flow-reset');
     this._frameSeq = 0;
-    this._inFlightSeq = 0;
-    this._inFlightSentAt = 0;
     this._lastAckedSeq = 0;
-    this._pendingFrame = null;
     this._lastFlushUntilAt = 0;
     this._dropFramesBeforeTs = 0;
     this._staleDropReason = 'stale';
@@ -243,6 +247,16 @@ class CameraService {
   setTriggerMode(value) {
     return this._call('cameraSetTriggerMode', { value: !!value });
   }
+  setLiveMode(profile) {
+    // eslint-disable-next-line no-console
+    console.log('[cameraService] setLiveMode profile=', profile);
+    // Same frame-boundary handling as setExposure: drop in-flight + pending,
+    // reset the JS-side stale tracker so post-restart SDK frame counters
+    // don't get falsely flagged.
+    this._markFrameBoundary('live-mode-change');
+    return this._call('cameraSetLiveMode', profile || {});
+  }
+
   async measureVickersAuto(parameters = {}) {
     this._tryLoad();
     if (!this.addon) {
@@ -581,12 +595,7 @@ class CameraService {
     const dropReason = reason === 'objective-change' ? 'stale-pre-objective-change' : 'stale';
     this._dropFramesBeforeTs = ts;
     this._staleDropReason = dropReason;
-    if (this._pendingFrame) {
-      this._droppedSinceLastFrame += 1;
-      this._pendingFrame = null;
-    }
-    this._inFlightSeq = 0;
-    this._inFlightSentAt = 0;
+    this._resetMainPending(reason || dropReason);
     // Native restarts the SDK stream on exposure/gain/objective change and
     // its frame counter may reset. If we keep the old high value here,
     // every fresh frame after restart would look "older by frameId" — the
@@ -597,9 +606,19 @@ class CameraService {
     return ts;
   }
 
+  _resetMainPending(reason) {
+    const dropped = this._pendingFrame ? 1 : 0;
+    if (dropped > 0) this._droppedSinceLastFrame += dropped;
+    this._pendingFrame = null;
+    this._inFlightSeq = 0;
+    this._inFlightSentAt = 0;
+    // eslint-disable-next-line no-console
+    console.log(`[camera-main-pending-reset] reason=${reason || 'unknown'} dropped=${dropped}`);
+  }
+
   _broadcastFrame(meta, data) {
     const capturedAt = Date.now();
-    if (capturedAt - this._lastMainRecvLogAt >= 1000) {
+    if (capturedAt - this._lastMainRecvLogAt >= 5000) {
       this._lastMainRecvLogAt = capturedAt;
       const grabTsLog = Number((meta && meta.grabTs) || 0);
       const ageMs = grabTsLog > 0 ? Math.max(0, capturedAt - grabTsLog) : 0;
@@ -610,7 +629,14 @@ class CameraService {
         `[camera-main-recv] frameId=${frameIdLog} ageMs=${ageMs} canSend=${this._canSend()}`
       );
     }
-    if (!this._canSend()) return;
+    if (!this._canSend()) {
+      if (capturedAt - this._lastCanSendFalseResetAt >= 1000) {
+        this._lastCanSendFalseResetAt = capturedAt;
+        this._resetMainPending('canSend-false');
+        this._lastAckedSeq = 0;
+      }
+      return;
+    }
     this._frameSeq += 1;
     const rawFrameId = meta && Number.isFinite(Number(meta.frameId)) ? Number(meta.frameId) : 0;
     const frameId = rawFrameId > 0 ? rawFrameId : this._frameSeq;
@@ -736,17 +762,18 @@ class CameraService {
     // Successful IPC send. Throttle to 1Hz so the log line is a steady
     // heartbeat, not per-frame spam. The ageMs is the user-visible
     // "native grab → handed to renderer IPC" latency.
-    if (sentAt - this._lastSendOkLogAt >= 1000) {
+    if (sentAt - this._lastSendOkLogAt >= 5000) {
       this._lastSendOkLogAt = sentAt;
       // eslint-disable-next-line no-console
-      console.log(`[camera-send-ok] frameId=${safeMeta.frameId} ageMs=${ageMs}`);
+      console.log(`[camera-main-send-ok] frameId=${safeMeta.frameId} ageMs=${ageMs}`);
     }
   }
 
   _drainPending() {
     if (!this._pendingFrame) return;
     if (!this._canSend()) {
-      this._pendingFrame = null;
+      this._resetMainPending('canSend-false-drain');
+      this._lastAckedSeq = 0;
       return;
     }
     const { meta, data } = this._pendingFrame;

@@ -98,6 +98,21 @@ bool DvpDll_Load(DvpDll& dll, const std::wstring& searchDir) {
   LOAD_OPTIONAL_PFN(GetBufferConfig,    dvpGetBufferConfig);
   LOAD_OPTIONAL_PFN(SetBufferConfig,    dvpSetBufferConfig);
 
+  // Fast Live Preview extensions. All OPTIONAL — cameras that don't
+  // support them just leave the pointer null and the JS layer surfaces a
+  // NO_METHOD error instead of crashing.
+  LOAD_OPTIONAL_PFN(SetRoi,              dvpSetRoi);
+  LOAD_OPTIONAL_PFN(GetRoiDescr,         dvpGetRoiDescr);
+  LOAD_OPTIONAL_PFN(SetRoiState,         dvpSetRoiState);
+  LOAD_OPTIONAL_PFN(GetTargetFormat,     dvpGetTargetFormat);
+  LOAD_OPTIONAL_PFN(SetTargetFormat,     dvpSetTargetFormat);
+  LOAD_OPTIONAL_PFN(GetSourceFormat,     dvpGetSourceFormat);
+  LOAD_OPTIONAL_PFN(SetSourceFormat,     dvpSetSourceFormat);
+  LOAD_OPTIONAL_PFN(GetResolutionModeSel, dvpGetResolutionModeSel);
+  LOAD_OPTIONAL_PFN(SetResolutionModeSel, dvpSetResolutionModeSel);
+  LOAD_OPTIONAL_PFN(GetMonoState,        dvpGetMonoState);
+  LOAD_OPTIONAL_PFN(SetMonoState,        dvpSetMonoState);
+
   return true;
 }
 
@@ -128,4 +143,15 @@ void DvpDll_Unload(DvpDll& dll) {
   dll.SetBufferQueueSize = nullptr;
   dll.GetBufferConfig = nullptr;
   dll.SetBufferConfig = nullptr;
+  dll.SetRoi = nullptr;
+  dll.GetRoiDescr = nullptr;
+  dll.SetRoiState = nullptr;
+  dll.GetTargetFormat = nullptr;
+  dll.SetTargetFormat = nullptr;
+  dll.GetSourceFormat = nullptr;
+  dll.SetSourceFormat = nullptr;
+  dll.GetResolutionModeSel = nullptr;
+  dll.SetResolutionModeSel = nullptr;
+  dll.GetMonoState = nullptr;
+  dll.SetMonoState = nullptr;
 }

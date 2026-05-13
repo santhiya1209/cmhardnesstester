@@ -245,6 +245,31 @@ function registerIpc() {
     console.log('[ipc] camera:set-exposure payload=', payload, '→ ms=', ms);
     return cameraService.setExposure(ms);
   });
+
+  // Dedicated channel for the "Live N FPS" UI action. Bypasses the
+  // dialog's slider throttle/dedupe (which silently skipped earlier
+  // clicks) and logs at every layer so the wiring is traceable end-to-end.
+  ipcMain.handle('camera:set-live-mode', async (_e, payload) => {
+    // eslint-disable-next-line no-console
+    console.log('[ipc] camera:set-live-mode payload=', payload);
+    return cameraService.setLiveMode(payload || {});
+  });
+
+  ipcMain.handle('camera:set-live-exposure-fps', async (_e, payload) => {
+    const targetFps = Number(payload && payload.targetFps);
+    // eslint-disable-next-line no-console
+    console.log(`[live-fps-ipc-main] targetFps=${targetFps}`);
+    if (!Number.isFinite(targetFps) || targetFps <= 0) {
+      return { ok: false, error: 'BAD_ARGS', message: `targetFps must be > 0 (got ${targetFps})` };
+    }
+    const exposureMs = 1000 / targetFps;
+    // eslint-disable-next-line no-console
+    console.log(`[live-fps-service-call] valueMs=${exposureMs.toFixed(3)}`);
+    const reply = await cameraService.setExposure(exposureMs);
+    // eslint-disable-next-line no-console
+    console.log('[live-fps-service-reply]', reply);
+    return reply;
+  });
   ipcMain.handle('camera:set-gain', (_e, payload) => {
     const v = num(payload && payload.value, 0);
     // eslint-disable-next-line no-console

@@ -55,6 +55,24 @@ export type CameraRange = {
 
 export interface HardnessCameraApi {
   setExposure(valueMs: number): Promise<CameraReply<{ exposureMs: number }>>;
+  setLiveExposureForFps(
+    targetFps: number
+  ): Promise<CameraReply<{ exposureMs: number; fpsCeiling?: number }>>;
+  setLiveMode(profile: {
+    roi?: { x: number; y: number; w: number; h: number };
+    format?: 'mono8' | 'rgb24' | 'rgb32' | 'bgr24' | 'bgr32' | 'mono16' | 'raw8' | 'raw10' | 'raw12';
+    resolutionMode?: number;
+    exposureMs?: number;
+    mono?: boolean;
+  }): Promise<
+    CameraReply<{
+      appliedRoi: boolean;
+      appliedFormat: boolean;
+      appliedResolutionMode: boolean;
+      appliedExposure: boolean;
+      appliedMono: boolean;
+    }>
+  >;
   setGain(value: number): Promise<CameraReply<{ gain: number }>>;
   getExposureRange(): Promise<CameraReply<CameraRange>>;
   getGainRange(): Promise<CameraReply<CameraRange>>;

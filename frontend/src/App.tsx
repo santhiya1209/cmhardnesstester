@@ -425,6 +425,17 @@ function App() {
       }
       return { ...prev, smoothing: defaults.smoothing, threshold: defaults.threshold };
     });
+    // Objective changed — drop any visible Auto Measure lines and arm the
+    // suppression ref so a settings-preview detection cannot repaint yellow
+    // lines for the new magnification on its own. Lines reappear only after
+    // the user clicks Auto Measure.
+    suppressAutoMeasurePreviewRef.current = true;
+    setCommittedAutoMeasureOverlay(null);
+    setPreviewAutoMeasureOverlay(null);
+    // eslint-disable-next-line no-console
+    console.log('[overlay-clear] reason=objective-change');
+    // eslint-disable-next-line no-console
+    console.log('[overlay-visible] false reason=objective-change');
   }, [activeObjective]);
   // Last manual-measure pixel diagonals (d1Px = horizontal, d2Px = vertical).
   // Captured in handleManualMeasurementUpdated and passed to CalibrationDialog
@@ -446,6 +457,11 @@ function App() {
   // even when the confirmed value is identical (e.g. user re-selects same lens).
   const [objectiveRefreshKey, setObjectiveRefreshKey] = useState<number>(0);
   const lastSyncedObjectiveRef = useRef<string | null>(null);
+  // Set true whenever the active objective changes. The next would-be
+  // settings-preview run is skipped so an objective change never paints
+  // yellow lines on its own — they appear only after an explicit Auto
+  // Measure click. Cleared by the click handler.
+  const suppressAutoMeasurePreviewRef = useRef(false);
   // Clears all Auto Measure overlay/session state. Used whenever the
   // displayed camera image is no longer guaranteed to match the cached
   // detection (objective change, camera open/refresh, auto-measure start,
@@ -471,6 +487,8 @@ function App() {
   const handleObjectiveChangeFromUI = useCallback((objective: '10X' | '40X') => {
     lastObjectiveClickAtRef.current = Date.now();
     setActiveObjective(objective);
+    // eslint-disable-next-line no-console
+    console.log(`[objective-change-request] source=ui objective=${objective}`);
     // eslint-disable-next-line no-console
     console.log('[objective] changed →', objective);
     // Snap Auto Measure smoothing/threshold to the objective-tuned defaults
@@ -1162,6 +1180,10 @@ function App() {
           console.log(
             `[overlay-show] reason=auto-measure-success objective=${objectiveForCalibration ?? 'unknown'}`
           );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[overlay-set] source=auto objective=${objectiveForCalibration ?? 'unknown'}`
+          );
         }
         return { ...graphics, corners: { ...graphics.corners } };
       });
@@ -1809,6 +1831,12 @@ function App() {
     }
 
     const timer = window.setTimeout(() => {
+      if (suppressAutoMeasurePreviewRef.current) {
+        suppressAutoMeasurePreviewRef.current = false;
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-preview-skip] reason=objective-change');
+        return;
+      }
       runAutoMeasure(autoMeasurePreviewSettings, true, 'settings-preview');
     }, 70);
 
@@ -1851,6 +1879,8 @@ function App() {
     if (!next) return;
     if (Date.now() - lastObjectiveClickAtRef.current < 5000) return;
     if (next !== activeObjective) {
+      // eslint-disable-next-line no-console
+      console.log(`[objective-change-request] source=machine objective=${next}`);
       setActiveObjective(next);
       // eslint-disable-next-line no-console
       console.log('[objective] changed current=', next, 'source=sse');
@@ -2021,14 +2051,17 @@ function App() {
   const handleAutoMeasure = useCallback(() => {
     // eslint-disable-next-line no-console
     console.log('[measure-mode-change] mode=auto');
+    // eslint-disable-next-line no-console
+    console.log(`[auto-measure-click] objective=${activeObjective ?? 'unknown'}`);
     if (activeTool === 'manualMeasure') {
       // eslint-disable-next-line no-console
       console.log('[measure-mode-clear] reason=switch-mode prev=manual');
       setActiveTool('pointer');
       resetManualMeasure();
     }
+    suppressAutoMeasurePreviewRef.current = false;
     runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
-  }, [activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
+  }, [activeObjective, activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
 
   // Live recompute when the user drags edges/corners on the auto-measure
   // overlay. We coalesce rapid drag events with a 90ms trailing debounce so
@@ -2861,6 +2894,7 @@ function App() {
         onPreviewChange={handleAutoMeasureSettingsPreviewChange}
         onSaved={handleAutoMeasureSettingsSaved}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        activeObjective={activeObjective}
       />
       <LineColorSettingDialog
         open={activeDialog === 'lineColor'}

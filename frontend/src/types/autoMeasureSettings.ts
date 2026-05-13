@@ -1,5 +1,16 @@
 export const IMAGE_TYPE_OPTIONS = ['HBW-A', 'HBW-B', 'HBW-C', 'HBW-EX', 'HV-1', 'HV-2', 'HV-3'] as const;
-export const OBJECTIVE_FOR_MEASURE_OPTIONS = ['5X', '10X', '20X', '40X', '50X'] as const;
+export const OBJECTIVE_FOR_MEASURE_OPTIONS = ['10X', '40X'] as const;
+
+// Machine-tuned per-objective defaults for the Auto Measure pipeline.
+// Mirrored in App.tsx detection paths so the values stay in lockstep when the
+// active objective changes (machine-confirmed or PC-driven).
+export const AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE: Record<
+  '10X' | '40X',
+  { smoothing: number; threshold: number }
+> = {
+  '10X': { smoothing: 4, threshold: 44 },
+  '40X': { smoothing: 6, threshold: 71 },
+};
 export const THRESHOLD_MODE_OPTIONS = ['otsu', 'adaptive', 'manual'] as const;
 
 export const SMOOTHING_MIN = 0;

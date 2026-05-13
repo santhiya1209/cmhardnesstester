@@ -23,6 +23,7 @@ type PixelFormat =
   | 'rgb24'
   | 'bgr24'
   | 'rgb32'
+  | 'rgba32'
   | 'bgr32'
   | 'bayer_bg'
   | 'bayer_gb'
@@ -58,7 +59,8 @@ type FrameMsg = {
   previewScale?: number;
 };
 type DisposeMsg = { type: 'dispose' };
-type IncomingMsg = InitMsg | Init2dMsg | FrameMsg | DisposeMsg;
+type ClearQueueMsg = { type: 'clear-queue'; epoch?: number; reason?: string };
+type IncomingMsg = InitMsg | Init2dMsg | FrameMsg | ClearQueueMsg | DisposeMsg;
 
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
@@ -269,6 +271,7 @@ function decode(
     pixelFormat === 'rgb24' ||
     pixelFormat === 'bgr24' ||
     pixelFormat === 'rgb32' ||
+    pixelFormat === 'rgba32' ||
     pixelFormat === 'bgr32' ||
     pixelFormat === 'bayer_bg' ||
     pixelFormat === 'bayer_gb' ||
@@ -347,7 +350,7 @@ function decode(
     return out;
   }
 
-  if (pixelFormat === 'rgb32' || pixelFormat === 'bgr32') {
+  if (pixelFormat === 'rgb32' || pixelFormat === 'rgba32' || pixelFormat === 'bgr32') {
     const swap32 = pixelFormat === 'bgr32';
     if (scale > 1) {
       decodeRgb32Downscale(new Uint32Array(buffer), dst32, width, dstW, dstH, scale, swap32);
@@ -357,7 +360,7 @@ function decode(
     // the channel order differs. Use a Uint32Array view directly — one load
     // + one store per pixel, no per-byte arithmetic.
     const src32 = new Uint32Array(buffer);
-    if (pixelFormat === 'rgb32') {
+    if (pixelFormat === 'rgb32' || pixelFormat === 'rgba32') {
       // src is RGBA (R lowest byte little-endian) which is exactly what
       // canvas expects. Direct copy via .set() — one C-level memcpy.
       dst32.set(src32.subarray(0, total));
@@ -432,14 +435,26 @@ function paint(frame: FrameMsg) {
   // throttle fast ones to 1Hz to keep DevTools readable.
   const nowMs = Date.now();
   const slow = convertMs > 10;
-  if (slow || nowMs - lastConvertLogAt > 1000) {
+  if (slow || nowMs - lastConvertLogAt > 5000) {
     lastConvertLogAt = nowMs;
     // eslint-disable-next-line no-console
     console.log(
       `[camera-frame-convert] frameId=${frameId} ms=${convertMs.toFixed(2)} scale=${previewScale}${slow ? ' SLOW' : ''}`
     );
+    // Same data under the canonical name the diagnostic spec asks for.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-convert-ms] frameId=${frameId} ms=${convertMs.toFixed(2)} scale=${previewScale} bytes=${frame.buffer.byteLength}`
+    );
+    // Color-conversion specifically: rgb24/bgr24/mono8/bayer_* → RGBA32 for
+    // the canvas. Worker-side cost; native does no conversion. Same value
+    // as convertMs — emitted under the requested name for traceability.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-color-convert-ms] frameId=${frameId} ms=${convertMs.toFixed(2)} from=${frame.pixelFormat} to=rgba32 scale=${previewScale}`
+    );
   }
-  if (nowMs - lastPreviewLogAt > 1000) {
+  if (nowMs - lastPreviewLogAt > 5000) {
     lastPreviewLogAt = nowMs;
     const sourceBytes = frame.buffer.byteLength;
     const previewBytes = img.data.byteLength;
@@ -506,6 +521,13 @@ self.onmessage = (e: MessageEvent<IncomingMsg>) => {
     mainThreadPaint = true;
   } else if (msg.type === 'frame') {
     paint(msg);
+  } else if (msg.type === 'clear-queue') {
+    imageData = null;
+    imageDataDims = null;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-worker-queue-clear] reason=${msg.reason ?? 'unknown'} epoch=${msg.epoch ?? 0}`
+    );
   } else if (msg.type === 'dispose') {
     canvas = null;
     ctx = null;

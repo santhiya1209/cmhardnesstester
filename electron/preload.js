@@ -10,6 +10,8 @@ const ALLOWED_INVOKE = new Set([
   'camera:get-frame',
   'camera:get-status',
   'camera:set-exposure',
+  'camera:set-live-exposure-fps',
+  'camera:set-live-mode',
   'camera:set-gain',
   'camera:get-exposure-range',
   'camera:get-gain-range',
@@ -60,7 +62,7 @@ contextBridge.exposeInMainWorld('api', {
         console.log('[micrometer][preload-received] payload=', args[0]);
       } else if (channel === 'camera:frame') {
         const now = Date.now();
-        if (now - lastCamLogAt >= 1000) {
+        if (now - lastCamLogAt >= 5000) {
           lastCamLogAt = now;
           const meta = args[0] || {};
           const body = args[1];
@@ -84,6 +86,17 @@ contextBridge.exposeInMainWorld('api', {
 contextBridge.exposeInMainWorld('hardnessCamera', {
   setExposure: (valueMs) =>
     ipcRenderer.invoke('camera:set-exposure', { valueMs: Number(valueMs) }),
+  setLiveExposureForFps: (targetFps) => {
+    const fps = Number(targetFps);
+    // eslint-disable-next-line no-console
+    console.log(`[live-fps-preload-call] targetFps=${fps}`);
+    return ipcRenderer.invoke('camera:set-live-exposure-fps', { targetFps: fps });
+  },
+  setLiveMode: (profile) => {
+    // eslint-disable-next-line no-console
+    console.log('[live-mode-preload-call] profile=', profile);
+    return ipcRenderer.invoke('camera:set-live-mode', profile || {});
+  },
   setGain: (value) =>
     ipcRenderer.invoke('camera:set-gain', { value: Number(value) }),
   getExposureRange: () => ipcRenderer.invoke('camera:get-exposure-range'),

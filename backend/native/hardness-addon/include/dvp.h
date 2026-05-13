@@ -111,6 +111,48 @@ typedef struct dvpRegion {
   dvpReserved reserved;
 } dvpRegion;
 
+/* dvpRegionDescr: legal ROI ranges. Recovered from vendor header via
+ * dvp.qch Doxygen source view; exact struct layout. */
+typedef struct dvpRegionDescr {
+  dvpInt32 iMinW;
+  dvpInt32 iMinH;
+  dvpInt32 iMaxW;
+  dvpInt32 iMaxH;
+  dvpInt32 iStepW;
+  dvpInt32 iStepH;
+  dvpReserved reserved;
+} dvpRegionDescr;
+
+/* dvpStreamFormat: target/source pixel-format enum used by
+ * dvpSetTargetFormat / dvpSetSourceFormat. Recovered exact values from
+ * vendor header. S_MONO8 (30) is the key value for Fast Live Preview:
+ * single-channel grayscale, 1/3 the wire bytes of S_RGB24. */
+typedef enum dvpStreamFormat {
+  S_RAW8        = 0,
+  S_RAW10       = 1,
+  S_RAW12       = 2,
+  S_RAW14       = 3,
+  S_RAW16       = 4,
+  S_BGR24       = 10,
+  S_BGR32       = 11,
+  S_BGR48       = 12,
+  S_BGR64       = 13,
+  S_RGB24       = 14,
+  S_RGB32       = 15,
+  S_RGB48       = 16,
+  S_RGB64       = 17,
+  S_YCBCR_411   = 20,
+  S_YCBCR_422   = 21,
+  S_YCBCR_444   = 22,
+  S_MONO8       = 30,
+  S_MONO10      = 31,
+  S_MONO12      = 32,
+  S_MONO14      = 33,
+  S_MONO16      = 34,
+  S_B8_G8_R8    = 40,
+  S_B16_G16_R16 = 44,
+} dvpStreamFormat;
+
 typedef struct dvpFrame {
   enum dvpImageFormat format;
   enum dvpBits        bits;
@@ -200,5 +242,19 @@ typedef dvpStatus (*pfn_dvpGetBufferQueueSize)(dvpHandle handle, dvpInt32 *pBuff
 typedef dvpStatus (*pfn_dvpSetBufferQueueSize)(dvpHandle handle, dvpInt32 BufferQueueSize);
 typedef dvpStatus (*pfn_dvpGetBufferConfig)(dvpHandle handle, dvpBufferConfig *pBufferConfig);
 typedef dvpStatus (*pfn_dvpSetBufferConfig)(dvpHandle handle, dvpBufferConfig BufferConfig);
+
+/* Fast-Live-Preview extensions. Signatures recovered exactly from the
+ * vendor's dvpcamera.h via dvp.qch (see dvpcamera.recovered.h). */
+typedef dvpStatus (*pfn_dvpSetRoi)(dvpHandle handle, dvpRegion Roi);
+typedef dvpStatus (*pfn_dvpGetRoiDescr)(dvpHandle handle, dvpRegionDescr *pRoiDescr);
+typedef dvpStatus (*pfn_dvpSetRoiState)(dvpHandle handle, bool RoiState);
+typedef dvpStatus (*pfn_dvpGetTargetFormat)(dvpHandle handle, dvpStreamFormat *pTargetFormat);
+typedef dvpStatus (*pfn_dvpSetTargetFormat)(dvpHandle handle, dvpStreamFormat TargetFormat);
+typedef dvpStatus (*pfn_dvpGetSourceFormat)(dvpHandle handle, dvpStreamFormat *pSourceFormat);
+typedef dvpStatus (*pfn_dvpSetSourceFormat)(dvpHandle handle, dvpStreamFormat SourceFormat);
+typedef dvpStatus (*pfn_dvpGetResolutionModeSel)(dvpHandle handle, dvpUint32 *pResolutionModeSel);
+typedef dvpStatus (*pfn_dvpSetResolutionModeSel)(dvpHandle handle, dvpUint32 ResolutionModeSel);
+typedef dvpStatus (*pfn_dvpGetMonoState)(dvpHandle handle, bool *pMonoState);
+typedef dvpStatus (*pfn_dvpSetMonoState)(dvpHandle handle, bool MonoState);
 
 #endif /* HARDNESS_DVP_H_ */

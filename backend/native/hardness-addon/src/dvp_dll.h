@@ -32,6 +32,21 @@ struct DvpDll {
   pfn_dvpGetBufferConfig GetBufferConfig = nullptr;
   pfn_dvpSetBufferConfig SetBufferConfig = nullptr;
 
+  /* Fast Live Preview extensions. Each is resolved best-effort via
+   * GetProcAddress in dvp_dll.cpp; cameras / DLLs that don't expose them
+   * leave the pointer null and the JS layer reports a NO_METHOD error. */
+  pfn_dvpSetRoi              SetRoi              = nullptr;
+  pfn_dvpGetRoiDescr         GetRoiDescr         = nullptr;
+  pfn_dvpSetRoiState         SetRoiState         = nullptr;
+  pfn_dvpGetTargetFormat     GetTargetFormat     = nullptr;
+  pfn_dvpSetTargetFormat     SetTargetFormat     = nullptr;
+  pfn_dvpGetSourceFormat     GetSourceFormat     = nullptr;
+  pfn_dvpSetSourceFormat     SetSourceFormat     = nullptr;
+  pfn_dvpGetResolutionModeSel GetResolutionModeSel = nullptr;
+  pfn_dvpSetResolutionModeSel SetResolutionModeSel = nullptr;
+  pfn_dvpGetMonoState        GetMonoState        = nullptr;
+  pfn_dvpSetMonoState        SetMonoState        = nullptr;
+
   bool loaded() const { return hModule != nullptr && Open != nullptr && GetFrame != nullptr; }
 };
 

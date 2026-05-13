@@ -1,4 +1,4 @@
-export type CameraPixelFormat = 'mono8' | 'rgb24' | 'bgr24' | 'rgb32' | 'bgr32' | 'raw';
+export type CameraPixelFormat = 'mono8' | 'rgb24' | 'bgr24' | 'rgb32' | 'rgba32' | 'bgr32' | 'raw';
 
 export type CameraStatus = {
   ok?: boolean;
