@@ -163,6 +163,41 @@ function MeasurementsWorkspaceImpl({
   const mutationError = error ?? deleteError ?? convertSyncError;
   const busy = loading || deleting;
 
+  // Single source of truth for the convert-value box. Computed live from the
+  // currently selected dropdown type + the displayed row's HV so the box
+  // never goes blank between dropdown change and server refetch. Always
+  // resolves to a non-empty string — "N/A" when conversion is unsupported
+  // or out of range.
+  const displayConvertValue = useMemo<string>(() => {
+    const hv =
+      typeof displayedMeasurement?.hv === 'number' && Number.isFinite(displayedMeasurement.hv)
+        ? displayedMeasurement.hv
+        : null;
+    const activeType: ConvertTargetType = CONVERT_TYPE_OPTIONS.includes(convertType)
+      ? convertType
+      : 'HV';
+
+    let rawValue: number | null;
+    if (hv === null) {
+      rawValue = null;
+    } else if (activeType === 'HV') {
+      rawValue = hv;
+    } else {
+      rawValue = convertVickers(hv, activeType);
+    }
+
+    const display = rawValue === null ? 'N/A' : formatNumber(rawValue);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[hardness-convert-render] selectedType=${activeType} rawValue=${rawValue ?? 'null'} displayValue=${display}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[hardness-convert-ui-update] convertType=${activeType} convertValue=${display}`
+    );
+    return display;
+  }, [displayedMeasurement, convertType]);
+
   // Sync the dropdown to whichever row is being shown so switching selection
   // reflects that row's saved convertType. Empty/legacy rows show 'HV'.
   useEffect(() => {
@@ -346,6 +381,15 @@ function MeasurementsWorkspaceImpl({
                 CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV'
               }
               disabled={busy}
+              displayEmpty
+              renderValue={(value) => {
+                const v = (value as string | undefined) ?? '';
+                return CONVERT_TYPE_OPTIONS.includes(
+                  v as (typeof CONVERT_TYPE_OPTIONS)[number]
+                )
+                  ? v
+                  : 'HV';
+              }}
               onChange={(event: SelectChangeEvent<(typeof CONVERT_TYPE_OPTIONS)[number]>) =>
                 void handleConvertTypeChange(
                   event.target.value as (typeof CONVERT_TYPE_OPTIONS)[number]
@@ -359,13 +403,7 @@ function MeasurementsWorkspaceImpl({
               ))}
             </Select>
           </FormControl>
-          <Box sx={CONVERT_VALUE_DISPLAY_SX}>
-            {formatNumber(
-              typeof displayedMeasurement?.convertValue === 'number'
-                ? displayedMeasurement.convertValue
-                : null
-            )}
-          </Box>
+          <Box sx={CONVERT_VALUE_DISPLAY_SX}>{displayConvertValue}</Box>
           <Typography sx={LABEL_SX}>Micrometer</Typography>
           <MicrometerDisplay sx={MICROMETER_FIELD_SX} />
         </Box>

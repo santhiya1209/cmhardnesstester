@@ -245,13 +245,21 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                 const parsed = Number(measurement.convertValue);
                 if (Number.isFinite(parsed)) convertValueNum = parsed;
               }
-              if (convertValueNum === null && typeof measurement.hv === 'number' && Number.isFinite(measurement.hv)) {
+              const convertTypeIsHv = convertType === 'HV' || convertType === 'NONE';
+              if (
+                convertValueNum === null &&
+                convertTypeIsHv &&
+                typeof measurement.hv === 'number' &&
+                Number.isFinite(measurement.hv)
+              ) {
                 convertValueNum = measurement.hv;
               }
               const convertValue =
                 convertValueNum !== null
                   ? `${formatHardness(convertValueNum)} ${convertType}`
-                  : '--';
+                  : convertTypeIsHv
+                    ? '--'
+                    : `N/A ${convertType}`;
 
               return (
                 <TableRow
