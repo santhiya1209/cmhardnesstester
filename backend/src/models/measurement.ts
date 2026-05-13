@@ -31,6 +31,7 @@ export const MeasurementPayloadSchema = z.object({
   // the measured HV. Kept as 'YES'/'NO' strings to match the table renderer's
   // existing formatQualified contract; null when no target range is set.
   qualified: z.enum(['YES', 'NO']).nullable().optional(),
+  hardnessType: z.string().trim().nullable().optional(),
   // Hardness conversion target (HV/HK/HBW/HRA/HRB/HRC/...) and the converted
   // numeric value. Stored per-row so changing the dropdown for one measurement
   // does not affect older saved rows. Null/missing means no conversion saved.

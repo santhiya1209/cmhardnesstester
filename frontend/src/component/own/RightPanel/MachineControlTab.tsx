@@ -155,6 +155,28 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
 
   const formState = useMemo(() => machineToForm(machineState), [machineState]);
 
+  // Local input state for Lightness so the field reflects what the user just
+  // typed without waiting for the backend → RS232 → ACK → SSE round trip. The
+  // field stays disconnected from machineState only while the user is actively
+  // editing; once a machine confirmation arrives, the latest value wins.
+  const [lightnessInput, setLightnessInput] = useState<string>(formState.lightness);
+  const lightnessDirtyRef = useRef(false);
+  const lastLightnessSyncedRef = useRef<string>(formState.lightness);
+  useEffect(() => {
+    const incoming = String(machineState?.lightness ?? '');
+    if (!incoming) return;
+    if (incoming === lastLightnessSyncedRef.current) return;
+    lastLightnessSyncedRef.current = incoming;
+    // Machine-confirmed value wins, even if the user has a dirty input — the
+    // physical machine is the source of truth and an ACK means the new value
+    // is in effect. This also covers operator-driven changes on the panel.
+    lightnessDirtyRef.current = false;
+    setLightnessInput(incoming);
+    const source = machineState?.lastUpdateSource ?? machineState?.lastUpdatedBy ?? 'machine';
+    // eslint-disable-next-line no-console
+    console.log(`[lightness-sync] source=${source} value=${incoming}`);
+  }, [machineState?.lightness, machineState?.lastUpdateSource, machineState?.lastUpdatedBy]);
+
   // One-shot startup log: surface the values that came back from SQLite via
   // the backend SSE snapshot so operators can verify what was restored.
   const restoredLoggedRef = useRef(false);
@@ -285,6 +307,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         // eslint-disable-next-line no-console
         console.log(`[objective-ui] click value=${value}`);
         // eslint-disable-next-line no-console
+        console.log(`[objective-ui-click] objective=${value}`);
+        // eslint-disable-next-line no-console
         console.log(`[machine-objective-ui] selected=${value}`);
         void pushChange(field, value).then((state) => {
           if ((value === '10X' || value === '40X') && state?.objective === value) {
@@ -305,8 +329,20 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
   const handleNumberChange = useCallback(
     (field: 'lightness' | 'loadTime') => (event: React.ChangeEvent<HTMLInputElement>) => {
       const value = event.target.value;
+      if (field === 'lightness') {
+        // Echo the keystroke into local state immediately so the field never
+        // appears frozen while the IPC + RS232 round trip is in flight.
+        lightnessDirtyRef.current = true;
+        setLightnessInput(value);
+        // eslint-disable-next-line no-console
+        console.log(`[lightness-ui-change] value=${value}`);
+      }
       // Only push numeric, non-blank values
       if (value.trim() !== '' && isValidNumberField(field, value)) {
+        if (field === 'lightness') {
+          // eslint-disable-next-line no-console
+          console.log(`[lightness-ipc-send] value=${value}`);
+        }
         void pushChange(field, value);
       } else if (value.trim() !== '') {
         // eslint-disable-next-line no-console
@@ -566,8 +602,8 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         <TextField
           size="small"
           type="number"
-          value={formState.lightness}
-          disabled={!connected || isBusy}
+          value={lightnessInput}
+          disabled={!connected}
           onChange={handleNumberChange('lightness')}
           slotProps={{ htmlInput: LIGHTNESS_INPUT_PROPS }}
         />

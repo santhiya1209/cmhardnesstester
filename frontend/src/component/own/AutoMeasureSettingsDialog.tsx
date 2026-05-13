@@ -181,6 +181,8 @@ function AutoMeasureSettingsDialogImpl({
   const handleSliderChange = useCallback(
     (field: SliderField) => (_e: Event, value: number | number[]) => {
       const next = Array.isArray(value) ? value[0] : value;
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-slider-change] type=${field} value=${next}`);
       updateForm((current) => ({ ...current, [field]: next }));
     },
     [updateForm]

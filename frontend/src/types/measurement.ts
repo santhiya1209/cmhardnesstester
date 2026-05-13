@@ -47,6 +47,7 @@ export type MeasurementSavePayload = {
   timestamp?: string;
   imageDataUrl?: string;
   qualified?: 'YES' | 'NO' | null;
+  hardnessType?: string | null;
   convertType?: string | null;
   convertValue?: number | null;
 };

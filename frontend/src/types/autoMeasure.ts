@@ -70,4 +70,15 @@ export type AutoMeasureLineLayout = 'four-guides' | 'two-diagonals';
 
 export type AutoMeasureGraphics = Pick<VickersAutoMeasureSuccess, 'corners' | 'lines'> & {
   lineLayout?: AutoMeasureLineLayout;
+  /** Objective the detection ran against. Used by the render gate to drop
+   * stale overlays after a 10X↔40X switch — graphics whose `objective` does
+   * not match the live `activeObjective` are filtered out before paint. */
+  objective?: string | null;
+  /** Frame epoch captured at the moment detection started. The render gate
+   * compares this against the current session's `autoMeasureCapturedFrameId`
+   * — async results from a superseded click are dropped. */
+  frameId?: number | null;
+  /** Session id at the moment detection started — guards async callbacks
+   * against a session that has since been invalidated. */
+  sessionId?: number | null;
 };

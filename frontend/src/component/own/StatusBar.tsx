@@ -42,8 +42,45 @@ const CONNECTION_SX: SxProps<Theme> = {
   opacity: 0.86,
 };
 
+export type CameraStatusState =
+  | 'closed'
+  | 'opening'
+  | 'connected'
+  | 'streaming'
+  | 'frozen'
+  | 'error'
+  | 'reconnecting';
+
+export type AutoMeasureStatusState =
+  | 'idle'
+  | 'detecting'
+  | 'success'
+  | 'duplicate'
+  | 'failed';
+
+const CAMERA_STATUS_LABEL: Record<CameraStatusState, string> = {
+  closed: 'Closed',
+  opening: 'Opening...',
+  connected: 'Connected',
+  streaming: 'Streaming',
+  frozen: 'Frozen',
+  error: 'Error',
+  reconnecting: 'Reconnecting...',
+};
+
+const AUTO_MEASURE_STATUS_LABEL: Record<AutoMeasureStatusState, string> = {
+  idle: 'Idle',
+  detecting: 'Detecting...',
+  success: 'Detection Success',
+  duplicate: 'Duplicate measurement',
+  failed: 'Detection Failed',
+};
+
 type Props = {
   message?: string;
+  cameraStatus?: CameraStatusState;
+  objective?: string | null;
+  autoMeasureStatus?: AutoMeasureStatusState;
 };
 
 function MicrometerReadoutImpl() {
@@ -66,10 +103,24 @@ function MicrometerReadoutImpl() {
 }
 const MicrometerReadout = memo(MicrometerReadoutImpl);
 
-function StatusBarImpl({ message = 'System Status: Failed To Load Hardness Tester' }: Props) {
+function StatusBarImpl({
+  message = 'System Status: Failed To Load Hardness Tester',
+  cameraStatus,
+  objective,
+  autoMeasureStatus,
+}: Props) {
   return (
     <Box component="footer" sx={BAR_SX}>
       <Typography sx={MESSAGE_SX}>{message}</Typography>
+      {cameraStatus ? (
+        <Typography sx={MESSAGE_SX}>{`Camera: ${CAMERA_STATUS_LABEL[cameraStatus]}`}</Typography>
+      ) : null}
+      {objective ? (
+        <Typography sx={MESSAGE_SX}>{`Objective: ${objective}`}</Typography>
+      ) : null}
+      {autoMeasureStatus ? (
+        <Typography sx={MESSAGE_SX}>{`Auto Measure: ${AUTO_MEASURE_STATUS_LABEL[autoMeasureStatus]}`}</Typography>
+      ) : null}
       <Box sx={READOUT_SX}>
         <MicrometerReadout />
       </Box>

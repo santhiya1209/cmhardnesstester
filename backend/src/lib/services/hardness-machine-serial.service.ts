@@ -619,6 +619,12 @@ class HardnessMachineSerialService extends EventEmitter {
         `[machine-loadtime-rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
       );
     }
+    if (this.pendingAckField === 'lightness') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-lightness-rx] raw=${JSON.stringify(chunk.toString('ascii'))} hex=${chunk.toString('hex')}`
+      );
+    }
     // eslint-disable-next-line no-console
     console.log(
       `[machine-rx] chunk hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
@@ -791,7 +797,7 @@ class HardnessMachineSerialService extends EventEmitter {
             );
             // eslint-disable-next-line no-console
             console.log(
-              `[machine-objective-rx] raw=${rxAscii} confirmedObjective=${frame.objective}`
+              `[machine-objective-rx] raw=${rxAscii} confirmedObjective=${frame.objective} expected=L${frame.slot}OK`
             );
             // eslint-disable-next-line no-console
             console.log(
@@ -893,6 +899,14 @@ class HardnessMachineSerialService extends EventEmitter {
             if (frame.key === 'lightness' || frame.key === 'loadTime') {
               // eslint-disable-next-line no-console
               console.log(`[machine-rx] confirmed ${frame.key}=${frame.value}`);
+            }
+            if (frame.key === 'lightness') {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[machine-lightness-rx] raw=${JSON.stringify(rxFrame.ascii)} parsedValue=${frame.value}`
+              );
+              // eslint-disable-next-line no-console
+              console.log(`[lightness-ack] value=${frame.value}`);
             }
             if (frame.key === 'force') {
               // eslint-disable-next-line no-console
@@ -1120,6 +1134,13 @@ class HardnessMachineSerialService extends EventEmitter {
       // eslint-disable-next-line no-console
       console.log(
         `[machine-loadtime-tx] value=${opts.expectedValue ?? 'unknown'} ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);
+    } else if (field === 'lightness') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-lightness-tx] value=${opts.expectedValue ?? 'unknown'} ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
       );
       // eslint-disable-next-line no-console
       console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);

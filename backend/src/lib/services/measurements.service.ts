@@ -59,6 +59,7 @@ export const measurementsService = createCrudService<
       xMm: input.xMm ?? null,
       yMm: input.yMm ?? null,
       qualified: input.qualified ?? null,
+      hardnessType: input.hardnessType ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -104,6 +105,8 @@ export const measurementsService = createCrudService<
       objective: input.objective === undefined ? current.objective ?? null : input.objective,
       testForceKgf:
         input.testForceKgf === undefined ? current.testForceKgf ?? null : input.testForceKgf,
+      hardnessType:
+        input.hardnessType === undefined ? current.hardnessType ?? null : input.hardnessType,
       unit: input.unit ?? current.unit,
       timestamp: input.timestamp ?? current.timestamp,
       updatedAt: now,
