@@ -94,6 +94,10 @@ type Props = {
   overlayShapes: OverlayShape[];
   autoMeasureGraphics: AutoMeasureGraphics | null;
   autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
+  /** Bumped by App on objective change → forces AutoMeasureOverlay to do an
+   *  imperative canvas clearRect so no stale yellow lines linger across the
+   *  switch. */
+  autoMeasureClearNonce?: number;
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
@@ -159,6 +163,7 @@ function CameraWindowImpl(
     overlayShapes,
     autoMeasureGraphics,
     autoMeasureGraphicsSource = 'auto',
+    autoMeasureClearNonce = 0,
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
@@ -788,6 +793,8 @@ function CameraWindowImpl(
           source={autoMeasureGraphicsSource}
           onAdjusted={onAutoMeasureAdjusted}
           strokeWidth={lineStrokeWidth}
+          activeObjective={manualMeasureObjective}
+          clearNonce={autoMeasureClearNonce}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}

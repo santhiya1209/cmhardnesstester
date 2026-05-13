@@ -448,6 +448,11 @@ function App() {
 
   const [autoMeasureSessionId, setAutoMeasureSessionId] = useState(0);
   const autoMeasureSessionIdRef = useRef(0);
+  // Bump-counter that forces AutoMeasureOverlay to imperatively clearRect its
+  // canvas (bypassing React state and the skip-redraw cache). Incremented on
+  // every objective change so no stale yellow lines from the prior mag survive
+  // into the next session.
+  const [autoMeasureClearNonce, setAutoMeasureClearNonce] = useState(0);
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log(`[auto-measure-session] id=${autoMeasureSessionId}`);
@@ -549,6 +554,9 @@ function App() {
     autoMeasurePreviewSnapshotRef.current = null;
     committedAutoMeasureFrameRef.current = null;
     previewMeasurementRef.current = null;
+    // Drop the duplicate-guard fingerprint so re-detection at the new
+    // objective is never short-circuited as a "same indentation" repeat.
+    lastCommittedFingerprintRef.current = null;
     setAutoMeasureSessionActive(false);
     setAutoMeasureCapturedFrameId(null);
     setAutoMeasureSessionId((id) => {
@@ -557,10 +565,15 @@ function App() {
       return next;
     });
     setAutoMeasureStatusState('idle');
+    // Force AutoMeasureOverlay to imperatively clear its canvas — React state
+    // nulling alone was leaving yellow lines on screen across objective swaps.
+    setAutoMeasureClearNonce((n) => n + 1);
     // eslint-disable-next-line no-console
     console.log(
       `[overlay-clear] reason=objective-change oldObjective=${oldObjective ?? 'null'} newObjective=${activeObjective ?? 'null'}`
     );
+    // eslint-disable-next-line no-console
+    console.log('[auto-measure-state-clear] reason=objective-change');
     // eslint-disable-next-line no-console
     console.log(
       `[auto-measure-overlay-clear] reason=objective-change from=${oldObjective ?? 'null'} to=${activeObjective ?? 'null'}`
@@ -922,6 +935,7 @@ function App() {
         averageUm,
         averageMm,
         hv,
+        hardnessType: 'HV' as const,
         qualified: deriveQualifiedForRow(hv),
         micronPerPixel: round((xUmPerPixel + yUmPerPixel) / 2, 6),
         calibrationName: settingsMatch?.objective ?? `${payload.zoomTime} ${payload.force} ${payload.hardnessLevel}`,
@@ -936,6 +950,12 @@ function App() {
 
       // eslint-disable-next-line no-console
       console.log('[calibration-auto-row-payload]', rowPayload);
+      // eslint-disable-next-line no-console
+      console.log('[hv-type-set] source=manual value=HV');
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-row-create] hv=${hv ?? 'n/a'} hardnessType=HV hvType=HV`
+      );
 
       try {
         const saved = await saveManualMeasurement({ values: rowPayload });
@@ -1176,6 +1196,7 @@ function App() {
             averageUm: values.avgDUm,
             averageMm: values.avgDMm,
             hv: values.hv,
+            hardnessType: 'HV' as const,
             qualified: deriveQualifiedForRow(values.hv),
             micronPerPixel: values.umPerPixel,
             calibrationName: values.calibrationName,
@@ -1189,6 +1210,12 @@ function App() {
           };
           // eslint-disable-next-line no-console
           console.log('[measurement-row-object] method=Manual', rowPayload);
+          // eslint-disable-next-line no-console
+          console.log('[hv-type-set] source=manual value=HV');
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
+          );
           const saved = await saveManualMeasurement({
             id: manualMeasurementIdRef.current ?? undefined,
             values: rowPayload,
@@ -1469,6 +1496,16 @@ function App() {
       };
       // eslint-disable-next-line no-console
       console.log('[measurement-row-object] method=Auto', autoRowPayload);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-row-build] hardness=${values.hv ?? 'n/a'} hardnessType=${autoRowPayload.hardnessType} hvType=${autoRowPayload.hardnessType}`
+      );
+      // eslint-disable-next-line no-console
+      console.log('[hv-type-set] source=auto value=HV');
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
+      );
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-row-insert] method=Auto hardnessType=HV hardness=${values.hv ?? 'n/a'}`
@@ -2555,6 +2592,12 @@ function App() {
               `[measurement-row-create] method=Auto-Adjusted d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
             );
             // eslint-disable-next-line no-console
+            console.log('[hv-type-set] source=auto value=HV');
+            // eslint-disable-next-line no-console
+            console.log(
+              `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
+            );
+            // eslint-disable-next-line no-console
             console.log('[album] snapshot capture start measurementId=', targetId ?? 'new');
             await waitForOverlayPaint();
             // eslint-disable-next-line no-console
@@ -2579,6 +2622,7 @@ function App() {
                 averageUm: values.avgDUm,
                 averageMm: values.avgDMm,
                 hv: values.hv,
+                hardnessType: 'HV',
                 qualified: deriveQualifiedForRow(values.hv),
                 micronPerPixel: values.umPerPixel,
                 calibrationName: values.calibrationName,
@@ -3234,6 +3278,7 @@ function App() {
           activeTool={activeTool}
           overlayShapes={overlay.shapes}
           autoMeasureGraphics={displayedAutoMeasureGraphics}
+          autoMeasureClearNonce={autoMeasureClearNonce}
           autoMeasureGraphicsSource={displayedAutoMeasureSource}
           crossLineVisible={overlay.crossLineVisible}
           onAddShape={overlay.addShape}

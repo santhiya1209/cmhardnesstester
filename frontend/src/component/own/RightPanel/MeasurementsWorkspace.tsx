@@ -149,6 +149,8 @@ function MeasurementsWorkspaceImpl({
     if (typeof latest.hv === 'number' && Number.isFinite(latest.hv)) {
       // eslint-disable-next-line no-console
       console.log(`[hardness-original-set] hv=${latest.hv}`);
+      // eslint-disable-next-line no-console
+      console.log(`[hv-value-set] hv=${latest.hv}`);
     }
   }, [measurements]);
 
@@ -169,8 +171,15 @@ function MeasurementsWorkspaceImpl({
       setConvertType(saved as (typeof CONVERT_TYPE_OPTIONS)[number]);
     } else {
       setConvertType('HV');
+      // Emitted on every measurement-success path that ends up landing here
+      // (Auto Measure, Manual Measure, calibration auto-row) because none of
+      // those write convertType, so this branch is the auto-default.
+      if (displayedMeasurement) {
+        // eslint-disable-next-line no-console
+        console.log('[hv-type-auto-set] value=HV reason=measurement-success');
+      }
     }
-  }, [displayedMeasurement?.id, displayedMeasurement?.convertType]);
+  }, [displayedMeasurement?.id, displayedMeasurement?.convertType, displayedMeasurement]);
 
   const handleConvertTypeChange = useCallback(
     async (next: (typeof CONVERT_TYPE_OPTIONS)[number]) => {
@@ -315,9 +324,27 @@ function MeasurementsWorkspaceImpl({
         <Box sx={SUMMARY_ROW_SX}>
           <Typography sx={LABEL_SX}>HV</Typography>
           <Box sx={HV_DISPLAY_SX}>{formatNumber(displayedMeasurement?.hv)}</Box>
+          {(() => {
+            // Render-time fallback: if an HV value is showing but the
+            // dropdown state somehow isn't one of the known options (race
+            // during refetch, legacy row, etc.), force 'HV' so the box is
+            // never visually blank next to a populated HV value.
+            const hvShown =
+              typeof displayedMeasurement?.hv === 'number' &&
+              Number.isFinite(displayedMeasurement.hv);
+            const displayedConvertType: (typeof CONVERT_TYPE_OPTIONS)[number] =
+              CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV';
+            // eslint-disable-next-line no-console
+            console.log(
+              `[hv-type-render] selectedHardnessType=${convertType || 'null'} displayed=${hvShown ? displayedConvertType : displayedConvertType}`
+            );
+            return null;
+          })()}
           <FormControl size="small" sx={HV_FIELD_SX}>
             <Select
-              value={convertType}
+              value={
+                CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV'
+              }
               disabled={busy}
               onChange={(event: SelectChangeEvent<(typeof CONVERT_TYPE_OPTIONS)[number]>) =>
                 void handleConvertTypeChange(

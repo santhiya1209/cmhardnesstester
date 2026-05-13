@@ -44,6 +44,14 @@ type Props = {
   onAdjusted?: (corners: AutoMeasureCorners) => void;
   /** Yellow-line base stroke width in CSS px. Shared with Manual Measure. */
   strokeWidth?: number;
+  /** Currently selected objective (10X/40X). Used as the in-draw render
+   *  guard: if the overlay's own `graphics.objective` doesn't match this,
+   *  we clear the canvas instead of drawing — defends against stale lines
+   *  surviving an objective switch. */
+  activeObjective?: string | null;
+  /** Bump this number to force an imperative `clearRect` on the canvas
+   *  regardless of React render scheduling or skip-redraw caches. */
+  clearNonce?: number;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -140,6 +148,8 @@ function AutoMeasureOverlayImpl({
   source = 'auto',
   onAdjusted,
   strokeWidth,
+  activeObjective = null,
+  clearNonce = 0,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -232,6 +242,43 @@ function AutoMeasureOverlayImpl({
 
   const corners = localCorners ?? graphics?.corners ?? null;
 
+  // Imperative force-clear of the overlay canvas. Triggered when the parent
+  // bumps clearNonce (e.g. objective change) or whenever `graphics` becomes
+  // null. React state nulling alone is not reliable here — a rAF queued by
+  // a prior render can repaint stale yellow lines AFTER state has cleared,
+  // and the skip-redraw cache (`lastDrawKeyRef`) can short-circuit the next
+  // legitimate draw. Calling clearRect synchronously plus invalidating the
+  // skip cache guarantees the canvas is visually blank within the same tick.
+  const forceClearCanvas = useCallback((reason: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    lastDrawKeyRef.current = '';
+    if (tweenFrameRef.current !== null) {
+      window.cancelAnimationFrame(tweenFrameRef.current);
+      tweenFrameRef.current = null;
+    }
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    localCornersRef.current = null;
+    // eslint-disable-next-line no-console
+    console.log(`[overlay-canvas-force-clear] reason=${reason}`);
+  }, []);
+
+  useEffect(() => {
+    if (clearNonce === 0) return;
+    forceClearCanvas(`clear-nonce-${clearNonce}`);
+  }, [clearNonce, forceClearCanvas]);
+
+  useEffect(() => {
+    if (graphics !== null) return;
+    forceClearCanvas('graphics-null');
+  }, [graphics, forceClearCanvas]);
+
   const draw = useCallback(() => {
     if (frameRef.current !== null) return;
     frameRef.current = window.requestAnimationFrame(() => {
@@ -249,7 +296,9 @@ function AutoMeasureOverlayImpl({
       const imageSizeKey = imageSize ? `${imageSize.width}x${imageSize.height}` : 'none';
       const hoverKey = hover ? hover.line : 'none';
       const dragKey = dragRef.current ? dragRef.current.line : 'none';
-      const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}`;
+      const overlayObjectiveKey = (graphics?.objective ?? '').trim().toUpperCase() || 'unknown';
+      const activeObjectiveKey = (activeObjective ?? '').trim().toUpperCase() || 'unknown';
+      const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}|${overlayObjectiveKey}|${activeObjectiveKey}`;
 
       if (!sizeChanged && lastDrawKeyRef.current === drawKey) {
         // eslint-disable-next-line no-console
@@ -259,6 +308,31 @@ function AutoMeasureOverlayImpl({
         return;
       }
       lastDrawKeyRef.current = drawKey;
+
+      // Final render guard at the actual draw point. The parent component
+      // (App.tsx) already gates `displayedAutoMeasureGraphics` by objective,
+      // but this canvas is a render target shared by preview + committed +
+      // settings-save sources, so we re-verify here. On mismatch we still
+      // call clearRect (it's already the first thing the draw fns do via
+      // active=false), but skip drawing any lines.
+      const normalize = (v: string | null | undefined) => (v ?? '').trim().toUpperCase();
+      const overlayObjective = normalize(graphics?.objective);
+      const liveObjective = normalize(activeObjective);
+      const objectiveMismatch =
+        overlayObjective && liveObjective && overlayObjective !== liveObjective;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[overlay-draw-source] source=${source} objective=${overlayObjective || 'unknown'} activeObjective=${liveObjective || 'unknown'} frameId=${graphics?.frameId ?? 'n/a'} visible=${objectiveMismatch || !corners ? 'false' : 'true'}`
+      );
+      if (objectiveMismatch) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[overlay-render-guard] visible=false reason=objective-mismatch overlayObjective=${overlayObjective} activeObjective=${liveObjective}`
+        );
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
 
       // eslint-disable-next-line no-console
       console.log('[overlay] draw-start');
@@ -323,7 +397,7 @@ function AutoMeasureOverlayImpl({
       // eslint-disable-next-line no-console
       console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
     });
-  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout]);
+  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective]);
 
   // Latest `draw` reference for the ResizeObserver callback. The observer
   // is installed once with `[]` deps; without this ref it would either

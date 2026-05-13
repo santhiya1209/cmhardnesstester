@@ -86,6 +86,7 @@ type Props = {
   overlayShapes: OverlayShape[];
   autoMeasureGraphics: AutoMeasureGraphics | null;
   autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
+  autoMeasureClearNonce?: number;
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
@@ -104,6 +105,7 @@ function LeftPanelImpl(
     overlayShapes,
     autoMeasureGraphics,
     autoMeasureGraphicsSource,
+    autoMeasureClearNonce,
     crossLineVisible,
     onAddShape,
     manualMeasureResetKey,
@@ -126,6 +128,7 @@ function LeftPanelImpl(
         overlayShapes={overlayShapes}
         autoMeasureGraphics={autoMeasureGraphics}
         autoMeasureGraphicsSource={autoMeasureGraphicsSource}
+        autoMeasureClearNonce={autoMeasureClearNonce}
         crossLineVisible={crossLineVisible}
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}

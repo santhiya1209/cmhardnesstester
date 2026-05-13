@@ -231,6 +231,10 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                 (d1Um !== null && d2Um !== null ? (d1Um + d2Um) / 2 : null);
 
               const hardnessType = formatBlank(measurement.hardnessType) || 'HV';
+              // eslint-disable-next-line no-console
+              console.log(
+                `[measurement-table-render] rowId=${measurement.id} hardnessType=${measurement.hardnessType ?? 'null'} hvType=${hardnessType}`
+              );
               const qualified = formatQualified(measurement.qualified);
               const convertType =
                 formatBlank(measurement.convertType) || hardnessType || 'NONE';
