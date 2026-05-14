@@ -110,8 +110,18 @@ async function readLatestMicrometerDepthMm(): Promise<number | null> {
   try {
     const reply = await getLatestMicrometerReading();
     const value = reply.reading?.value ?? null;
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-  } catch {
+    const resolved =
+      typeof value === 'number' && Number.isFinite(value) ? value : null;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[micrometer-depth-before-row] value=${resolved ?? 'null'} stale=${(reply.reading as { stale?: boolean } | null)?.stale ?? false}`
+    );
+    return resolved;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[micrometer-depth-before-row] value=null error=${err instanceof Error ? err.message : String(err)}`
+    );
     return null;
   }
 }
@@ -1040,6 +1050,16 @@ function App() {
           console.log(
             `[measurement-save] depth from micrometer=${depthPayload.depthMm ?? '-'} new=${isNewManualMeasurement}`
           );
+          if (isNewManualMeasurement) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[measurement-row-depth-snapshot] rowId=pending depth=${depthPayload.depthMm ?? 'null'} source=currentMicrometer`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[measurement-row-depth-assign] depthMm=${depthPayload.depthMm ?? 'null'}`
+            );
+          }
           const pixelValues = calculateManualDiagonalsFromPixels(
             result.d1Px,
             result.d2Px,
@@ -1216,10 +1236,18 @@ function App() {
           console.log(
             `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
           );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-save-payload] depthMm=${'depthMm' in rowPayload ? (rowPayload as { depthMm?: number | null }).depthMm ?? 'null' : 'preserved'}`
+          );
           const saved = await saveManualMeasurement({
             id: manualMeasurementIdRef.current ?? undefined,
             values: rowPayload,
           });
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
+          );
           // eslint-disable-next-line no-console
           console.log(
             `[measurement-row-save-success] method=Manual id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv} objective=${saved.objective}`
@@ -1288,14 +1316,76 @@ function App() {
     async (snapshot: AutoMeasureDetectionSnapshot, source: 'auto-click' | 'settings-save') => {
       const { result, graphics, objectiveForCalibration, machineStateForAuto, forceKgf } = snapshot;
 
+      // Refined-diamond geometry gate. The native detector returns a tip set
+      // even from minAreaRect-only fallbacks; we must guarantee the four
+      // points form a real diamond before committing yellow lines + a row.
+      // The polygon top→right→bottom→left must be:
+      //   1. all four points finite,
+      //   2. top above bottom, left to the left of right,
+      //   3. left/right vertically near the diagonal mid-Y (D1 horizontal-ish),
+      //   4. top/bottom horizontally near the diagonal mid-X (D2 vertical-ish),
+      //   5. diagonals cross near the polygon centroid.
+      // If ANY check fails the detector reported the wrong geometry — most
+      // commonly a rectangle/manual-guide leak — and we must report failure
+      // instead of silently saving a wrong HV.
+      const c = graphics.corners;
+      const isFinitePoint = (p: { x: number; y: number } | null | undefined) =>
+        !!p && Number.isFinite(p.x) && Number.isFinite(p.y);
+      const cornersFinite =
+        isFinitePoint(c.top) && isFinitePoint(c.right) &&
+        isFinitePoint(c.bottom) && isFinitePoint(c.left);
+      const midX = (c.left.x + c.right.x) / 2;
+      const midY = (c.top.y + c.bottom.y) / 2;
+      const d1Px = Math.hypot(c.right.x - c.left.x, c.right.y - c.left.y);
+      const d2Px = Math.hypot(c.bottom.x - c.top.x, c.bottom.y - c.top.y);
+      const tol = Math.max(2, 0.18 * Math.min(d1Px, d2Px));
+      const horizontalOk =
+        c.left.x < c.right.x &&
+        Math.abs(c.left.y - midY) <= tol &&
+        Math.abs(c.right.y - midY) <= tol;
+      const verticalOk =
+        c.top.y < c.bottom.y &&
+        Math.abs(c.top.x - midX) <= tol &&
+        Math.abs(c.bottom.x - midX) <= tol;
+      const overlayIsDiamond = cornersFinite && horizontalOk && verticalOk &&
+        d1Px > 4 && d2Px > 4;
+      if (!cornersFinite) {
+        // eslint-disable-next-line no-console
+        console.warn('[auto-measure][reject-no-refined-corners] reason=non-finite-corners');
+        setUnavailableMsg('Refined diamond corners not available');
+        setStatusMessage('System Status: Auto Measure rejected: refined diamond corners not available');
+        return false;
+      }
+      if (!overlayIsDiamond) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[auto-measure][reject-overlay-not-diamond] reason=geometry-not-diamond horizontalOk=${horizontalOk} verticalOk=${verticalOk} d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} tol=${tol.toFixed(2)}`
+        );
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[auto-measure][save-blocked-invalid-overlay] reason=overlay-not-diamond source=${source}`
+        );
+        setUnavailableMsg('Refined diamond corners not available');
+        setStatusMessage('System Status: Auto Measure rejected: overlay geometry is not a diamond');
+        return false;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure][success-refined-diamond-only] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} midX=${midX.toFixed(2)} midY=${midY.toFixed(2)} tolPx=${tol.toFixed(2)}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-corners] left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
+      );
+
       // Duplicate-measurement guard. Identical detection on the same unchanged
       // frame (repeat click) must NOT spawn a new table row. Tolerance is
       // sub-pixel because the native detector is deterministic for an
       // unchanged frame; a real new indentation moves D1/D2/center well past
       // these bounds. Settings-save is exempt — the user is intentionally
       // re-detecting under new params and expects the existing row to update.
-      const centerX = (graphics.corners.left.x + graphics.corners.right.x) / 2;
-      const centerY = (graphics.corners.top.y + graphics.corners.bottom.y) / 2;
+      const centerX = midX;
+      const centerY = midY;
       const frameEpoch = getLastPaintEpoch();
       const fingerprint = {
         d1Px: result.d1Pixels,
@@ -1366,6 +1456,10 @@ function App() {
           console.log(
             `[overlay-set] source=auto objective=${objectiveForCalibration ?? 'unknown'} sessionId=${graphics.sessionId ?? 'n/a'} lines=${graphics.lines.length} frameId=${graphics.frameId ?? 'n/a'}`
           );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure][overlay-freeze] objective=${objectiveForCalibration ?? 'unknown'} sessionId=${graphics.sessionId ?? 'n/a'} frameId=${graphics.frameId ?? 'n/a'} corners=4 color=yellow`
+          );
         }
         return { ...graphics, corners: { ...graphics.corners } };
       });
@@ -1384,6 +1478,16 @@ function App() {
       console.log(
         `[measurement-save] depth from micrometer=${depthMm ?? '-'} new=${isNewAutoMeasurement}`
       );
+      if (isNewAutoMeasurement) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-row-depth-snapshot] rowId=pending depth=${depthMm ?? 'null'} source=currentMicrometer`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-row-depth-assign] depthMm=${depthMm ?? 'null'}`
+        );
+      }
 
       const conversion = calculateVickersFromPixels({
         calibrationSettings,
@@ -1510,12 +1614,20 @@ function App() {
       console.log(
         `[auto-measure-row-insert] method=Auto hardnessType=HV hardness=${values.hv ?? 'n/a'}`
       );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-save-payload] depthMm=${'depthMm' in autoRowPayload ? (autoRowPayload as { depthMm?: number | null }).depthMm ?? 'null' : 'preserved'}`
+      );
       let saved;
       try {
         saved = await saveManualMeasurement({
           id: autoMeasurementIdRef.current ?? undefined,
           values: autoRowPayload,
         });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
+        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[measurement-row-save-error] method=Auto', err);
@@ -1531,6 +1643,10 @@ function App() {
       // eslint-disable-next-line no-console
       console.log(
         `[measurement-row-save-success] method=Auto id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv} objective=${saved.objective}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure][table-save] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv} hardnessType=${autoRowPayload.hardnessType} objective=${saved.objective} method=Auto depthMm=${depthMm ?? 'preserved'} timestamp=${timestamp}`
       );
       // eslint-disable-next-line no-console
       console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
@@ -1739,6 +1855,10 @@ function App() {
           );
           // eslint-disable-next-line no-console
           console.log(`[auto-measure-snapshot] frameId=${capturedFrameId}`);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure][frame-freeze] sessionId=${sessionIdForRun} frameId=${capturedFrameId} objective=${objectiveForCalibration ?? 'unknown'}`
+          );
           // eslint-disable-next-line no-console
           console.log(
             `[auto-measure-capture-fresh-frame] objective=${objectiveForCalibration} frameId=${capturedFrameId}`
@@ -2032,12 +2152,17 @@ function App() {
         if (preview) {
           const detectMs = performance.now() - requestedAt;
           if (!autoMeasureSettingsEqual(settings, latestAutoMeasurePreviewSettingsRef.current)) {
+            const latest = latestAutoMeasurePreviewSettingsRef.current;
             // eslint-disable-next-line no-console
             console.log(
               `[auto-settings-preview] smoothing=${settings.smoothing} kernel=${readPreviewKernel(result, settings.smoothing)} threshold=${settings.threshold} accepted=false D1_px=0 D2_px=0 detectMs=${detectMs.toFixed(1)}`
             );
             // eslint-disable-next-line no-console
             console.log('[auto-settings-preview-reject] reason=stale-preview keepLastValid=true');
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-settings][preview-skip-stale] reqSmoothing=${settings.smoothing} reqThreshold=${settings.threshold} latestSmoothing=${latest?.smoothing ?? 'n/a'} latestThreshold=${latest?.threshold ?? 'n/a'} detectMs=${detectMs.toFixed(1)}`
+            );
             return;
           }
           const before = displayedAutoMeasureGraphicsRef.current;
@@ -2063,6 +2188,10 @@ function App() {
           // eslint-disable-next-line no-console
           console.log(
             `[auto-settings-preview] smoothing=${settings.smoothing} threshold=${settings.threshold} D1_px=${result.d1Pixels.toFixed(3)} D2_px=${result.d2Pixels.toFixed(3)} kernel=${kernel} accepted=true detectMs=${detectMs.toFixed(1)}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-settings][preview-apply] smoothing=${settings.smoothing} threshold=${settings.threshold} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} detectMs=${detectMs.toFixed(1)}`
           );
           const fmtPt = (p: { x: number; y: number } | null | undefined) =>
             p ? `${p.x.toFixed(2)},${p.y.toFixed(2)}` : 'null';

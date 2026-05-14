@@ -116,18 +116,57 @@ export function drawTwoIndependentLines({
 
   ctx.strokeStyle = YELLOW;
   ctx.fillStyle = YELLOW;
-  ctx.lineCap = 'butt';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.setLineDash([]);
 
-  // D1 segment
-  ctx.lineWidth = hover === 'd1-body' || drag === 'd1-body' ? activeWidth : baseWidth;
+  // 4 fitted edge lines — these ARE the Vickers edge-fit result. Each edge
+  // is extended well past its two corner tips along its own direction so
+  // the yellow line visibly crosses the indentation edge (industrial
+  // edge-fit visualizer style) instead of stopping at the corner.
+  // EXTEND_FACTOR = 0.7 means each end extends by 70% of the corner-to-
+  // corner length, so the rendered line ≈ 2.4× the polygon edge.
+  const top = dD2S;
+  const right = dD1E;
+  const bottom = dD2E;
+  const left = dD1S;
+  const EXTEND_FACTOR = 0.7;
+  const extendedEndpoints = (a: Point, b: Point): [Point, Point] => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3) return [a, b];
+    const ex = (dx / len) * len * EXTEND_FACTOR;
+    const ey = (dy / len) * len * EXTEND_FACTOR;
+    return [
+      { x: a.x - ex, y: a.y - ey },
+      { x: b.x + ex, y: b.y + ey },
+    ];
+  };
+  ctx.lineWidth = baseWidth;
+  const strokeEdge = (a: Point, b: Point) => {
+    const [pa, pb] = extendedEndpoints(a, b);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  };
+  strokeEdge(top, right);
+  strokeEdge(right, bottom);
+  strokeEdge(bottom, left);
+  strokeEdge(left, top);
+
+  // Diagonals D1 (left↔right) and D2 (top↔bottom). Rendered thinner so the
+  // polygon edges remain the dominant visual; they exist to mark D1 and D2
+  // on the indentation directly.
+  const diagonalWidth = Math.max(1, baseWidth - 0.6);
+  ctx.lineWidth = hover === 'd1-body' || drag === 'd1-body' ? activeWidth : diagonalWidth;
   ctx.beginPath();
   ctx.moveTo(dD1S.x, dD1S.y);
   ctx.lineTo(dD1E.x, dD1E.y);
   ctx.stroke();
 
-  // D2 segment
-  ctx.lineWidth = hover === 'd2-body' || drag === 'd2-body' ? activeWidth : baseWidth;
+  ctx.lineWidth = hover === 'd2-body' || drag === 'd2-body' ? activeWidth : diagonalWidth;
   ctx.beginPath();
   ctx.moveTo(dD2S.x, dD2S.y);
   ctx.lineTo(dD2E.x, dD2E.y);

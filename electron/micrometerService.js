@@ -238,7 +238,22 @@ class MicrometerService {
   }
 
   getLatestReading() {
-    return this.latestReading ? { ...this.latestReading } : null;
+    if (this.latestReading) return { ...this.latestReading };
+    // Fall back to the latched UI state value: _scheduleStaleReadingTimeout
+    // nulls `latestReading` after 5s of serial silence, but `this.state.value`
+    // (what the UI displays) is intentionally preserved. Measurement-row
+    // snapshots must reflect what the user sees, not the serial buffer.
+    const stateValue = this.state ? this.state.value : null;
+    if (typeof stateValue === 'number' && Number.isFinite(stateValue)) {
+      return {
+        raw: this.state.rawHex ?? null,
+        value: stateValue,
+        unit: 'mm',
+        timestamp: this.state.timestamp ?? Date.now(),
+        stale: true,
+      };
+    }
+    return null;
   }
 
   async open(portName = DEFAULT_PORT) {

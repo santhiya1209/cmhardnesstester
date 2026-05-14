@@ -162,6 +162,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       const value = clamp(rawValue, gainRange.min, gainRange.max);
       // eslint-disable-next-line no-console
       console.log('[camera-settings][frontend] gain changed:', value);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-settings][gain-change] value=${value} min=${gainRange.min} max=${gainRange.max}`
+      );
       try {
         dropPendingCameraFrames('gain-change');
         const reply = await window.hardnessCamera.setGain(value);
@@ -191,6 +195,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       const valueMs = clamp(rawValueMs, exposureRange.min, exposureRange.max);
       // eslint-disable-next-line no-console
       console.log('[camera-settings][frontend] exposure changed:', valueMs);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-settings][exposure-change] valueMs=${valueMs} min=${exposureRange.min} max=${exposureRange.max}`
+      );
       try {
         dropPendingCameraFrames('exposure-change');
         const reply = await window.hardnessCamera.setExposure(valueMs);

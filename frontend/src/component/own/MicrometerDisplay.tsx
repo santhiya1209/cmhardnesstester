@@ -22,6 +22,8 @@ function MicrometerDisplayImpl({ sx }: Props) {
     if (status === 'valid' && value !== null && Number.isFinite(value)) {
       lastValueRef.current = value;
       setLatched(displayText);
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-live] value=${value}`);
     } else if (!connected) {
       lastValueRef.current = null;
       setLatched(null);

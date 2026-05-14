@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect } from 'react';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -9,7 +9,6 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { colors } from '@/theme/theme';
 import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
-import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 
 const COLUMNS = [
   '#',
@@ -122,17 +121,6 @@ function formatTimestamp(value: string): string {
 }
 
 function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, onSelect }: Props) {
-  const { connected, status, value, displayText } = useMicrometerReading();
-  const [latchedDepth, setLatchedDepth] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (status === 'valid' && value !== null && Number.isFinite(value)) {
-      setLatchedDepth(displayText);
-    } else if (!connected) {
-      setLatchedDepth(null);
-    }
-  }, [status, value, displayText, connected]);
-
   useEffect(() => {
     const first = measurements[0];
     const firstD1Um = first ? first.d1Um ?? (first.unit === 'um' ? first.d1 : null) : null;
@@ -190,11 +178,6 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
       );
     });
   }, [measurements]);
-
-  const liveDepthText =
-    status === 'valid' && value !== null && Number.isFinite(value)
-      ? displayText
-      : (latchedDepth ?? '--');
 
   return (
     <TableContainer sx={TABLE_WRAP_SX}>
@@ -283,9 +266,13 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>
-                    {measurement.depthMm !== null && measurement.depthMm !== undefined
-                      ? formatDepth(measurement.depthMm)
-                      : liveDepthText}
+                    {(() => {
+                      // eslint-disable-next-line no-console
+                      console.log(
+                        `[measurement-table-depth-render] rowId=${measurement.id} depth=${measurement.depthMm ?? 'null'}`
+                      );
+                      return formatDepth(measurement.depthMm);
+                    })()}
                   </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
                 </TableRow>

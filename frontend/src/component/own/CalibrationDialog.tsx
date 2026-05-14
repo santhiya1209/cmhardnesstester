@@ -218,9 +218,17 @@ function CalibrationDialogImpl({
   const [confirmClear, setConfirmClear] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Selection-state popup: mirrors the (zoomTime, force) selection against
+  // the stored calibration list. mode=update when a row already exists for
+  // the current (objective, force); mode=insert when it does not. The
+  // upsert API ensures the save action matches `mode`.
+  const [selectionStatus, setSelectionStatus] = useState<
+    { mode: 'update' | 'insert'; message: string } | null
+  >(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const panelLoggedOpenRef = useRef(false);
   const lastLivePixelLogRef = useRef<string | null>(null);
+  const lastSelectionKeyRef = useRef<string | null>(null);
 
   const busy = loading || saving || deleting || clearing || importing;
   const errorMessage = loadError ?? validationError ?? actionError;
@@ -309,6 +317,95 @@ function CalibrationDialogImpl({
     }
   }, [open, autoFillPixelLengthX, autoFillPixelLengthY]);
 
+  // Selection-state check: when the user changes Objective / Force /
+  // Hardness Level (or the items list refreshes), look up whether a
+  // calibration row already exists for the current (zoomTime, force).
+  // - exists  -> mode=update, preload Pixel X/Y + Hardness from the row
+  //              matching the current hardnessLevel (if any), show
+  //              "already calibrated" popup
+  // - missing -> mode=insert, clear Pixel X/Y + Hardness, show
+  //              "not calibrated yet" popup
+  // Preloading only fires when the (zoomTime, force, hardnessLevel) key
+  // actually changes (tracked via lastSelectionKeyRef) so live drag updates
+  // and items refetches don't stomp on the user's in-progress edits.
+  useEffect(() => {
+    if (!open) {
+      lastSelectionKeyRef.current = null;
+      return;
+    }
+    if (loading) return;
+
+    const objective = form.zoomTime;
+    const force = form.force;
+    const hardnessLevel = form.hardnessLevel;
+    const selectionKey = `${objective}|${force}|${hardnessLevel}`;
+    const keyChanged = lastSelectionKeyRef.current !== selectionKey;
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[calibration-selection-check] objective=${objective} force=${force}`
+    );
+
+    const anyForObjectiveForce = items.find(
+      (it) => it.zoomTime === objective && it.force === force
+    );
+    const exactForHardnessLevel = items.find(
+      (it) =>
+        it.zoomTime === objective &&
+        it.force === force &&
+        it.hardnessLevel === hardnessLevel
+    );
+
+    if (anyForObjectiveForce) {
+      const message = `${objective} / ${force} is already calibrated. Updating Middle, Low, and High values will overwrite the existing calibration.`;
+      setSelectionStatus({ mode: 'update', message });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-existing-found] id=${anyForObjectiveForce.id} objective=${objective} force=${force} hardnessLevel=${anyForObjectiveForce.hardnessLevel} pixelLengthX=${anyForObjectiveForce.pixelLengthX} pixelLengthY=${anyForObjectiveForce.pixelLengthY} hardness=${anyForObjectiveForce.hardness}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-popup] mode=update message=${message}`);
+
+      if (keyChanged) {
+        lastSelectionKeyRef.current = selectionKey;
+        if (exactForHardnessLevel) {
+          setForm((current) => ({
+            ...current,
+            pixelLengthX: String(exactForHardnessLevel.pixelLengthX),
+            pixelLengthY: String(exactForHardnessLevel.pixelLengthY),
+            hardness: String(exactForHardnessLevel.hardness),
+          }));
+        } else {
+          setForm((current) => ({
+            ...current,
+            pixelLengthX: DEFAULT_FORM_STATE.pixelLengthX,
+            pixelLengthY: DEFAULT_FORM_STATE.pixelLengthY,
+            hardness: DEFAULT_FORM_STATE.hardness,
+          }));
+        }
+      }
+    } else {
+      const message = `${objective} / ${force} is not calibrated yet. Please enter Middle, Low, and High values to calibrate.`;
+      setSelectionStatus({ mode: 'insert', message });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-not-found] objective=${objective} force=${force}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-popup] mode=insert message=${message}`);
+
+      if (keyChanged) {
+        lastSelectionKeyRef.current = selectionKey;
+        setForm((current) => ({
+          ...current,
+          pixelLengthX: DEFAULT_FORM_STATE.pixelLengthX,
+          pixelLengthY: DEFAULT_FORM_STATE.pixelLengthY,
+          hardness: DEFAULT_FORM_STATE.hardness,
+        }));
+      }
+    }
+  }, [open, loading, items, form.zoomTime, form.force, form.hardnessLevel]);
+
   const handleTabChange = useCallback((_e: unknown, value: CalibrationType) => {
     setTab(value);
     setValidationError(null);
@@ -383,6 +480,14 @@ function CalibrationDialogImpl({
       console.log(
         `[calibration-save] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel}`
       );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-save-request] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} pixelLengthX=${payload.pixelLengthX} pixelLengthY=${payload.pixelLengthY} hardness=${payload.hardness}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-save-mode] mode=${selectionStatus?.mode ?? 'insert'} objective=${payload.zoomTime} force=${payload.force}`
+      );
       const savedCalibration = await saveCalibration(payload);
       // eslint-disable-next-line no-console
       console.log(
@@ -433,7 +538,7 @@ function CalibrationDialogImpl({
     } catch (e) {
       setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
     }
-  }, [form, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, tab]);
+  }, [form, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, selectionStatus, tab]);
 
   const handleManual = useCallback(() => {
     if (!onRequestManualMeasure) {
@@ -745,6 +850,15 @@ function CalibrationDialogImpl({
         <Typography variant="subtitle2" sx={SECTION_TITLE_SX}>
           Add Calibration
         </Typography>
+
+        {selectionStatus ? (
+          <Alert
+            severity={selectionStatus.mode === 'update' ? 'warning' : 'info'}
+            sx={{ mt: 1 }}
+          >
+            {selectionStatus.message}
+          </Alert>
+        ) : null}
 
         <Tabs value={tab} onChange={handleTabChange} sx={{ mt: 0.5, mb: 1 }}>
           <Tab value="hardness" label="Hardness Calibration" />

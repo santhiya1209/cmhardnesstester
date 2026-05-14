@@ -6,9 +6,7 @@ import { displayToImage, getImagePlacement, imageToDisplay } from '@/utils/manua
 import {
   clampPointToImage,
   drawManualMeasureOverlay,
-  drawTwoIndependentLines,
   type ManualMeasureImageSize,
-  type TwoLinesHandle,
 } from '@/utils/manualMeasureOverlayCanvas';
 import type { Point } from '@/types/tool';
 
@@ -67,9 +65,9 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
-type DragHandle = LineKey | 'center' | 'd1-body' | 'd2-body';
+type DragHandle = LineKey | 'center';
 
-type DragKind = 'line' | 'corner' | 'center' | 'd1-body' | 'd2-body';
+type DragKind = 'line' | 'corner' | 'center';
 
 type DragState = {
   kind: DragKind;
@@ -78,19 +76,6 @@ type DragState = {
   startCorners: AutoMeasureCorners;
   startPointerImage: Point;
 };
-
-// Perpendicular distance from point P to segment AB (display coords).
-function distancePointToSegment(p: Point, a: Point, b: Point): number {
-  const vx = b.x - a.x;
-  const vy = b.y - a.y;
-  const len2 = vx * vx + vy * vy;
-  if (len2 <= 0) return Math.hypot(p.x - a.x, p.y - a.y);
-  let t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
-  t = Math.max(0, Math.min(1, t));
-  const cx = a.x + t * vx;
-  const cy = a.y + t * vy;
-  return Math.hypot(p.x - cx, p.y - cy);
-}
 
 function clonePoint(p: Point): Point {
   return { x: p.x, y: p.y };
@@ -338,64 +323,88 @@ function AutoMeasureOverlayImpl({
       console.log('[overlay] draw-start');
       // eslint-disable-next-line no-console
       console.log(`[overlay-redraw] source=${source}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[overlay-set] style=four-guide-lines objective=${overlayObjective || 'unknown'}`
+      );
 
-      if (graphics?.lineLayout === 'two-diagonals') {
-        // 10X: two independent yellow segments — D1 (left tip ↔ right tip)
-        // and D2 (top tip ↔ bottom tip). Endpoints carry their own (x, y)
-        // so neither line is forced through the other's midpoint, and each
-        // line is independently translatable.
-        const dragHandle = dragRef.current
-          ? (dragRef.current.kind === 'd1-body'
-              ? 'd1-body'
-              : dragRef.current.kind === 'd2-body'
-              ? 'd2-body'
-              : (dragRef.current.line as TwoLinesHandle))
-          : null;
-        const hoverHandle = hover
-          ? (hover.kind === 'd1-body'
-              ? 'd1-body'
-              : hover.kind === 'd2-body'
-              ? 'd2-body'
-              : (hover.line as TwoLinesHandle))
-          : null;
-        drawTwoIndependentLines({
-          canvas,
-          wrap,
-          active: !!corners && !!imageSize,
-          imageSize,
-          d1Start: corners?.left ?? null,
-          d1End: corners?.right ?? null,
-          d2Start: corners?.top ?? null,
-          d2End: corners?.bottom ?? null,
-          hover: hoverHandle,
-          drag: dragHandle,
-          strokeWidth,
-        });
-      } else {
-        // 40X+: four full-extent guides + 4 corner handles (legacy layout).
-        const guides = corners
-          ? {
-              leftX: corners.left.x,
-              rightX: corners.right.x,
-              topY: corners.top.y,
-              bottomY: corners.bottom.y,
-            }
-          : null;
-        drawManualMeasureOverlay({
-          canvas,
-          wrap,
-          active: !!corners && !!imageSize,
-          imageSize,
-          guides,
-          hoverGuide: hover ? hover.line : null,
-          dragGuide: dragRef.current ? dragRef.current.line : null,
-          strokeWidth,
-          lineLayout: graphics?.lineLayout,
-        });
-      }
+      // Four full-extent yellow guide lines through the 4 refined diamond
+      // tips: vertical at left.x / right.x, horizontal at top.y / bottom.y.
+      // Same visual style for 10X and 40X — for 10X the two-diagonals
+      // detection still produces 4 tip points that drive these guides.
+      const dragHandle = dragRef.current && dragRef.current.kind === 'line'
+        ? (dragRef.current.line as 'left' | 'right' | 'top' | 'bottom')
+        : null;
+      const hoverHandle = hover && hover.kind === 'line'
+        ? (hover.line as 'left' | 'right' | 'top' | 'bottom')
+        : null;
+      const guides = corners
+        ? {
+            leftX: corners.left.x,
+            rightX: corners.right.x,
+            topY: corners.top.y,
+            bottomY: corners.bottom.y,
+          }
+        : null;
+      drawManualMeasureOverlay({
+        canvas,
+        wrap,
+        active: !!corners && !!imageSize,
+        imageSize,
+        guides,
+        hoverGuide: hoverHandle,
+        dragGuide: dragHandle,
+        strokeWidth,
+        lineLayout: 'four-guides',
+      });
 
       // eslint-disable-next-line no-console
       console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
+      if (corners) {
+        const fmt = (p: Point) => `(${p.x.toFixed(2)},${p.y.toFixed(2)})`;
+        const d1 = Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y);
+        const d2 = Math.hypot(corners.bottom.x - corners.top.x, corners.bottom.y - corners.top.y);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][overlay-draw-diamond] layout=diamond edges=4 d1=left↔right d2=top↔bottom color=yellow source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][overlay-type] type=diamond not=box,manual-guides source=${source} edges=4`
+        );
+        // 4 fitted edges (polygon sides). The C++ pipeline produced these
+        // via Sobel-gradient side ROIs + cv::fitLine; the renderer just
+        // re-emits the geometry it actually painted, so an operator can
+        // confirm a yellow stroke for each edge.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][fit-edge-top-left] from=${fmt(corners.top)} to=${fmt(corners.left)} source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][fit-edge-top-right] from=${fmt(corners.top)} to=${fmt(corners.right)} source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][fit-edge-bottom-right] from=${fmt(corners.bottom)} to=${fmt(corners.right)} source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][fit-edge-bottom-left] from=${fmt(corners.bottom)} to=${fmt(corners.left)} source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][corner-tip] top=${fmt(corners.top)} right=${fmt(corners.right)} bottom=${fmt(corners.bottom)} left=${fmt(corners.left)}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][diamond-overlay] edges=4 corners=4 d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)} source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure][refined-diagonals] d1=left↔right d2=top↔bottom d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
+        );
+      }
     });
   }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective]);
 
@@ -476,25 +485,28 @@ function AutoMeasureOverlayImpl({
         }
       }
 
-      if (isTwoDiagonals) {
-        // 10X: D1-body and D2-body translate their own line only. No center
-        // handle in this layout — D1 and D2 are independent objects.
-        const d1Dist = distancePointToSegment(display, left, right);
-        const d2Dist = distancePointToSegment(display, top, bottom);
-        if (d1Dist <= LINE_BODY_HIT_DISTANCE && d1Dist <= d2Dist) {
-          return { kind: 'd1-body', line: 'left' };
-        }
-        if (d2Dist <= LINE_BODY_HIT_DISTANCE) {
-          return { kind: 'd2-body', line: 'top' };
-        }
-        return null;
+      // Line bodies: full-extent vertical guides at left.x / right.x and
+      // horizontal guides at top.y / bottom.y. Hit by perpendicular distance
+      // to the line in display coords. Applies uniformly to 10X and 40X
+      // since both render the same four-guide style.
+      const lineCandidates: Array<{ key: LineKey; dist: number }> = [
+        { key: 'left', dist: Math.abs(display.x - left.x) },
+        { key: 'right', dist: Math.abs(display.x - right.x) },
+        { key: 'top', dist: Math.abs(display.y - top.y) },
+        { key: 'bottom', dist: Math.abs(display.y - bottom.y) },
+      ];
+      const nearestLine = lineCandidates.reduce((best, c) => (c.dist < best.dist ? c : best));
+      if (nearestLine.dist <= LINE_BODY_HIT_DISTANCE) {
+        return { kind: 'line', line: nearestLine.key };
       }
 
-      // 40X: center hit zone — translates all 4 tips together.
-      const cx = (left.x + right.x) / 2;
-      const cy = (top.y + bottom.y) / 2;
-      if (Math.hypot(display.x - cx, display.y - cy) <= CENTER_HIT_RADIUS) {
-        return { kind: 'center', line: 'left' };
+      if (!isTwoDiagonals) {
+        // 40X: center hit zone — translates all 4 tips together.
+        const cx = (left.x + right.x) / 2;
+        const cy = (top.y + bottom.y) / 2;
+        if (Math.hypot(display.x - cx, display.y - cy) <= CENTER_HIT_RADIUS) {
+          return { kind: 'center', line: 'left' };
+        }
       }
 
       return null;
@@ -559,43 +571,6 @@ function AutoMeasureOverlayImpl({
     [imageSize]
   );
 
-  // Two-diagonals line-body drag: translate D1 (left+right) or D2 (top+bottom)
-  // together without touching the other line. Clamps the translation so no
-  // endpoint exits the image bounds.
-  const applyLineBodyDelta = useCallback(
-    (
-      which: 'd1' | 'd2',
-      dxImg: number,
-      dyImg: number,
-      base: AutoMeasureCorners
-    ): AutoMeasureCorners => {
-      const next = cloneCorners(base);
-      const w = imageSize?.width ?? Number.POSITIVE_INFINITY;
-      const h = imageSize?.height ?? Number.POSITIVE_INFINITY;
-      const a = which === 'd1' ? base.left : base.top;
-      const b = which === 'd1' ? base.right : base.bottom;
-      let ddx = dxImg;
-      let ddy = dyImg;
-      const minX = Math.min(a.x, b.x);
-      const maxX = Math.max(a.x, b.x);
-      const minY = Math.min(a.y, b.y);
-      const maxY = Math.max(a.y, b.y);
-      if (minX + ddx < 0) ddx = -minX;
-      if (maxX + ddx > w) ddx = w - maxX;
-      if (minY + ddy < 0) ddy = -minY;
-      if (maxY + ddy > h) ddy = h - maxY;
-      if (which === 'd1') {
-        next.left = { x: a.x + ddx, y: a.y + ddy };
-        next.right = { x: b.x + ddx, y: b.y + ddy };
-      } else {
-        next.top = { x: a.x + ddx, y: a.y + ddy };
-        next.bottom = { x: b.x + ddx, y: b.y + ddy };
-      }
-      return next;
-    },
-    [imageSize]
-  );
-
   // Apply a 1-D drag offset (image coords) to the chosen line, recomputing all
   // 4 corners so they stay snapped to their owning lines (Vickers geometry).
   const applyLineDelta = useCallback(
@@ -604,28 +579,18 @@ function AutoMeasureOverlayImpl({
       const w = imageSize?.width ?? Number.POSITIVE_INFINITY;
       const h = imageSize?.height ?? Number.POSITIVE_INFINITY;
 
+      // Each guide line owns exactly one tip coordinate: vertical lines own
+      // left.x / right.x, horizontal lines own top.y / bottom.y. Dragging a
+      // line moves only that coordinate so D1 and D2 stay decoupled.
       if (line === 'left') {
-        const x = Math.max(0, Math.min(w, base.left.x + dxImg));
-        next.left.x = x;
+        next.left.x = Math.max(0, Math.min(w, base.left.x + dxImg));
       } else if (line === 'right') {
-        const x = Math.max(0, Math.min(w, base.right.x + dxImg));
-        next.right.x = x;
+        next.right.x = Math.max(0, Math.min(w, base.right.x + dxImg));
       } else if (line === 'top') {
-        const y = Math.max(0, Math.min(h, base.top.y + dyImg));
-        next.top.y = y;
+        next.top.y = Math.max(0, Math.min(h, base.top.y + dyImg));
       } else if (line === 'bottom') {
-        const y = Math.max(0, Math.min(h, base.bottom.y + dyImg));
-        next.bottom.y = y;
+        next.bottom.y = Math.max(0, Math.min(h, base.bottom.y + dyImg));
       }
-
-      // Re-snap diamond corners to the bounding-box centerline metaphor:
-      // top/bottom share centerX; left/right share centerY.
-      const centerX = (next.left.x + next.right.x) / 2;
-      const centerY = (next.top.y + next.bottom.y) / 2;
-      next.top.x = centerX;
-      next.bottom.x = centerX;
-      next.left.y = centerY;
-      next.right.y = centerY;
       return next;
     },
     [imageSize]
@@ -643,11 +608,7 @@ function AutoMeasureOverlayImpl({
         let next: AutoMeasureCorners;
         if (drag.kind === 'center') {
           next = applyCenterDelta(dx, dy, drag.startCorners);
-        } else if (drag.kind === 'd1-body') {
-          next = applyLineBodyDelta('d1', dx, dy, drag.startCorners);
-        } else if (drag.kind === 'd2-body') {
-          next = applyLineBodyDelta('d2', dx, dy, drag.startCorners);
-        } else if (isTwoDiagonals && drag.kind === 'corner') {
+        } else if (drag.kind === 'corner') {
           next = applyCornerDelta2D(drag.line, dx, dy, drag.startCorners);
         } else {
           next = applyLineDelta(drag.line, dx, dy, drag.startCorners);
@@ -655,19 +616,9 @@ function AutoMeasureOverlayImpl({
         writeCorners(next);
         const d1 = Math.hypot(next.right.x - next.left.x, next.right.y - next.left.y);
         const d2 = Math.hypot(next.bottom.x - next.top.x, next.bottom.y - next.top.y);
-        const handleLabel: DragHandle =
-          drag.kind === 'center'
-            ? 'center'
-            : drag.kind === 'd1-body'
-            ? 'd1-body'
-            : drag.kind === 'd2-body'
-            ? 'd2-body'
-            : drag.line;
+        const handleLabel: DragHandle = drag.kind === 'center' ? 'center' : drag.line;
         if (isTwoDiagonals) {
-          const lineLabel =
-            drag.kind === 'd1-body' || (drag.kind === 'corner' && (drag.line === 'left' || drag.line === 'right'))
-              ? 'D1'
-              : 'D2';
+          const lineLabel = drag.line === 'left' || drag.line === 'right' ? 'D1' : 'D2';
           // eslint-disable-next-line no-console
           console.log(
             `[line-adjust-update] line=${lineLabel} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
@@ -701,7 +652,6 @@ function AutoMeasureOverlayImpl({
     [
       applyCenterDelta,
       applyCornerDelta2D,
-      applyLineBodyDelta,
       applyLineDelta,
       getDisplayPoint,
       hitTest,
@@ -723,14 +673,7 @@ function AutoMeasureOverlayImpl({
       if (!startPointerImage) return;
       event.preventDefault();
       wrapRef.current?.setPointerCapture(event.pointerId);
-      const handleLabel: DragHandle =
-        hit.kind === 'center'
-          ? 'center'
-          : hit.kind === 'd1-body'
-          ? 'd1-body'
-          : hit.kind === 'd2-body'
-          ? 'd2-body'
-          : hit.line;
+      const handleLabel: DragHandle = hit.kind === 'center' ? 'center' : hit.line;
       // eslint-disable-next-line no-console
       console.log('[auto-measure] adjust start', {
         kind: hit.kind,
@@ -813,14 +756,7 @@ function AutoMeasureOverlayImpl({
   const cursor = (() => {
     const dragKind = dragRef.current?.kind ?? null;
     const hoverKind = hover?.kind ?? null;
-    if (
-      dragKind === 'center' ||
-      hoverKind === 'center' ||
-      dragKind === 'd1-body' ||
-      hoverKind === 'd1-body' ||
-      dragKind === 'd2-body' ||
-      hoverKind === 'd2-body'
-    ) return 'move';
+    if (dragKind === 'center' || hoverKind === 'center') return 'move';
     const active = dragRef.current ? { line: dragRef.current.line } : hover ? { line: hover.line } : null;
     if (!active) return 'default';
     if (VERTICAL_LINES.includes(active.line)) return 'ew-resize';

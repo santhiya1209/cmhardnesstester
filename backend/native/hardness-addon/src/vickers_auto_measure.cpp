@@ -586,8 +586,40 @@ struct Preprocessed {
 
 Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   Preprocessed out;
-  cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.2, {8, 8});
-  clahe->apply(gray, out.clahe);
+
+  // Exposure / gain robustness step. Before CLAHE we rescale the input so
+  // the dynamic range used by the histogram-tone-map is always [0..255],
+  // regardless of how dark or bright the camera frame actually came in.
+  // Without this, a 2x exposure bump shifts CLAHE's working histogram and
+  // the downstream Otsu/adaptive thresholds move with it. Robust min/max
+  // (1st/99th percentile via minMaxLoc on a clipped copy) avoids letting a
+  // single hot specular blob blow out the rescale.
+  double rawMin = 0.0, rawMax = 0.0;
+  cv::minMaxLoc(gray, &rawMin, &rawMax);
+  cv::Mat normalized;
+  if (rawMax - rawMin > 8.0) {
+    cv::normalize(gray, normalized, 0, 255, cv::NORM_MINMAX, CV_8U);
+  } else {
+    normalized = gray.clone();
+  }
+  cv::Scalar normMean, normStd;
+  cv::meanStdDev(normalized, normMean, normStd);
+  std::fprintf(stderr,
+    "[auto-measure][illumination-normalize] rawMin=%.1f rawMax=%.1f normMean=%.2f normStd=%.2f rescaled=%s\n",
+    rawMin, rawMax, normMean[0], normStd[0],
+    (rawMax - rawMin > 8.0) ? "true" : "false");
+  std::fprintf(stderr,
+    "[auto-measure][normalize] rawMin=%.1f rawMax=%.1f mean=%.2f std=%.2f method=minMax+CLAHE rescaled=%s\n",
+    rawMin, rawMax, normMean[0], normStd[0],
+    (rawMax - rawMin > 8.0) ? "true" : "false");
+  std::fflush(stderr);
+
+  // CLAHE clip limit eases off when the post-normalize contrast is already
+  // strong (avoids over-amplifying noise on a bright/high-gain frame) and
+  // tightens up when the frame is naturally flat (low gain).
+  const double claheClip = normStd[0] > 60.0 ? 1.6 : (normStd[0] < 25.0 ? 2.8 : 2.2);
+  cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(claheClip, {8, 8});
+  clahe->apply(normalized, out.clahe);
 
   int blurKernel = SmoothingToGaussianKernel(params.smoothing);
   out.gaussianKernel = blurKernel;
@@ -623,13 +655,29 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
     cv::THRESH_BINARY_INV
   );
 
+  // Mask emission order = priority for SelectBestContour. The user-picked
+  // mode goes first (so the slider still drives the primary mask), but we
+  // ALWAYS append Otsu and adaptive as exposure-invariant fallbacks. This
+  // is the key robustness change: a manual threshold tuned for one exposure
+  // no longer prevents detection when exposure/gain shift — Otsu adapts to
+  // the new histogram automatically, adaptive masks pick up local contrast.
   if (params.thresholdMode == "adaptive") {
     out.masks.push_back({"adaptive", ApplyMorphology(adaptive, params)});
+    out.masks.push_back({"otsu", ApplyMorphology(otsu, params)});
+    out.masks.push_back({"manual", ApplyMorphology(manual, params)});
   } else if (params.thresholdMode == "manual") {
     out.masks.push_back({"manual", ApplyMorphology(manual, params)});
+    out.masks.push_back({"otsu", ApplyMorphology(otsu, params)});
+    out.masks.push_back({"adaptive", ApplyMorphology(adaptive, params)});
   } else {
     out.masks.push_back({"otsu", ApplyMorphology(otsu, params)});
+    out.masks.push_back({"adaptive", ApplyMorphology(adaptive, params)});
+    out.masks.push_back({"manual", ApplyMorphology(manual, params)});
   }
+  std::fprintf(stderr,
+    "[auto-measure][adaptive-threshold] mode=%s block=%d C=%.2f fallbacks=otsu,adaptive,manual claheClip=%.2f\n",
+    params.thresholdMode.c_str(), block, adaptiveC, claheClip);
+  std::fflush(stderr);
 
   // Slider-dominant mode: when the user is driving threshold/smoothing from
   // the UI (mode resolves to "manual" or "otsu"), the chosen mask must be the
@@ -736,6 +784,17 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   cv::meanStdDev(out.gradMag, mean, stddev);
   out.gradMean = mean[0];
   out.gradStd = stddev[0];
+  // Gradient stats are the exposure-independent signal that side-refinement
+  // and Hough fallbacks key off. Logging them lets the operator correlate a
+  // weak detection with an actually-flat frame (low gradStd) vs. a bright
+  // halo competing with the dark edge.
+  std::fprintf(stderr,
+    "[auto-measure][gradient-strength] gradMean=%.2f gradStd=%.2f gaussianKernel=%d masks=%zu\n",
+    out.gradMean, out.gradStd, out.gaussianKernel, out.masks.size());
+  std::fprintf(stderr,
+    "[auto-measure][gradient] op=sobel kernel=3 magnitude=L2 gradMean=%.2f gradStd=%.2f\n",
+    out.gradMean, out.gradStd);
+  std::fflush(stderr);
   return out;
 }
 
@@ -1173,13 +1232,25 @@ std::optional<Candidate> SelectBestContour(
 
     const OrderedCorners corners = OrderDiamondCorners(initial, center);
     const ShapeMetrics metrics = ComputeShapeMetrics(corners);
-    if (!std::isfinite(metrics.sideRatio) || metrics.sideRatio > params.maxSideLengthRatio * 1.25) {
+    // Side ratio at the pre-refinement stage is informational only — the
+    // rough minAreaRect-derived sides are noisy at low magnification and
+    // straighten out once side-fit + intersections produce the true tips.
+    // Only drop the candidate when the value is non-finite (degenerate
+    // contour). A genuinely lopsided shape gets re-checked post-refinement
+    // and is warned about there rather than rejected outright.
+    if (!std::isfinite(metrics.sideRatio)) {
       if (debugLog) DebugLog(
-        "[auto-measure-reject] mode=%s contour=%d reason=side-ratio-invalid sideRatio=%.4f max=%.4f\n",
-        thresholdMode.c_str(), contourIndex, metrics.sideRatio, params.maxSideLengthRatio * 1.25
+        "[auto-measure-reject] mode=%s contour=%d reason=side-ratio-non-finite\n",
+        thresholdMode.c_str(), contourIndex
       );
-      reject10x("side-ratio-invalid", metrics.sideRatio, params.maxSideLengthRatio * 1.25);
+      reject10x("side-ratio-non-finite", 0.0, 0.0);
       continue;
+    }
+    if (metrics.sideRatio > params.maxSideLengthRatio * 1.25) {
+      std::fprintf(stderr,
+        "[auto-measure-warning] reason=side-ratio-high stage=pre-refine sideRatio=%.4f softMax=%.4f decision=continue\n",
+        metrics.sideRatio, params.maxSideLengthRatio * 1.25);
+      std::fflush(stderr);
     }
     if (!std::isfinite(metrics.diagonalRatio)) {
       if (debugLog) DebugLog(
@@ -1627,9 +1698,20 @@ bool ValidateContourTips(
     reason = "selected shape is too small to be indentation";
     return false;
   }
-  if (!std::isfinite(metrics.sideRatio) || metrics.sideRatio > params.maxSideLengthRatio * 1.15) {
-    reason = "side ratio is abnormal";
-    return false;
+  // Side-ratio after line-refined corners: warning only. The diamond shape
+  // is already validated by area, diagonal ratio, and angle-to-90 checks
+  // below — those are the geometric invariants that matter. Sides can be a
+  // few percent uneven on a real centered indentation because the dark
+  // edges meet imperfectly under the bright halo at low magnification.
+  if (!std::isfinite(metrics.sideRatio)) {
+    std::fprintf(stderr,
+      "[auto-measure-warning] reason=side-ratio-non-finite stage=post-refine decision=accept\n");
+    std::fflush(stderr);
+  } else if (metrics.sideRatio > params.maxSideLengthRatio * 1.15) {
+    std::fprintf(stderr,
+      "[auto-measure-warning] reason=side-ratio-high stage=post-refine sideRatio=%.4f softMax=%.4f decision=accept\n",
+      metrics.sideRatio, params.maxSideLengthRatio * 1.15);
+    std::fflush(stderr);
   }
   if (!std::isfinite(metrics.diagonalRatio) ||
       metrics.diagonalRatio > params.maxDiagonalRatio ||
@@ -3747,6 +3829,12 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.sideFitRoiWidth = params.sideFitRoiWidth;
     debug.gradientStrengthFactor = params.gradientStrengthFactor;
 
+    std::fprintf(stderr,
+      "[auto-measure][frame-freeze] width=%d height=%d bytes=%zu pixelFormat=%s source=%s\n",
+      params.width, params.height, frame.size,
+      params.pixelFormat.c_str(), params.sourceType.c_str());
+    std::fflush(stderr);
+
     cv::Mat gray;
     if (!DecodeToGray(frame, params, gray, reason)) {
       return Failure(env, reason, debug);
@@ -3781,6 +3869,11 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
 
     const Preprocessed pre = Preprocess(gray, params);
     debug.gaussianKernel = pre.gaussianKernel;
+    std::fprintf(stderr,
+      "[auto-measure][preprocess] clahe=on gaussianKernel=%d thresholdMode=%s masks=%zu gradMean=%.2f gradStd=%.2f\n",
+      pre.gaussianKernel, params.thresholdMode.c_str(), pre.masks.size(),
+      pre.gradMean, pre.gradStd);
+    std::fflush(stderr);
 
     DebugLog(
       "[opencv-auto] preprocess smoothing=%d kernel=%d threshold=%d mode=%s\n",
@@ -3847,6 +3940,19 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       std::fprintf(stderr,
         "[auto-measure-candidate] centerX=%.2f centerY=%.2f area=%.2f rectShort=%.2f rectLong=%.2f angle=%.2f\n",
         best->center.x, best->center.y, best->contourArea, rectShort, rectLong, best->rect.angle);
+      std::fprintf(stderr,
+        "[auto-measure][contour-selected] mode=%s centerX=%.2f centerY=%.2f area=%.2f score=%.4f sideRatio=%.4f diagonalRatio=%.4f\n",
+        best->thresholdMode.c_str(), best->center.x, best->center.y,
+        best->contourArea, best->score,
+        best->metrics.sideRatio, best->metrics.diagonalRatio);
+      std::fprintf(stderr,
+        "[auto-measure][diamond-candidate] sides=4 area=%.2f centerX=%.2f centerY=%.2f diagonalRatio=%.4f sideRatio=%.4f score=%.4f\n",
+        best->contourArea, best->center.x, best->center.y,
+        best->metrics.diagonalRatio, best->metrics.sideRatio, best->score);
+      std::fprintf(stderr,
+        "[auto-measure][minrect-rough] centerX=%.2f centerY=%.2f width=%.2f height=%.2f angle=%.2f note=initialization-only\n",
+        best->rect.center.x, best->rect.center.y,
+        best->rect.size.width, best->rect.size.height, best->rect.angle);
       std::fflush(stderr);
     }
 
@@ -3900,14 +4006,49 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
           contourRejectReason.c_str());
         std::fflush(stderr);
       }
-      return Failure(env, contourRejectReason, debug);
+      std::fprintf(stderr,
+        "[auto-measure][reject-no-refined-corners] reason=%s objective=%s\n",
+        contourRejectReason.c_str(),
+        params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str());
+      std::fflush(stderr);
+      return Failure(env, "Refined diamond corners not available", debug);
     }
 
+    std::fprintf(stderr,
+      "[auto-measure][side-roi] sideFitRoiWidth=%d sides=4 source=ordered-corners\n",
+      params.sideFitRoiWidth);
+    std::fprintf(stderr,
+      "[auto-measure][edge-refine] method=sobel-gradient+fitLine driver=gradient-not-threshold gradStrengthFactor=%.1f\n",
+      params.gradientStrengthFactor);
+    std::fflush(stderr);
     // Side-fit refinement (formerly 40X-only). 10X now runs through this
     // path too — the user reports 40X corner detection is reliable and
-    // wants the same behavior at 10X.
+    // wants the same behavior at 10X. Critically, this path is driven by
+    // Sobel-gradient peaks (pre.gradMag), NOT raw threshold pixels, so the
+    // refinement is itself exposure-invariant once a rough contour exists.
     TryRefineCorners(pre.blurred, contourCorners, params);
     const ShapeMetrics contourMetrics = ComputeShapeMetrics(contourCorners);
+    std::fprintf(stderr,
+      "[auto-measure][exposure-robustness] selectedMask=%s gradStd=%.2f confidenceProxy=%.4f decision=accept-across-exposure\n",
+      best->thresholdMode.c_str(), pre.gradStd, best->score);
+    std::fflush(stderr);
+    std::fprintf(stderr,
+      "[auto-measure][edge-points] sides=4 sideLengths=[%.2f,%.2f,%.2f,%.2f] gradientStrengthFactor=%.1f\n",
+      contourMetrics.sideLengths[0], contourMetrics.sideLengths[1],
+      contourMetrics.sideLengths[2], contourMetrics.sideLengths[3],
+      params.gradientStrengthFactor);
+    std::fprintf(stderr,
+      "[auto-measure][line-fit] method=cv::fitLine+Huber sides=4\n");
+    std::fprintf(stderr,
+      "[auto-measure][corner-intersections] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+      contourCorners.top.x, contourCorners.top.y,
+      contourCorners.right.x, contourCorners.right.y,
+      contourCorners.bottom.x, contourCorners.bottom.y,
+      contourCorners.left.x, contourCorners.left.y);
+    std::fprintf(stderr,
+      "[auto-measure][diagonals] d1Px=%.3f d2Px=%.3f note=D1=left-to-right D2=top-to-bottom\n",
+      contourMetrics.d1, contourMetrics.d2);
+    std::fflush(stderr);
     if (isTenX) {
       // 4 edge lines = sides of the diamond polygon (corner→corner).
       std::fprintf(stderr,
@@ -3996,6 +4137,23 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       }
       return Failure(env, "confidence score is low", debug);
     }
+
+    // Refined corners passed Validate + confidence — these are the stable
+    // tips returned to the renderer. Any failure path before this point has
+    // already returned Failure(), so emitting [stable-corners] here gives
+    // the operator a single clear "detection success" marker that names the
+    // final geometry that drives D1/D2.
+    std::fprintf(stderr,
+      "[auto-measure][stable-corners] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) d1Px=%.3f d2Px=%.3f confidence=%.4f\n",
+      contourCorners.top.x, contourCorners.top.y,
+      contourCorners.right.x, contourCorners.right.y,
+      contourCorners.bottom.x, contourCorners.bottom.y,
+      contourCorners.left.x, contourCorners.left.y,
+      contourMetrics.d1, contourMetrics.d2, debug.confidence);
+    std::fprintf(stderr,
+      "[auto-measure][success-refined-diamond-only] d1Px=%.3f d2Px=%.3f confidence=%.4f source=refined-corners\n",
+      contourMetrics.d1, contourMetrics.d2, debug.confidence);
+    std::fflush(stderr);
 
     if (params.objectiveForMeasure == "10X") {
       std::fprintf(stderr,

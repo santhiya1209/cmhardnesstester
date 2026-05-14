@@ -57,6 +57,10 @@ function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsP
 
 const PANEL_WIDTH = 560;
 const DRAG_LOG_THROTTLE_MS = 100;
+// Preview backend (native detection + overlay paint) is heavy. Hold the
+// preview dispatch until the user pauses the slider for this long — the
+// thumb/number remain fully decoupled and update on every tick.
+const PREVIEW_DEBOUNCE_MS = 300;
 
 type SliderField = 'smoothing' | 'threshold';
 
@@ -71,6 +75,16 @@ function AutoMeasureSettingsDialogImpl({
   const { data, error: loadError, loading, refetch } = useAutoMeasureSettings();
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
   const [form, setForm] = useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
+  // formRef mirrors `form` so slider handlers see the latest value without
+  // closure staleness — required because a drag fires onChange faster than
+  // React batches the prior setState commit.
+  const formRef = useRef<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
+  const previewSeqRef = useRef(0);
+  const previewDebounceRef = useRef<number | null>(null);
+  // True while a slider is being actively dragged. Suppresses the
+  // objective-default sync effect so a machine-driven objective tick can't
+  // overwrite the user's in-progress slider value mid-drag.
+  const sliderDraggingRef = useRef(false);
   const [savedBaseline, setSavedBaseline] = useState<AutoMeasureSettingsPayload>(
     DEFAULT_AUTO_MEASURE_SETTINGS
   );
@@ -114,6 +128,7 @@ function AutoMeasureSettingsDialogImpl({
           `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
         );
       }
+      formRef.current = next;
       setForm(next);
       setSavedBaseline(next);
     }
@@ -124,90 +139,184 @@ function AutoMeasureSettingsDialogImpl({
   // operator never has to re-pick the objective by hand.
   useEffect(() => {
     if (!open) return;
+    if (sliderDraggingRef.current) return;
     const synced = normalizeObjectiveKey(activeObjective);
     if (!synced) return;
     const defaults = AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE[synced];
-    setForm((current) => {
-      if (
-        current.objectiveForMeasure === synced &&
-        current.smoothing === defaults.smoothing &&
-        current.threshold === defaults.threshold
-      ) {
-        return current;
-      }
-      const next = normalizeAutoMeasureSettings({
-        ...current,
-        objectiveForMeasure: synced,
-        smoothing: defaults.smoothing,
-        threshold: defaults.threshold,
-      });
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-settings-sync] objective=${synced}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-      );
-      // Intentionally do NOT call onPreviewChange here. App-level state is
-      // already mirroring the objective-driven defaults; firing a preview
-      // through this path would repaint yellow lines on objective change,
-      // which violates the "lines only on Auto Measure click" rule.
-      return next;
+    const current = formRef.current;
+    if (
+      current.objectiveForMeasure === synced &&
+      current.smoothing === defaults.smoothing &&
+      current.threshold === defaults.threshold
+    ) {
+      return;
+    }
+    const next = normalizeAutoMeasureSettings({
+      ...current,
+      objectiveForMeasure: synced,
+      smoothing: defaults.smoothing,
+      threshold: defaults.threshold,
     });
+    // eslint-disable-next-line no-console
+    console.log(`[auto-measure-settings-sync] objective=${synced}`);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-settings][settings-sync] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
+    formRef.current = next;
+    setForm(next);
+    // Intentionally do NOT call onPreviewChange here. App-level state is
+    // already mirroring the objective-driven defaults; firing a preview
+    // through this path would repaint yellow lines on objective change,
+    // which violates the "lines only on Auto Measure click" rule.
   }, [open, activeObjective]);
 
-  const updateForm = useCallback(
-    (updater: (current: AutoMeasureSettingsPayload) => AutoMeasureSettingsPayload) => {
-      setForm((current) => {
-        const next = normalizeAutoMeasureSettings(updater(current));
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure-settings-preview-update]');
-        onPreviewChange?.(next);
-        return next;
-      });
+  // Local-only form write. Synchronous: updates ref + React state in the
+  // same commit so the slider thumb and the numeric readout move together
+  // with no preview-side coupling. Side effects (preview dispatch) MUST NOT
+  // happen here — see schedulePreview / flushPreview below.
+  const writeLocal = useCallback((patch: Partial<AutoMeasureSettingsPayload>) => {
+    const next = normalizeAutoMeasureSettings({ ...formRef.current, ...patch });
+    formRef.current = next;
+    setForm(next);
+    return next;
+  }, []);
+
+  const clearPreviewDebounce = useCallback((reason: string) => {
+    if (previewDebounceRef.current === null) return;
+    window.clearTimeout(previewDebounceRef.current);
+    previewDebounceRef.current = null;
+    // eslint-disable-next-line no-console
+    console.log(`[auto-measure-settings][preview-debounce-clear] reason=${reason}`);
+  }, []);
+
+  // Commit the current form to the parent preview pipeline. Stamps a
+  // monotonic sequence so the App-side stale guard (latestPreviewSettings)
+  // discards an older detection finishing after a newer one was scheduled.
+  const flushPreview = useCallback(
+    (source: string) => {
+      clearPreviewDebounce('flush');
+      const snapshot = formRef.current;
+      const seq = ++previewSeqRef.current;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-settings][preview-commit] seq=${seq} source=${source} smoothing=${snapshot.smoothing} threshold=${snapshot.threshold}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-settings][preview-request] seq=${seq} source=${source} smoothing=${snapshot.smoothing} threshold=${snapshot.threshold}`
+      );
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-settings-preview-update]');
+      onPreviewChange?.(snapshot);
     },
-    [onPreviewChange]
+    [clearPreviewDebounce, onPreviewChange]
   );
+
+  const schedulePreview = useCallback(
+    (source: string) => {
+      if (previewDebounceRef.current !== null) {
+        window.clearTimeout(previewDebounceRef.current);
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-settings][preview-debounce-clear] reason=reschedule');
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-settings][preview-debounce-schedule] source=${source} delayMs=${PREVIEW_DEBOUNCE_MS} smoothing=${formRef.current.smoothing} threshold=${formRef.current.threshold}`
+      );
+      previewDebounceRef.current = window.setTimeout(() => {
+        previewDebounceRef.current = null;
+        flushPreview(`${source}:debounced`);
+      }, PREVIEW_DEBOUNCE_MS);
+    },
+    [flushPreview]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (previewDebounceRef.current !== null) {
+        window.clearTimeout(previewDebounceRef.current);
+        previewDebounceRef.current = null;
+      }
+    };
+  }, []);
 
   const handleObjectiveChange = useCallback(
     (event: SelectChangeEvent) => {
-      updateForm((current) => ({
-        ...current,
-        objectiveForMeasure: event.target.value as ObjectiveForMeasure,
-      }));
+      writeLocal({ objectiveForMeasure: event.target.value as ObjectiveForMeasure });
+      flushPreview('objective');
     },
-    [updateForm]
+    [flushPreview, writeLocal]
   );
 
+  // Slider onChange: write LOCAL form only. Never run detection or call the
+  // parent on the per-tick path — that's what made the slider feel sticky.
+  // Preview dispatch is debounced (schedulePreview) and force-flushed on
+  // release (handleSliderCommitted).
   const handleSliderChange = useCallback(
     (field: SliderField) => (_e: Event, value: number | number[]) => {
       const next = Array.isArray(value) ? value[0] : value;
+      const prev = formRef.current[field];
+      if (prev === next) return;
+      sliderDraggingRef.current = true;
+      writeLocal({ [field]: next } as Partial<AutoMeasureSettingsPayload>);
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-slider-change] type=${field} value=${next}`);
-      updateForm((current) => ({ ...current, [field]: next }));
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-settings][slider-change] field=${field} prev=${prev} next=${next}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-settings][slider-local-change] field=${field} value=${next}`
+      );
+      schedulePreview(`slider:${field}`);
     },
-    [updateForm]
+    [schedulePreview, writeLocal]
+  );
+
+  // Pointer/keyboard release: flush the debounced preview NOW so the user's
+  // final value is reflected immediately on letting go.
+  const handleSliderCommitted = useCallback(
+    (field: SliderField) => (_e: React.SyntheticEvent | Event, value: number | number[]) => {
+      const next = Array.isArray(value) ? value[0] : value;
+      sliderDraggingRef.current = false;
+      if (formRef.current[field] !== next) {
+        writeLocal({ [field]: next } as Partial<AutoMeasureSettingsPayload>);
+      }
+      flushPreview(`slider-release:${field}`);
+    },
+    [flushPreview, writeLocal]
   );
 
   const handleCheckboxChange = useCallback(
     (field: 'turretAfterImpress' | 'measureAfterImpress') =>
       (event: React.ChangeEvent<HTMLInputElement>) => {
-        const checked = event.target.checked;
-        updateForm((current) => ({ ...current, [field]: checked }));
+        writeLocal({ [field]: event.target.checked } as Partial<AutoMeasureSettingsPayload>);
+        flushPreview(`checkbox:${field}`);
       },
-    [updateForm]
+    [flushPreview, writeLocal]
   );
 
   const handleDefault = useCallback(() => {
+    formRef.current = DEFAULT_AUTO_MEASURE_SETTINGS;
     setForm(DEFAULT_AUTO_MEASURE_SETTINGS);
-    onPreviewChange?.(DEFAULT_AUTO_MEASURE_SETTINGS);
-  }, [onPreviewChange]);
+    flushPreview('default');
+  }, [flushPreview]);
 
   const handleCancel = useCallback(() => {
+    clearPreviewDebounce('cancel');
+    formRef.current = savedBaseline;
     setForm(savedBaseline);
     onClose();
-  }, [onClose, savedBaseline]);
+  }, [clearPreviewDebounce, onClose, savedBaseline]);
 
   const handleSave = useCallback(async () => {
+    clearPreviewDebounce('save');
     try {
       const finalValues = normalizeAutoMeasureSettings(form);
       await saveAutoMeasureSettings({ id: data?.id, values: finalValues });
@@ -218,7 +327,7 @@ function AutoMeasureSettingsDialogImpl({
     } catch {
       // surfaced via saveError
     }
-  }, [data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
+  }, [clearPreviewDebounce, data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
   // Drag handlers — pointer events give us automatic capture across the entire
   // window, so we don't need a global mousemove listener and the panel keeps
@@ -287,6 +396,7 @@ function AutoMeasureSettingsDialogImpl({
         max={max}
         step={1}
         onChange={handleSliderChange(field)}
+        onChangeCommitted={handleSliderCommitted(field)}
         disabled={busy}
         sx={{ flex: 1 }}
       />
