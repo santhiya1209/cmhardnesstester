@@ -145,6 +145,7 @@ type Props = {
   measurementsLoading: boolean;
   refetchMeasurements: () => Promise<void>;
   onOpenTestRecords: (measurementIds: string[]) => void;
+  onMeasurementsCleared?: () => void;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
@@ -165,6 +166,7 @@ function RightPanelImpl({
   measurementsError,
   measurementsLoading,
   onOpenTestRecords,
+  onMeasurementsCleared,
   refetchMeasurements,
   onObjectiveChange,
   trimMeasureOpen,
@@ -197,6 +199,7 @@ function RightPanelImpl({
             refetch={refetchMeasurements}
             onOpenStatisticsTab={() => setTab(4)}
             onOpenTestRecords={onOpenTestRecords}
+            onMeasurementsCleared={onMeasurementsCleared}
           />
 
           <Tabs

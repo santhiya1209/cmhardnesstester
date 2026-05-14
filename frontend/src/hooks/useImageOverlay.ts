@@ -24,6 +24,13 @@ export function useImageOverlay(): ImageOverlayApi {
 
   const clearAll = useCallback(() => {
     setShapes([]);
+    setCrossLineVisible((wasVisible) => {
+      if (wasVisible) {
+        // eslint-disable-next-line no-console
+        console.log('[center-cross-clear] reason=clear-graphics');
+      }
+      return false;
+    });
   }, []);
 
   const clearByKind = useCallback((kind: OverlayShape['kind']) => {
@@ -35,7 +42,12 @@ export function useImageOverlay(): ImageOverlayApi {
   }, []);
 
   const toggleCrossLine = useCallback(() => {
-    setCrossLineVisible((v) => !v);
+    setCrossLineVisible((v) => {
+      const next = !v;
+      // eslint-disable-next-line no-console
+      console.log(`[center-cross][toggle] enabled=${next}`);
+      return next;
+    });
   }, []);
 
   return useMemo(

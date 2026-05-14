@@ -108,6 +108,7 @@ type Props = {
   error: string | null;
   onOpenStatisticsTab: () => void;
   onOpenTestRecords: (measurementIds: string[]) => void;
+  onMeasurementsCleared?: () => void;
   refetch: () => Promise<void>;
 };
 
@@ -125,6 +126,7 @@ function MeasurementsWorkspaceImpl({
   error,
   onOpenStatisticsTab,
   onOpenTestRecords,
+  onMeasurementsCleared,
   refetch,
 }: Props) {
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
@@ -339,7 +341,8 @@ function MeasurementsWorkspaceImpl({
     }
     setSelectedMeasurementId(null);
     await refetch();
-  }, [measurements, refetch, removeMeasurement]);
+    onMeasurementsCleared?.();
+  }, [measurements, onMeasurementsCleared, refetch, removeMeasurement]);
 
   const statusMessage = useMemo(() => {
     if (deleting) {

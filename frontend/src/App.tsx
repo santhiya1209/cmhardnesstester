@@ -65,6 +65,7 @@ import type { ConfigDialogId, MenuActionId } from '@/types/menu';
 import type {
   AutoMeasureCorners,
   AutoMeasureGraphics,
+  VickersAutoMeasureResult,
   VickersAutoMeasureSuccess,
 } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
@@ -177,9 +178,25 @@ type AutoMeasureDetectionSnapshot = {
   settings: AutoMeasureSettingsPayload;
   result: VickersAutoMeasureSuccess;
   graphics: AutoMeasureGraphics;
+  method: AutoMeasureDetectionMethod;
+  validationReason: string;
   objectiveForCalibration: string;
   machineStateForAuto: MachineState | null;
   forceKgf: number | null;
+};
+
+type AutoMeasureDetectionMethod = 'refined' | 'rough';
+
+type CommittedAutoMeasureFingerprint = {
+  objective: string;
+  centerX: number;
+  centerY: number;
+  d1Px: number;
+  d2Px: number;
+  hv: number | null;
+  rowId: string | null;
+  fingerprintKey: string;
+  graphics: AutoMeasureGraphics;
 };
 
 type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save';
@@ -205,6 +222,66 @@ function logUnexpectedAutoMeasureCall(source: string) {
   );
 }
 
+const AUTO_MEASURE_CENTER_TOLERANCE_PX = 3;
+const AUTO_MEASURE_DIAGONAL_TOLERANCE_PX = 3;
+
+function normalizeAutoMeasureFingerprintObjective(objective: string | null | undefined): string {
+  return (objective ?? 'unknown').trim().toUpperCase() || 'UNKNOWN';
+}
+
+function buildAutoMeasureFingerprintKey({
+  objective,
+  centerX,
+  centerY,
+  d1Px,
+  d2Px,
+}: {
+  objective: string;
+  centerX: number;
+  centerY: number;
+  d1Px: number;
+  d2Px: number;
+}): string {
+  return [
+    objective,
+    Math.round(centerX),
+    Math.round(centerY),
+    Math.round(d1Px),
+    Math.round(d2Px),
+  ].join('|');
+}
+
+function cloneAutoMeasureGraphics(graphics: AutoMeasureGraphics): AutoMeasureGraphics {
+  return {
+    ...graphics,
+    corners: {
+      top: { ...graphics.corners.top },
+      right: { ...graphics.corners.right },
+      bottom: { ...graphics.corners.bottom },
+      left: { ...graphics.corners.left },
+    },
+    lines: graphics.lines.map((line) => ({
+      p1: { ...line.p1 },
+      p2: { ...line.p2 },
+    })),
+  };
+}
+
+function upsertCommittedAutoMeasureFingerprint(
+  entries: CommittedAutoMeasureFingerprint[],
+  entry: CommittedAutoMeasureFingerprint
+): CommittedAutoMeasureFingerprint[] {
+  const existingIndex = entries.findIndex(
+    (candidate) => candidate.rowId !== null && candidate.rowId === entry.rowId
+  );
+  if (existingIndex === -1) {
+    return [...entries, entry];
+  }
+  const next = [...entries];
+  next[existingIndex] = entry;
+  return next;
+}
+
 // Per-objective Auto Measure defaults. The user's machine-tuned values.
 // These override whatever is currently in the Auto Measure Settings UI
 // when a detection runs, and reset the UI when the objective changes.
@@ -218,6 +295,72 @@ function autoMeasureDefaultsForObjective(
 ): { smoothing: number; threshold: number } | null {
   const key = String(objective ?? '').trim().toUpperCase();
   return AUTO_MEASURE_OBJECTIVE_DEFAULTS[key] ?? null;
+}
+
+type AutoMeasureLogContext = {
+  objective: string | null | undefined;
+  smoothing: number;
+  threshold: number;
+  method?: AutoMeasureDetectionMethod;
+  d1Px?: number | null;
+  d2Px?: number | null;
+  center?: { x: number; y: number } | null;
+  reason?: string;
+  extra?: string;
+};
+
+type AutoMeasureGeometryValidation = {
+  ok: boolean;
+  reason: string;
+  d1Px: number;
+  d2Px: number;
+  ratio: number;
+  center: { x: number; y: number };
+};
+
+type ResolvedAutoMeasureDetection =
+  | {
+      ok: true;
+      result: VickersAutoMeasureSuccess;
+      method: AutoMeasureDetectionMethod;
+      reason: string;
+      validation: AutoMeasureGeometryValidation;
+      fallbackUsed: boolean;
+    }
+  | {
+      ok: false;
+      reason: string;
+      method: AutoMeasureDetectionMethod;
+      validation?: AutoMeasureGeometryValidation;
+    };
+
+const MIN_AUTO_MEASURE_DIAGONAL_PX = 6;
+const MAX_AUTO_MEASURE_DIAGONAL_RATIO = 4;
+
+function formatAutoMeasureNumber(value: number | null | undefined, digits = 2): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(digits)
+    : 'n/a';
+}
+
+function formatAutoMeasureCenter(center: { x: number; y: number } | null | undefined): string {
+  return center && Number.isFinite(center.x) && Number.isFinite(center.y)
+    ? `(${center.x.toFixed(2)},${center.y.toFixed(2)})`
+    : 'n/a';
+}
+
+function logAutoMeasurePhase(phase: string, context: AutoMeasureLogContext): void {
+  const d1 = context.d1Px ?? null;
+  const d2 = context.d2Px ?? null;
+  const ratio =
+    typeof d1 === 'number' && Number.isFinite(d1) &&
+    typeof d2 === 'number' && Number.isFinite(d2) && d2 > 0
+      ? d1 / d2
+      : null;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[${phase}] objective=${context.objective ?? 'unknown'} smoothing=${context.smoothing} threshold=${context.threshold} d1=${formatAutoMeasureNumber(d1)} d2=${formatAutoMeasureNumber(d2)} ratio=${formatAutoMeasureNumber(ratio, 3)} center=${formatAutoMeasureCenter(context.center)} reason=${context.reason ?? 'n/a'} method=${context.method ?? 'refined'}${context.extra ? ` ${context.extra}` : ''}`
+  );
 }
 
 function smoothingToPreviewKernel(smoothing: number): number {
@@ -255,6 +398,311 @@ function hasValidAutoMeasureCorners(result: VickersAutoMeasureSuccess): boolean 
     finitePoint(result.corners.bottom) &&
     finitePoint(result.corners.left)
   );
+}
+
+function readAutoMeasurePoint(value: unknown): { x: number; y: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const point = value as { x?: unknown; y?: unknown };
+  const x = Number(point.x);
+  const y = Number(point.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+function readAutoMeasureCorners(value: unknown): AutoMeasureCorners | null {
+  if (!value || typeof value !== 'object') return null;
+  const corners = value as Record<keyof AutoMeasureCorners, unknown>;
+  const top = readAutoMeasurePoint(corners.top);
+  const right = readAutoMeasurePoint(corners.right);
+  const bottom = readAutoMeasurePoint(corners.bottom);
+  const left = readAutoMeasurePoint(corners.left);
+  return top && right && bottom && left ? { top, right, bottom, left } : null;
+}
+
+function orderRoughDiamondPoints(points: { x: number; y: number }[]): AutoMeasureCorners | null {
+  if (points.length !== 4 || points.some((point) => !finitePoint(point))) return null;
+  const indexed = points.map((point, index) => ({ point, index }));
+  const top = [...indexed].sort((a, b) => a.point.y - b.point.y || a.point.x - b.point.x)[0];
+  const bottom = [...indexed].sort((a, b) => b.point.y - a.point.y || b.point.x - a.point.x)[0];
+  const left = [...indexed].sort((a, b) => a.point.x - b.point.x || a.point.y - b.point.y)[0];
+  const right = [...indexed].sort((a, b) => b.point.x - a.point.x || b.point.y - a.point.y)[0];
+  if (new Set([top.index, right.index, bottom.index, left.index]).size !== 4) return null;
+  return {
+    top: top.point,
+    right: right.point,
+    bottom: bottom.point,
+    left: left.point,
+  };
+}
+
+function roughCornersFromRotatedRect(rect: unknown): AutoMeasureCorners | null {
+  if (!rect || typeof rect !== 'object') return null;
+  const source = rect as { center?: unknown; width?: unknown; height?: unknown; angle?: unknown };
+  const center = readAutoMeasurePoint(source.center);
+  const width = Number(source.width);
+  const height = Number(source.height);
+  const angle = Number(source.angle);
+  if (!center || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  const theta = (Number.isFinite(angle) ? angle : 0) * Math.PI / 180;
+  const ux = { x: Math.cos(theta) * width / 2, y: Math.sin(theta) * width / 2 };
+  const uy = { x: -Math.sin(theta) * height / 2, y: Math.cos(theta) * height / 2 };
+  return orderRoughDiamondPoints([
+    { x: center.x - ux.x - uy.x, y: center.y - ux.y - uy.y },
+    { x: center.x + ux.x - uy.x, y: center.y + ux.y - uy.y },
+    { x: center.x + ux.x + uy.x, y: center.y + ux.y + uy.y },
+    { x: center.x - ux.x + uy.x, y: center.y - ux.y + uy.y },
+  ]);
+}
+
+function readRoughAutoMeasureCorners(debug: Record<string, unknown>): {
+  corners: AutoMeasureCorners;
+  reason: string;
+} | null {
+  for (const key of ['roughCorners', 'contourCorners', 'initialCorners']) {
+    const corners = readAutoMeasureCorners(debug[key]);
+    if (corners) return { corners, reason: `debug-${key}` };
+  }
+  const rectCorners = roughCornersFromRotatedRect(debug.minAreaRect);
+  if (rectCorners) return { corners: rectCorners, reason: 'debug-minAreaRect' };
+  const finalCorners = readAutoMeasureCorners(debug.finalCorners);
+  return finalCorners ? { corners: finalCorners, reason: 'debug-finalCorners' } : null;
+}
+
+function validateAutoMeasureGeometry(
+  corners: AutoMeasureCorners,
+  context: Omit<AutoMeasureLogContext, 'd1Px' | 'd2Px' | 'center' | 'reason'> & {
+    reason?: string;
+  }
+): AutoMeasureGeometryValidation {
+  const finite =
+    finitePoint(corners.top) &&
+    finitePoint(corners.right) &&
+    finitePoint(corners.bottom) &&
+    finitePoint(corners.left);
+  const d1Px = finite
+    ? Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y)
+    : Number.NaN;
+  const d2Px = finite
+    ? Math.hypot(corners.bottom.x - corners.top.x, corners.bottom.y - corners.top.y)
+    : Number.NaN;
+  const midD1 = finite
+    ? { x: (corners.left.x + corners.right.x) / 2, y: (corners.left.y + corners.right.y) / 2 }
+    : { x: Number.NaN, y: Number.NaN };
+  const midD2 = finite
+    ? { x: (corners.top.x + corners.bottom.x) / 2, y: (corners.top.y + corners.bottom.y) / 2 }
+    : { x: Number.NaN, y: Number.NaN };
+  const center = {
+    x: (midD1.x + midD2.x) / 2,
+    y: (midD1.y + midD2.y) / 2,
+  };
+  const ratio = d2Px > 0 ? d1Px / d2Px : Number.NaN;
+  const distinctDistances = finite
+    ? [
+        Math.hypot(corners.top.x - corners.right.x, corners.top.y - corners.right.y),
+        Math.hypot(corners.right.x - corners.bottom.x, corners.right.y - corners.bottom.y),
+        Math.hypot(corners.bottom.x - corners.left.x, corners.bottom.y - corners.left.y),
+        Math.hypot(corners.left.x - corners.top.x, corners.left.y - corners.top.y),
+      ]
+    : [Number.NaN];
+  const midpointOffset = Math.hypot(midD1.x - midD2.x, midD1.y - midD2.y);
+  const minDiagonal = Math.min(d1Px, d2Px);
+  const diagonalOk =
+    Number.isFinite(d1Px) &&
+    Number.isFinite(d2Px) &&
+    d1Px >= MIN_AUTO_MEASURE_DIAGONAL_PX &&
+    d2Px >= MIN_AUTO_MEASURE_DIAGONAL_PX;
+  const ratioOk =
+    Number.isFinite(ratio) &&
+    ratio >= 1 / MAX_AUTO_MEASURE_DIAGONAL_RATIO &&
+    ratio <= MAX_AUTO_MEASURE_DIAGONAL_RATIO;
+  const orderOk =
+    finite &&
+    corners.left.x < corners.right.x &&
+    corners.top.y < corners.bottom.y;
+  const distinctOk = distinctDistances.every((distance) => distance >= 2);
+  const centerOk =
+    Number.isFinite(midpointOffset) &&
+    Number.isFinite(minDiagonal) &&
+    midpointOffset <= Math.max(12, minDiagonal * 0.65);
+  const reason = !finite
+    ? 'non-finite-corners'
+    : !diagonalOk
+      ? 'diagonals-too-small'
+      : !ratioOk
+        ? 'diagonal-ratio-out-of-range'
+        : !orderOk
+          ? 'corner-order-invalid'
+          : !distinctOk
+            ? 'corner-points-not-distinct'
+            : !centerOk
+              ? 'diagonal-centers-too-far-apart'
+              : context.reason ?? 'geometry-usable';
+  const validation = {
+    ok: finite && diagonalOk && ratioOk && orderOk && distinctOk && centerOk,
+    reason,
+    d1Px,
+    d2Px,
+    ratio,
+    center,
+  };
+  logAutoMeasurePhase('auto-measure-diamond-validation', {
+    ...context,
+    d1Px,
+    d2Px,
+    center,
+    reason,
+  });
+  return validation;
+}
+
+function buildRoughAutoMeasureResult(
+  raw: VickersAutoMeasureResult,
+  corners: AutoMeasureCorners,
+  reason: string
+): VickersAutoMeasureSuccess {
+  const d1Pixels = Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y);
+  const d2Pixels = Math.hypot(corners.bottom.x - corners.top.x, corners.bottom.y - corners.top.y);
+  const debug = raw.debug ?? {};
+  const confidence = Number((debug as { confidence?: unknown }).confidence);
+  return {
+    ok: true,
+    source: raw.source === 'uploaded-image' ? 'uploaded-image' : 'live-camera',
+    corners,
+    lines: [
+      { p1: corners.top, p2: corners.right },
+      { p1: corners.right, p2: corners.bottom },
+      { p1: corners.bottom, p2: corners.left },
+      { p1: corners.left, p2: corners.top },
+    ],
+    d1Pixels,
+    d2Pixels,
+    d1Mm: null,
+    d2Mm: null,
+    averageMm: null,
+    confidence: Number.isFinite(confidence) && confidence > 0 ? confidence : 0,
+    hv: null,
+    debug: {
+      ...debug,
+      frontendFallback: 'rough',
+      frontendFallbackReason: reason,
+    },
+  };
+}
+
+function resolveAutoMeasureDetection(
+  raw: VickersAutoMeasureResult,
+  context: Pick<AutoMeasureLogContext, 'objective' | 'smoothing' | 'threshold'>
+): ResolvedAutoMeasureDetection {
+  if (raw.ok) {
+    const refinedResult = raw;
+    const refinedCorners = refinedResult.corners;
+    const validation = validateAutoMeasureGeometry(refinedCorners, {
+      ...context,
+      method: 'refined',
+      reason: 'refined-corners',
+    });
+    logAutoMeasurePhase('auto-measure-refined-corners', {
+      ...context,
+      method: 'refined',
+      d1Px: validation.d1Px,
+      d2Px: validation.d2Px,
+      center: validation.center,
+      reason: validation.reason,
+    });
+    if (validation.ok) {
+      const roughForLog = readRoughAutoMeasureCorners(raw.debug ?? {});
+      if (roughForLog) {
+        const roughValidation = validateAutoMeasureGeometry(roughForLog.corners, {
+          ...context,
+          method: 'rough',
+          reason: roughForLog.reason,
+        });
+        logAutoMeasurePhase('auto-measure-rough-diamond', {
+          ...context,
+          method: 'rough',
+          d1Px: roughValidation.d1Px,
+          d2Px: roughValidation.d2Px,
+          center: roughValidation.center,
+          reason: roughValidation.reason,
+          extra: `source=${roughForLog.reason} used=false`,
+        });
+      } else {
+        logAutoMeasurePhase('auto-measure-rough-diamond', {
+          ...context,
+          method: 'rough',
+          reason: 'rough-geometry-missing used=false',
+        });
+      }
+      return {
+        ok: true,
+        result: refinedResult,
+        method: 'refined',
+        reason: validation.reason,
+        validation,
+        fallbackUsed: false,
+      };
+    }
+  } else {
+    logAutoMeasurePhase('auto-measure-refined-corners', {
+      ...context,
+      method: 'refined',
+      reason: raw.reason,
+    });
+  }
+
+  const debug = raw.debug ?? {};
+  const rough = readRoughAutoMeasureCorners(debug);
+  if (rough) {
+    const validation = validateAutoMeasureGeometry(rough.corners, {
+      ...context,
+      method: 'rough',
+      reason: rough.reason,
+    });
+    logAutoMeasurePhase('auto-measure-rough-diamond', {
+      ...context,
+      method: 'rough',
+      d1Px: validation.d1Px,
+      d2Px: validation.d2Px,
+      center: validation.center,
+      reason: validation.reason,
+      extra: `source=${rough.reason}`,
+    });
+    if (validation.ok) {
+      logAutoMeasurePhase('auto-measure-fallback-used', {
+        ...context,
+        method: 'rough',
+        d1Px: validation.d1Px,
+        d2Px: validation.d2Px,
+        center: validation.center,
+        reason: raw.ok ? 'refined-geometry-not-usable' : raw.reason,
+        extra: `source=${rough.reason}`,
+      });
+      return {
+        ok: true,
+        result: buildRoughAutoMeasureResult(raw, rough.corners, rough.reason),
+        method: 'rough',
+        reason: rough.reason,
+        validation,
+        fallbackUsed: true,
+      };
+    }
+  } else {
+    logAutoMeasurePhase('auto-measure-rough-diamond', {
+      ...context,
+      method: 'rough',
+      reason: 'rough-geometry-missing',
+    });
+  }
+
+  const reason = raw.ok
+    ? 'no usable diamond geometry'
+    : raw.reason || 'no usable diamond geometry';
+  return {
+    ok: false,
+    reason,
+    method: raw.ok ? 'refined' : 'rough',
+  };
 }
 
 function graphicsFromAutoMeasureResult(
@@ -398,17 +846,21 @@ function App() {
     activeDialog === 'autoMeasure' && previewAutoMeasureOverlay ? 'preview' : 'auto';
   const displayedAutoMeasureGraphicsRef = useRef<AutoMeasureGraphics | null>(null);
   const autoMeasurementIdRef = useRef<string | null>(null);
-  // Duplicate-measurement guard. Captures the last committed Auto Measure
-  // result so a repeat click on the same unchanged frame doesn't append a
-  // duplicate table row. Cleared on camera close, new image, objective
-  // change, and clear-graphics — see [measurement-session-reset] logs.
-  const lastCommittedFingerprintRef = useRef<{
-    d1Px: number;
-    d2Px: number;
-    centerX: number;
-    centerY: number;
-    frameEpoch: number;
-  } | null>(null);
+  // Duplicate-measurement guard for every committed Auto Measure row in the
+  // current measurement session. It survives overlay clears and repeat Auto
+  // Measure clicks; only table clear, new image/session resets, or row removal
+  // prune it.
+  const committedFingerprintsRef = useRef<CommittedAutoMeasureFingerprint[]>([]);
+  useEffect(() => {
+    const currentRowIds = new Set(measurements.map((measurement) => measurement.id));
+    const next = committedFingerprintsRef.current.filter(
+      (entry) => entry.rowId !== null && currentRowIds.has(entry.rowId)
+    );
+    if (next.length === committedFingerprintsRef.current.length) return;
+    committedFingerprintsRef.current = next;
+    // eslint-disable-next-line no-console
+    console.log(`[measurement-fingerprint-prune] total=${next.length}`);
+  }, [measurements]);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
   // - Set by the user's lens button click (authoritative, instant).
   // - Hydrated from SSE machine state when SSE pushes (guarded so it cannot
@@ -564,9 +1016,6 @@ function App() {
     autoMeasurePreviewSnapshotRef.current = null;
     committedAutoMeasureFrameRef.current = null;
     previewMeasurementRef.current = null;
-    // Drop the duplicate-guard fingerprint so re-detection at the new
-    // objective is never short-circuited as a "same indentation" repeat.
-    lastCommittedFingerprintRef.current = null;
     setAutoMeasureSessionActive(false);
     setAutoMeasureCapturedFrameId(null);
     setAutoMeasureSessionId((id) => {
@@ -616,10 +1065,8 @@ function App() {
   // yellow lines on its own — they appear only after an explicit Auto
   // Measure click. Cleared by the click handler.
   const suppressAutoMeasurePreviewRef = useRef(false);
-  // Clears all Auto Measure overlay/session state. Used whenever the
-  // displayed camera image is no longer guaranteed to match the cached
-  // detection (objective change, camera open/refresh, auto-measure start,
-  // auto-measure reject, manual-mode switch).
+  // Clears Auto Measure overlay/session state without touching committed row
+  // fingerprints. Duplicate suppression must survive overlay clears.
   const clearAutoMeasureOverlay = useCallback((reason: string) => {
     setCommittedAutoMeasureOverlay((prev) => {
       if (!prev) {
@@ -633,7 +1080,6 @@ function App() {
     committedAutoMeasureFrameRef.current = null;
     previewMeasurementRef.current = null;
     autoMeasurementIdRef.current = null;
-    lastCommittedFingerprintRef.current = null;
     // Cancel any pending coalesced trailing detection and mark the settings
     // dialog closed in the ref the in-flight finally block consults so a
     // queued preview run does not repaint after we just cleared.
@@ -1314,68 +1760,55 @@ function App() {
 
   const commitAutoMeasureSnapshot = useCallback(
     async (snapshot: AutoMeasureDetectionSnapshot, source: 'auto-click' | 'settings-save') => {
-      const { result, graphics, objectiveForCalibration, machineStateForAuto, forceKgf } = snapshot;
+      const {
+        result,
+        graphics,
+        method,
+        validationReason,
+        objectiveForCalibration,
+        machineStateForAuto,
+        forceKgf,
+      } = snapshot;
 
-      // Refined-diamond geometry gate. The native detector returns a tip set
-      // even from minAreaRect-only fallbacks; we must guarantee the four
-      // points form a real diamond before committing yellow lines + a row.
-      // The polygon top→right→bottom→left must be:
-      //   1. all four points finite,
-      //   2. top above bottom, left to the left of right,
-      //   3. left/right vertically near the diagonal mid-Y (D1 horizontal-ish),
-      //   4. top/bottom horizontally near the diagonal mid-X (D2 vertical-ish),
-      //   5. diagonals cross near the polygon centroid.
-      // If ANY check fails the detector reported the wrong geometry — most
-      // commonly a rectangle/manual-guide leak — and we must report failure
-      // instead of silently saving a wrong HV.
+      // Final frontend sanity gate. This intentionally stays loose: native
+      // already selected the contour, and this layer only blocks broken or
+      // non-finite geometry. Rotation, bloom, scratches, mild asymmetry, and
+      // imperfect refined corners are accepted.
       const c = graphics.corners;
-      const isFinitePoint = (p: { x: number; y: number } | null | undefined) =>
-        !!p && Number.isFinite(p.x) && Number.isFinite(p.y);
-      const cornersFinite =
-        isFinitePoint(c.top) && isFinitePoint(c.right) &&
-        isFinitePoint(c.bottom) && isFinitePoint(c.left);
-      const midX = (c.left.x + c.right.x) / 2;
-      const midY = (c.top.y + c.bottom.y) / 2;
-      const d1Px = Math.hypot(c.right.x - c.left.x, c.right.y - c.left.y);
-      const d2Px = Math.hypot(c.bottom.x - c.top.x, c.bottom.y - c.top.y);
-      const tol = Math.max(2, 0.18 * Math.min(d1Px, d2Px));
-      const horizontalOk =
-        c.left.x < c.right.x &&
-        Math.abs(c.left.y - midY) <= tol &&
-        Math.abs(c.right.y - midY) <= tol;
-      const verticalOk =
-        c.top.y < c.bottom.y &&
-        Math.abs(c.top.x - midX) <= tol &&
-        Math.abs(c.bottom.x - midX) <= tol;
-      const overlayIsDiamond = cornersFinite && horizontalOk && verticalOk &&
-        d1Px > 4 && d2Px > 4;
-      if (!cornersFinite) {
-        // eslint-disable-next-line no-console
-        console.warn('[auto-measure][reject-no-refined-corners] reason=non-finite-corners');
-        setUnavailableMsg('Refined diamond corners not available');
-        setStatusMessage('System Status: Auto Measure rejected: refined diamond corners not available');
-        return false;
-      }
-      if (!overlayIsDiamond) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[auto-measure][reject-overlay-not-diamond] reason=geometry-not-diamond horizontalOk=${horizontalOk} verticalOk=${verticalOk} d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} tol=${tol.toFixed(2)}`
-        );
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[auto-measure][save-blocked-invalid-overlay] reason=overlay-not-diamond source=${source}`
-        );
-        setUnavailableMsg('Refined diamond corners not available');
-        setStatusMessage('System Status: Auto Measure rejected: overlay geometry is not a diamond');
+      const validation = validateAutoMeasureGeometry(c, {
+        objective: objectiveForCalibration,
+        smoothing: snapshot.settings.smoothing,
+        threshold: snapshot.settings.threshold,
+        method,
+        reason: validationReason,
+      });
+      const { d1Px, d2Px, ratio, center } = validation;
+      if (!validation.ok) {
+        logAutoMeasurePhase('auto-measure-reject', {
+          objective: objectiveForCalibration,
+          smoothing: snapshot.settings.smoothing,
+          threshold: snapshot.settings.threshold,
+          method,
+          d1Px,
+          d2Px,
+          center,
+          reason: validation.reason,
+        });
+        setUnavailableMsg('Auto Measure rejected: no usable diamond geometry. Please use manual measure.');
+        setStatusMessage(`System Status: Auto Measure rejected: ${validation.reason}`);
         return false;
       }
       // eslint-disable-next-line no-console
       console.log(
-        `[auto-measure][success-refined-diamond-only] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} midX=${midX.toFixed(2)} midY=${midY.toFixed(2)} tolPx=${tol.toFixed(2)}`
+        `[auto-measure][success-refined-diamond-only] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} midX=${center.x.toFixed(2)} midY=${center.y.toFixed(2)} method=${method}`
       );
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-corners] left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-success] objective=${objectiveForCalibration ?? 'unknown'} method=${method} left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)}) d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} smoothing=${snapshot.settings.smoothing} threshold=${snapshot.settings.threshold} ratio=${ratio.toFixed(3)} center=(${center.x.toFixed(2)},${center.y.toFixed(2)}) reason=${validation.reason}`
       );
 
       // Duplicate-measurement guard. Identical detection on the same unchanged
@@ -1384,8 +1817,8 @@ function App() {
       // unchanged frame; a real new indentation moves D1/D2/center well past
       // these bounds. Settings-save is exempt — the user is intentionally
       // re-detecting under new params and expects the existing row to update.
-      const centerX = midX;
-      const centerY = midY;
+      const centerX = center.x;
+      const centerY = center.y;
       const frameEpoch = getLastPaintEpoch();
       const fingerprint = {
         d1Px: result.d1Pixels,
@@ -1393,6 +1826,10 @@ function App() {
         centerX,
         centerY,
         frameEpoch,
+        hv:
+          typeof result.hv === 'number' && Number.isFinite(result.hv)
+            ? result.hv
+            : null,
       };
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-start] frameId=${frameEpoch}`);
@@ -1401,23 +1838,71 @@ function App() {
         `[measurement-fingerprint]\ncenterX=${centerX.toFixed(2)}\ncenterY=${centerY.toFixed(2)}\nd1Px=${fingerprint.d1Px.toFixed(2)}\nd2Px=${fingerprint.d2Px.toFixed(2)}\nframeId=${frameEpoch}`
       );
 
-      const last = lastCommittedFingerprintRef.current;
-      if (source === 'auto-click' && last) {
-        const D_PX_TOL = 1.5;
-        const CENTER_TOL = 2;
-        const sameValues =
-          Math.abs(last.d1Px - fingerprint.d1Px) <= D_PX_TOL &&
-          Math.abs(last.d2Px - fingerprint.d2Px) <= D_PX_TOL &&
-          Math.abs(last.centerX - fingerprint.centerX) <= CENTER_TOL &&
-          Math.abs(last.centerY - fingerprint.centerY) <= CENTER_TOL;
-        const sameFrame = last.frameEpoch === fingerprint.frameEpoch;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-duplicate-check]\nsameFrame=${sameFrame}\nsameValues=${sameValues}`
-        );
-        if (sameValues) {
+      const fingerprintObjective = normalizeAutoMeasureFingerprintObjective(objectiveForCalibration);
+      const fingerprintKey = buildAutoMeasureFingerprintKey({
+        objective: fingerprintObjective,
+        centerX: fingerprint.centerX,
+        centerY: fingerprint.centerY,
+        d1Px: fingerprint.d1Px,
+        d2Px: fingerprint.d2Px,
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-fingerprint] objective=${fingerprintObjective} centerX=${Math.round(fingerprint.centerX)} centerY=${Math.round(fingerprint.centerY)} d1=${Math.round(fingerprint.d1Px)} d2=${Math.round(fingerprint.d2Px)} key=${fingerprintKey}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-fingerprint-current] objective=${fingerprintObjective} centerX=${fingerprint.centerX.toFixed(2)} centerY=${fingerprint.centerY.toFixed(2)} d1Px=${fingerprint.d1Px.toFixed(2)} d2Px=${fingerprint.d2Px.toFixed(2)} key=${fingerprintKey}`
+      );
+      if (source === 'auto-click') {
+        const existing = committedFingerprintsRef.current;
+        let matchedEntry: typeof existing[number] | null = null;
+        for (const entry of existing) {
+          const sameObjective = entry.objective === fingerprintObjective;
+          const d1Delta = Math.abs(entry.d1Px - fingerprint.d1Px);
+          const d2Delta = Math.abs(entry.d2Px - fingerprint.d2Px);
+          const cxDelta = Math.abs(entry.centerX - fingerprint.centerX);
+          const cyDelta = Math.abs(entry.centerY - fingerprint.centerY);
+          const matches =
+            sameObjective &&
+            d1Delta <= AUTO_MEASURE_DIAGONAL_TOLERANCE_PX &&
+            d2Delta <= AUTO_MEASURE_DIAGONAL_TOLERANCE_PX &&
+            cxDelta <= AUTO_MEASURE_CENTER_TOLERANCE_PX &&
+            cyDelta <= AUTO_MEASURE_CENTER_TOLERANCE_PX;
           // eslint-disable-next-line no-console
-          console.log('[measurement-row-blocked] reason=duplicate-measurement');
+          console.log(
+            `[measurement-fingerprint-compare-row] rowId=${entry.rowId ?? 'unknown'} sameObjective=${sameObjective} d1Delta=${d1Delta.toFixed(2)} d2Delta=${d2Delta.toFixed(2)} cxDelta=${cxDelta.toFixed(2)} cyDelta=${cyDelta.toFixed(2)} matches=${matches}`
+          );
+          if (matches && !matchedEntry) {
+            matchedEntry = entry;
+          }
+        }
+        if (matchedEntry) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-duplicate-skip-existing-row] rowId=${matchedEntry.rowId ?? 'unknown'} key=${matchedEntry.fingerprintKey} hv=${matchedEntry.hv ?? 'n/a'} d1Px=${matchedEntry.d1Px.toFixed(2)} d2Px=${matchedEntry.d2Px.toFixed(2)}`
+          );
+          // eslint-disable-next-line no-console
+          console.log('[measurement-duplicate-skip]');
+          const restoredGraphics = {
+            ...cloneAutoMeasureGraphics(matchedEntry.graphics),
+            frameId: graphics.frameId,
+            sessionId: graphics.sessionId,
+            objective: graphics.objective ?? matchedEntry.objective,
+          };
+          setCommittedAutoMeasureOverlay(restoredGraphics);
+          autoMeasurementIdRef.current = matchedEntry.rowId;
+          previewMeasurementRef.current = {
+            d1Pixels: matchedEntry.d1Px,
+            d2Pixels: matchedEntry.d2Px,
+            confidence: result.confidence,
+          };
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-duplicate] keepOverlay=true matchedRowId=${matchedEntry.rowId ?? 'unknown'}`
+          );
+          // eslint-disable-next-line no-console
+          console.log('[overlay-set-from-auto-result] reason=duplicate-restore');
           setAutoMeasureStatus('duplicate');
           setStatusMessage(
             'System Status: Auto Measure: same indentation — no duplicate row added.'
@@ -1445,6 +1930,10 @@ function App() {
         );
         // eslint-disable-next-line no-console
         console.log(
+          `[overlay-set-from-auto-result] source=${source} corners=4 d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
           `[overlay-draw] source=auto-measure d1=${result.d1Pixels.toFixed(2)}px d2=${result.d2Pixels.toFixed(2)}px objective=${objectiveForCalibration ?? 'unknown'}`
         );
         if (source === 'auto-click') {
@@ -1468,11 +1957,12 @@ function App() {
       previewMeasurementRef.current = null;
 
       const timestamp = new Date().toISOString();
+      const saveRowId = source === 'auto-click' ? undefined : autoMeasurementIdRef.current ?? undefined;
       // Depth is captured ONLY when creating a new auto-measure row. On
       // re-detection of an existing row we must keep the originally saved
       // micrometer reading — overwriting would violate "old saved row must
       // not change" and copy the current depth across all re-detected rows.
-      const isNewAutoMeasurement = autoMeasurementIdRef.current === null;
+      const isNewAutoMeasurement = saveRowId === undefined;
       const depthMm = isNewAutoMeasurement ? await readLatestMicrometerDepthMm() : null;
       // eslint-disable-next-line no-console
       console.log(
@@ -1564,7 +2054,7 @@ function App() {
       );
 
       // eslint-disable-next-line no-console
-      console.log('[album] snapshot capture start measurementId=', autoMeasurementIdRef.current ?? 'new');
+      console.log('[album] snapshot capture start measurementId=', saveRowId ?? 'new');
       await waitForOverlayPaint();
       // eslint-disable-next-line no-console
       console.log('[album] auto measure overlay ready, capturing thumbnail');
@@ -1618,10 +2108,20 @@ function App() {
       console.log(
         `[measurement-save-payload] depthMm=${'depthMm' in autoRowPayload ? (autoRowPayload as { depthMm?: number | null }).depthMm ?? 'null' : 'preserved'}`
       );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-row-add] reason=${isNewAutoMeasurement ? 'new-indentation' : 'settings-save-update'} hv=${values.hv ?? 'n/a'} d1Px=${values.d1Px.toFixed(2)} d2Px=${values.d2Px.toFixed(2)} existingRowId=${saveRowId ?? 'none'}`
+      );
+      if (isNewAutoMeasurement) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-new-row] reason=new-indentation hv=${values.hv ?? 'n/a'} fingerprintKey=${fingerprintKey}`
+        );
+      }
       let saved;
       try {
         saved = await saveManualMeasurement({
-          id: autoMeasurementIdRef.current ?? undefined,
+          id: saveRowId,
           values: autoRowPayload,
         });
         // eslint-disable-next-line no-console
@@ -1652,7 +2152,27 @@ function App() {
       console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
       autoMeasurementIdRef.current = saved.id;
-      lastCommittedFingerprintRef.current = fingerprint;
+      committedFingerprintsRef.current = upsertCommittedAutoMeasureFingerprint(
+        committedFingerprintsRef.current,
+        {
+          objective: fingerprintObjective,
+          d1Px: fingerprint.d1Px,
+          d2Px: fingerprint.d2Px,
+          centerX: fingerprint.centerX,
+          centerY: fingerprint.centerY,
+          hv:
+            typeof saved.hv === 'number' && Number.isFinite(saved.hv)
+              ? saved.hv
+              : fingerprint.hv,
+          rowId: saved.id,
+          fingerprintKey,
+          graphics: cloneAutoMeasureGraphics(graphics),
+        }
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-fingerprint-store] rowId=${saved.id} key=${fingerprintKey} total=${committedFingerprintsRef.current.length}`
+      );
       if (source === 'auto-click') {
         setAutoMeasureStatus('success');
       }
@@ -1715,6 +2235,10 @@ function App() {
       // Non-preview (explicit Auto Measure click) is still ignored while busy.
       if (preview) {
         autoMeasurePendingPreviewRef.current = settingsInput;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-preview-coalesced] smoothing=${settingsInput.smoothing} threshold=${settingsInput.threshold}`
+        );
       }
       // eslint-disable-next-line no-console
       console.log(
@@ -1729,8 +2253,8 @@ function App() {
         // Drop the previously-committed yellow lines before running a new
         // detection — old D1/D2 must never linger over a fresh detection
         // attempt. The new overlay will be set only if detection succeeds.
-        // We keep `lastCommittedFingerprintRef` alive so the duplicate-row
-        // guard still fires on a repeat click against an unchanged frame.
+        // Keep committed row fingerprints alive so repeat clicks compare
+        // against every current row, even while the overlay is being refreshed.
         setCommittedAutoMeasureOverlay((prev) => {
           if (!prev) {
             // eslint-disable-next-line no-console
@@ -1743,6 +2267,8 @@ function App() {
         autoMeasurementIdRef.current = null;
         // eslint-disable-next-line no-console
         console.log('[overlay-clear] reason=auto-measure-start');
+        // eslint-disable-next-line no-console
+        console.log('[overlay-clear-before-auto]');
       }
 
       autoMeasureInFlightRef.current = true;
@@ -1753,6 +2279,8 @@ function App() {
       const sessionIdForRun = autoMeasureSessionIdRef.current + 1;
       autoMeasureSessionIdRef.current = sessionIdForRun;
       setAutoMeasureSessionId(sessionIdForRun);
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-run-start] runId=${sessionIdForRun} source=${callSource}`);
       // Both auto-click and settings-preview activate the session — preview
       // overlays during slider drags also need the gate to allow paint.
       // The session ends on the next clearAutoMeasureOverlay invalidator
@@ -1835,10 +2363,23 @@ function App() {
         }
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
-        let displayedFrame =
-          callSource === 'auto-click'
-            ? cameraRef.current?.captureDisplayedFrame({ freeze: true })
-            : committedAutoMeasureFrameRef.current;
+        let displayedFrame;
+        if (callSource === 'auto-click') {
+          displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
+        } else {
+          displayedFrame = committedAutoMeasureFrameRef.current;
+          if (displayedFrame) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-frozen-frame-reuse] sessionId=${sessionIdForRun} size=${displayedFrame.width}x${displayedFrame.height}`
+            );
+          } else {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-measure-live-frame-blocked] reason=no-frozen-frame source=${callSource}`
+            );
+          }
+        }
         let capturedFrameIdForRun: number | null = autoMeasureCapturedFrameId;
         if (callSource === 'auto-click') {
           const capturedFrameId = getLastPaintedFrameId();
@@ -1918,9 +2459,42 @@ function App() {
           return;
         }
 
+        // Hard guard: live-camera detection input MUST be the native
+        // full-resolution bgr24 frame (2592x1944). If anything else slipped
+        // through (resized rgb32 canvas, partial frame, wrong format),
+        // reject — never let detection silently run on a downscaled frame.
+        if (
+          displayedFrame.source === 'live-camera' &&
+          (displayedFrame.width !== 2592 ||
+            displayedFrame.height !== 1944 ||
+            displayedFrame.pixelFormat !== 'bgr24')
+        ) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-reject] reason=invalid-detection-frame width=${displayedFrame.width} height=${displayedFrame.height} pixelFormat=${displayedFrame.pixelFormat}`
+          );
+          if (!preview) {
+            setStatusMessage('System Status: Auto Measure rejected: invalid-detection-frame');
+            setUnavailableMsg('Auto Measure rejected: invalid-detection-frame. Please retry.');
+            clearAutoMeasureOverlay('auto-measure-failed');
+            if (callSource === 'auto-click') setAutoMeasureStatus('failed');
+          }
+          return;
+        }
+
         if (callSource === 'auto-click') {
           committedAutoMeasureFrameRef.current = cloneCapturedFrame(displayedFrame);
         }
+        const runSmoothing = settings.smoothing;
+        const runThreshold = settings.threshold;
+        logAutoMeasurePhase('auto-measure-frame', {
+          objective: objectiveForCalibration,
+          smoothing: runSmoothing,
+          threshold: runThreshold,
+          method: 'refined',
+          reason: 'captured',
+          extra: `width=${displayedFrame.width} height=${displayedFrame.height} frameId=${capturedFrameIdForRun ?? 'n/a'} source=${displayedFrame.source}`,
+        });
 
         // Only forward the live machine-control objective when it normalises
         // to one of the canonical values. A transient empty / unknown machine
@@ -1960,17 +2534,44 @@ function App() {
           `[auto-measure-start] sessionId=${sessionIdForRun} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${liveObjectiveForNative}`
         );
         const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
-        // Force objective-tuned defaults for smoothing/threshold so the
-        // detector always uses the values calibrated for that magnification,
-        // regardless of any stale UI value.
-        const objectiveDefaults = autoMeasureDefaultsForObjective(liveObjectiveForNative);
-        const runSmoothing = objectiveDefaults?.smoothing ?? settings.smoothing;
-        const runThreshold = objectiveDefaults?.threshold ?? settings.threshold;
+        if (preview) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-preview-start] sessionId=${sessionIdForRun} smoothing=${settings.smoothing} threshold=${settings.threshold}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-preview-handler-enter] smoothing=${settings.smoothing} threshold=${settings.threshold}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-preview-frame-source] source=frozenFrame frameId=${capturedFrameIdForRun ?? 'n/a'} size=${displayedFrame.width}x${displayedFrame.height}`
+          );
+        }
+        // Slider values are the source of truth at detection time. Objective
+        // defaults seed the dialog when the objective changes (UI level) — at
+        // detection time we must honor whatever the user has in the form,
+        // otherwise dragging Smoothing/Threshold sliders produces no visible
+        // change in the yellow lines because every detection runs on the
+        // same hardcoded numbers.
         // eslint-disable-next-line no-console
         console.log(
           `[auto-measure-run] objective=${liveObjectiveForNative} smoothing=${runSmoothing} threshold=${runThreshold}`
         );
-        const result = await measureFn({
+        if (preview) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-preview-native-call] smoothing=${runSmoothing} threshold=${runThreshold} objective=${liveObjectiveForNative}`
+          );
+        }
+        logAutoMeasurePhase('auto-measure-preprocess', {
+          objective: liveObjectiveForNative,
+          smoothing: runSmoothing,
+          threshold: runThreshold,
+          method: 'refined',
+          reason: 'clahe+adaptive-threshold+morphology',
+        });
+        const nativeResult = await measureFn({
           smoothing: runSmoothing,
           threshold: runThreshold,
           objectiveForMeasure: liveObjectiveForNative,
@@ -1990,45 +2591,81 @@ function App() {
 
         if (!preview) {
           // eslint-disable-next-line no-console
-          console.log('[auto-measure] result', result);
+          console.log('[auto-measure] result', nativeResult);
           if (callSource === 'auto-click') {
             // eslint-disable-next-line no-console
             console.log(
-              `[auto-measure-click] detection-complete ok=${result.ok} confidence=${result.ok ? result.confidence.toFixed(3) : 0} D1_px=${result.ok ? result.d1Pixels.toFixed(3) : 0} D2_px=${result.ok ? result.d2Pixels.toFixed(3) : 0}`
+              `[auto-measure-click] detection-complete ok=${nativeResult.ok} confidence=${nativeResult.ok ? nativeResult.confidence.toFixed(3) : 0} D1_px=${nativeResult.ok ? nativeResult.d1Pixels.toFixed(3) : 0} D2_px=${nativeResult.ok ? nativeResult.d2Pixels.toFixed(3) : 0}`
             );
           }
         }
 
-        if (!result.ok || result.confidence < minConfidence || !hasValidAutoMeasureCorners(result)) {
-          const baseReason = result.ok
-            ? result.confidence < minConfidence
-              ? 'low confidence'
-              : 'invalid corner coordinates'
-            : result.reason;
-
-          // Step 1 runtime sanity check: if the operator asked for 10X but
-          // the native debug echo doesn't say "10X", the rebuilt .node
-          // didn't load (or string normalisation diverged). Surface this as
-          // a distinct reason rather than masking it under the normal
-          // detection-failure message.
-          const debugObj = (result.debug ?? {}) as { objectiveForMeasure?: unknown };
-          const nativeObjective =
-            typeof debugObj.objectiveForMeasure === 'string'
-              ? debugObj.objectiveForMeasure
-              : '';
-          let reason = baseReason;
-          if (
-            liveObjectiveForNative === '10X' &&
-            nativeObjective !== '10X' &&
-            nativeObjective !== ''
-          ) {
-            reason = `native-branch-not-used (requested=10X native=${nativeObjective})`;
-          } else if (liveObjectiveForNative === '10X' && nativeObjective === '') {
-            reason = `native-branch-not-used (native objective missing — addon likely stale; rebuild required)`;
+        const debugObj = (nativeResult.debug ?? {}) as {
+          objectiveForMeasure?: unknown;
+          contourCount?: unknown;
+          selectedContourArea?: unknown;
+          selectedValidationArea?: unknown;
+          confidence?: unknown;
+        };
+        const nativeObjective =
+          typeof debugObj.objectiveForMeasure === 'string'
+            ? debugObj.objectiveForMeasure
+            : '';
+        logAutoMeasurePhase('auto-measure-contours', {
+          objective: liveObjectiveForNative,
+          smoothing: runSmoothing,
+          threshold: runThreshold,
+          method: nativeResult.ok ? 'refined' : 'rough',
+          d1Px: nativeResult.ok ? nativeResult.d1Pixels : null,
+          d2Px: nativeResult.ok ? nativeResult.d2Pixels : null,
+          center: nativeResult.ok
+            ? {
+                x: ((nativeResult.corners.left.x + nativeResult.corners.right.x) / 2 +
+                  (nativeResult.corners.top.x + nativeResult.corners.bottom.x) / 2) / 2,
+                y: ((nativeResult.corners.left.y + nativeResult.corners.right.y) / 2 +
+                  (nativeResult.corners.top.y + nativeResult.corners.bottom.y) / 2) / 2,
+              }
+            : null,
+          reason: nativeResult.ok ? 'native-result' : nativeResult.reason,
+          extra: `contourCount=${Number(debugObj.contourCount) || 0} selectedArea=${formatAutoMeasureNumber(Number(debugObj.selectedContourArea))} validationArea=${formatAutoMeasureNumber(Number(debugObj.selectedValidationArea))} confidence=${nativeResult.ok ? nativeResult.confidence.toFixed(3) : '0.000'}`,
+        });
+        const resolvedDetection = resolveAutoMeasureDetection(nativeResult, {
+          objective: liveObjectiveForNative,
+          smoothing: runSmoothing,
+          threshold: runThreshold,
+        });
+        if (
+          liveObjectiveForNative === '10X' &&
+          nativeObjective !== '10X' &&
+          nativeObjective !== ''
+        ) {
+          const reason = `native-branch-not-used (requested=10X native=${nativeObjective})`;
+          logAutoMeasurePhase('auto-measure-reject', {
+            objective: liveObjectiveForNative,
+            smoothing: runSmoothing,
+            threshold: runThreshold,
+            method: resolvedDetection.method,
+            reason,
+          });
+          if (!preview) {
+            setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
+            setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
+            clearAutoMeasureOverlay('auto-measure-failed');
+            if (callSource === 'auto-click') setAutoMeasureStatus('failed');
           }
-
+          return;
+        }
+        if (!resolvedDetection.ok) {
+          const reason = resolvedDetection.reason;
           if (preview) {
             // Preview rejection: keep last valid overlay; no log spam.
+            logAutoMeasurePhase('auto-measure-reject', {
+              objective: liveObjectiveForNative,
+              smoothing: runSmoothing,
+              threshold: runThreshold,
+              method: resolvedDetection.method,
+              reason,
+            });
             // eslint-disable-next-line no-console
             console.log(
               `[auto-settings-preview] smoothing=${settings.smoothing} kernel=${smoothingToPreviewKernel(settings.smoothing)} threshold=${settings.threshold} accepted=false D1_px=0 D2_px=0`
@@ -2043,6 +2680,13 @@ function App() {
           console.log(
             `[auto-measure-result] success=false reason=${reason} objective=${liveObjectiveForNative} nativeObjective=${nativeObjective || 'missing'}`
           );
+          logAutoMeasurePhase('auto-measure-reject', {
+            objective: liveObjectiveForNative,
+            smoothing: runSmoothing,
+            threshold: runThreshold,
+            method: resolvedDetection.method,
+            reason,
+          });
           setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
           // Surface the actual reason in the toast instead of the generic
           // "Auto detection not reliable" line so the operator sees WHY.
@@ -2057,6 +2701,21 @@ function App() {
             `[measurement-commit-blocked] method=Auto reason=detection-rejected detail="${reason}"`
           );
           return;
+        }
+
+        const result = resolvedDetection.result;
+        const detectionMethod = resolvedDetection.method;
+        if (result.confidence < minConfidence) {
+          logAutoMeasurePhase('auto-measure-fallback-used', {
+            objective: liveObjectiveForNative,
+            smoothing: runSmoothing,
+            threshold: runThreshold,
+            method: detectionMethod,
+            d1Px: result.d1Pixels,
+            d2Px: result.d2Pixels,
+            center: resolvedDetection.validation.center,
+            reason: `low-confidence-geometry-accepted confidence=${result.confidence.toFixed(3)} min=${minConfidence.toFixed(3)}`,
+          });
         }
 
         if (!preview) {
@@ -2111,6 +2770,18 @@ function App() {
           console.log(
             `[auto-measure-stale-callback] reason=session-superseded run=${sessionIdForRun} current=${autoMeasureSessionIdRef.current}`
           );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-run-ignore-stale] resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[overlay-skip-stale-result] reason=runId-mismatch resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[overlay-ignore-stale] resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
+          );
           return;
         }
         // Objective + frame guards. Result must belong to the objective the
@@ -2139,11 +2810,49 @@ function App() {
           console.log(
             `[auto-measure] corners-detected top=${c.top.x.toFixed(2)},${c.top.y.toFixed(2)} right=${c.right.x.toFixed(2)},${c.right.y.toFixed(2)} bottom=${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)} left=${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}`
           );
+          // nativeCorners → displayCorners scale map. Camera preview canvas
+          // is painted at half native resolution (PREVIEW_SCALE=2 in
+          // useCameraStream); the AutoMeasureOverlay still receives native
+          // corners and maps them via imageToDisplay at render time. This
+          // log captures the scaled set used for the yellow overlay.
+          const nativeWidth = displayedFrame.width;
+          const nativeHeight = displayedFrame.height;
+          const PREVIEW_SCALE = 2;
+          const displayWidth = Math.round(nativeWidth / PREVIEW_SCALE);
+          const displayHeight = Math.round(nativeHeight / PREVIEW_SCALE);
+          const scaleX = displayWidth / nativeWidth;
+          const scaleY = displayHeight / nativeHeight;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-scale-map] nativeWidth=${nativeWidth} nativeHeight=${nativeHeight} displayWidth=${displayWidth} displayHeight=${displayHeight} scaleX=${scaleX.toFixed(4)} scaleY=${scaleY.toFixed(4)}`
+          );
+          const scalePoint = (p: { x: number; y: number }) => ({
+            x: +(p.x * scaleX).toFixed(2),
+            y: +(p.y * scaleY).toFixed(2),
+          });
+          const nativeCorners = {
+            top: { x: +c.top.x.toFixed(2), y: +c.top.y.toFixed(2) },
+            right: { x: +c.right.x.toFixed(2), y: +c.right.y.toFixed(2) },
+            bottom: { x: +c.bottom.x.toFixed(2), y: +c.bottom.y.toFixed(2) },
+            left: { x: +c.left.x.toFixed(2), y: +c.left.y.toFixed(2) },
+          };
+          const displayCorners = {
+            top: scalePoint(c.top),
+            right: scalePoint(c.right),
+            bottom: scalePoint(c.bottom),
+            left: scalePoint(c.left),
+          };
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-result] nativeCorners=${JSON.stringify(nativeCorners)} displayCorners=${JSON.stringify(displayCorners)} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} hv=${typeof result.hv === 'number' ? result.hv.toFixed(2) : 'n/a'} frameId=${capturedFrameIdForRun ?? 'n/a'}`
+          );
         }
         const snapshot: AutoMeasureDetectionSnapshot = {
           settings,
           result,
           graphics,
+          method: detectionMethod,
+          validationReason: resolvedDetection.reason,
           objectiveForCalibration,
           machineStateForAuto,
           forceKgf,
@@ -2151,6 +2860,35 @@ function App() {
 
         if (preview) {
           const detectMs = performance.now() - requestedAt;
+          {
+            const c = result.ok ? result.corners : null;
+            const fmt = (p: { x: number; y: number } | null | undefined) =>
+              p ? `(${p.x.toFixed(2)},${p.y.toFixed(2)})` : 'null';
+            // eslint-disable-next-line no-console
+            console.log(
+              `[auto-preview-result] ok=${result.ok} left=${fmt(c?.left)} right=${fmt(c?.right)} top=${fmt(c?.top)} bottom=${fmt(c?.bottom)} d1=${result.ok ? result.d1Pixels.toFixed(3) : 'n/a'} d2=${result.ok ? result.d2Pixels.toFixed(3) : 'n/a'}`
+            );
+            const prev = displayedAutoMeasureGraphicsRef.current;
+            if (c && prev) {
+              const d = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+                Math.hypot(a.x - b.x, a.y - b.y).toFixed(2);
+              // eslint-disable-next-line no-console
+              console.log(
+                `[auto-preview-geometry-delta] dLeft=${d(c.left, prev.corners.left)} dRight=${d(c.right, prev.corners.right)} dTop=${d(c.top, prev.corners.top)} dBottom=${d(c.bottom, prev.corners.bottom)}`
+              );
+              const same =
+                d(c.left, prev.corners.left) === '0.00' &&
+                d(c.right, prev.corners.right) === '0.00' &&
+                d(c.top, prev.corners.top) === '0.00' &&
+                d(c.bottom, prev.corners.bottom) === '0.00';
+              if (same) {
+                // eslint-disable-next-line no-console
+                console.log(
+                  `[auto-preview-no-geometry-change] smoothing=${settings.smoothing} threshold=${settings.threshold}`
+                );
+              }
+            }
+          }
           if (!autoMeasureSettingsEqual(settings, latestAutoMeasurePreviewSettingsRef.current)) {
             const latest = latestAutoMeasurePreviewSettingsRef.current;
             // eslint-disable-next-line no-console
@@ -2193,6 +2931,10 @@ function App() {
           console.log(
             `[auto-measure-settings][preview-apply] smoothing=${settings.smoothing} threshold=${settings.threshold} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} detectMs=${detectMs.toFixed(1)}`
           );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-preview-finish] smoothing=${settings.smoothing} threshold=${settings.threshold} detectMs=${detectMs.toFixed(1)}`
+          );
           const fmtPt = (p: { x: number; y: number } | null | undefined) =>
             p ? `${p.x.toFixed(2)},${p.y.toFixed(2)}` : 'null';
           // eslint-disable-next-line no-console
@@ -2227,6 +2969,10 @@ function App() {
       } finally {
         autoMeasureInFlightRef.current = false;
         setAutoMeasuring(false);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-run-finish] runId=${sessionIdForRun} source=${callSource}`
+        );
         // Drain coalesced preview: if a slider tick arrived while we were
         // running, fire one more pass with the latest settings so the user's
         // final position always wins.
@@ -2272,6 +3018,11 @@ function App() {
       });
     }
 
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-preview-request] smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
+    );
+
     const timer = window.setTimeout(() => {
       if (suppressAutoMeasurePreviewRef.current) {
         suppressAutoMeasurePreviewRef.current = false;
@@ -2279,11 +3030,23 @@ function App() {
         console.log('[auto-measure-preview-skip] reason=objective-change');
         return;
       }
-      runAutoMeasure(autoMeasurePreviewSettings, true, 'settings-preview');
+      // Invoke through the ref so this effect does NOT depend on
+      // runAutoMeasure's callback identity. Without this indirection, every
+      // change to activeObjective / calibrations re-creates runAutoMeasure,
+      // re-fires this effect mid-drag, clears the 70ms timer, and restarts
+      // the preview pipeline — visible as jitter while the user is dragging
+      // the Smoothing / Threshold sliders.
+      runAutoMeasureRef.current?.(autoMeasurePreviewSettings, true, 'settings-preview');
     }, 70);
 
     return () => window.clearTimeout(timer);
-  }, [activeDialog, autoMeasurePreviewSettings, committedAutoMeasureOverlay, runAutoMeasure]);
+    // committedAutoMeasureOverlay and runAutoMeasure are intentionally NOT
+    // in the deps — they would re-fire the effect mid-drag. The initial-open
+    // copy uses committedAutoMeasureOverlay from the closure captured when
+    // activeDialog flips to 'autoMeasure', which is the moment we actually
+    // want it sampled.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDialog, autoMeasurePreviewSettings]);
 
   const handleAutoMeasureSettingsSaved = useCallback(
     (settings: AutoMeasureSettingsPayload) => {
@@ -2517,7 +3280,7 @@ function App() {
         // can write a row even if pixel coordinates happen to land near the
         // last committed values. The new indentation is, by definition, a
         // new measurement.
-        lastCommittedFingerprintRef.current = null;
+        committedFingerprintsRef.current = [];
         impressInProgressRef.current = false;
         // eslint-disable-next-line no-console
         console.log(`[auto-measure-after-impress-start] frameId=${getLastPaintEpoch()}`);
@@ -2766,6 +3529,40 @@ function App() {
             // eslint-disable-next-line no-console
             console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
             autoMeasurementIdRef.current = saved.id;
+            const centerX = (corners.left.x + corners.right.x) / 2;
+            const centerY = (corners.top.y + corners.bottom.y) / 2;
+            const fingerprintObjective = normalizeAutoMeasureFingerprintObjective(objectiveForCalibration);
+            const fingerprintKey = buildAutoMeasureFingerprintKey({
+              objective: fingerprintObjective,
+              centerX,
+              centerY,
+              d1Px: values.d1Px,
+              d2Px: values.d2Px,
+            });
+            const baseGraphics = displayedAutoMeasureGraphicsRef.current;
+            if (baseGraphics) {
+              committedFingerprintsRef.current = upsertCommittedAutoMeasureFingerprint(
+                committedFingerprintsRef.current,
+                {
+                  objective: fingerprintObjective,
+                  d1Px: values.d1Px,
+                  d2Px: values.d2Px,
+                  centerX,
+                  centerY,
+                  hv:
+                    typeof saved.hv === 'number' && Number.isFinite(saved.hv)
+                      ? saved.hv
+                      : values.hv,
+                  rowId: saved.id,
+                  fingerprintKey,
+                  graphics: cloneAutoMeasureGraphics({ ...baseGraphics, corners }),
+                }
+              );
+              // eslint-disable-next-line no-console
+              console.log(
+                `[measurement-fingerprint-store] rowId=${saved.id} key=${fingerprintKey} total=${committedFingerprintsRef.current.length}`
+              );
+            }
             // eslint-disable-next-line no-console
             console.log(
               `[auto-measure][drag-table-update] rowId=${saved.id} source=corrected`
@@ -2855,9 +3652,6 @@ function App() {
         committedAutoMeasureFrameRef.current = null;
         previewMeasurementRef.current = null;
         autoMeasurementIdRef.current = null;
-        lastCommittedFingerprintRef.current = null;
-        // eslint-disable-next-line no-console
-        console.log('[measurement-session-reset] reason=clear-graphics');
         resetManualMeasure();
       },
       autoMeasure: handleAutoMeasure,
@@ -2918,7 +3712,7 @@ function App() {
               committedAutoMeasureFrameRef.current = null;
               previewMeasurementRef.current = null;
               autoMeasurementIdRef.current = null;
-              lastCommittedFingerprintRef.current = null;
+              committedFingerprintsRef.current = [];
               // eslint-disable-next-line no-console
               console.log('[measurement-session-reset] reason=new-image');
               setStatusMessage(`System Status: Loaded ${reply.fileName}`);
@@ -3142,7 +3936,7 @@ function App() {
             committedAutoMeasureFrameRef.current = null;
             previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
-            lastCommittedFingerprintRef.current = null;
+            committedFingerprintsRef.current = [];
             // Cancel any pending coalesced trailing detection. The in-flight
             // finally block re-reads this ref; clearing it stops the queued
             // re-run from firing onto a closed camera.
@@ -3182,7 +3976,7 @@ function App() {
             committedAutoMeasureFrameRef.current = null;
             previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
-            lastCommittedFingerprintRef.current = null;
+            committedFingerprintsRef.current = [];
             // eslint-disable-next-line no-console
             console.log('[overlay-clear] reason=camera-close');
             // eslint-disable-next-line no-console
@@ -3396,6 +4190,13 @@ function App() {
     setStatusMessage('System Status: Test Records opened');
   }, []);
 
+  const handleMeasurementsCleared = useCallback(() => {
+    committedFingerprintsRef.current = [];
+    autoMeasurementIdRef.current = null;
+    // eslint-disable-next-line no-console
+    console.log('[measurement-session-reset] reason=clear-table');
+  }, []);
+
   return (
     <Box sx={ROOT_SX}>
       <MenuBar onSelect={handleMenuSelect} />
@@ -3426,6 +4227,7 @@ function App() {
           measurementsLoading={measurementsLoading}
           refetchMeasurements={refetchMeasurements}
           onOpenTestRecords={handleOpenTestRecords}
+          onMeasurementsCleared={handleMeasurementsCleared}
           onObjectiveChange={handleObjectiveChangeFromUI}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={() => setTrimMeasureOpen(false)}

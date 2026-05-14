@@ -60,7 +60,12 @@ const DRAG_LOG_THROTTLE_MS = 100;
 // Preview backend (native detection + overlay paint) is heavy. Hold the
 // preview dispatch until the user pauses the slider for this long — the
 // thumb/number remain fully decoupled and update on every tick.
-const PREVIEW_DEBOUNCE_MS = 300;
+// Live-preview cadence. The App-side coalescing (autoMeasurePendingPreviewRef)
+// ensures only one detection runs at a time and the latest pending settings
+// always wins, so a short debounce here gives a real-time slider feel without
+// queuing a stack of detections. 80ms balances rAF-fluid motion against not
+// spawning a fresh native run on every sub-pixel slider tick.
+const PREVIEW_DEBOUNCE_MS = 80;
 
 type SliderField = 'smoothing' | 'threshold';
 
@@ -212,6 +217,10 @@ function AutoMeasureSettingsDialogImpl({
       );
       // eslint-disable-next-line no-console
       console.log('[auto-measure-settings-preview-update]');
+      // eslint-disable-next-line no-console
+      console.log(
+        `[settings-preview-callback] smoothing=${snapshot.smoothing} threshold=${snapshot.threshold}`
+      );
       onPreviewChange?.(snapshot);
     },
     [clearPreviewDebounce, onPreviewChange]
@@ -264,6 +273,8 @@ function AutoMeasureSettingsDialogImpl({
       if (prev === next) return;
       sliderDraggingRef.current = true;
       writeLocal({ [field]: next } as Partial<AutoMeasureSettingsPayload>);
+      // eslint-disable-next-line no-console
+      console.log(`[settings-slider-change] name=${field} value=${next}`);
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-slider-change] type=${field} value=${next}`);
       // eslint-disable-next-line no-console

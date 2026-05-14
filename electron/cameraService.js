@@ -321,6 +321,16 @@ class CameraService {
           objectiveForMeasure: nativeParams.objectiveForMeasure,
         });
       }
+      {
+        const pf = String(nativeParams.pixelFormat || '').toLowerCase();
+        const channels = pf === 'bgr24' || pf === 'rgb24' ? 3 : pf === 'rgb32' || pf === 'bgra' ? 4 : pf === 'mono8' ? 1 : 'n/a';
+        const bytes = frame.data && typeof frame.data.byteLength === 'number' ? frame.data.byteLength : 'n/a';
+        const frameId = parameters && parameters.frameId != null ? parameters.frameId : 'n/a';
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-native-input] width=${nativeParams.width} height=${nativeParams.height} channels=${channels} bytes=${bytes} frameId=${frameId} source=${nativeParams.source}`
+        );
+      }
       const result = fn(
         frame.data,
         nativeParams.width,

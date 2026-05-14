@@ -566,43 +566,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
                 {Math.round(exposureMs)} ms
               </Typography>
             </Stack>
-            <Stack direction="row" spacing={1} sx={{ mt: 1, pl: '110px' }}>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={busy || !liveAvailable}
-                onClick={() => {
-                  const targetFps = 30;
-                  // eslint-disable-next-line no-console
-                  console.log(`[live-fps-button-click] targetFps=${targetFps}`);
-                  // Bypass flushExposureLive — its throttle / dedupe / in-flight
-                  // guards silently skip when the user has been moving the slider.
-                  // Use the dedicated IPC path so each layer logs and we see
-                  // exactly which stage (if any) fails.
-                  dropPendingCameraFrames('exposure-change');
-                  void window.hardnessCamera
-                    .setLiveExposureForFps(targetFps)
-                    .then((reply: { ok?: boolean; exposureMs?: number; message?: string }) => {
-                      // eslint-disable-next-line no-console
-                      console.log('[live-fps-button-reply]', reply);
-                      if (reply && typeof reply.exposureMs === 'number') {
-                        setExposureMs(reply.exposureMs);
-                      } else if (reply && !reply.ok) {
-                        setLiveApplyError(reply.message ?? 'Live FPS request failed.');
-                      }
-                    })
-                    .catch((err: unknown) => {
-                      // eslint-disable-next-line no-console
-                      console.error('[live-fps-button-error]', err);
-                      setLiveApplyError(
-                        err instanceof Error ? err.message : 'Live FPS request threw.'
-                      );
-                    });
-                }}
-              >
-                Live 30 FPS
-              </Button>
-            </Stack>
           </Box>
 
           {!liveAvailable ? (

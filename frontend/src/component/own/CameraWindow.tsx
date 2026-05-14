@@ -279,12 +279,12 @@ function CameraWindowImpl(
       return { ok: false, error: 'awaiting-fresh-frame' };
     }
 
-    // FAST PATH for live capture: the visible canvas is now painted at
-    // PREVIEW_SCALE (downscaled) for latency reasons; reading its pixels
-    // would hand the native detector a downscaled image. Use the FULL-RES
-    // raw mono8 buffer that useCameraStream holds in memory instead. No
-    // canvas getImageData required → also saves a ~5MB memcpy on click.
-    if (!frozen) {
+    // Live-camera detection MUST always use the latest full-resolution
+    // native frame (2592x1944 bgr24), regardless of the UI freeze state.
+    // The visible canvas is painted at PREVIEW_SCALE (downscaled rgb32) for
+    // latency; reading its pixels would hand the native detector a wrong-
+    // sized frame and corrupt repeat detections on the same indentation.
+    if (imageSourceRef.current === 'live-camera') {
       const full = getLatestFullFrame();
       if (full && full.body) {
         const buffer = toOwnedArrayBuffer(full.body);
@@ -302,13 +302,11 @@ function CameraWindowImpl(
               setFrozen(true);
             }
           }
-          // eslint-disable-next-line no-console
-          console.log('[opencv-auto] frame captured (full-res fast-path)');
         }
+        const bytes = (full.body as ArrayBuffer).byteLength ?? buffer.byteLength;
         // eslint-disable-next-line no-console
         console.log(
-          '[frame] captured timestamp=', Date.now(),
-          'source=live-camera-fullres size=', full.width, 'x', full.height
+          `[native-frame-freeze] width=${full.width} height=${full.height} pixelFormat=${full.pixelFormat} bytes=${bytes} frameId=${full.frameId ?? 'n/a'} source=native-camera`
         );
         return {
           ok: true,
@@ -320,6 +318,12 @@ function CameraWindowImpl(
           source: 'live-camera',
         };
       }
+      // No silent fallback to the downscaled rgb32 canvas — reject so the
+      // caller can surface the failure and the user can re-click once a
+      // fresh native frame arrives.
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-reject] reason=native-full-frame-not-available');
+      return { ok: false, error: 'native-full-frame-not-available' };
     }
 
     const ctx = source.getContext('2d', { willReadFrequently: true });
@@ -783,6 +787,7 @@ function CameraWindowImpl(
           activeTool={activeTool}
           shapes={overlayShapes}
           crossLineVisible={crossLineVisible}
+          imageSize={imageSize}
           onAddShape={onAddShape}
           onClearKind={onClearShapeKind}
         />

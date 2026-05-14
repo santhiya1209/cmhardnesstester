@@ -302,6 +302,19 @@ function registerIpc() {
       // eslint-disable-next-line no-console
       console.log('[ipc] camera:measure-vickers-auto payload=', safePayload);
     }
+    {
+      const w = safePayload && safePayload.width;
+      const h = safePayload && safePayload.height;
+      const pf = safePayload && safePayload.pixelFormat;
+      const buf = safePayload && safePayload.frameBuffer;
+      const bytes = buf && typeof buf.byteLength === 'number' ? buf.byteLength : 'n/a';
+      const frameId = safePayload && safePayload.frameId != null ? safePayload.frameId : 'n/a';
+      const src = (safePayload && safePayload.source) || 'live-camera';
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-main-recv] width=${w} height=${h} pixelFormat=${pf} bytes=${bytes} frameId=${frameId} source=${src}`
+      );
+    }
     return cameraService.measureVickersAuto(safePayload);
   });
 

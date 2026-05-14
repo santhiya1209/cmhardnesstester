@@ -8,6 +8,8 @@ import type {
   Point,
   ToolId,
 } from '@/types/tool';
+import { getImagePlacement } from '@/utils/manualMeasure';
+import type { ManualMeasureImageSize } from '@/utils/manualMeasureOverlayCanvas';
 
 const ROOT_SX: SxProps<Theme> = {
   position: 'absolute',
@@ -25,7 +27,7 @@ const CANVAS_STYLE: React.CSSProperties = {
 
 const STROKE = '#FFFF00';
 const STROKE_ANGLE = '#00E5FF';
-const STROKE_CROSS = 'rgba(255,255,255,0.85)';
+const STROKE_CROSS = '#FF00FF';
 const TEXT_BG = 'rgba(0,0,0,0.55)';
 const FONT = '12px Consolas, ui-monospace, monospace';
 
@@ -81,15 +83,39 @@ function drawShape(ctx: CanvasRenderingContext2D, s: OverlayShape) {
   drawLabel(ctx, `${angleDeg(s.vertex, s.a, s.b).toFixed(1)}°`, s.vertex);
 }
 
-function drawCross(ctx: CanvasRenderingContext2D, w: number, h: number) {
+type ImageRect = { x: number; y: number; width: number; height: number };
+
+let lastCrossLogKey: string | null = null;
+function drawCross(ctx: CanvasRenderingContext2D, rect: ImageRect) {
+  const centerX = rect.x + rect.width / 2;
+  const centerY = rect.y + rect.height / 2;
+  ctx.save();
+  // Clip to the actual displayed image rect so the cross never extends into
+  // the letterbox / black side bars around the live camera frame.
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.width, rect.height);
+  ctx.clip();
   ctx.strokeStyle = STROKE_CROSS;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(0, h / 2);
-  ctx.lineTo(w, h / 2);
-  ctx.moveTo(w / 2, 0);
-  ctx.lineTo(w / 2, h);
+  ctx.moveTo(rect.x, centerY);
+  ctx.lineTo(rect.x + rect.width, centerY);
+  ctx.moveTo(centerX, rect.y);
+  ctx.lineTo(centerX, rect.y + rect.height);
   ctx.stroke();
+  ctx.restore();
+  const key = `${rect.x.toFixed(1)},${rect.y.toFixed(1)},${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`;
+  if (key !== lastCrossLogKey) {
+    lastCrossLogKey = key;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[center-cross][image-rect] x=${rect.x.toFixed(2)} y=${rect.y.toFixed(2)} w=${rect.width.toFixed(2)} h=${rect.height.toFixed(2)}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[center-cross][draw] centerX=${centerX.toFixed(2)} centerY=${centerY.toFixed(2)}`
+    );
+  }
 }
 
 type DraftLength = { kind: 'length'; a: Point; b: Point };
@@ -102,6 +128,13 @@ type Props = {
   activeTool: ToolId;
   shapes: OverlayShape[];
   crossLineVisible: boolean;
+  /**
+   * Native size of the live camera image. Required to compute the centered
+   * imageRect (offset + scaled dimensions) inside the wrapper so the Center
+   * Cross Line tracks the actual displayed image — not the canvas bitmap or
+   * the wrapper element (which include letterbox padding).
+   */
+  imageSize: ManualMeasureImageSize | null;
   onAddShape: (shape: OverlayShapeInput) => void;
   onCursor?: (p: Point | null) => void;
   // Called by the overlay when a new length/angle draft starts so the host
@@ -114,6 +147,7 @@ function ImageOverlayImpl({
   activeTool,
   shapes,
   crossLineVisible,
+  imageSize,
   onAddShape,
   onCursor,
   onClearKind,
@@ -122,6 +156,11 @@ function ImageOverlayImpl({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
   const [hover, setHover] = useState<Point | null>(null);
+  // Bumped whenever the bitmap is resized so the redraw effect re-runs and
+  // the Center Cross Line (and other overlays) repaint against the new
+  // dimensions. Without this, a resize clears the bitmap and the cross
+  // stays gone until the next state-driven redraw.
+  const [resizeTick, setResizeTick] = useState(0);
 
   // Resize the bitmap to match the wrapper size to keep crisp drawing.
   useEffect(() => {
@@ -137,6 +176,7 @@ function ImageOverlayImpl({
       if (canvas.width !== targetW || canvas.height !== targetH) {
         canvas.width = targetW;
         canvas.height = targetH;
+        setResizeTick((t) => t + 1);
       }
     };
     apply();
@@ -159,7 +199,20 @@ function ImageOverlayImpl({
     const hCss = canvas.height / dpr;
     ctx.clearRect(0, 0, wCss, hCss);
 
-    if (crossLineVisible) drawCross(ctx, wCss, hCss);
+    if (crossLineVisible) {
+      const placement =
+        imageSize && imageSize.width > 0 && imageSize.height > 0
+          ? getImagePlacement(wCss, hCss, imageSize)
+          : null;
+      if (placement) {
+        drawCross(ctx, {
+          x: placement.offsetX,
+          y: placement.offsetY,
+          width: placement.width,
+          height: placement.height,
+        });
+      }
+    }
 
     for (const s of shapes) drawShape(ctx, s);
 
@@ -185,7 +238,7 @@ function ImageOverlayImpl({
         }
       }
     }
-  }, [shapes, draft, hover, crossLineVisible]);
+  }, [shapes, draft, hover, crossLineVisible, imageSize, resizeTick]);
 
   // Lifecycle: announce open when entering a drawing tool and reset on exit.
   useEffect(() => {

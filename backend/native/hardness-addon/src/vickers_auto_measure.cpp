@@ -103,7 +103,41 @@ struct Candidate {
   double score = 0.0;
   std::string thresholdMode;
   int contourCount = 0;
+  // Deterministic tie-break inputs. `contourIndex` is the position in the
+  // findContours output (raster order) for THIS mask. `boundingTopLeft`
+  // pins a stable spatial key. Used by CandidateBetterThan when scores
+  // are within FLT_EPS so the same frame + params always picks the same
+  // contour across repeat clicks.
+  int contourIndex = 0;
+  cv::Point boundingTopLeft = cv::Point(0, 0);
 };
+
+// Score-equality epsilon for tie-break. The score is a weighted sum of
+// ~7 components in [0,1]; small float accumulation differences can flip
+// strict-> on visually identical contours. 1e-4 is well below any
+// meaningful score gap (the smallest weight is 0.03) so this only
+// catches numerical noise, not legitimate near-tie cases.
+constexpr double kCandidateScoreTieEps = 1e-4;
+
+inline bool CandidateBetterThan(const Candidate& a, const Candidate& b) {
+  if (std::abs(a.score - b.score) > kCandidateScoreTieEps) {
+    return a.score > b.score;
+  }
+  // Tie-break order (each strict; if equal, fall through):
+  //   1. lower centerDistance (closer to frame center wins)
+  //   2. larger validationArea (bigger consistent indentation wins)
+  //   3. lower diamond aspect deviation from 1.0 (more square wins)
+  //   4. boundingRect top-left X, then Y (deterministic spatial)
+  //   5. contourIndex (deterministic vector order)
+  if (a.centerDistance != b.centerDistance) return a.centerDistance < b.centerDistance;
+  if (a.validationArea != b.validationArea) return a.validationArea > b.validationArea;
+  const double aspectDevA = std::abs(a.metrics.diagonalRatio - 1.0);
+  const double aspectDevB = std::abs(b.metrics.diagonalRatio - 1.0);
+  if (aspectDevA != aspectDevB) return aspectDevA < aspectDevB;
+  if (a.boundingTopLeft.x != b.boundingTopLeft.x) return a.boundingTopLeft.x < b.boundingTopLeft.x;
+  if (a.boundingTopLeft.y != b.boundingTopLeft.y) return a.boundingTopLeft.y < b.boundingTopLeft.y;
+  return a.contourIndex < b.contourIndex;
+}
 
 struct LineModel {
   bool ok = false;
@@ -628,6 +662,14 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   } else {
     out.blurred = out.clahe.clone();
   }
+  std::fprintf(stderr,
+    "[detect-smoothing-applied] value=%d kernel=%d\n",
+    params.smoothing, blurKernel);
+  std::fflush(stderr);
+  std::fprintf(stderr,
+    "[detect-preprocess] smoothing=%d kernel=%d claheClip=%.2f thresholdParam=%d\n",
+    params.smoothing, blurKernel, claheClip, params.threshold);
+  std::fflush(stderr);
 
   cv::Mat otsu;
   cv::threshold(out.blurred, otsu, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
@@ -654,6 +696,9 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
     255,
     cv::THRESH_BINARY_INV
   );
+  std::fprintf(stderr,
+    "[detect-threshold-applied] value=%d\n", params.threshold);
+  std::fflush(stderr);
 
   // Mask emission order = priority for SelectBestContour. The user-picked
   // mode goes first (so the slider still drives the primary mask), but we
@@ -1002,6 +1047,11 @@ std::optional<Candidate> SelectBestContour(
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   debug.contourCount = std::max(debug.contourCount, static_cast<int>(contours.size()));
+  std::fprintf(stderr,
+    "[detect-contour-count] count=%zu mode=%s\n",
+    contours.size(),
+    thresholdMode.empty() ? "unknown" : thresholdMode.c_str());
+  std::fflush(stderr);
 
   const double imageArea = static_cast<double>(params.width) * params.height;
   const double minArea = MinIndentationAreaPixels(params);
@@ -1322,6 +1372,16 @@ std::optional<Candidate> SelectBestContour(
     candidate.score = score;
     candidate.thresholdMode = thresholdMode;
     candidate.contourCount = static_cast<int>(contours.size());
+    candidate.contourIndex = contourIndex;
+    candidate.boundingTopLeft = cv::boundingRect(contour).tl();
+    // Per-accepted-candidate trace in spec format so operators can grep
+    // candidate disposition across a single detection.
+    std::fprintf(stderr,
+      "[detect-candidate] idx=%d score=%.4f area=%.2f centerDist=%.2f ratio=%.4f mode=%s\n",
+      contourIndex, score, validationArea, centerDistance,
+      metrics.diagonalRatio,
+      thresholdMode.empty() ? "unknown" : thresholdMode.c_str());
+    std::fflush(stderr);
 
     // Unconditional per-accepted-candidate trace (spec format). Helps the
     // operator see WHY a wrong-large contour was preferred — e.g. seeing
@@ -1348,7 +1408,7 @@ std::optional<Candidate> SelectBestContour(
 
     curDiamondScore = score;
     ++usableCount;
-    if (!best || candidate.score > best->score) {
+    if (!best || CandidateBetterThan(candidate, *best)) {
       best = candidate;
     }
   }
@@ -3541,6 +3601,17 @@ void RefineTipsForTwoLineMode(
     corners.top.x, corners.top.y, corners.right.x, corners.right.y,
     corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
   std::fflush(stderr);
+  std::fprintf(stderr,
+    "[detect-edge-lines] left=(%.2f,%.2f) right=(%.2f,%.2f) top=(%.2f,%.2f) bottom=(%.2f,%.2f)\n",
+    corners.left.x, corners.left.y, corners.right.x, corners.right.y,
+    corners.top.x, corners.top.y, corners.bottom.x, corners.bottom.y);
+  std::fflush(stderr);
+  std::fprintf(stderr,
+    "[detect-final-corners] left=(%.2f,%.2f) right=(%.2f,%.2f) top=(%.2f,%.2f) bottom=(%.2f,%.2f) source=%s\n",
+    corners.left.x, corners.left.y, corners.right.x, corners.right.y,
+    corners.top.x, corners.top.y, corners.bottom.x, corners.bottom.y,
+    finalSource);
+  std::fflush(stderr);
 
   const double d2PxFinal = std::hypot(
     static_cast<double>(corners.bottom.x - corners.top.x),
@@ -3815,6 +3886,13 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.requestedThresholdMode = params.thresholdMode;
     debug.smoothing = params.smoothing;
     debug.threshold = params.threshold;
+    std::fprintf(stderr,
+      "[detect-settings-received] smoothing=%d threshold=%d objective=%s thresholdMode=%s\n",
+      params.smoothing,
+      params.threshold,
+      params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str(),
+      params.thresholdMode.empty() ? "unknown" : params.thresholdMode.c_str());
+    std::fflush(stderr);
     debug.erosion = params.erosion;
     debug.dilation = params.dilation;
     debug.factor = params.factor;
@@ -3901,9 +3979,67 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
         for (size_t i = 1; i < pre.masks.size(); ++i) {
           const auto& item = pre.masks[i];
           std::optional<Candidate> candidate = SelectBestContour(item.second, item.first, params, debug);
-          if (candidate && (!best || candidate->score > best->score)) {
+          if (candidate && (!best || CandidateBetterThan(*candidate, *best))) {
             best = candidate;
           }
+        }
+      }
+    }
+    if (best) {
+      std::fprintf(stderr,
+        "[detect-selected] idx=%d score=%.4f mode=%s reason=best-score centerX=%.2f centerY=%.2f\n",
+        best->contourIndex, best->score,
+        best->thresholdMode.empty() ? "unknown" : best->thresholdMode.c_str(),
+        best->center.x, best->center.y);
+      std::fflush(stderr);
+
+      // Repeatability self-test. Gated on AUTO_MEASURE_REPEATABILITY env var
+      // because it triples per-mask selection cost. Runs the SAME masks
+      // through selection twice more and reports any deviation from the
+      // first winner — proves the comparator is deterministic for a given
+      // (mask, params) pair.
+      const char* repeatEnv = std::getenv("AUTO_MEASURE_REPEATABILITY");
+      if (repeatEnv && repeatEnv[0] != '\0' && repeatEnv[0] != '0') {
+        double maxDeltaPx = 0.0;
+        cv::Point2f firstCenter = best->center;
+        int firstIdx = best->contourIndex;
+        std::fprintf(stderr,
+          "[detect-repeatability] run=1 idx=%d centerX=%.2f centerY=%.2f score=%.4f\n",
+          firstIdx, firstCenter.x, firstCenter.y, best->score);
+        std::fflush(stderr);
+        for (int run = 2; run <= 3; ++run) {
+          std::optional<Candidate> probe;
+          if (!pre.masks.empty()) {
+            probe = SelectBestContour(pre.masks.front().second, pre.masks.front().first, params, debug);
+            if (!probe) {
+              for (size_t i = 1; i < pre.masks.size(); ++i) {
+                const auto& item = pre.masks[i];
+                std::optional<Candidate> cand = SelectBestContour(item.second, item.first, params, debug);
+                if (cand && (!probe || CandidateBetterThan(*cand, *probe))) {
+                  probe = cand;
+                }
+              }
+            }
+          }
+          if (probe) {
+            const double dx = probe->center.x - firstCenter.x;
+            const double dy = probe->center.y - firstCenter.y;
+            const double delta = std::sqrt(dx * dx + dy * dy);
+            if (delta > maxDeltaPx) maxDeltaPx = delta;
+            std::fprintf(stderr,
+              "[detect-repeatability] run=%d idx=%d centerX=%.2f centerY=%.2f score=%.4f deltaPx=%.3f\n",
+              run, probe->contourIndex, probe->center.x, probe->center.y, probe->score, delta);
+            std::fflush(stderr);
+          } else {
+            std::fprintf(stderr,
+              "[detect-repeatability] run=%d idx=none\n", run);
+            std::fflush(stderr);
+          }
+        }
+        if (maxDeltaPx > 1.0) {
+          std::fprintf(stderr,
+            "[detect-repeatability-warning] maxDeltaPx=%.3f\n", maxDeltaPx);
+          std::fflush(stderr);
         }
       }
     }

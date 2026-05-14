@@ -155,6 +155,17 @@ function AutoMeasureOverlayImpl({
     if (dragRef.current) return;
     const target = graphics ? cloneCorners(graphics.corners) : null;
     const current = localCornersRef.current;
+    {
+      const fmt = (p: Point | null | undefined) =>
+        p ? `(${p.x.toFixed(2)},${p.y.toFixed(2)})` : 'null';
+      // eslint-disable-next-line no-console
+      console.log(
+        `[overlay-props-received] source=${source} left=${fmt(target?.left)} right=${fmt(target?.right)} top=${fmt(target?.top)} bottom=${fmt(target?.bottom)}`
+      );
+      const changed = cornersKey(target) !== cornersKey(current);
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-target-changed] changed=${changed}`);
+    }
     // Same-values fast path. If the parent re-renders and passes a new
     // `graphics` object reference with identical corner values, do NOT
     // restart the tween — restarting would call writeCorners every rAF tick
@@ -198,9 +209,31 @@ function AutoMeasureOverlayImpl({
     }
     // Snap on appear/disappear — a fade-from-nothing tween isn't meaningful.
     if (!target || !current) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-overlay-update] source=${source} mode=snap corners=${cornersKey(target)}`
+      );
       writeCorners(target);
       return;
     }
+    if (source !== 'preview') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-overlay-update] source=${source} mode=snap-frozen corners=${cornersKey(target)}`
+      );
+      writeCorners(target);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-overlay-update] source=${source} mode=tween from=${cornersKey(current)} to=${cornersKey(target)}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-overlay-animate] source=${source} durationMs=${TWEEN_DURATION_MS}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(`[overlay-animate-start] source=${source} durationMs=${TWEEN_DURATION_MS}`);
     const from = cloneCorners(current);
     const to = target;
     const startTime = performance.now();
@@ -285,6 +318,8 @@ function AutoMeasureOverlayImpl({
       const activeObjectiveKey = (activeObjective ?? '').trim().toUpperCase() || 'unknown';
       const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}|${overlayObjectiveKey}|${activeObjectiveKey}`;
 
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-draw-key] key=${drawKey}`);
       if (!sizeChanged && lastDrawKeyRef.current === drawKey) {
         // eslint-disable-next-line no-console
         console.log('[overlay] skipped-redraw-no-change');
@@ -293,6 +328,8 @@ function AutoMeasureOverlayImpl({
         return;
       }
       lastDrawKeyRef.current = drawKey;
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-draw-executed] source=${source}`);
 
       // Final render guard at the actual draw point. The parent component
       // (App.tsx) already gates `displayedAutoMeasureGraphics` by objective,
@@ -328,7 +365,7 @@ function AutoMeasureOverlayImpl({
         `[overlay-set] style=four-guide-lines objective=${overlayObjective || 'unknown'}`
       );
 
-      // Four full-extent yellow guide lines through the 4 refined diamond
+      // Four full-extent yellow guide lines through the 4 detected diamond
       // tips: vertical at left.x / right.x, horizontal at top.y / bottom.y.
       // Same visual style for 10X and 40X — for 10X the two-diagonals
       // detection still produces 4 tip points that drive these guides.
@@ -359,7 +396,7 @@ function AutoMeasureOverlayImpl({
       });
 
       // eslint-disable-next-line no-console
-      console.log(`[overlay] draw-complete source=${source} lines=2 points=4`);
+      console.log(`[overlay] draw-complete source=${source} lines=4 points=4`);
       if (corners) {
         const fmt = (p: Point) => `(${p.x.toFixed(2)},${p.y.toFixed(2)})`;
         const d1 = Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y);
