@@ -26,6 +26,20 @@ import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } f
 type MachineControlTabProps = {
   /** Called after the backend accepts a 10X / 40X lens change. */
   onObjectiveChange?: (objective: '10X' | '40X') => void;
+  /**
+   * Fired the instant a turret direction button is clicked, before the IPC
+   * is sent. App-level uses this to clear stale Auto/Manual/Calibration
+   * overlays so the operator never sees old yellow lines on top of the
+   * moving image during turret rotation.
+   */
+  onTurretIntent?: () => void;
+  /**
+   * Same as `onTurretIntent` but fired when the user picks a 10X / 40X
+   * objective via the dropdown — i.e. an intent to move that will change
+   * the optical zoom. Overlays must clear immediately, before the machine
+   * RX confirms.
+   */
+  onObjectiveChangeIntent?: () => void;
 };
 
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
@@ -147,7 +161,11 @@ function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boo
   return numeric >= 1 && numeric <= 99;
 }
 
-function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {}) {
+function MachineControlTabImpl({
+  onObjectiveChange,
+  onTurretIntent,
+  onObjectiveChangeIntent,
+}: MachineControlTabProps = {}) {
   const { data: machineState, error: streamError } = useMachineState();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
@@ -310,6 +328,9 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
         console.log(`[objective-ui-click] objective=${value}`);
         // eslint-disable-next-line no-console
         console.log(`[machine-objective-ui] selected=${value}`);
+        // Fire overlay-clear intent immediately so stale yellow lines are
+        // gone before the optical zoom actually changes.
+        onObjectiveChangeIntent?.();
         void pushChange(field, value).then((state) => {
           if ((value === '10X' || value === '40X') && state?.objective === value) {
             onObjectiveChange?.(value);
@@ -323,7 +344,7 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
       }
       void pushChange(field, value);
     },
-    [formState.objective, onObjectiveChange, pushChange]
+    [formState.objective, onObjectiveChange, onObjectiveChangeIntent, pushChange]
   );
 
   const handleNumberChange = useCallback(
@@ -493,12 +514,24 @@ function MachineControlTabImpl({ onObjectiveChange }: MachineControlTabProps = {
     (direction: TurretDirection) => () => {
       // eslint-disable-next-line no-console
       console.log(`[machine-ui] turret click direction=${direction}`);
-      void moveTurret(direction).catch(() => {
-        // Errors surface via turretError -> errorMessage. UI must NOT
-        // optimistically reflect motion; real state comes from machine RX.
-      });
+      // eslint-disable-next-line no-console
+      console.log(`[machine-turret-click] direction=${direction}`);
+      // Fire overlay-clear intent BEFORE the IPC so stale yellow lines are
+      // gone from the moment the operator presses the button.
+      onTurretIntent?.();
+      // eslint-disable-next-line no-console
+      console.log(`[machine-turret-tx] command=move-turret direction=${direction}`);
+      void moveTurret(direction)
+        .then(() => {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-turret-ack] status=ok direction=${direction}`);
+        })
+        .catch(() => {
+          // Errors surface via turretError -> errorMessage. UI must NOT
+          // optimistically reflect motion; real state comes from machine RX.
+        });
     },
-    [moveTurret]
+    [moveTurret, onTurretIntent]
   );
 
   const connected = machineState?.connected ?? false;

@@ -9,6 +9,7 @@ import {
   bumpFrameEpochOnCanvasClear,
   getCurrentFrameEpoch,
   getLastCameraFramePaintAt,
+  getLastPaintedFrameId,
   getLastPaintEpoch,
   getLatestFullFrame,
   useCameraStream,
@@ -115,6 +116,14 @@ type Props = {
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
   /** Yellow-line stroke width in CSS px (driven by useLineThickness). */
   lineStrokeWidth?: number;
+  /**
+   * App-level flag flipped true the instant a turret/objective intent is
+   * received and false once the machine RX confirms motion completed (or a
+   * 4 s watchdog expires). When true the camera blanks the live canvas,
+   * drops in-flight frames, and overlays a "Turret moving..." message.
+   * Defaults to false for safety.
+   */
+  turretMoving?: boolean;
 };
 
 export type CameraWindowHandle = {
@@ -174,6 +183,7 @@ function CameraWindowImpl(
     magnifierEnabled,
     onClearShapeKind,
     lineStrokeWidth,
+    turretMoving = false,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -537,6 +547,55 @@ function CameraWindowImpl(
   // state so the user actually sees an empty viewport. clearLiveCanvas alone
   // leaves a stale freeze-canvas overlay visible if the camera was frozen
   // (e.g. via Auto Measure) at the moment of close.
+  // Turret/objective movement gate. Rising edge clears the live canvas +
+  // bumps the frame epoch so any in-flight worker frame from before motion
+  // is dropped on arrival. Falling edge logs the first fresh post-turret
+  // paint so the operator can see streaming resumed. While `turretMoving`
+  // is true a "Turret moving..." overlay is rendered above the (now blank)
+  // canvas — the old indentation image must not remain visible during the
+  // motion window.
+  const turretMovingPrevRef = useRef(false);
+  useEffect(() => {
+    const prev = turretMovingPrevRef.current;
+    turretMovingPrevRef.current = turretMoving;
+    if (turretMoving && !prev) {
+      // eslint-disable-next-line no-console
+      console.log('[camera-image-clear] reason=turret-moving');
+      // eslint-disable-next-line no-console
+      console.log('[camera-render-blocked] reason=turret-moving');
+      const live = canvasRef.current;
+      if (live) {
+        const ctx = live.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, live.width, live.height);
+      }
+      liveCanvasClearedAtRef.current = Date.now();
+      bumpFrameEpochOnCanvasClear();
+      return;
+    }
+    if (!turretMoving && prev) {
+      // eslint-disable-next-line no-console
+      console.log('[camera-wait-fresh-frame] reason=after-turret');
+      let cancelled = false;
+      void waitForFreshCameraFrame(2500).then((fresh) => {
+        if (cancelled) return;
+        if (fresh) {
+          const fid = getLastPaintedFrameId();
+          // eslint-disable-next-line no-console
+          console.log(`[camera-fresh-frame-after-turret] frameId=${fid}`);
+          // eslint-disable-next-line no-console
+          console.log('[camera-render-resume] reason=fresh-frame-after-turret');
+        } else {
+          // eslint-disable-next-line no-console
+          console.log('[camera-render-resume] reason=fresh-frame-timeout');
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+  }, [turretMoving]);
+
   const clearLiveImage = useCallback(() => {
     const snap = freezeCanvasRef.current;
     const snapCtx = snap?.getContext('2d');
@@ -837,6 +896,26 @@ function CameraWindowImpl(
             }}
           >
             FROZEN
+          </Box>
+        ) : null}
+        {turretMoving ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              bgcolor: '#000',
+              color: '#FFEB3B',
+              fontSize: 18,
+              fontWeight: 600,
+              letterSpacing: 1,
+              pointerEvents: 'none',
+              zIndex: 10,
+            }}
+          >
+            Turret moving...
           </Box>
         ) : null}
         {zoom !== 1 ? (

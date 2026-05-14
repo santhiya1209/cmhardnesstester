@@ -836,12 +836,26 @@ function App() {
   // state lingers in React. Flipped true only after a successful openDevice
   // reply, flipped false at closeDevice.
   const [cameraOpen, setCameraOpen] = useState(false);
+  // `turretMoving` gates overlay rendering during the click → ACK window.
+  // The yellow Auto Measure / Manual Measure / Calibration overlays must
+  // disappear the instant a turret or objective button is pressed, BEFORE
+  // the motion completes, so the operator never sees stale yellow lines
+  // floating on top of the camera image as the turret rotates. A watchdog
+  // (declared further below) releases the gate after 4 s if no machine RX
+  // arrives, so a dropped ACK can never permanently suppress overlay
+  // rendering.
+  const [turretMoving, setTurretMoving] = useState(false);
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const rawDisplayedAutoMeasureGraphics =
     activeDialog === 'autoMeasure'
       ? previewAutoMeasureOverlay ?? committedAutoMeasureOverlay
       : committedAutoMeasureOverlay;
+  // Suppress overlay output entirely while the turret/objective is moving.
+  // The state-clear in markTurretIntent already nulls the underlying
+  // overlays, but a stale render (or an in-flight detection result landing
+  // mid-motion) must not paint a yellow line on top of the moving image.
+  const turretMovingGuardedGraphics = turretMoving ? null : rawDisplayedAutoMeasureGraphics;
   const displayedAutoMeasureSource: 'auto' | 'preview' | 'save' =
     activeDialog === 'autoMeasure' && previewAutoMeasureOverlay ? 'preview' : 'auto';
   const displayedAutoMeasureGraphicsRef = useRef<AutoMeasureGraphics | null>(null);
@@ -930,18 +944,23 @@ function App() {
   const lastOverlayRenderLogRef = useRef<string | null>(null);
   const displayedAutoMeasureGraphics = (() => {
     if (!cameraOpen) return null;
+    if (turretMoving) {
+      // eslint-disable-next-line no-console
+      console.log('[overlay-render-guard] visible=false reason=turret-moving');
+      return null;
+    }
     if (objectiveChangeInProgress) {
       // eslint-disable-next-line no-console
       console.log('[overlay-render-guard] visible=false reason=objective-change-in-progress');
       return null;
     }
-    if (!rawDisplayedAutoMeasureGraphics) return null;
+    if (!turretMovingGuardedGraphics) return null;
     if (!autoMeasureSessionActive) {
       // eslint-disable-next-line no-console
       console.log('[overlay-render-guard] visible=false reason=no-active-auto-session');
       return null;
     }
-    const overlayObjective = (rawDisplayedAutoMeasureGraphics.objective ?? '').trim().toUpperCase();
+    const overlayObjective = (turretMovingGuardedGraphics.objective ?? '').trim().toUpperCase();
     const confirmedFromMachine = (liveMachineState?.confirmedObjectiveFromMachine ?? '')
       .trim()
       .toUpperCase();
@@ -958,7 +977,7 @@ function App() {
       );
       return null;
     }
-    const overlayFrameId = rawDisplayedAutoMeasureGraphics.frameId ?? null;
+    const overlayFrameId = turretMovingGuardedGraphics.frameId ?? null;
     if (
       overlayFrameId !== null &&
       autoMeasureCapturedFrameId !== null &&
@@ -978,7 +997,7 @@ function App() {
         `[auto-measure-overlay-render] objective=${overlayObjective || 'unknown'} frameId=${overlayFrameId ?? 'n/a'}`
       );
     }
-    return rawDisplayedAutoMeasureGraphics;
+    return turretMovingGuardedGraphics;
   })();
 
   // Whenever the active objective changes (UI click OR machine echo), snap
@@ -1048,11 +1067,43 @@ function App() {
     d1Px: number;
     d2Px: number;
   } | null>(null);
+  // Mirror of latestManualPixels for synchronous reads from async callbacks
+  // (e.g. the auto-measure preview result handler, which needs to compute a
+  // geometry delta vs. the previous pixels without closing over stale state).
+  const latestManualPixelsRef = useRef<{ d1Px: number; d2Px: number } | null>(null);
+  useEffect(() => {
+    latestManualPixelsRef.current = latestManualPixels;
+  }, [latestManualPixels]);
   // True while the user is doing a Manual Measure that was launched from the
   // Calibration dialog. handleManualMeasurementUpdated checks this flag so it
   // can suppress measurement-row creation (calibration mode is pixels-only)
   // and the calibration dialog re-opens once the user is done.
   const calibrationManualModeRef = useRef(false);
+  // Mutually-exclusive overlay mode for the Calibration panel. Without this
+  // the shared AutoMeasureOverlay and ManualMeasureOverlay state could both
+  // be populated while Calibration is open — clicking Auto, then Manual,
+  // would leave the yellow auto guides visible underneath the manual
+  // draggable lines. Updated only from the three calibration entry points
+  // (auto click, manual click, dialog close).
+  const [calibrationMeasureMode, setCalibrationMeasureModeState] = useState<
+    'none' | 'auto' | 'manual'
+  >('none');
+  const calibrationMeasureModeRef = useRef<'none' | 'auto' | 'manual'>('none');
+  const setCalibrationMeasureMode = useCallback(
+    (next: 'none' | 'auto' | 'manual', reason: string) => {
+      const prev = calibrationMeasureModeRef.current;
+      if (prev === next) return;
+      calibrationMeasureModeRef.current = next;
+      setCalibrationMeasureModeState(next);
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-mode-change] from=${prev} to=${next} reason=${reason}`);
+    },
+    []
+  );
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[calibration-overlay-render] mode=${calibrationMeasureMode}`);
+  }, [calibrationMeasureMode]);
   const lastObjectiveClickAtRef = useRef<number>(0);
   // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
   // CameraWindow watches it to invalidate any per-objective caches and force a
@@ -1140,6 +1191,18 @@ function App() {
   // the dialog.
   const handleCalibrationAutoMeasure = useCallback(
     async (objective: string): Promise<{ d1Px: number; d2Px: number } | null> => {
+      // Mutually-exclusive calibration overlay: clear any manual state
+      // before kicking off auto detection so the two never coexist.
+      if (calibrationMeasureModeRef.current === 'manual') {
+        // eslint-disable-next-line no-console
+        console.log('[calibration-overlay-clear] target=manual reason=switch-to-auto');
+      }
+      calibrationManualModeRef.current = false;
+      setManualMeasureResetKey((current) => current + 1);
+      setActiveTool('pointer');
+      setCalibrationMeasureMode('auto', 'auto-measure-click');
+      // eslint-disable-next-line no-console
+      console.log('[calibration-auto-detect-start]');
       // eslint-disable-next-line no-console
       console.log(`[calibration-auto-measure-start] objective=${objective}`);
       const camera = cameraRef.current;
@@ -1168,13 +1231,32 @@ function App() {
           : settings.objectiveForMeasure;
       const minConfidence =
         settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
-      const calibObjectiveDefaults = autoMeasureDefaultsForObjective(liveObjectiveForNative);
-      const calibSmoothing = calibObjectiveDefaults?.smoothing ?? settings.smoothing;
-      const calibThreshold = calibObjectiveDefaults?.threshold ?? settings.threshold;
+      // Detection-parity rule: Calibration Auto Measure MUST use the exact
+      // same smoothing/threshold the live Auto Measure uses, so the native
+      // detector runs an identical pipeline and selects the same contour on
+      // the same indentation. Previously this path applied
+      // autoMeasureDefaultsForObjective(...) as an override, which silently
+      // diverged from the slider values whenever the user adjusted them or
+      // the objective defaults differed (e.g. calibration t=71 vs live t=92).
+      // That divergence is what caused the elongated 2.08-sideRatio contour
+      // to be picked in calibration while live picked the real diamond.
+      const calibSmoothing = settings.smoothing;
+      const calibThreshold = settings.threshold;
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-run] objective=${liveObjectiveForNative} smoothing=${calibSmoothing} threshold=${calibThreshold} source=calibration`
       );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-native-input] objective=${liveObjectiveForNative} smoothing=${calibSmoothing} threshold=${calibThreshold} imageType=${settings.imageType} minConfidence=${minConfidence} width=${frame.width} height=${frame.height} pixelFormat=${frame.pixelFormat} source=${frame.source}`
+      );
+      // Persist the frozen calibration frame so the Auto Measure Settings
+      // preview effect (which re-runs detection through runAutoMeasureRef
+      // with callSource='settings-preview') can use the SAME native 2592x1944
+      // bgr24 buffer when the user drags Smoothing/Threshold. Without this
+      // the settings preview path would fall back to the live camera and
+      // diverge from the diamond the user is calibrating against.
+      committedAutoMeasureFrameRef.current = cloneCapturedFrame(frame);
       const result = await measureVickersAuto({
         smoothing: calibSmoothing,
         threshold: calibThreshold,
@@ -1207,6 +1289,23 @@ function App() {
       console.log(
         `[calibration-auto-measure-success] pixelX=${result.d1Pixels} pixelY=${result.d2Pixels}`
       );
+      {
+        const dbg = (result.debug ?? {}) as Record<string, unknown>;
+        const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
+        const area = num(dbg.selectedContourArea);
+        const rectShort = num(dbg.rectShort);
+        const rectLong = num(dbg.rectLong);
+        const sideRatio = num(dbg.sideRatio ?? (rectLong && rectShort ? rectLong / rectShort : NaN));
+        const diagonalRatio = num(
+          dbg.diagonalRatio ?? (result.d1Pixels && result.d2Pixels
+            ? Math.max(result.d1Pixels, result.d2Pixels) / Math.max(1, Math.min(result.d1Pixels, result.d2Pixels))
+            : NaN)
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[detect-selected-final] mode=calibration area=${area} sideRatio=${Number.isFinite(sideRatio) ? sideRatio.toFixed(4) : 'n/a'} diagonalRatio=${Number.isFinite(diagonalRatio) ? diagonalRatio.toFixed(4) : 'n/a'} d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)} confidence=${result.confidence.toFixed(4)}`
+        );
+      }
       if (liveObjectiveForNative === '10X' && hasValidAutoMeasureCorners(result)) {
         const c = result.corners;
         const centerX = (c.left.x + c.right.x) / 2;
@@ -1222,7 +1321,7 @@ function App() {
       }
       return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
     },
-    [autoMeasureSettings]
+    [autoMeasureSettings, setActiveTool, setCalibrationMeasureMode]
   );
 
   // Calibration-mode Manual Measure: activates the manual measure tool while
@@ -1233,6 +1332,17 @@ function App() {
   // suppresses measurement-row creation so the calibration drag does not
   // pollute the measurement table.
   const handleCalibrationManualMeasure = useCallback(() => {
+    // Mutually-exclusive calibration overlay: clear any auto state before
+    // entering manual mode so the yellow auto guides disappear immediately.
+    if (calibrationMeasureModeRef.current === 'auto') {
+      // eslint-disable-next-line no-console
+      console.log('[calibration-overlay-clear] target=auto reason=switch-to-manual');
+    }
+    setAutoMeasureSessionActive(false);
+    clearAutoMeasureOverlay('switch-to-manual');
+    setCalibrationMeasureMode('manual', 'manual-measure-click');
+    // eslint-disable-next-line no-console
+    console.log('[calibration-manual-start]');
     // eslint-disable-next-line no-console
     console.log('[calibration-manual-measure-start]');
     calibrationManualModeRef.current = true;
@@ -1240,7 +1350,7 @@ function App() {
     setStatusMessage(
       'System Status: Calibration Manual Measure active: drag the cross over the indent. Pixel X/Y update live in the panel.'
     );
-  }, [setActiveTool]);
+  }, [clearAutoMeasureOverlay, setActiveTool, setCalibrationMeasureMode]);
 
   // Triggered immediately after Add Calibration succeeds. Reads the CURRENT
   // D1/D2 line pixels (already in the calibration payload), runs the
@@ -2533,6 +2643,12 @@ function App() {
         console.log(
           `[auto-measure-start] sessionId=${sessionIdForRun} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${liveObjectiveForNative}`
         );
+        // Parity log: must match [calibration-auto-native-input] for the
+        // same indent so the two paths can be diffed in the console.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[live-auto-native-input] objective=${liveObjectiveForNative} smoothing=${settings.smoothing} threshold=${settings.threshold} imageType=${settings.imageType} minConfidence=${minConfidence} width=${displayedFrame.width} height=${displayedFrame.height} pixelFormat=${displayedFrame.pixelFormat} source=${displayedFrame.source}`
+        );
         const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
         if (preview) {
           // eslint-disable-next-line no-console
@@ -2749,6 +2865,23 @@ function App() {
           console.log(
             `[auto-measure-result] sessionId=${sessionIdForRun} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${liveObjectiveForNative}`
           );
+          {
+            const dbg = (result.debug ?? {}) as Record<string, unknown>;
+            const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
+            const area = num(dbg.selectedContourArea);
+            const rectShort = num(dbg.rectShort);
+            const rectLong = num(dbg.rectLong);
+            const sideRatio = num(dbg.sideRatio ?? (rectLong && rectShort ? rectLong / rectShort : NaN));
+            const diagonalRatio = num(
+              dbg.diagonalRatio ?? (result.d1Pixels && result.d2Pixels
+                ? Math.max(result.d1Pixels, result.d2Pixels) / Math.max(1, Math.min(result.d1Pixels, result.d2Pixels))
+                : NaN)
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[detect-selected-final] mode=live area=${area} sideRatio=${Number.isFinite(sideRatio) ? sideRatio.toFixed(4) : 'n/a'} diagonalRatio=${Number.isFinite(diagonalRatio) ? diagonalRatio.toFixed(4) : 'n/a'} d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)} confidence=${result.confidence.toFixed(4)}`
+            );
+          }
         }
 
         // Stamp the run's session id + the captured frame id on the graphics
@@ -2941,6 +3074,47 @@ function App() {
           console.log(
             `[auto-settings-tip-move] topBefore=${fmtPt(before?.corners.top)} topAfter=${fmtPt(result.corners.top)} rightBefore=${fmtPt(before?.corners.right)} rightAfter=${fmtPt(result.corners.right)} bottomBefore=${fmtPt(before?.corners.bottom)} bottomAfter=${fmtPt(result.corners.bottom)} leftBefore=${fmtPt(before?.corners.left)} leftAfter=${fmtPt(result.corners.left)}`
           );
+          // Calibration-aware: when the preview is being driven for the
+          // Calibration auto path, push the new pixels into the same state
+          // the Calibration dialog reads (autoFillPixelLength*), so the
+          // panel's Pixel X / Pixel Y fields refresh live as the user drags
+          // Smoothing / Threshold sliders. The committed auto overlay was
+          // already updated above so the yellow guide lines move.
+          if (calibrationMeasureModeRef.current === 'auto') {
+            const prevPixels = latestManualPixelsRef.current;
+            const d1Delta = prevPixels ? Math.abs(result.d1Pixels - prevPixels.d1Px) : NaN;
+            const d2Delta = prevPixels ? Math.abs(result.d2Pixels - prevPixels.d2Px) : NaN;
+            const moved =
+              !prevPixels ||
+              (Number.isFinite(d1Delta) && d1Delta > 0.5) ||
+              (Number.isFinite(d2Delta) && d2Delta > 0.5);
+            // eslint-disable-next-line no-console
+            console.log(
+              `[calibration-auto-preview-result] d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} corners=${JSON.stringify({
+                top: { x: +result.corners.top.x.toFixed(2), y: +result.corners.top.y.toFixed(2) },
+                right: { x: +result.corners.right.x.toFixed(2), y: +result.corners.right.y.toFixed(2) },
+                bottom: { x: +result.corners.bottom.x.toFixed(2), y: +result.corners.bottom.y.toFixed(2) },
+                left: { x: +result.corners.left.x.toFixed(2), y: +result.corners.left.y.toFixed(2) },
+              })} confidence=${result.confidence.toFixed(4)}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[calibration-auto-preview-geometry-delta] d1Delta=${Number.isFinite(d1Delta) ? d1Delta.toFixed(3) : 'n/a'} d2Delta=${Number.isFinite(d2Delta) ? d2Delta.toFixed(3) : 'n/a'} moved=${moved}`
+            );
+            // eslint-disable-next-line no-console
+            console.log('[calibration-auto-overlay-update] reason=settings-preview');
+            // The yellow guides should also paint as the committed (not just
+            // preview) overlay so closing the settings dialog doesn't snap
+            // back to the pre-preview detection in calibration mode.
+            setCommittedAutoMeasureOverlay(graphics);
+            const nextPixels = { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
+            latestManualPixelsRef.current = nextPixels;
+            setLatestManualPixels(nextPixels);
+            // eslint-disable-next-line no-console
+            console.log(
+              `[calibration-auto-pixel-update] pixelX=${result.d1Pixels.toFixed(3)} pixelY=${result.d2Pixels.toFixed(3)}`
+            );
+          }
           return;
         }
 
@@ -3022,6 +3196,43 @@ function App() {
     console.log(
       `[auto-measure-preview-request] smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
     );
+    // Calibration-aware preview: when the Calibration panel is open, the
+    // slider re-run must respect the calibration overlay mode. Manual mode
+    // → ignore (no preview detection); Auto mode → emit the calibration log
+    // breadcrumb so the live and calibration paths can be diffed in the
+    // console. When Calibration is closed, the normal live preview flow is
+    // unaffected.
+    // calibrationMeasureModeRef is 'none' whenever Calibration is closed
+    // (the close handler resets it), so this naturally restricts the
+    // calibration-specific branch to the open-panel case.
+    const calibrationMode = calibrationMeasureModeRef.current;
+    if (calibrationMode !== 'none') {
+      if (calibrationMode !== 'auto') {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-auto-preview-ignore] reason=not-auto-mode mode=${calibrationMode}`
+        );
+        return;
+      }
+      const calibFrame = committedAutoMeasureFrameRef.current;
+      if (!calibFrame) {
+        // eslint-disable-next-line no-console
+        console.log('[calibration-auto-preview-ignore] reason=no-frozen-frame');
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-settings-change] smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-preview-request] frameId=${calibFrame.source}-${calibFrame.width}x${calibFrame.height} smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-auto-preview-native-call] width=${calibFrame.width} height=${calibFrame.height} pixelFormat=${calibFrame.pixelFormat} bytes=${calibFrame.buffer.byteLength} frameId=${calibFrame.source}-${calibFrame.width}x${calibFrame.height}`
+      );
+    }
 
     const timer = window.setTimeout(() => {
       if (suppressAutoMeasurePreviewRef.current) {
@@ -3203,11 +3414,61 @@ function App() {
     refetchCalibrationSettings,
   ]);
 
+  const turretMovingTimerRef = useRef<number | null>(null);
+  const clearTurretMovingTimer = useCallback(() => {
+    if (turretMovingTimerRef.current !== null) {
+      window.clearTimeout(turretMovingTimerRef.current);
+      turretMovingTimerRef.current = null;
+    }
+  }, []);
+  const markTurretIntent = useCallback(
+    (reason: 'turret-click' | 'objective-change-click') => {
+      const logTag =
+        reason === 'objective-change-click'
+          ? '[overlay-clear-before-objective-change]'
+          : '[overlay-clear-before-turret]';
+      // eslint-disable-next-line no-console
+      console.log(`${logTag} reason=${reason}`);
+      // Force-clear overlay state. clearAutoMeasureOverlay nulls
+      // committedAutoMeasureOverlay → AutoMeasureOverlay re-renders empty.
+      // Bumping manualMeasureResetKey clears the manual measure overlay's
+      // internal corners + repaints empty. The calibration overlay shares
+      // committedAutoMeasureOverlay, so the same call clears it too.
+      clearAutoMeasureOverlay(reason);
+      setPreviewAutoMeasureOverlay(null);
+      setAutoMeasureSessionActive(false);
+      setManualMeasureResetKey((current) => current + 1);
+      // eslint-disable-next-line no-console
+      console.log('[overlay-force-clear] target=auto+manual+calibration');
+      clearTurretMovingTimer();
+      setTurretMoving(true);
+      // eslint-disable-next-line no-console
+      console.log(`[overlay-render-blocked] reason=${reason}`);
+      turretMovingTimerRef.current = window.setTimeout(() => {
+        turretMovingTimerRef.current = null;
+        setTurretMoving(false);
+        // eslint-disable-next-line no-console
+        console.log('[overlay-render-resume] reason=watchdog-timeout');
+      }, 4000);
+    },
+    [clearAutoMeasureOverlay, clearTurretMovingTimer]
+  );
+  useEffect(() => clearTurretMovingTimer, [clearTurretMovingTimer]);
+
   // Turret position change — any direction button (left/front/right) that
   // moves the turret can land on a different slot (incl. IND, which is not
   // an objective lens and therefore does NOT bump confirmedObjective). The
   // overlay was captured against a specific turret orientation, so any
   // turret move invalidates it regardless of objective.
+  //
+  // IMPORTANT: do NOT clear the live canvas here. Turret rotation is a pure
+  // mechanical move on the same camera/sensor — closing or blanking the
+  // canvas would make the camera look frozen for the entire motion window
+  // (the next worker frame paints only when one is grabbed/decoded, which
+  // can lag a couple of frames during vibration). The canvas-flush belongs
+  // exclusively to the confirmed-objective-change handler below, which
+  // fires when the new turret slot actually changes the optical objective.
+  // Pure turret rotation on the same objective MUST keep streaming pixels.
   const lastSeenTurretPositionRef = useRef<string | null>(null);
   useEffect(() => {
     const pos = liveMachineState?.turretPosition ?? null;
@@ -3217,12 +3478,62 @@ function App() {
       return;
     }
     if (lastSeenTurretPositionRef.current === pos) return;
+    const prevPos = lastSeenTurretPositionRef.current;
     lastSeenTurretPositionRef.current = pos;
+    const frameId = getLastPaintedFrameId();
     // eslint-disable-next-line no-console
     console.log(`[turret-change-start] position=${pos}`);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-turret-rx] data=${pos} from=${prevPos}`
+    );
+    // RX confirms the motion completed — release the overlay-render gate
+    // immediately, regardless of whether the gate was set by a click in
+    // this session (a hardware-driven turret move with no click also lands
+    // here and must not leave the gate stuck on if a prior watchdog set it).
+    clearTurretMovingTimer();
+    setTurretMoving(false);
+    // eslint-disable-next-line no-console
+    console.log('[overlay-render-resume] reason=turret-ack');
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-live-before-turret] streaming=${cameraStatus === 'streaming'} frameId=${frameId}`
+    );
+    // eslint-disable-next-line no-console
+    console.log('[camera-stream-preserve] reason=turret-command');
     clearAutoMeasureOverlay('turret-change');
-    cameraRef.current?.clearLiveCanvas();
-  }, [liveMachineState?.turretPosition, clearAutoMeasureOverlay]);
+    // Schedule a one-shot post-RX log on the next paint so the user can
+    // verify the stream resumed (frameId advanced) without the camera ever
+    // being closed/reset.
+    const startId = frameId;
+    let cancelled = false;
+    const tickStart = Date.now();
+    const tick = () => {
+      if (cancelled) return;
+      const cur = getLastPaintedFrameId();
+      if (cur > startId) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-live-after-turret] streaming=${cameraStatus === 'streaming'} frameId=${cur}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(`[camera-resume-after-turret] frameId=${cur}`);
+        return;
+      }
+      if (Date.now() - tickStart > 2000) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-live-after-turret] streaming=${cameraStatus === 'streaming'} frameId=${cur} note=no-new-frame-within-2s`
+        );
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+    };
+  }, [liveMachineState?.turretPosition, clearAutoMeasureOverlay, cameraStatus, clearTurretMovingTimer]);
 
   // Impress lifecycle. Drives:
   //  - overlay clear at TX time (so old yellow lines disappear before motion),
@@ -4220,6 +4531,7 @@ function App() {
           magnifierEnabled={magnifierEnabled}
           onClearShapeKind={overlay.clearByKind}
           lineStrokeWidth={lineThickness.strokeWidth}
+          turretMoving={turretMoving}
         />
         <RightPanel
           measurements={measurements}
@@ -4229,6 +4541,8 @@ function App() {
           onOpenTestRecords={handleOpenTestRecords}
           onMeasurementsCleared={handleMeasurementsCleared}
           onObjectiveChange={handleObjectiveChangeFromUI}
+          onTurretIntent={() => markTurretIntent('turret-click')}
+          onObjectiveChangeIntent={() => markTurretIntent('objective-change-click')}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={() => setTrimMeasureOpen(false)}
           onTrimAdjust={handleTrimAdjust}
@@ -4242,6 +4556,16 @@ function App() {
                   // eslint-disable-next-line no-console
                   console.log('[calibration-manual-mode-cleared] reason=panel-closed-by-user');
                 }
+                if (calibrationMeasureModeRef.current !== 'none') {
+                  // eslint-disable-next-line no-console
+                  console.log('[calibration-overlay-clear] target=manual reason=panel-closed');
+                  // eslint-disable-next-line no-console
+                  console.log('[calibration-overlay-clear] target=auto reason=panel-closed');
+                }
+                setManualMeasureResetKey((current) => current + 1);
+                setAutoMeasureSessionActive(false);
+                clearAutoMeasureOverlay('calibration-closed');
+                setCalibrationMeasureMode('none', 'panel-closed');
                 closeDialog();
               }}
               onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}

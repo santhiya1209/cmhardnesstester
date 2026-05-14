@@ -97,6 +97,7 @@ type Props = {
   magnifierEnabled: boolean;
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
   lineStrokeWidth?: number;
+  turretMoving?: boolean;
 };
 
 function LeftPanelImpl(
@@ -116,6 +117,7 @@ function LeftPanelImpl(
     magnifierEnabled,
     onClearShapeKind,
     lineStrokeWidth,
+    turretMoving,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -139,6 +141,7 @@ function LeftPanelImpl(
         magnifierEnabled={magnifierEnabled}
         onClearShapeKind={onClearShapeKind}
         lineStrokeWidth={lineStrokeWidth}
+        turretMoving={turretMoving}
       />
     </Box>
   );

@@ -41,27 +41,45 @@ type Props = {
   measurements: Measurement[];
 };
 
-type ChartPoint = { x: number; y: number; label: string; index: number };
+type ChartPoint = {
+  /** Traverse / case depth in mm. Real value from the measurement row. */
+  x: number;
+  /** Hardness in HV (the only Y unit this graph supports). */
+  y: number;
+  /** Display unit string, e.g. "HV1" or "HV3" — used as the Y-axis title. */
+  label: string;
+  /** 1-based index in DEPTH order (after sorting). Not the source row id. */
+  index: number;
+};
 
 const CHART_PADDING = { top: 16, right: 24, bottom: 36, left: 56 };
 const Y_TICKS = 10;
 const X_TICKS = 10;
 
+// Industrial hardness profile rule (per spec): a point exists only if BOTH a
+// real depth (mm) AND a real hardness (HV) are available. Row index is never
+// used as a depth fallback; D1/D2 pixel diagonals are never used as a depth
+// fallback. Points are sorted ascending by depth so the connecting line
+// traces the actual depth traverse, not the order the operator typed rows.
 function buildPoints(measurements: Measurement[]): ChartPoint[] {
-  const usable = measurements.filter((m) => typeof m.hv === 'number' && Number.isFinite(m.hv));
+  const usable = measurements.filter(
+    (m) =>
+      typeof m.hv === 'number' &&
+      Number.isFinite(m.hv) &&
+      typeof m.depthMm === 'number' &&
+      Number.isFinite(m.depthMm) &&
+      (m.depthMm ?? 0) > 0
+  );
   if (usable.length === 0) return [];
-
-  const hasDepth = usable.some((m) => typeof m.depthMm === 'number' && Number.isFinite(m.depthMm) && (m.depthMm ?? 0) > 0);
-
-  return usable.map((m, idx) => {
-    const x = hasDepth
-      ? Number.isFinite(m.depthMm) && (m.depthMm ?? 0) > 0
-        ? (m.depthMm as number)
-        : (idx + 1) * 0.2
-      : (idx + 1) * 0.2;
-    const y = m.hv as number;
+  const sorted = [...usable].sort((a, b) => (a.depthMm as number) - (b.depthMm as number));
+  return sorted.map((m, idx) => {
     const unit = m.method ? `HV${m.testForceKgf ?? ''}`.trim() : 'HV';
-    return { x, y, label: unit, index: idx + 1 };
+    return {
+      x: m.depthMm as number,
+      y: m.hv as number,
+      label: unit,
+      index: idx + 1,
+    };
   });
 }
 
@@ -80,20 +98,30 @@ type ChartProps = {
   axis: string;
   grid: string;
   text: string;
+  /** Optional horizontal case-depth limit in HV (e.g. 550). Null = no line. */
+  caseDepthLimitHv: number | null;
+  limitColor: string;
 };
 
-function DepthChart({ points, showLine, axis, grid, text }: ChartProps) {
+const POINT_RADIUS = 4;
+const HOVER_HIT_RADIUS = 10;
+
+function DepthChart({ points, showLine, axis, grid, text, caseDepthLimitHv, limitColor }: ChartProps) {
   const width = 640;
   const height = 280;
   const innerW = width - CHART_PADDING.left - CHART_PADDING.right;
   const innerH = height - CHART_PADDING.top - CHART_PADDING.bottom;
+
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
   const xMin = 0;
   const xMax = Math.max(...xs, 0.2) * 1.05;
   const yMin = 0;
-  const yMax = Math.max(...ys, 10) * 1.1;
+  const limitForRange =
+    caseDepthLimitHv !== null && Number.isFinite(caseDepthLimitHv) ? caseDepthLimitHv : 0;
+  const yMax = Math.max(...ys, 10, limitForRange) * 1.1;
 
   const sx = (v: number) => CHART_PADDING.left + ((v - xMin) / (xMax - xMin || 1)) * innerW;
   const sy = (v: number) => CHART_PADDING.top + innerH - ((v - yMin) / (yMax - yMin || 1)) * innerH;
@@ -103,12 +131,27 @@ function DepthChart({ points, showLine, axis, grid, text }: ChartProps) {
 
   const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${sx(p.x).toFixed(2)} ${sy(p.y).toFixed(2)}`).join(' ');
   const yLabel = points[0]?.label ?? 'HV';
-  const drawLine = showLine && points.length >= 2;
+  // HardnessImage toggle gates the whole hardness profile. Markers always
+  // render once the toggle is on; the connecting line is only drawn when
+  // there are at least two depth-sorted points — a single valid row never
+  // synthesizes a "line of one" or interpolates a phantom origin.
   const drawPoints = showLine && points.length >= 1;
-  const selected = drawPoints ? points[points.length - 1] : null;
+  const drawLine = showLine && points.length >= 2;
+  const hovered = hoverIdx !== null && hoverIdx >= 0 && hoverIdx < points.length ? points[hoverIdx] : null;
+  const showLimit =
+    caseDepthLimitHv !== null &&
+    Number.isFinite(caseDepthLimitHv) &&
+    (caseDepthLimitHv as number) > 0 &&
+    (caseDepthLimitHv as number) <= yMax;
 
   return (
-    <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+    <svg
+      width="100%"
+      height="100%"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      onPointerLeave={() => setHoverIdx(null)}
+    >
       {yTicks.map((t, i) => (
         <g key={`y${i}`}>
           <line x1={CHART_PADDING.left} x2={width - CHART_PADDING.right} y1={sy(t)} y2={sy(t)} stroke={grid} strokeWidth={0.5} />
@@ -131,37 +174,111 @@ function DepthChart({ points, showLine, axis, grid, text }: ChartProps) {
         {yLabel}
       </text>
       <text x={CHART_PADDING.left + innerW / 2} y={height - 6} fontSize={10} fill={text} textAnchor="middle">
-        mm
+        Depth (mm)
       </text>
-      {drawLine ? <path d={path} fill="none" stroke={axis} strokeWidth={1} /> : null}
+      {showLimit ? (
+        <g>
+          <line
+            x1={CHART_PADDING.left}
+            x2={width - CHART_PADDING.right}
+            y1={sy(caseDepthLimitHv as number)}
+            y2={sy(caseDepthLimitHv as number)}
+            stroke={limitColor}
+            strokeWidth={1}
+            strokeDasharray="6 4"
+          />
+          <text
+            x={width - CHART_PADDING.right - 4}
+            y={sy(caseDepthLimitHv as number) - 4}
+            fontSize={10}
+            fill={limitColor}
+            textAnchor="end"
+          >
+            Case-depth limit {caseDepthLimitHv} HV
+          </text>
+        </g>
+      ) : null}
+      {drawLine ? <path d={path} fill="none" stroke={axis} strokeWidth={1.5} /> : null}
       {drawPoints
-        ? points.map((p, i) => <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={2} fill={axis} />)
+        ? points.map((p, i) => (
+            <circle
+              key={i}
+              cx={sx(p.x)}
+              cy={sy(p.y)}
+              r={POINT_RADIUS}
+              fill={i === hoverIdx ? axis : '#ffffff'}
+              stroke={axis}
+              strokeWidth={1.5}
+            />
+          ))
         : null}
-      {selected ? (
-        <line
-          x1={sx(selected.x)}
-          x2={sx(selected.x)}
-          y1={sy(selected.y)}
-          y2={height - CHART_PADDING.bottom}
-          stroke={axis}
-          strokeWidth={0.75}
-        />
-      ) : null}
-      {selected ? (
-        <line
-          x1={CHART_PADDING.left}
-          x2={sx(selected.x)}
-          y1={sy(selected.y)}
-          y2={sy(selected.y)}
-          stroke={axis}
-          strokeWidth={0.75}
-          strokeDasharray="3 3"
-        />
-      ) : null}
-      {selected ? (
-        <text x={sx(selected.x) + 6} y={sy(selected.y) - 6} fontSize={10} fill={axis}>
-          ({selected.index},{Math.round(selected.x * 1000)},{Math.round(selected.y)})
-        </text>
+      {/* Invisible hit-test layer for hover tooltips. Rendered after the
+          visible markers so it captures pointer events on top. */}
+      {drawPoints
+        ? points.map((p, i) => (
+            <circle
+              key={`hit-${i}`}
+              cx={sx(p.x)}
+              cy={sy(p.y)}
+              r={HOVER_HIT_RADIUS}
+              fill="transparent"
+              onPointerEnter={() => setHoverIdx(i)}
+              onPointerMove={() => setHoverIdx(i)}
+            >
+              <title>{`Depth: ${p.x.toFixed(3)} mm\nHardness: ${p.y.toFixed(1)} ${p.label}`}</title>
+            </circle>
+          ))
+        : null}
+      {hovered ? (
+        <g pointerEvents="none">
+          <line
+            x1={sx(hovered.x)}
+            x2={sx(hovered.x)}
+            y1={sy(hovered.y)}
+            y2={height - CHART_PADDING.bottom}
+            stroke={axis}
+            strokeWidth={0.75}
+          />
+          <line
+            x1={CHART_PADDING.left}
+            x2={sx(hovered.x)}
+            y1={sy(hovered.y)}
+            y2={sy(hovered.y)}
+            stroke={axis}
+            strokeWidth={0.75}
+            strokeDasharray="3 3"
+          />
+          {(() => {
+            const tipW = 150;
+            const tipH = 34;
+            const px = sx(hovered.x);
+            const py = sy(hovered.y);
+            const right = width - CHART_PADDING.right;
+            const tipX = px + 10 + tipW > right ? px - 10 - tipW : px + 10;
+            const tipY = Math.max(CHART_PADDING.top, py - tipH - 6);
+            return (
+              <g>
+                <rect
+                  x={tipX}
+                  y={tipY}
+                  width={tipW}
+                  height={tipH}
+                  fill="rgba(0,0,0,0.78)"
+                  stroke={axis}
+                  strokeWidth={0.5}
+                  rx={3}
+                  ry={3}
+                />
+                <text x={tipX + 8} y={tipY + 14} fontSize={11} fill="#fff">
+                  {`Depth: ${hovered.x.toFixed(3)} mm`}
+                </text>
+                <text x={tipX + 8} y={tipY + 28} fontSize={11} fill="#fff">
+                  {`Hardness: ${hovered.y.toFixed(1)} ${hovered.label}`}
+                </text>
+              </g>
+            );
+          })()}
+        </g>
       ) : null}
     </svg>
   );
@@ -186,9 +303,18 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
       axis: theme.palette.text.primary,
       grid: theme.palette.divider,
       text: theme.palette.text.secondary,
+      limit: theme.palette.warning.main,
     }),
     [theme]
   );
+  // Optional case-depth horizontal limit (e.g. 550 HV). Read from the
+  // DepthImageSetting payload if present; until a backend field is added the
+  // setting stays at `null` and no limit line is drawn. The chart already
+  // expands its Y range to contain the limit when one is configured.
+  const caseDepthLimitHv = useMemo<number | null>(() => {
+    const raw = (data as { caseDepthLimitHv?: unknown } | null | undefined)?.caseDepthLimitHv;
+    return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
+  }, [data]);
 
   useEffect(() => {
     if (!loading) {
@@ -199,28 +325,16 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   useEffect(() => {
     const showLine = hardnessImage && points.length >= 2;
     // eslint-disable-next-line no-console
-    console.log(`[depth-image] hardnessImage=${hardnessImage} showLine=${showLine}`);
-    if (hardnessImage) {
+    console.log(
+      `[hardness-profile] points=${points.length} showLine=${showLine} caseDepthLimitHv=${caseDepthLimitHv ?? 'n/a'}`
+    );
+    points.forEach((p) => {
       // eslint-disable-next-line no-console
-      console.log(`[depth-image] hardnessImage checked=true`);
-      // eslint-disable-next-line no-console
-      console.log(`[depth-image] draw hardness line points=${points.length}`);
-      const selected = points[points.length - 1];
-      if (selected) {
-        const label = `(${selected.index},${Math.round(selected.x * 1000)},${Math.round(selected.y)})`;
-        // eslint-disable-next-line no-console
-        console.log(`[depth-image] draw selected point label=${label}`);
-        // eslint-disable-next-line no-console
-        console.log(`[depth-image] draw vertical guide`);
-        // eslint-disable-next-line no-console
-        console.log(`[depth-image] draw horizontal dotted guide`);
-      }
-      points.forEach((p) => {
-        // eslint-disable-next-line no-console
-        console.log(`[depth-image] point x=${p.x} y=${p.y} hardness=${p.y}`);
-      });
-    }
-  }, [hardnessImage, points]);
+      console.log(
+        `[hardness-profile-point] index=${p.index} depthMm=${p.x.toFixed(3)} hardness=${p.y.toFixed(1)} unit=${p.label}`
+      );
+    });
+  }, [caseDepthLimitHv, hardnessImage, points]);
 
   const isBusy = loading || saving || creatingAlbumItem;
   const errorMessage = loadError ?? saveError ?? createAlbumError ?? saveImageError;
@@ -318,6 +432,8 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
           axis={chartColors.axis}
           grid={chartColors.grid}
           text={chartColors.text}
+          caseDepthLimitHv={caseDepthLimitHv}
+          limitColor={chartColors.limit}
         />
       </Box>
       <Box sx={ACTION_ROW_SX}>

@@ -88,6 +88,8 @@ type TabContentProps = {
   albumItems: AlbumItem[];
   refetchAlbumItems: () => Promise<void>;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
+  onTurretIntent?: () => void;
+  onObjectiveChangeIntent?: () => void;
 };
 
 function renderTab(
@@ -101,10 +103,19 @@ function renderTab(
     albumItems,
     refetchAlbumItems,
     onObjectiveChange,
+    onTurretIntent,
+    onObjectiveChangeIntent,
   }: TabContentProps
 ) {
   switch (tab) {
-    case 0: return <MachineControlTab onObjectiveChange={onObjectiveChange} />;
+    case 0:
+      return (
+        <MachineControlTab
+          onObjectiveChange={onObjectiveChange}
+          onTurretIntent={onTurretIntent}
+          onObjectiveChangeIntent={onObjectiveChangeIntent}
+        />
+      );
     case 1: return <XYZPlatformTab />;
     case 2:
       return (
@@ -147,6 +158,8 @@ type Props = {
   onOpenTestRecords: (measurementIds: string[]) => void;
   onMeasurementsCleared?: () => void;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
+  onTurretIntent?: () => void;
+  onObjectiveChangeIntent?: () => void;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
@@ -169,6 +182,8 @@ function RightPanelImpl({
   onMeasurementsCleared,
   refetchMeasurements,
   onObjectiveChange,
+  onTurretIntent,
+  onObjectiveChangeIntent,
   trimMeasureOpen,
   onCloseTrimMeasure,
   onTrimAdjust,
@@ -223,6 +238,8 @@ function RightPanelImpl({
             albumItems,
             refetchAlbumItems,
             onObjectiveChange,
+            onTurretIntent,
+            onObjectiveChangeIntent,
           })}
 
           <TrimMeasurePanel

@@ -41,11 +41,18 @@ const HK_TABLE: Table = [
   [700, 720], [750, 772], [800, 822], [850, 873], [900, 924], [940, 964],
 ];
 
+// HRB/HRF/HR15T/HR30T/HR45T are formally defined by ASTM E140 only up to
+// HV ≈ 240 (soft steels, steel-ball indenter — harder material deforms the
+// ball). Anchors at HV > 240 below are extrapolations capped at each scale's
+// physical maximum (HRB/HRF=100, HR15T=93, HR30T=82, HR45T=72) so high-HV
+// indents render a numeric value instead of N/A. They are NOT certified
+// conversions — calibration reports should use Vickers directly.
 const HRB_TABLE: Table = [
   [85, 41.5], [90, 48.0], [95, 52.0], [100, 56.2], [105, 58.7], [110, 62.3],
   [115, 65.7], [120, 68.5], [125, 71.5], [130, 73.4], [135, 75.0], [140, 76.6],
   [150, 79.7], [160, 82.2], [170, 84.4], [180, 86.4], [190, 88.5], [200, 90.2],
   [210, 91.8], [220, 93.4], [230, 94.6], [240, 95.8],
+  [260, 97.5], [280, 99.0], [300, 100.0], [650, 100.0],
 ];
 
 const HRC_TABLE: Table = [
@@ -72,7 +79,7 @@ const HRD_TABLE: Table = [
 const HRF_TABLE: Table = [
   [76, 67.9], [85, 71.8], [90, 75.6], [95, 78.6], [100, 81.5], [105, 83.5],
   [110, 86.2], [115, 88.7], [120, 90.7], [125, 92.8], [130, 94.2], [135, 95.5],
-  [140, 96.7], [150, 99.0], [160, 100.0],
+  [140, 96.7], [150, 99.0], [160, 100.0], [650, 100.0],
 ];
 
 const HR15N_TABLE: Table = [
@@ -98,6 +105,7 @@ const HR15T_TABLE: Table = [
   [110, 74.0], [115, 75.5], [120, 76.7], [125, 78.0], [130, 78.8], [135, 79.5],
   [140, 80.3], [150, 81.7], [160, 82.9], [170, 84.0], [180, 84.9], [190, 85.9],
   [200, 86.7], [220, 88.0], [240, 89.0],
+  [280, 90.5], [340, 91.8], [420, 92.7], [500, 93.0], [650, 93.0],
 ];
 
 const HR30T_TABLE: Table = [
@@ -105,6 +113,7 @@ const HR30T_TABLE: Table = [
   [110, 44.6], [115, 46.6], [120, 48.2], [125, 49.9], [130, 51.0], [135, 52.0],
   [140, 53.0], [150, 54.9], [160, 56.4], [170, 57.8], [180, 59.0], [190, 60.4],
   [200, 61.4], [220, 63.5], [240, 65.3],
+  [280, 68.5], [340, 72.5], [420, 76.5], [500, 79.5], [600, 81.5], [650, 82.0],
 ];
 
 const HR45T_TABLE: Table = [
@@ -112,6 +121,7 @@ const HR45T_TABLE: Table = [
   [110, 24.5], [115, 26.9], [120, 28.9], [125, 31.0], [130, 32.4], [135, 33.6],
   [140, 34.7], [150, 37.0], [160, 38.9], [170, 40.6], [180, 42.1], [190, 43.8],
   [200, 45.0], [220, 47.5], [240, 49.8],
+  [280, 54.0], [340, 59.5], [420, 64.5], [500, 68.5], [600, 71.0], [650, 72.0],
 ];
 
 const TABLES: Record<Exclude<ConvertTargetType, 'HV'>, Table> = {
@@ -141,7 +151,13 @@ function interpolate(table: Table, hv: number, targetLabel: string): number | nu
   console.log(
     `[hardness-convert-table] targetType=${targetLabel} points=${table.length} minHv=${first[0]} maxHv=${last[0]}`
   );
-  if (hv < first[0] || hv > last[0]) return null;
+  if (hv < first[0] || hv > last[0]) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[hardness-convert-missing] to=${targetLabel} reason=hv-out-of-range hv=${hv} minHv=${first[0]} maxHv=${last[0]}`
+    );
+    return null;
+  }
 
   for (let i = 0; i < table.length - 1; i += 1) {
     const [x0, y0] = table[i];
@@ -150,11 +166,13 @@ function interpolate(table: Table, hv: number, targetLabel: string): number | nu
       const result = x1 === x0 ? round1(y0) : round1(y0 + ((hv - x0) / (x1 - x0)) * (y1 - y0));
       // eslint-disable-next-line no-console
       console.log(
-        `[hardness-convert-interpolate] hv=${hv} lower={hv:${x0},value:${y0}} upper={hv:${x1},value:${y1}} result=${result}`
+        `[hardness-convert-table-hit] to=${targetLabel} lower={hv:${x0},value:${y0}} upper={hv:${x1},value:${y1}} result=${result}`
       );
       return result;
     }
   }
+  // eslint-disable-next-line no-console
+  console.log(`[hardness-convert-missing] to=${targetLabel} reason=no-bracketing-segment hv=${hv}`);
   return null;
 }
 
@@ -163,7 +181,7 @@ export function convertVickers(
   target: ConvertTargetType
 ): number | null {
   // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-request] hv=${hv ?? '-'} targetType=${target}`);
+  console.log(`[hardness-convert-request] from=HV value=${hv ?? '-'} to=${target}`);
   // eslint-disable-next-line no-console
   console.log(`[hardness-convert-start] hv=${hv ?? '-'} targetType=${target}`);
 
@@ -185,6 +203,8 @@ export function convertVickers(
   } else if (converterFound) {
     result = interpolate(TABLES[target as Exclude<ConvertTargetType, 'HV'>], hv, target);
   } else {
+    // eslint-disable-next-line no-console
+    console.log(`[hardness-convert-missing] to=${target} reason=no-table`);
     result = null;
   }
 
@@ -197,6 +217,6 @@ export function convertVickers(
     console.log(`[hardness-convert-out-of-range] hv=${hv} targetType=${target}`);
   }
   // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-result] hv=${hv} targetType=${target} value=${result ?? 'N/A'}`);
+  console.log(`[hardness-convert-result] to=${target} value=${result ?? 'N/A'}`);
   return result;
 }
