@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
@@ -8,11 +8,13 @@ import {
   buildDepthHvGraphPoints,
   buildMinorTicks,
   buildSmoothPath,
+  findChdIntersection,
   formatDistance,
   formatHv,
   type Axis,
   type DepthHvGraphPoint,
 } from './DepthVsHvGraph.utils';
+import { renderChdReference, renderTooltip } from './DepthVsHvGraphOverlays';
 
 export { buildDepthHvGraphPoints };
 export type { DepthHvGraphPoint };
@@ -55,34 +57,17 @@ type GraphColors = {
   muted: string;
   pointFill: string;
   paper: string;
+  reference: string;
   tooltipBg: string;
   tooltipText: string;
 };
 
 type Props = {
   points: DepthHvGraphPoint[];
+  chdTargetHv: number | null;
 };
 
-function renderTooltip(point: DepthHvGraphPoint, plot: Plot, colors: GraphColors): ReactNode {
-  const tipW = 158;
-  const tipH = 42;
-  const px = plot.sx(point.distanceUm);
-  const py = plot.sy(point.hv);
-  const tipX = px + 12 + tipW > SIZE.w - PAD.right ? px - 12 - tipW : px + 12;
-  const tipY = Math.max(PAD.top + 4, py - tipH - 8);
-
-  return (
-    <g pointerEvents="none">
-      <line x1={px} x2={px} y1={PAD.top} y2={SIZE.h - PAD.bottom} stroke={colors.axis} strokeWidth={0.9} strokeDasharray="4 4" />
-      <line x1={PAD.left} x2={SIZE.w - PAD.right} y1={py} y2={py} stroke={colors.axis} strokeWidth={0.9} strokeDasharray="4 4" />
-      <rect x={tipX} y={tipY} width={tipW} height={tipH} fill={colors.tooltipBg} stroke={colors.curve} strokeWidth={0.8} rx={3} ry={3} />
-      <text x={tipX + 9} y={tipY + 17} fontSize={12} fill={colors.tooltipText}>{`Distance: ${formatDistance(point.distanceUm)}`}</text>
-      <text x={tipX + 9} y={tipY + 33} fontSize={12} fill={colors.tooltipText}>{`HV: ${formatHv(point.hv)}`}</text>
-    </g>
-  );
-}
-
-function DepthVsHvGraphImpl({ points }: Props) {
+function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
   const theme = useTheme();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const colors = useMemo<GraphColors>(
@@ -95,6 +80,7 @@ function DepthVsHvGraphImpl({ points }: Props) {
       muted: theme.palette.grey[700],
       pointFill: theme.palette.common.white,
       paper: theme.palette.common.white,
+      reference: theme.palette.error.main,
       tooltipBg: theme.palette.grey[900],
       tooltipText: theme.palette.common.white,
     }),
@@ -104,7 +90,11 @@ function DepthVsHvGraphImpl({ points }: Props) {
     if (points.length === 0) return null;
 
     const xAxis = buildAxis(points.map((point) => point.distanceUm), X_TICK_COUNT, true);
-    const yAxis = buildAxis(points.map((point) => point.hv), Y_TICK_COUNT, false);
+    const yValues =
+      chdTargetHv !== null && Number.isFinite(chdTargetHv)
+        ? [...points.map((point) => point.hv), chdTargetHv]
+        : points.map((point) => point.hv);
+    const yAxis = buildAxis(yValues, Y_TICK_COUNT, false);
     const innerW = SIZE.w - PAD.left - PAD.right;
     const innerH = SIZE.h - PAD.top - PAD.bottom;
     const sx = (value: number) => PAD.left + ((value - xAxis.min) / (xAxis.max - xAxis.min || 1)) * innerW;
@@ -119,10 +109,21 @@ function DepthVsHvGraphImpl({ points }: Props) {
       minorXTicks: buildMinorTicks(xAxis.ticks),
       minorYTicks: buildMinorTicks(yAxis.ticks),
     };
-  }, [points]);
+  }, [chdTargetHv, points]);
+  const chdIntersection = useMemo(
+    () => findChdIntersection(points, chdTargetHv),
+    [chdTargetHv, points]
+  );
 
   useEffect(() => {
     console.log(`[case-hardness-profile-render] points=${points.length}`);
+    console.log(`[hv-depth-graph-update] points=${points.length} targetHv=${chdTargetHv ?? 'null'}`);
+    console.log(
+      `[graph-measurement-points] ${JSON.stringify(
+        points.map((point) => ({ depthMm: point.distanceUm / 1000, distanceUm: point.distanceUm, hv: point.hv }))
+      )}`
+    );
+    console.log(`[chd-calc] targetHv=${chdTargetHv ?? 'null'} points=${points.length}`);
     if (plot) {
       console.log(
         `[case-hardness-profile-axis] xMinUm=${plot.xAxis.min} xMaxUm=${plot.xAxis.max} yMinHv=${plot.yAxis.min} yMaxHv=${plot.yAxis.max}`
@@ -131,7 +132,17 @@ function DepthVsHvGraphImpl({ points }: Props) {
     points.forEach((point) => {
       console.log(`[case-hardness-profile-point] distanceUm=${point.distanceUm} hv=${point.hv}`);
     });
-  }, [plot, points]);
+    if (chdIntersection) {
+      console.log(
+        `[chd-intersection] targetHv=${chdIntersection.hv} depthMm=${chdIntersection.depthMm} distanceUm=${chdIntersection.distanceUm} segmentStart=${chdIntersection.segmentStart.id} segmentEnd=${chdIntersection.segmentEnd.id}`
+      );
+    } else {
+      console.log(`[chd-intersection] targetHv=${chdTargetHv ?? 'null'} depthMm=null distanceUm=null`);
+    }
+    console.log(
+      `[graph-red-line-render] targetHv=${chdTargetHv ?? 'null'} intersection=${chdIntersection ? chdIntersection.distanceUm : 'none'}`
+    );
+  }, [chdIntersection, chdTargetHv, plot, points]);
 
   if (!plot) {
     return (
@@ -148,7 +159,14 @@ function DepthVsHvGraphImpl({ points }: Props) {
 
   return (
     <Box sx={GRAPH_SX}>
-      <svg width="100%" height="100%" viewBox={`0 0 ${SIZE.w} ${SIZE.h}`} preserveAspectRatio="xMidYMid meet" onPointerLeave={() => setHoverIndex(null)}>
+      <svg
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${SIZE.w} ${SIZE.h}`}
+        preserveAspectRatio="xMidYMid meet"
+        shapeRendering="geometricPrecision"
+        onPointerLeave={() => setHoverIndex(null)}
+      >
         <rect x={0} y={0} width={SIZE.w} height={SIZE.h} fill={colors.paper} />
         <text x={SIZE.w / 2} y={29} fontSize={21} fontWeight={700} fill={colors.label} textAnchor="middle">Case Hardness Profile</text>
         <text x={SIZE.w / 2} y={49} fontSize={12} fontWeight={600} fill={colors.muted} textAnchor="middle">Industrial metallurgical hardness profile</text>
@@ -167,9 +185,10 @@ function DepthVsHvGraphImpl({ points }: Props) {
           </g>
         ))}
         <rect x={PAD.left} y={PAD.top} width={plotRight - PAD.left} height={plotBottom - PAD.top} fill="none" stroke={colors.axis} strokeWidth={1.5} />
-        <text x={PAD.left + (plotRight - PAD.left) / 2} y={SIZE.h - 14} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle">Distance from Surface (µm)</text>
+        <text x={PAD.left + (plotRight - PAD.left) / 2} y={SIZE.h - 14} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle">{'Distance from Surface (\u00B5m)'}</text>
         <text x={24} y={PAD.top + (plotBottom - PAD.top) / 2} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle" transform={`rotate(-90 24 ${PAD.top + (plotBottom - PAD.top) / 2})`}>Hardness (HV)</text>
         {points.length >= 2 ? <path d={plot.linePath} fill="none" stroke={colors.curve} strokeWidth={3} strokeLinejoin="round" strokeLinecap="round" /> : null}
+        {renderChdReference(chdTargetHv, chdIntersection, plot, colors, { size: SIZE, pad: PAD })}
         {points.map((point, index) => (
           <circle key={`${point.id}-${point.index}`} cx={plot.sx(point.distanceUm)} cy={plot.sy(point.hv)} r={POINT_RADIUS} fill={index === hoverIndex ? colors.curve : colors.pointFill} stroke={colors.curve} strokeWidth={2} />
         ))}
@@ -178,7 +197,7 @@ function DepthVsHvGraphImpl({ points }: Props) {
             <title>{`Distance: ${formatDistance(point.distanceUm)}\nHV: ${formatHv(point.hv)}`}</title>
           </circle>
         ))}
-        {hovered ? renderTooltip(hovered, plot, colors) : null}
+        {hovered ? renderTooltip(hovered, plot, colors, { size: SIZE, pad: PAD }) : null}
       </svg>
     </Box>
   );

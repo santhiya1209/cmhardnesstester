@@ -28,11 +28,20 @@ export type Axis = {
   ticks: number[];
 };
 
+export type ChdIntersection = {
+  depthMm: number;
+  distanceUm: number;
+  hv: number;
+  segmentStart: DepthHvGraphPoint;
+  segmentEnd: DepthHvGraphPoint;
+};
+
 export function formatDistance(value: number): string {
-  return value >= 100 ? `${Math.round(value)} µm` : `${value.toFixed(1)} µm`;
+  return value >= 100 ? `${Math.round(value)} \u00B5m` : `${value.toFixed(1)} \u00B5m`;
 }
 
 export function formatHv(value: number): string {
+  if (Number.isInteger(value)) return value >= 1000 ? value.toLocaleString('en-IN') : String(value);
   return value >= 1000 ? Math.round(value).toLocaleString('en-IN') : value.toFixed(2);
 }
 
@@ -56,10 +65,7 @@ function readDistanceUm(row: MeasurementGraphRow): number | null {
   const directUm = readFiniteNumber(row.distanceUm, row.distanceMicrometer, row.distanceMicrometers);
   if (directUm !== null) return directUm;
 
-  const distance = readFiniteNumber(row.distance);
-  if (distance !== null) return distance;
-
-  const depthMm = readFiniteNumber(row.depthMm, row.depth, row.micrometer, row.micrometerValue);
+  const depthMm = readFiniteNumber(row.depthMm, row.depth, row.distance, row.micrometer, row.micrometerValue);
   return depthMm === null ? null : depthMm * UM_PER_MM;
 }
 
@@ -114,6 +120,47 @@ export function buildAxis(values: number[], tickCount: number, includeZero: bool
   }
 
   return { min: axisMin, max: axisMax, ticks };
+}
+
+export function findChdIntersection(
+  points: DepthHvGraphPoint[],
+  targetHv: number | null
+): ChdIntersection | null {
+  if (targetHv === null || !Number.isFinite(targetHv) || points.length === 0) return null;
+
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (point.hv === targetHv) {
+      return {
+        depthMm: point.distanceUm / UM_PER_MM,
+        distanceUm: point.distanceUm,
+        hv: targetHv,
+        segmentStart: point,
+        segmentEnd: point,
+      };
+    }
+
+    const next = points[index + 1];
+    if (!next) continue;
+
+    const low = Math.min(point.hv, next.hv);
+    const high = Math.max(point.hv, next.hv);
+    const crosses = targetHv >= low && targetHv <= high && point.hv !== next.hv;
+    if (!crosses) continue;
+
+    const ratio = (targetHv - point.hv) / (next.hv - point.hv);
+    const distanceUm = point.distanceUm + ratio * (next.distanceUm - point.distanceUm);
+
+    return {
+      depthMm: distanceUm / UM_PER_MM,
+      distanceUm,
+      hv: targetHv,
+      segmentStart: point,
+      segmentEnd: next,
+    };
+  }
+
+  return null;
 }
 
 export function buildMinorTicks(majorTicks: number[]): number[] {
