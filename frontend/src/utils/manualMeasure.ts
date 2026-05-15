@@ -90,9 +90,30 @@ export function isValidObjectiveName(objective: string | null | undefined): obje
   return VALID_OBJECTIVE_NAMES.includes(normalizeObjectiveName(objective) as ValidObjectiveName);
 }
 
-function readUmPerPixel(calibration: CalibrationSettings): number {
+export function readUmPerPixel(calibration: CalibrationSettings | null | undefined): number {
+  if (!calibration) return 0;
   const value = calibration.umPerPixel ?? calibration.pixelToMicron;
   return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function pixelsToMicrons(
+  pixelDistance: number,
+  micronsPerPixel: number | null | undefined
+): number | null {
+  if (
+    !Number.isFinite(pixelDistance) ||
+    pixelDistance < 0 ||
+    typeof micronsPerPixel !== 'number' ||
+    !Number.isFinite(micronsPerPixel) ||
+    micronsPerPixel <= 0
+  ) {
+    return null;
+  }
+  return pixelDistance * micronsPerPixel;
+}
+
+export function formatMicronDisplay(value: number): string {
+  return `${value.toFixed(2)}um`;
 }
 
 export function findCalibrationForObjective(

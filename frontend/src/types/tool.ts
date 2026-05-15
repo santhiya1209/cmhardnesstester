@@ -48,6 +48,7 @@ export type AngleShape = {
   vertex: Point;
   a: Point;
   b: Point;
+  coordinateSpace?: 'display' | 'image';
 };
 
 export type OverlayShape = LengthShape | AngleShape;

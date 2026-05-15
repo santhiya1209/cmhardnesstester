@@ -189,13 +189,19 @@ type AutoMeasureDetectionMethod = 'refined' | 'rough';
 
 type CommittedAutoMeasureFingerprint = {
   objective: string;
+  frameId: number | null;
   centerX: number;
   centerY: number;
   d1Px: number;
   d2Px: number;
   hv: number | null;
+  d1Um: number | null;
+  d2Um: number | null;
+  avgDUm: number | null;
+  avgDMm: number | null;
   rowId: string | null;
   fingerprintKey: string;
+  corners: AutoMeasureGraphics['corners'];
   graphics: AutoMeasureGraphics;
 };
 
@@ -224,6 +230,10 @@ function logUnexpectedAutoMeasureCall(source: string) {
 
 const AUTO_MEASURE_CENTER_TOLERANCE_PX = 3;
 const AUTO_MEASURE_DIAGONAL_TOLERANCE_PX = 3;
+const AUTO_MEASURE_CORNER_TOLERANCE_PX = 4;
+const AUTO_MEASURE_HARDNESS_TOLERANCE_HV = 10;
+const AUTO_MEASURE_STABLE_PIXEL_DIGITS = 2;
+const AUTO_MEASURE_CORNER_KEYS = ['top', 'right', 'bottom', 'left'] as const;
 
 function normalizeAutoMeasureFingerprintObjective(objective: string | null | undefined): string {
   return (objective ?? 'unknown').trim().toUpperCase() || 'UNKNOWN';
@@ -249,6 +259,29 @@ function buildAutoMeasureFingerprintKey({
     Math.round(d1Px),
     Math.round(d2Px),
   ].join('|');
+}
+
+function roundAutoMeasurePixel(value: number): number {
+  return Number(value.toFixed(AUTO_MEASURE_STABLE_PIXEL_DIGITS));
+}
+
+function finiteOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function formatNullableNumber(value: number | null, digits = 3): string {
+  return value === null ? 'n/a' : value.toFixed(digits);
+}
+
+function getAutoMeasureMaxCornerDelta(
+  a: AutoMeasureGraphics['corners'],
+  b: AutoMeasureGraphics['corners']
+): number {
+  return AUTO_MEASURE_CORNER_KEYS.reduce((maxDelta, key) => {
+    const dx = a[key].x - b[key].x;
+    const dy = a[key].y - b[key].y;
+    return Math.max(maxDelta, Math.hypot(dx, dy));
+  }, 0);
 }
 
 function cloneAutoMeasureGraphics(graphics: AutoMeasureGraphics): AutoMeasureGraphics {
@@ -1583,6 +1616,28 @@ function App() {
     console.log('[calibration] loaded map', map);
   }, [calibrationSettingsList]);
 
+  // um-per-pixel calibration for the currently-active objective. Resolves
+  // through the same lookup helpers used by Manual Measure so Measure Length
+  // renders the identical calibrated micron conversion instead of raw pixels.
+  const umPerPixelForActiveObjective = useMemo<number | null>(() => {
+    const confirmedFromMachine =
+      liveMachineState?.confirmedObjectiveFromMachine?.trim() || null;
+    const optimisticActive = (activeObjective && activeObjective.trim()) || null;
+    const lastEchoed = liveMachineState?.objective?.trim() || null;
+    const targetObjective = confirmedFromMachine || optimisticActive || lastEchoed;
+    if (!targetObjective) return null;
+    const calibration = resolveManualCalibration({
+      calibrationSettings,
+      calibrationSettingsList,
+      calibrations,
+      machineState: liveMachineState ? { ...liveMachineState, objective: targetObjective } : null,
+      targetObjective,
+    });
+    return calibration?.micronPerPixel ?? null;
+  }, [activeObjective, calibrationSettings, calibrationSettingsList, calibrations, liveMachineState]);
+
+  const handleUpdateShape = overlay.updateShape;
+
   const resetManualMeasure = useCallback(() => {
     manualMeasurementIdRef.current = null;
     setManualMeasureResetKey((current) => current + 1);
@@ -1929,34 +1984,27 @@ function App() {
         `[auto-measure-success] objective=${objectiveForCalibration ?? 'unknown'} method=${method} left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)}) d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} smoothing=${snapshot.settings.smoothing} threshold=${snapshot.settings.threshold} ratio=${ratio.toFixed(3)} center=(${center.x.toFixed(2)},${center.y.toFixed(2)}) reason=${validation.reason}`
       );
 
-      // Duplicate-measurement guard. Identical detection on the same unchanged
-      // frame (repeat click) must NOT spawn a new table row. Tolerance is
-      // sub-pixel because the native detector is deterministic for an
-      // unchanged frame; a real new indentation moves D1/D2/center well past
-      // these bounds. Settings-save is exempt — the user is intentionally
+      // Duplicate-measurement guard. Repeat clicks on the same indentation
+      // compare stable rounded geometry against the row fingerprint before
+      // any save. Settings-save is exempt because the user is intentionally
       // re-detecting under new params and expects the existing row to update.
-      const centerX = center.x;
-      const centerY = center.y;
-      const frameEpoch = getLastPaintEpoch();
-      const fingerprint = {
-        d1Px: result.d1Pixels,
-        d2Px: result.d2Pixels,
-        centerX,
-        centerY,
-        frameEpoch,
-        hv:
-          typeof result.hv === 'number' && Number.isFinite(result.hv)
-            ? result.hv
-            : null,
-      };
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-start] frameId=${frameEpoch}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-fingerprint]\ncenterX=${centerX.toFixed(2)}\ncenterY=${centerY.toFixed(2)}\nd1Px=${fingerprint.d1Px.toFixed(2)}\nd2Px=${fingerprint.d2Px.toFixed(2)}\nframeId=${frameEpoch}`
-      );
-
+      const stableD1Px = roundAutoMeasurePixel(d1Px);
+      const stableD2Px = roundAutoMeasurePixel(d2Px);
+      const stableCenterX = roundAutoMeasurePixel(center.x);
+      const stableCenterY = roundAutoMeasurePixel(center.y);
+      const frameEpoch =
+        typeof graphics.frameId === 'number' && Number.isFinite(graphics.frameId)
+          ? graphics.frameId
+          : getLastPaintEpoch();
       const fingerprintObjective = normalizeAutoMeasureFingerprintObjective(objectiveForCalibration);
+      const fingerprint = {
+        d1Px: stableD1Px,
+        d2Px: stableD2Px,
+        centerX: stableCenterX,
+        centerY: stableCenterY,
+        frameId: frameEpoch,
+        hv: finiteOrNull(result.hv),
+      };
       const fingerprintKey = buildAutoMeasureFingerprintKey({
         objective: fingerprintObjective,
         centerX: fingerprint.centerX,
@@ -1965,6 +2013,24 @@ function App() {
         d2Px: fingerprint.d2Px,
       });
       // eslint-disable-next-line no-console
+      console.log(`[auto-measure-start] frameId=${frameEpoch}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-snapshot] source=${source} frameId=${frameEpoch} objective=${fingerprintObjective} frozen=true`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-geometry] frameId=${frameEpoch} objective=${fingerprintObjective} center=(${center.x.toFixed(3)},${center.y.toFixed(3)}) d1Px=${d1Px.toFixed(3)} d2Px=${d2Px.toFixed(3)} top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)}) left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)})`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-d1d2-rounded] rawD1Px=${d1Px.toFixed(4)} rawD2Px=${d2Px.toFixed(4)} roundedD1Px=${stableD1Px.toFixed(2)} roundedD2Px=${stableD2Px.toFixed(2)} precision=${AUTO_MEASURE_STABLE_PIXEL_DIGITS}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-fingerprint]\ncenterX=${fingerprint.centerX.toFixed(2)}\ncenterY=${fingerprint.centerY.toFixed(2)}\nd1Px=${fingerprint.d1Px.toFixed(2)}\nd2Px=${fingerprint.d2Px.toFixed(2)}\nframeId=${frameEpoch}`
+      );
+      // eslint-disable-next-line no-console
       console.log(
         `[measurement-fingerprint] objective=${fingerprintObjective} centerX=${Math.round(fingerprint.centerX)} centerY=${Math.round(fingerprint.centerY)} d1=${Math.round(fingerprint.d1Px)} d2=${Math.round(fingerprint.d2Px)} key=${fingerprintKey}`
       );
@@ -1972,21 +2038,57 @@ function App() {
       console.log(
         `[measurement-fingerprint-current] objective=${fingerprintObjective} centerX=${fingerprint.centerX.toFixed(2)} centerY=${fingerprint.centerY.toFixed(2)} d1Px=${fingerprint.d1Px.toFixed(2)} d2Px=${fingerprint.d2Px.toFixed(2)} key=${fingerprintKey}`
       );
+
+      const conversion = calculateVickersFromPixels({
+        calibrationSettings,
+        calibrationSettingsList,
+        calibrations,
+        d1Px: stableD1Px,
+        d2Px: stableD2Px,
+        forceKgf,
+        machineState: machineStateForAuto,
+        objective: objectiveForCalibration,
+        targetObjective: objectiveForCalibration,
+      });
+      const candidateHv = conversion.ok ? finiteOrNull(conversion.value.hv) : fingerprint.hv;
+      if (conversion.ok) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-hv-calc] formula=1.8544*force/davgMm^2 objective=${conversion.value.normalizedObjective} forceKgf=${forceKgf ?? 'null'} d1Px=${stableD1Px.toFixed(2)} d2Px=${stableD2Px.toFixed(2)} d1Um=${conversion.value.d1Um.toFixed(3)} d2Um=${conversion.value.d2Um.toFixed(3)} davgMm=${conversion.value.avgDMm.toFixed(6)} hv=${conversion.value.hv ?? 'n/a'}`
+        );
+      }
+
       if (source === 'auto-click') {
         const existing = committedFingerprintsRef.current;
         let matchedEntry: typeof existing[number] | null = null;
+        if (existing.length === 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[measurement-duplicate-check] candidates=0 key=${fingerprintKey} found=false`);
+        }
         for (const entry of existing) {
           const sameObjective = entry.objective === fingerprintObjective;
+          const sameFrame = entry.frameId !== null && entry.frameId === frameEpoch;
           const d1Delta = Math.abs(entry.d1Px - fingerprint.d1Px);
           const d2Delta = Math.abs(entry.d2Px - fingerprint.d2Px);
           const cxDelta = Math.abs(entry.centerX - fingerprint.centerX);
           const cyDelta = Math.abs(entry.centerY - fingerprint.centerY);
+          const centerDelta = Math.hypot(cxDelta, cyDelta);
+          const cornerDelta = getAutoMeasureMaxCornerDelta(entry.corners, c);
+          const hvDelta =
+            entry.hv !== null && candidateHv !== null ? Math.abs(entry.hv - candidateHv) : null;
+          const hvMatches = hvDelta === null || hvDelta <= AUTO_MEASURE_HARDNESS_TOLERANCE_HV;
           const matches =
             sameObjective &&
             d1Delta <= AUTO_MEASURE_DIAGONAL_TOLERANCE_PX &&
             d2Delta <= AUTO_MEASURE_DIAGONAL_TOLERANCE_PX &&
             cxDelta <= AUTO_MEASURE_CENTER_TOLERANCE_PX &&
-            cyDelta <= AUTO_MEASURE_CENTER_TOLERANCE_PX;
+            cyDelta <= AUTO_MEASURE_CENTER_TOLERANCE_PX &&
+            cornerDelta <= AUTO_MEASURE_CORNER_TOLERANCE_PX &&
+            hvMatches;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-duplicate-check] rowId=${entry.rowId ?? 'unknown'} sameFrame=${sameFrame} sameObjective=${sameObjective} d1Delta=${d1Delta.toFixed(3)} d2Delta=${d2Delta.toFixed(3)} cxDelta=${cxDelta.toFixed(3)} cyDelta=${cyDelta.toFixed(3)} centerDelta=${centerDelta.toFixed(3)} cornerDelta=${cornerDelta.toFixed(3)} hvDelta=${formatNullableNumber(hvDelta)} matches=${matches}`
+          );
           // eslint-disable-next-line no-console
           console.log(
             `[measurement-fingerprint-compare-row] rowId=${entry.rowId ?? 'unknown'} sameObjective=${sameObjective} d1Delta=${d1Delta.toFixed(2)} d2Delta=${d2Delta.toFixed(2)} cxDelta=${cxDelta.toFixed(2)} cyDelta=${cyDelta.toFixed(2)} matches=${matches}`
@@ -1996,6 +2098,14 @@ function App() {
           }
         }
         if (matchedEntry) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-duplicate-found] rowId=${matchedEntry.rowId ?? 'unknown'} key=${matchedEntry.fingerprintKey} existingHv=${matchedEntry.hv ?? 'n/a'} candidateHv=${candidateHv ?? 'n/a'} d1Px=${matchedEntry.d1Px.toFixed(2)} d2Px=${matchedEntry.d2Px.toFixed(2)}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-row-skip-duplicate] rowId=${matchedEntry.rowId ?? 'unknown'} reason=same-indentation keepHv=${matchedEntry.hv ?? 'n/a'}`
+          );
           // eslint-disable-next-line no-console
           console.log(
             `[measurement-duplicate-skip-existing-row] rowId=${matchedEntry.rowId ?? 'unknown'} key=${matchedEntry.fingerprintKey} hv=${matchedEntry.hv ?? 'n/a'} d1Px=${matchedEntry.d1Px.toFixed(2)} d2Px=${matchedEntry.d2Px.toFixed(2)}`
@@ -2023,10 +2133,23 @@ function App() {
           console.log('[overlay-set-from-auto-result] reason=duplicate-restore');
           setAutoMeasureStatus('duplicate');
           setStatusMessage(
-            'System Status: Auto Measure: same indentation — no duplicate row added.'
+            'System Status: Auto Measure: same indentation - no duplicate row added.'
           );
           return false;
         }
+      }
+
+      if (!conversion.ok) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[measurement-commit-blocked] method=Auto reason=conversion-failed detail="${conversion.reason}" objective=${objectiveForCalibration}`
+        );
+        const message = /calibration/i.test(conversion.reason)
+          ? `Calibration missing for ${objectiveForCalibration ?? 'current objective'}`
+          : conversion.reason;
+        setUnavailableMsg(message);
+        setStatusMessage(`System Status: Auto Measure blocked: ${message}`);
+        return false;
       }
 
       // Why: always commit a NEW reference for the explicit Auto Measure
@@ -2048,11 +2171,11 @@ function App() {
         );
         // eslint-disable-next-line no-console
         console.log(
-          `[overlay-set-from-auto-result] source=${source} corners=4 d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)}`
+          `[overlay-set-from-auto-result] source=${source} corners=4 d1Px=${stableD1Px.toFixed(2)} d2Px=${stableD2Px.toFixed(2)}`
         );
         // eslint-disable-next-line no-console
         console.log(
-          `[overlay-draw] source=auto-measure d1=${result.d1Pixels.toFixed(2)}px d2=${result.d2Pixels.toFixed(2)}px objective=${objectiveForCalibration ?? 'unknown'}`
+          `[overlay-draw] source=auto-measure d1=${stableD1Px.toFixed(2)}px d2=${stableD2Px.toFixed(2)}px objective=${objectiveForCalibration ?? 'unknown'}`
         );
         if (source === 'auto-click') {
           // eslint-disable-next-line no-console
@@ -2097,33 +2220,9 @@ function App() {
         );
       }
 
-      const conversion = calculateVickersFromPixels({
-        calibrationSettings,
-        calibrationSettingsList,
-        calibrations,
-        d1Px: result.d1Pixels,
-        d2Px: result.d2Pixels,
-        forceKgf,
-        machineState: machineStateForAuto,
-        objective: objectiveForCalibration,
-        targetObjective: objectiveForCalibration,
-      });
-
-      if (!conversion.ok) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[measurement-commit-blocked] method=Auto reason=conversion-failed detail="${conversion.reason}" objective=${objectiveForCalibration}`
-        );
-        const message = /calibration/i.test(conversion.reason)
-          ? `Calibration missing for ${objectiveForCalibration ?? 'current objective'}`
-          : conversion.reason;
-        setUnavailableMsg(message);
-        setStatusMessage(`System Status: Auto Measure blocked: ${message}`);
-        return false;
-      }
       // eslint-disable-next-line no-console
       console.log(
-        `[measurement-commit-start] method=Auto objective=${objectiveForCalibration} d1Px=${result.d1Pixels} d2Px=${result.d2Pixels}`
+        `[measurement-commit-start] method=Auto objective=${objectiveForCalibration} d1Px=${stableD1Px} d2Px=${stableD2Px}`
       );
 
       const values = conversion.value;
@@ -2270,21 +2369,34 @@ function App() {
       console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
       autoMeasurementIdRef.current = saved.id;
+      const committedGraphics = cloneAutoMeasureGraphics(graphics);
       committedFingerprintsRef.current = upsertCommittedAutoMeasureFingerprint(
         committedFingerprintsRef.current,
         {
           objective: fingerprintObjective,
-          d1Px: fingerprint.d1Px,
-          d2Px: fingerprint.d2Px,
+          frameId: fingerprint.frameId,
+          d1Px: values.d1Px,
+          d2Px: values.d2Px,
           centerX: fingerprint.centerX,
           centerY: fingerprint.centerY,
           hv:
             typeof saved.hv === 'number' && Number.isFinite(saved.hv)
               ? saved.hv
-              : fingerprint.hv,
+              : candidateHv,
+          d1Um: typeof saved.d1Um === 'number' && Number.isFinite(saved.d1Um) ? saved.d1Um : values.d1Um,
+          d2Um: typeof saved.d2Um === 'number' && Number.isFinite(saved.d2Um) ? saved.d2Um : values.d2Um,
+          avgDUm:
+            typeof saved.averageUm === 'number' && Number.isFinite(saved.averageUm)
+              ? saved.averageUm
+              : values.avgDUm,
+          avgDMm:
+            typeof saved.averageMm === 'number' && Number.isFinite(saved.averageMm)
+              ? saved.averageMm
+              : values.avgDMm,
           rowId: saved.id,
           fingerprintKey,
-          graphics: cloneAutoMeasureGraphics(graphics),
+          corners: committedGraphics.corners,
+          graphics: committedGraphics,
         }
       );
       // eslint-disable-next-line no-console
@@ -3880,31 +3992,43 @@ function App() {
             autoMeasurementIdRef.current = saved.id;
             const centerX = (corners.left.x + corners.right.x) / 2;
             const centerY = (corners.top.y + corners.bottom.y) / 2;
+            const stableCenterX = roundAutoMeasurePixel(centerX);
+            const stableCenterY = roundAutoMeasurePixel(centerY);
             const fingerprintObjective = normalizeAutoMeasureFingerprintObjective(objectiveForCalibration);
             const fingerprintKey = buildAutoMeasureFingerprintKey({
               objective: fingerprintObjective,
-              centerX,
-              centerY,
+              centerX: stableCenterX,
+              centerY: stableCenterY,
               d1Px: values.d1Px,
               d2Px: values.d2Px,
             });
             const baseGraphics = displayedAutoMeasureGraphicsRef.current;
             if (baseGraphics) {
+              const committedGraphics = cloneAutoMeasureGraphics({ ...baseGraphics, corners });
               committedFingerprintsRef.current = upsertCommittedAutoMeasureFingerprint(
                 committedFingerprintsRef.current,
                 {
                   objective: fingerprintObjective,
+                  frameId:
+                    typeof baseGraphics.frameId === 'number' && Number.isFinite(baseGraphics.frameId)
+                      ? baseGraphics.frameId
+                      : null,
                   d1Px: values.d1Px,
                   d2Px: values.d2Px,
-                  centerX,
-                  centerY,
+                  centerX: stableCenterX,
+                  centerY: stableCenterY,
                   hv:
                     typeof saved.hv === 'number' && Number.isFinite(saved.hv)
                       ? saved.hv
                       : values.hv,
+                  d1Um: values.d1Um,
+                  d2Um: values.d2Um,
+                  avgDUm: values.avgDUm,
+                  avgDMm: values.avgDMm,
                   rowId: saved.id,
                   fingerprintKey,
-                  graphics: cloneAutoMeasureGraphics({ ...baseGraphics, corners }),
+                  corners: committedGraphics.corners,
+                  graphics: committedGraphics,
                 }
               );
               // eslint-disable-next-line no-console
@@ -4470,17 +4594,13 @@ function App() {
       // eslint-disable-next-line no-console
       console.log(`[toolbar-tool-change] from=${activeTool} to=${mappedTool ?? action}`);
 
-      // Drawing tools (Measure Length / Measure Angle) leave persistent
-      // shapes. When the user switches AWAY to another tool, drop those
-      // shapes so the camera window doesn't carry stale measurement lines
-      // into the next mode.
+      // Measure Length keeps its one-shot behavior on tool switch. Measure
+      // Angle is intentionally persistent and multi-measurement: Clear
+      // Graphics is the explicit removal path for those overlays.
       if (activeTool === 'measureLength' && mappedTool !== 'measureLength') {
         // eslint-disable-next-line no-console
         console.log('[measure-length-reset] reason=tool-switch');
         overlay.clearByKind('length');
-      }
-      if (activeTool === 'measureAngle' && mappedTool !== 'measureAngle') {
-        overlay.clearByKind('angle');
       }
 
       // Magnifier is now an overlay toggle (handled in dispatcher via
@@ -4583,6 +4703,8 @@ function App() {
           turretMoving={turretMoving}
           turretMovingTarget={turretMovingTarget}
           cameraOpen={cameraOpen}
+          umPerPixel={umPerPixelForActiveObjective}
+          onUpdateShape={handleUpdateShape}
         />
         <RightPanel
           measurements={measurements}

@@ -2,13 +2,21 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { colors } from '@/theme/theme';
 import type {
+  AngleShape,
   OverlayShape,
   OverlayShapeInput,
   Point,
   ToolId,
 } from '@/types/tool';
-import { getImagePlacement } from '@/utils/manualMeasure';
+import {
+  displayToImage,
+  formatMicronDisplay,
+  getImagePlacement,
+  imageToDisplay,
+  pixelsToMicrons,
+} from '@/utils/manualMeasure';
 import type { ManualMeasureImageSize } from '@/utils/manualMeasureOverlayCanvas';
 
 const ROOT_SX: SxProps<Theme> = {
@@ -25,11 +33,61 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
-const STROKE = '#FFFF00';
-const STROKE_ANGLE = '#00E5FF';
+const STROKE_ANGLE = colors.measureAngleLine;
 const STROKE_CROSS = '#FF00FF';
-const TEXT_BG = 'rgba(0,0,0,0.55)';
-const FONT = '12px Consolas, ui-monospace, monospace';
+const STROKE_LENGTH = '#E040FB';
+const LENGTH_FONT = '12px "Cascadia Mono", Consolas, ui-monospace, monospace';
+const ANGLE_FONT = '12px "Cascadia Mono", Consolas, ui-monospace, monospace';
+const LENGTH_TICK_HALF = 6;
+const LENGTH_ENDPOINT_HIT_RADIUS = 8;
+const ANGLE_POINT_HIT_RADIUS = 9;
+const ANGLE_LINE_WIDTH = 1.15;
+const ANGLE_HANDLE_RADIUS = 2.25;
+const ANGLE_ARC_MIN_RADIUS = 18;
+const ANGLE_ARC_MAX_RADIUS = 44;
+const ANGLE_LOG_INTERVAL_MS = 100;
+
+type ImagePlacement = NonNullable<ReturnType<typeof getImagePlacement>>;
+type ImageRect = { x: number; y: number; width: number; height: number };
+type AnglePointKey = 'vertex' | 'a' | 'b';
+type AngleCoordinateSpace = NonNullable<AngleShape['coordinateSpace']>;
+
+type DrawOptions = {
+  imageScale: number | null;
+  umPerPixel: number | null;
+  placement: ImagePlacement | null;
+  imageSize: ManualMeasureImageSize | null;
+  imageRect: ImageRect | null;
+};
+
+type DraftLength = { kind: 'length'; a: Point };
+type DraftAngle =
+  | { kind: 'angle'; step: 'firstArm'; vertex: Point }
+  | { kind: 'angle'; step: 'secondArm'; vertex: Point; a: Point };
+type Draft = DraftLength | DraftAngle | null;
+
+type AngleDrag = {
+  id: string;
+  point: AnglePointKey;
+  pointerId: number;
+  coordinateSpace: AngleCoordinateSpace;
+  vertex: Point;
+  a: Point;
+  b: Point;
+};
+
+type LengthDrag = {
+  id: string;
+  endpoint: 'a' | 'b';
+  pointerId: number;
+  other: Point;
+  live: Point;
+};
+
+const angleRenderLogKeys = new Map<string, string>();
+const angleValueLogKeys = new Map<string, string>();
+const lengthDisplayLogKeys = new Map<string, string>();
+let lastCrossLogKey: string | null = null;
 
 function dist(a: Point, b: Point) {
   const dx = a.x - b.x;
@@ -37,9 +95,25 @@ function dist(a: Point, b: Point) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+function samePoint(a: Point | null, b: Point | null) {
+  if (!a || !b) return a === b;
+  return Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01;
+}
+
+function copyPoint(p: Point): Point {
+  return { x: p.x, y: p.y };
+}
+
+function clamp(value: number, min: number, max: number) {
+  if (max < min) return (min + max) / 2;
+  return Math.max(min, Math.min(max, value));
+}
+
 function angleDeg(vertex: Point, a: Point, b: Point) {
-  const v1x = a.x - vertex.x, v1y = a.y - vertex.y;
-  const v2x = b.x - vertex.x, v2y = b.y - vertex.y;
+  const v1x = a.x - vertex.x;
+  const v1y = a.y - vertex.y;
+  const v2x = b.x - vertex.x;
+  const v2y = b.y - vertex.y;
   const dot = v1x * v2x + v1y * v2y;
   const m1 = Math.hypot(v1x, v1y);
   const m2 = Math.hypot(v2x, v2y);
@@ -48,50 +122,316 @@ function angleDeg(vertex: Point, a: Point, b: Point) {
   return (Math.acos(cos) * 180) / Math.PI;
 }
 
-function drawLabel(ctx: CanvasRenderingContext2D, text: string, at: Point) {
-  ctx.font = FONT;
-  const metrics = ctx.measureText(text);
-  const padX = 4, padY = 2;
-  const w = metrics.width + padX * 2;
-  const h = 14 + padY * 2;
-  ctx.fillStyle = TEXT_BG;
-  ctx.fillRect(at.x + 6, at.y + 6, w, h);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.textBaseline = 'top';
-  ctx.fillText(text, at.x + 6 + padX, at.y + 6 + padY);
+function imageRectFromPlacement(placement: ImagePlacement): ImageRect {
+  return {
+    x: placement.offsetX,
+    y: placement.offsetY,
+    width: placement.width,
+    height: placement.height,
+  };
 }
 
-function drawShape(ctx: CanvasRenderingContext2D, s: OverlayShape) {
-  ctx.lineWidth = 1.5;
-  if (s.kind === 'length') {
-    ctx.strokeStyle = STROKE;
+function getLengthDisplayInfo(
+  displayPx: number,
+  placementScale: number | null,
+  umPerPixel: number | null
+) {
+  const imagePx = placementScale && placementScale > 0 ? displayPx / placementScale : displayPx;
+  const um = pixelsToMicrons(imagePx, umPerPixel);
+  return {
+    imagePx,
+    um,
+    label: um !== null ? formatMicronDisplay(um) : null,
+  };
+}
+
+function pointInRect(p: Point, rect: ImageRect) {
+  return (
+    p.x >= rect.x &&
+    p.x <= rect.x + rect.width &&
+    p.y >= rect.y &&
+    p.y <= rect.y + rect.height
+  );
+}
+
+function normalizedDelta(delta: number) {
+  const full = Math.PI * 2;
+  const next = delta % full;
+  return next < 0 ? next + full : next;
+}
+
+function getSmallArc(vertex: Point, a: Point, b: Point) {
+  const start = Math.atan2(a.y - vertex.y, a.x - vertex.x);
+  const end = Math.atan2(b.y - vertex.y, b.x - vertex.x);
+  const clockwise = normalizedDelta(end - start);
+  if (clockwise <= Math.PI) {
+    return {
+      start,
+      end,
+      anticlockwise: false,
+      span: clockwise,
+      mid: start + clockwise / 2,
+    };
+  }
+  const span = Math.PI * 2 - clockwise;
+  return {
+    start,
+    end,
+    anticlockwise: true,
+    span,
+    mid: start - span / 2,
+  };
+}
+
+function logAngleRender(
+  id: string,
+  value: number | null,
+  vertex: Point,
+  a: Point,
+  b: Point | null,
+  source: string
+) {
+  const valueText = value === null ? 'n/a' : value.toFixed(1);
+  const key = [
+    source,
+    valueText,
+    vertex.x.toFixed(1),
+    vertex.y.toFixed(1),
+    a.x.toFixed(1),
+    a.y.toFixed(1),
+    b?.x.toFixed(1) ?? 'n/a',
+    b?.y.toFixed(1) ?? 'n/a',
+  ].join('|');
+  if (angleRenderLogKeys.get(id) === key) return;
+  angleRenderLogKeys.set(id, key);
+  // eslint-disable-next-line no-console
+  console.log(`[measure-angle-render] id=${id} source=${source} value=${valueText}`);
+}
+
+function logAngleValue(id: string, value: number, source: string) {
+  const valueText = value.toFixed(1);
+  const key = `${source}|${valueText}`;
+  if (angleValueLogKeys.get(id) === key) return;
+  angleValueLogKeys.set(id, key);
+  // eslint-disable-next-line no-console
+  console.log(`[measure-angle-value] id=${id} source=${source} value=${valueText}°`);
+}
+
+function anglePointToDisplay(
+  shape: AngleShape,
+  key: AnglePointKey,
+  placement: ImagePlacement | null
+): Point | null {
+  const point = shape[key];
+  if (shape.coordinateSpace === 'image') {
+    return placement ? imageToDisplay(point, placement) : null;
+  }
+  return point;
+}
+
+function angleShapeToDisplay(shape: AngleShape, placement: ImagePlacement | null) {
+  const vertex = anglePointToDisplay(shape, 'vertex', placement);
+  const a = anglePointToDisplay(shape, 'a', placement);
+  const b = anglePointToDisplay(shape, 'b', placement);
+  return vertex && a && b ? { vertex, a, b } : null;
+}
+
+function drawLengthShape(
+  ctx: CanvasRenderingContext2D,
+  a: Point,
+  b: Point,
+  opts: { imageScale: number | null; umPerPixel: number | null },
+  source = 'shape'
+) {
+  ctx.save();
+  ctx.strokeStyle = STROKE_LENGTH;
+  ctx.lineWidth = 1.25;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len > 0.5) {
+    const px = -dy / len;
+    const py = dx / len;
+    const h = LENGTH_TICK_HALF;
     ctx.beginPath();
-    ctx.moveTo(s.a.x, s.a.y);
-    ctx.lineTo(s.b.x, s.b.y);
+    ctx.moveTo(a.x + px * h, a.y + py * h);
+    ctx.lineTo(a.x - px * h, a.y - py * h);
+    ctx.moveTo(b.x + px * h, b.y + py * h);
+    ctx.lineTo(b.x - px * h, b.y - py * h);
     ctx.stroke();
-    const px = dist(s.a, s.b);
-    drawLabel(ctx, `${px.toFixed(1)} px`, s.b);
+  }
+
+  const { imagePx, um, label } = getLengthDisplayInfo(len, opts.imageScale, opts.umPerPixel);
+  const logKey = `${source}|${imagePx.toFixed(2)}|${opts.umPerPixel ?? 'null'}|${label}`;
+  if (lengthDisplayLogKeys.get(source) !== logKey) {
+    lengthDisplayLogKeys.set(source, logKey);
+    // eslint-disable-next-line no-console
+    console.log(`[measure-length-px] source=${source} value=${imagePx.toFixed(2)}`);
+    // eslint-disable-next-line no-console
+    console.log(`[measure-length-calibration] source=${source} umPerPixel=${opts.umPerPixel ?? 'missing'}`);
+    if (um !== null) {
+      // eslint-disable-next-line no-console
+      console.log(`[measure-length-um] source=${source} value=${um.toFixed(2)}`);
+      // eslint-disable-next-line no-console
+      console.log(`[measure-length-display] source=${source} value=${label}`);
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`[measure-length-display] source=${source} value=calibration-missing`);
+    }
+  }
+  const midX = (a.x + b.x) / 2;
+  const midY = (a.y + b.y) / 2;
+  let angle = Math.atan2(dy, dx);
+  if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
+  ctx.font = LENGTH_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.translate(midX, midY);
+  ctx.rotate(angle);
+  ctx.fillStyle = STROKE_LENGTH;
+  if (label !== null) {
+    ctx.fillText(label, 0, -6);
+  }
+  ctx.restore();
+}
+
+function drawAngleHandle(ctx: CanvasRenderingContext2D, point: Point, radius: number) {
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function clampAngleLabelPoint(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  point: Point,
+  rect: ImageRect | null
+): Point {
+  if (!rect) return point;
+  const metrics = ctx.measureText(text);
+  const halfWidth = metrics.width / 2 + 3;
+  const halfHeight = 8;
+  return {
+    x: clamp(point.x, rect.x + halfWidth, rect.x + rect.width - halfWidth),
+    y: clamp(point.y, rect.y + halfHeight, rect.y + rect.height - halfHeight),
+  };
+}
+
+function drawAngleShape(
+  ctx: CanvasRenderingContext2D,
+  shape: AngleShape,
+  opts: DrawOptions,
+  source: 'shape' | 'preview' | 'drag' = 'shape'
+) {
+  const display = angleShapeToDisplay(shape, opts.placement);
+  if (!display) return;
+  const value = angleDeg(shape.vertex, shape.a, shape.b);
+  const lenA = dist(display.vertex, display.a);
+  const lenB = dist(display.vertex, display.b);
+
+  ctx.save();
+  if (opts.imageRect) {
+    ctx.beginPath();
+    ctx.rect(opts.imageRect.x, opts.imageRect.y, opts.imageRect.width, opts.imageRect.height);
+    ctx.clip();
+  }
+
+  ctx.strokeStyle = STROKE_ANGLE;
+  ctx.fillStyle = STROKE_ANGLE;
+  ctx.lineWidth = ANGLE_LINE_WIDTH;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(display.vertex.x, display.vertex.y);
+  ctx.lineTo(display.a.x, display.a.y);
+  ctx.moveTo(display.vertex.x, display.vertex.y);
+  ctx.lineTo(display.b.x, display.b.y);
+  ctx.stroke();
+
+  if (lenA > 1 && lenB > 1) {
+    const arc = getSmallArc(display.vertex, display.a, display.b);
+    const radius = Math.min(
+      ANGLE_ARC_MAX_RADIUS,
+      Math.max(ANGLE_ARC_MIN_RADIUS, Math.min(lenA, lenB) * 0.28)
+    );
+    ctx.beginPath();
+    ctx.arc(display.vertex.x, display.vertex.y, radius, arc.start, arc.end, arc.anticlockwise);
+    ctx.stroke();
+
+    const label = `${value.toFixed(1)}°`;
+    const labelRadius = radius + 17;
+    ctx.font = ANGLE_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const labelPoint = clampAngleLabelPoint(
+      ctx,
+      label,
+      {
+        x: display.vertex.x + Math.cos(arc.mid) * labelRadius,
+        y: display.vertex.y + Math.sin(arc.mid) * labelRadius,
+      },
+      opts.imageRect
+    );
+    ctx.fillText(label, labelPoint.x, labelPoint.y);
+  }
+
+  drawAngleHandle(ctx, display.vertex, ANGLE_HANDLE_RADIUS + 0.35);
+  drawAngleHandle(ctx, display.a, ANGLE_HANDLE_RADIUS);
+  drawAngleHandle(ctx, display.b, ANGLE_HANDLE_RADIUS);
+  ctx.restore();
+
+  logAngleRender(shape.id, value, display.vertex, display.a, display.b, source);
+  logAngleValue(shape.id, value, source);
+}
+
+function drawAngleFirstArm(
+  ctx: CanvasRenderingContext2D,
+  vertexImage: Point,
+  endpointImage: Point,
+  opts: DrawOptions
+) {
+  if (!opts.placement) return;
+  const vertex = imageToDisplay(vertexImage, opts.placement);
+  const endpoint = imageToDisplay(endpointImage, opts.placement);
+  ctx.save();
+  if (opts.imageRect) {
+    ctx.beginPath();
+    ctx.rect(opts.imageRect.x, opts.imageRect.y, opts.imageRect.width, opts.imageRect.height);
+    ctx.clip();
+  }
+  ctx.strokeStyle = STROKE_ANGLE;
+  ctx.fillStyle = STROKE_ANGLE;
+  ctx.lineWidth = ANGLE_LINE_WIDTH;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(vertex.x, vertex.y);
+  ctx.lineTo(endpoint.x, endpoint.y);
+  ctx.stroke();
+  drawAngleHandle(ctx, vertex, ANGLE_HANDLE_RADIUS + 0.35);
+  drawAngleHandle(ctx, endpoint, ANGLE_HANDLE_RADIUS);
+  ctx.restore();
+  logAngleRender('_draft_first_arm', null, vertex, endpoint, null, 'preview');
+}
+
+function drawShape(ctx: CanvasRenderingContext2D, s: OverlayShape, opts: DrawOptions) {
+  if (s.kind === 'length') {
+    drawLengthShape(ctx, s.a, s.b, opts, `shape:${s.id}`);
     return;
   }
-  // angle
-  ctx.strokeStyle = STROKE_ANGLE;
-  ctx.beginPath();
-  ctx.moveTo(s.a.x, s.a.y);
-  ctx.lineTo(s.vertex.x, s.vertex.y);
-  ctx.lineTo(s.b.x, s.b.y);
-  ctx.stroke();
-  drawLabel(ctx, `${angleDeg(s.vertex, s.a, s.b).toFixed(1)}°`, s.vertex);
+  drawAngleShape(ctx, s, opts);
 }
 
-type ImageRect = { x: number; y: number; width: number; height: number };
-
-let lastCrossLogKey: string | null = null;
 function drawCross(ctx: CanvasRenderingContext2D, rect: ImageRect) {
   const centerX = rect.x + rect.width / 2;
   const centerY = rect.y + rect.height / 2;
   ctx.save();
-  // Clip to the actual displayed image rect so the cross never extends into
-  // the letterbox / black side bars around the live camera frame.
   ctx.beginPath();
   ctx.rect(rect.x, rect.y, rect.width, rect.height);
   ctx.clip();
@@ -118,11 +458,21 @@ function drawCross(ctx: CanvasRenderingContext2D, rect: ImageRect) {
   }
 }
 
-type DraftLength = { kind: 'length'; a: Point; b: Point };
-type DraftAngle =
-  | { kind: 'angle'; step: 'a'; vertex: Point; a: Point }
-  | { kind: 'angle'; step: 'b'; vertex: Point; a: Point; b: Point };
-type Draft = DraftLength | DraftAngle | null;
+function hitTestAnglePoint(
+  p: Point,
+  shape: AngleShape,
+  placement: ImagePlacement | null
+): AnglePointKey | null {
+  const display = angleShapeToDisplay(shape, placement);
+  if (!display) return null;
+  const candidates: Array<{ key: AnglePointKey; distance: number }> = [
+    { key: 'vertex', distance: dist(p, display.vertex) },
+    { key: 'a', distance: dist(p, display.a) },
+    { key: 'b', distance: dist(p, display.b) },
+  ];
+  candidates.sort((left, right) => left.distance - right.distance);
+  return candidates[0]?.distance <= ANGLE_POINT_HIT_RADIUS ? candidates[0].key : null;
+}
 
 type Props = {
   activeTool: ToolId;
@@ -130,16 +480,17 @@ type Props = {
   crossLineVisible: boolean;
   /**
    * Native size of the live camera image. Required to compute the centered
-   * imageRect (offset + scaled dimensions) inside the wrapper so the Center
-   * Cross Line tracks the actual displayed image — not the canvas bitmap or
-   * the wrapper element (which include letterbox padding).
+   * imageRect (offset + scaled dimensions) inside the wrapper so tools track
+   * the displayed image, not the black letterbox padding.
    */
   imageSize: ManualMeasureImageSize | null;
+  /** Active objective's calibration in um per IMAGE pixel. Used by Measure
+   *  Length to render values as "X.XXum"; no pixel label is rendered when
+   *  calibration is unavailable. */
+  umPerPixel?: number | null;
   onAddShape: (shape: OverlayShapeInput) => void;
+  onUpdateShape?: (id: string, next: OverlayShapeInput) => void;
   onCursor?: (p: Point | null) => void;
-  // Called by the overlay when a new length/angle draft starts so the host
-  // can drop previously-completed shapes of the same kind. Keeps the camera
-  // window from accumulating stale measurement lines across iterations.
   onClearKind?: (kind: OverlayShape['kind']) => void;
 };
 
@@ -148,31 +499,52 @@ function ImageOverlayImpl({
   shapes,
   crossLineVisible,
   imageSize,
+  umPerPixel = null,
   onAddShape,
+  onUpdateShape,
   onCursor,
-  onClearKind,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
-  const [draft, setDraft] = useState<Draft>(null);
-  const [hover, setHover] = useState<Point | null>(null);
-  // Bumped whenever the bitmap is resized so the redraw effect re-runs and
-  // the Center Cross Line (and other overlays) repaint against the new
-  // dimensions. Without this, a resize clears the bitmap and the cross
-  // stays gone until the next state-driven redraw.
+  const draftRef = useRef<Draft>(null);
+  const hoverDisplayRef = useRef<Point | null>(null);
+  const hoverImageRef = useRef<Point | null>(null);
+  const lengthDragRef = useRef<LengthDrag | null>(null);
+  const angleDragRef = useRef<AngleDrag | null>(null);
+  const paintFrameRef = useRef<number | null>(null);
+  const lastLengthLogAtRef = useRef(0);
+  const lastAnglePreviewLogAtRef = useRef(0);
+  const lastDragLogAtRef = useRef(0);
   const [resizeTick, setResizeTick] = useState(0);
+  const [paintTick, setPaintTick] = useState(0);
 
-  // Resize the bitmap to match the wrapper size to keep crisp drawing.
+  const requestPaint = useCallback(() => {
+    if (paintFrameRef.current !== null) return;
+    paintFrameRef.current = window.requestAnimationFrame(() => {
+      paintFrameRef.current = null;
+      setPaintTick((tick) => tick + 1);
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (paintFrameRef.current !== null) {
+        window.cancelAnimationFrame(paintFrameRef.current);
+        paintFrameRef.current = null;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
 
     const apply = () => {
-      const rect = wrap.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
-      const targetW = Math.max(1, Math.round(rect.width * dpr));
-      const targetH = Math.max(1, Math.round(rect.height * dpr));
+      const targetW = Math.max(1, Math.round(wrap.clientWidth * dpr));
+      const targetH = Math.max(1, Math.round(wrap.clientHeight * dpr));
       if (canvas.width !== targetW || canvas.height !== targetH) {
         canvas.width = targetW;
         canvas.height = targetH;
@@ -186,7 +558,52 @@ function ImageOverlayImpl({
     return () => ro.disconnect();
   }, []);
 
-  // Redraw whenever shapes / draft / crossline / hover changes.
+  const getCurrentPlacement = useCallback((): ImagePlacement | null => {
+    const wrap = wrapRef.current;
+    if (!wrap || !imageSize || imageSize.width <= 0 || imageSize.height <= 0) return null;
+    return getImagePlacement(wrap.clientWidth, wrap.clientHeight, imageSize);
+  }, [imageSize]);
+
+  const localPoint = useCallback((e: React.PointerEvent): Point => {
+    const wrap = wrapRef.current;
+    if (!wrap) return { x: 0, y: 0 };
+    const rect = wrap.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * wrap.clientWidth,
+      y: ((e.clientY - rect.top) / rect.height) * wrap.clientHeight,
+    };
+  }, []);
+
+  const pointerToImagePoint = useCallback(
+    (e: React.PointerEvent, allowClamp: boolean) => {
+      if (!imageSize || imageSize.width <= 0 || imageSize.height <= 0) return null;
+      const placement = getCurrentPlacement();
+      if (!placement) return null;
+      const display = localPoint(e);
+      const imageRect = imageRectFromPlacement(placement);
+      if (!allowClamp && !pointInRect(display, imageRect)) return null;
+      const image = displayToImage(display, placement, imageSize);
+      return {
+        image,
+        display: imageToDisplay(image, placement),
+        rawDisplay: display,
+        placement,
+        imageRect,
+      };
+    },
+    [getCurrentPlacement, imageSize, localPoint]
+  );
+
+  const pointForDrag = useCallback(
+    (e: React.PointerEvent, coordinateSpace: AngleCoordinateSpace): Point | null => {
+      const hit = pointerToImagePoint(e, true);
+      if (coordinateSpace === 'image') return hit?.image ?? null;
+      return hit?.display ?? localPoint(e);
+    },
+    [localPoint, pointerToImagePoint]
+  );
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -199,170 +616,443 @@ function ImageOverlayImpl({
     const hCss = canvas.height / dpr;
     ctx.clearRect(0, 0, wCss, hCss);
 
-    if (crossLineVisible) {
-      const placement =
-        imageSize && imageSize.width > 0 && imageSize.height > 0
-          ? getImagePlacement(wCss, hCss, imageSize)
-          : null;
-      if (placement) {
-        drawCross(ctx, {
-          x: placement.offsetX,
-          y: placement.offsetY,
-          width: placement.width,
-          height: placement.height,
-        });
-      }
+    const placement =
+      imageSize && imageSize.width > 0 && imageSize.height > 0
+        ? getImagePlacement(wCss, hCss, imageSize)
+        : null;
+    const imageRect = placement ? imageRectFromPlacement(placement) : null;
+
+    if (crossLineVisible && imageRect) {
+      drawCross(ctx, imageRect);
     }
 
-    for (const s of shapes) drawShape(ctx, s);
+    const drawOpts: DrawOptions = {
+      imageScale: placement ? placement.scale : null,
+      umPerPixel,
+      placement,
+      imageSize,
+      imageRect,
+    };
+    const lengthDrag = lengthDragRef.current;
+    const angleDrag = angleDragRef.current;
 
-    if (draft && hover) {
-      if (draft.kind === 'length') {
-        drawShape(ctx, { id: '_draft', kind: 'length', a: draft.a, b: hover });
-      } else if (draft.kind === 'angle') {
-        if (draft.step === 'a') {
-          ctx.strokeStyle = STROKE_ANGLE;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(hover.x, hover.y);
-          ctx.lineTo(draft.vertex.x, draft.vertex.y);
-          ctx.stroke();
-        } else {
-          drawShape(ctx, {
+    for (const shape of shapes) {
+      if (shape.kind === 'length' && lengthDrag && lengthDrag.id === shape.id) {
+        const a = lengthDrag.endpoint === 'a' ? lengthDrag.live : lengthDrag.other;
+        const b = lengthDrag.endpoint === 'b' ? lengthDrag.live : lengthDrag.other;
+        drawLengthShape(ctx, a, b, drawOpts, `drag:${shape.id}`);
+        // eslint-disable-next-line no-console
+        console.log(`[measure-length-render] id=${shape.id} dragging=true`);
+        continue;
+      }
+      if (shape.kind === 'angle' && angleDrag && angleDrag.id === shape.id) {
+        drawAngleShape(
+          ctx,
+          {
+            id: shape.id,
+            kind: 'angle',
+            vertex: angleDrag.vertex,
+            a: angleDrag.a,
+            b: angleDrag.b,
+            coordinateSpace: angleDrag.coordinateSpace,
+          },
+          drawOpts,
+          'drag'
+        );
+        continue;
+      }
+      drawShape(ctx, shape, drawOpts);
+    }
+
+    const draft = draftRef.current;
+    if (draft?.kind === 'length' && hoverDisplayRef.current) {
+      drawLengthShape(ctx, draft.a, hoverDisplayRef.current, drawOpts, 'preview');
+    } else if (draft?.kind === 'angle' && hoverImageRef.current) {
+      if (draft.step === 'firstArm') {
+        drawAngleFirstArm(ctx, draft.vertex, hoverImageRef.current, drawOpts);
+      } else {
+        drawAngleShape(
+          ctx,
+          {
             id: '_draft',
             kind: 'angle',
             vertex: draft.vertex,
             a: draft.a,
-            b: hover,
-          });
-        }
+            b: hoverImageRef.current,
+            coordinateSpace: 'image',
+          },
+          drawOpts,
+          'preview'
+        );
       }
     }
-  }, [shapes, draft, hover, crossLineVisible, imageSize, resizeTick]);
+  }, [shapes, crossLineVisible, imageSize, resizeTick, umPerPixel, paintTick]);
 
-  // Lifecycle: announce open when entering a drawing tool and reset on exit.
   useEffect(() => {
     if (activeTool === 'measureLength') {
       // eslint-disable-next-line no-console
       console.log('[measure-length-open]');
     }
-    setDraft((prev) => {
-      if (prev) {
+    if (activeTool === 'measureAngle') {
+      // eslint-disable-next-line no-console
+      console.log('[measure-angle-tool-enable]');
+    }
+    if (draftRef.current) {
+      if (draftRef.current.kind === 'length') {
         // eslint-disable-next-line no-console
         console.log('[measure-length-reset] reason=tool-switch');
       }
-      return null;
-    });
-  }, [activeTool]);
+      draftRef.current = null;
+      hoverDisplayRef.current = null;
+      hoverImageRef.current = null;
+      requestPaint();
+    }
+  }, [activeTool, requestPaint]);
 
-  // Throttle the per-move length log to ~10Hz so the console isn't flooded.
-  const lastLengthLogAtRef = useRef(0);
-
-  const localPoint = useCallback((e: React.PointerEvent): Point => {
-    const wrap = wrapRef.current;
-    if (!wrap) return { x: 0, y: 0 };
-    const rect = wrap.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  }, []);
-
-  const isDrawingTool =
-    activeTool === 'measureLength' ||
-    activeTool === 'measureAngle';
+  const isDrawingTool = activeTool === 'measureLength' || activeTool === 'measureAngle';
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
-      const p = localPoint(e);
-      setHover(p);
-      onCursor?.(p);
-      if (draft && draft.kind === 'length') {
+      const display = localPoint(e);
+      hoverDisplayRef.current = display;
+      onCursor?.(display);
+
+      const angleDrag = angleDragRef.current;
+      if (angleDrag && angleDrag.pointerId === e.pointerId) {
+        const next = pointForDrag(e, angleDrag.coordinateSpace);
+        if (!next) return;
+        angleDrag[angleDrag.point] = next;
+        const value = angleDeg(angleDrag.vertex, angleDrag.a, angleDrag.b);
+        requestPaint();
         const now = Date.now();
-        if (now - lastLengthLogAtRef.current >= 100) {
-          lastLengthLogAtRef.current = now;
-          const lengthPx = dist(draft.a, p);
+        if (now - lastDragLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
+          lastDragLogAtRef.current = now;
           // eslint-disable-next-line no-console
           console.log(
-            `[measure-length-update] lengthPx=${lengthPx.toFixed(2)} lengthUm=n/a`
+            `[measure-angle-drag] id=${angleDrag.id} point=${angleDrag.point} value=${value.toFixed(1)}°`
+          );
+          logAngleValue(angleDrag.id, value, 'drag');
+        }
+        return;
+      }
+
+      const lengthDrag = lengthDragRef.current;
+      if (lengthDrag && lengthDrag.pointerId === e.pointerId) {
+        lengthDrag.live = display;
+        requestPaint();
+        const now = Date.now();
+        if (now - lastDragLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
+          lastDragLogAtRef.current = now;
+          const lengthPx = dist(lengthDrag.other, display);
+          const placement = getCurrentPlacement();
+          const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measure-length-drag] id=${lengthDrag.id} endpoint=${lengthDrag.endpoint} lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
+          );
+        }
+        return;
+      }
+
+      const draft = draftRef.current;
+      if (draft?.kind === 'angle') {
+        const hit = pointerToImagePoint(e, true);
+        if (!hit) return;
+        if (!samePoint(hoverImageRef.current, hit.image)) {
+          hoverImageRef.current = hit.image;
+          hoverDisplayRef.current = hit.display;
+          requestPaint();
+        }
+        if (draft.step === 'secondArm') {
+          const value = angleDeg(draft.vertex, draft.a, hit.image);
+          const now = Date.now();
+          if (now - lastAnglePreviewLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
+            lastAnglePreviewLogAtRef.current = now;
+            // eslint-disable-next-line no-console
+            console.log(`[measure-angle-preview] value=${value.toFixed(1)}°`);
+            logAngleValue('_draft', value, 'preview');
+          }
+        }
+        return;
+      }
+
+      if (draft?.kind === 'length') {
+        requestPaint();
+        const now = Date.now();
+        if (now - lastLengthLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
+          lastLengthLogAtRef.current = now;
+          const lengthPx = dist(draft.a, display);
+          const placement = getCurrentPlacement();
+          const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measure-length-update] lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
           );
         }
       }
     },
-    [draft, localPoint, onCursor]
+    [getCurrentPlacement, localPoint, onCursor, pointForDrag, pointerToImagePoint, requestPaint, umPerPixel]
   );
 
   const handlePointerLeave = useCallback(() => {
-    setHover(null);
+    if (lengthDragRef.current || angleDragRef.current) return;
+    hoverDisplayRef.current = null;
+    hoverImageRef.current = null;
     onCursor?.(null);
-  }, [onCursor]);
+    requestPaint();
+  }, [onCursor, requestPaint]);
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      const angleDrag = angleDragRef.current;
+      if (angleDrag && angleDrag.pointerId === e.pointerId) {
+        const wrap = wrapRef.current;
+        if (wrap?.hasPointerCapture(e.pointerId)) {
+          wrap.releasePointerCapture(e.pointerId);
+        }
+        const value = angleDeg(angleDrag.vertex, angleDrag.a, angleDrag.b);
+        onUpdateShape?.(angleDrag.id, {
+          kind: 'angle',
+          vertex: copyPoint(angleDrag.vertex),
+          a: copyPoint(angleDrag.a),
+          b: copyPoint(angleDrag.b),
+          coordinateSpace: angleDrag.coordinateSpace,
+        });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measure-angle-drag] id=${angleDrag.id} point=${angleDrag.point} action=end value=${value.toFixed(1)}°`
+        );
+        logAngleValue(angleDrag.id, value, 'drag');
+        angleDragRef.current = null;
+        requestPaint();
+        e.preventDefault();
+        return;
+      }
+
+      const lengthDrag = lengthDragRef.current;
+      if (!lengthDrag || lengthDrag.pointerId !== e.pointerId) return;
+      const wrap = wrapRef.current;
+      if (wrap?.hasPointerCapture(e.pointerId)) {
+        wrap.releasePointerCapture(e.pointerId);
+      }
+      const a = lengthDrag.endpoint === 'a' ? lengthDrag.live : lengthDrag.other;
+      const b = lengthDrag.endpoint === 'b' ? lengthDrag.live : lengthDrag.other;
+      onUpdateShape?.(lengthDrag.id, { kind: 'length', a, b });
+      const lengthPx = dist(a, b);
+      const placement = getCurrentPlacement();
+      const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measure-length-drag] id=${lengthDrag.id} endpoint=${lengthDrag.endpoint} action=end lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
+      );
+      lengthDragRef.current = null;
+      requestPaint();
+    },
+    [getCurrentPlacement, onUpdateShape, requestPaint, umPerPixel]
+  );
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
+      const display = localPoint(e);
+      const draft = draftRef.current;
+
+      if (!draft && (activeTool === 'pointer' || activeTool === 'measureLength' || activeTool === 'measureAngle')) {
+        const placement = getCurrentPlacement();
+        for (let i = shapes.length - 1; i >= 0; i--) {
+          const shape = shapes[i];
+          if (
+            shape.kind === 'angle' &&
+            (activeTool === 'pointer' || activeTool === 'measureAngle')
+          ) {
+            const point = hitTestAnglePoint(display, shape, placement);
+            if (point) {
+              (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+              const coordinateSpace = shape.coordinateSpace ?? 'display';
+              angleDragRef.current = {
+                id: shape.id,
+                point,
+                pointerId: e.pointerId,
+                coordinateSpace,
+                vertex: copyPoint(shape.vertex),
+                a: copyPoint(shape.a),
+                b: copyPoint(shape.b),
+              };
+              const next = pointForDrag(e, coordinateSpace);
+              if (next) {
+                angleDragRef.current[point] = next;
+              }
+              const dragValue = angleDeg(
+                angleDragRef.current.vertex,
+                angleDragRef.current.a,
+                angleDragRef.current.b
+              );
+              // eslint-disable-next-line no-console
+              console.log(
+                `[measure-angle-drag] id=${shape.id} point=${point} action=start value=${dragValue.toFixed(1)}°`
+              );
+              requestPaint();
+              e.preventDefault();
+              return;
+            }
+          }
+
+          if (
+            shape.kind === 'length' &&
+            (activeTool === 'pointer' || activeTool === 'measureLength')
+          ) {
+            const dA = dist(display, shape.a);
+            const dB = dist(display, shape.b);
+            const nearer = dA <= dB ? 'a' : 'b';
+            const dHit = Math.min(dA, dB);
+            if (dHit <= LENGTH_ENDPOINT_HIT_RADIUS) {
+              (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+              lengthDragRef.current = {
+                id: shape.id,
+                endpoint: nearer,
+                pointerId: e.pointerId,
+                other: nearer === 'a' ? shape.b : shape.a,
+                live: display,
+              };
+              requestPaint();
+              // eslint-disable-next-line no-console
+              console.log(
+                `[measure-length-drag] id=${shape.id} endpoint=${nearer} action=start`
+              );
+              e.preventDefault();
+              return;
+            }
+          }
+        }
+      }
+
       if (!isDrawingTool) return;
-      const p = localPoint(e);
 
       if (activeTool === 'measureLength') {
         if (!draft) {
-          // First click of a new length: drop any previous length shape so
-          // only the most recent measurement is visible.
-          onClearKind?.('length');
-          setDraft({ kind: 'length', a: p, b: p });
+          draftRef.current = { kind: 'length', a: display };
+          hoverDisplayRef.current = display;
+          requestPaint();
           // eslint-disable-next-line no-console
           console.log('[measure-length-start]');
         } else if (draft.kind === 'length') {
-          onAddShape({ kind: 'length', a: draft.a, b: p });
-          setDraft(null);
+          onAddShape({ kind: 'length', a: draft.a, b: display });
+          draftRef.current = null;
+          hoverDisplayRef.current = null;
+          requestPaint();
+          const lengthPx = dist(draft.a, display);
+          const placement = getCurrentPlacement();
+          const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
           // eslint-disable-next-line no-console
-          console.log('[measure-length-complete]');
+          console.log(
+            `[measure-length-complete] lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
+          );
           // eslint-disable-next-line no-console
           console.log('[measure-length-reset] reason=complete');
         }
         return;
       }
+
       if (activeTool === 'measureAngle') {
+        const hit = pointerToImagePoint(e, false);
+        if (!hit) return;
+
         if (!draft) {
-          onClearKind?.('angle');
-          setDraft({ kind: 'angle', step: 'a', vertex: p, a: p });
-        } else if (draft.kind === 'angle' && draft.step === 'a') {
-          setDraft({ kind: 'angle', step: 'b', vertex: draft.vertex, a: p, b: p });
-        } else if (draft.kind === 'angle' && draft.step === 'b') {
-          onAddShape({ kind: 'angle', vertex: draft.vertex, a: draft.a, b: p });
-          setDraft(null);
+          draftRef.current = { kind: 'angle', step: 'firstArm', vertex: hit.image };
+          hoverImageRef.current = hit.image;
+          hoverDisplayRef.current = hit.display;
+          requestPaint();
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measure-angle-start] vertex=${hit.image.x.toFixed(2)},${hit.image.y.toFixed(2)}`
+          );
+          e.preventDefault();
+          return;
+        }
+
+        if (draft.kind === 'angle' && draft.step === 'firstArm') {
+          draftRef.current = {
+            kind: 'angle',
+            step: 'secondArm',
+            vertex: draft.vertex,
+            a: hit.image,
+          };
+          hoverImageRef.current = hit.image;
+          hoverDisplayRef.current = hit.display;
+          requestPaint();
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measure-angle-first-arm] endpoint=${hit.image.x.toFixed(2)},${hit.image.y.toFixed(2)}`
+          );
+          e.preventDefault();
+          return;
+        }
+
+        if (draft.kind === 'angle' && draft.step === 'secondArm') {
+          const value = angleDeg(draft.vertex, draft.a, hit.image);
+          onAddShape({
+            kind: 'angle',
+            vertex: copyPoint(draft.vertex),
+            a: copyPoint(draft.a),
+            b: copyPoint(hit.image),
+            coordinateSpace: 'image',
+          });
+          draftRef.current = null;
+          hoverImageRef.current = null;
+          hoverDisplayRef.current = null;
+          requestPaint();
+          // eslint-disable-next-line no-console
+          console.log(`[measure-angle-finalize] value=${value.toFixed(1)}°`);
+          logAngleValue('_finalize', value, 'finalize');
+          e.preventDefault();
         }
       }
     },
-    [activeTool, draft, isDrawingTool, localPoint, onAddShape, onClearKind]
+    [
+      activeTool,
+      getCurrentPlacement,
+      isDrawingTool,
+      localPoint,
+      onAddShape,
+      pointerToImagePoint,
+      pointForDrag,
+      requestPaint,
+      shapes,
+      umPerPixel,
+    ]
   );
 
-  // Right-click cancels the in-progress draft.
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
-      if (draft) {
-        e.preventDefault();
-        if (draft.kind === 'length') {
-          // eslint-disable-next-line no-console
-          console.log('[measure-length-reset] reason=escape');
-        }
-        setDraft(null);
+      if (!draftRef.current) return;
+      e.preventDefault();
+      if (draftRef.current.kind === 'length') {
+        // eslint-disable-next-line no-console
+        console.log('[measure-length-reset] reason=escape');
       }
+      draftRef.current = null;
+      hoverDisplayRef.current = null;
+      hoverImageRef.current = null;
+      requestPaint();
     },
-    [draft]
+    [requestPaint]
   );
 
-  // Escape key also cancels an in-progress draft.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      setDraft((prev) => {
-        if (prev && prev.kind === 'length') {
-          // eslint-disable-next-line no-console
-          console.log('[measure-length-reset] reason=escape');
-        }
-        return null;
-      });
+      if (draftRef.current?.kind === 'length') {
+        // eslint-disable-next-line no-console
+        console.log('[measure-length-reset] reason=escape');
+      }
+      draftRef.current = null;
+      hoverDisplayRef.current = null;
+      hoverImageRef.current = null;
+      requestPaint();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [requestPaint]);
 
   const cursor =
     activeTool === 'pointer'
@@ -379,6 +1069,8 @@ function ImageOverlayImpl({
       sx={{ ...ROOT_SX, cursor }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       onPointerLeave={handlePointerLeave}
       onContextMenu={handleContextMenu}
     >

@@ -38,6 +38,7 @@ export const colors = {
   // Measurement overlay colors — drawn on the camera/canvas.
   autoMeasureLine: '#FFFF00',
   d1d2MeasureLine: '#800080',
+  measureAngleLine: '#E040FB',
   // Back-compat alias.
   heading: '#1E3A5F',
 } as const;

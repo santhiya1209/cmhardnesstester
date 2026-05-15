@@ -132,6 +132,11 @@ type Props = {
   /** Live camera open flag. Forwarded to AutoMeasureOverlay so it can hard-
    *  gate drawing — no yellow lines may paint when the camera is closed. */
   cameraOpen?: boolean;
+  /** Active objective's calibration in µm per image pixel. Threaded into
+   *  ImageOverlay so Measure Length renders calibrated microns. */
+  umPerPixel?: number | null;
+  /** Endpoint-drag commit for an existing length shape (Measure Length). */
+  onUpdateShape?: (id: string, next: OverlayShapeInput) => void;
 };
 
 export type CameraWindowHandle = {
@@ -194,6 +199,8 @@ function CameraWindowImpl(
     turretMoving = false,
     turretMovingTarget = null,
     cameraOpen = true,
+    umPerPixel = null,
+    onUpdateShape,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -874,7 +881,9 @@ function CameraWindowImpl(
           shapes={overlayShapes}
           crossLineVisible={crossLineVisible}
           imageSize={imageSize}
+          umPerPixel={umPerPixel}
           onAddShape={onAddShape}
+          onUpdateShape={onUpdateShape}
           onClearKind={onClearShapeKind}
         />
         <AutoMeasureOverlay

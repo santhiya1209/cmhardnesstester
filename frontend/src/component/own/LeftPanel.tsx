@@ -100,6 +100,8 @@ type Props = {
   turretMoving?: boolean;
   turretMovingTarget?: string | null;
   cameraOpen?: boolean;
+  umPerPixel?: number | null;
+  onUpdateShape?: (id: string, next: OverlayShapeInput) => void;
 };
 
 function LeftPanelImpl(
@@ -122,6 +124,8 @@ function LeftPanelImpl(
     turretMoving,
     turretMovingTarget,
     cameraOpen,
+    umPerPixel,
+    onUpdateShape,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -148,6 +152,8 @@ function LeftPanelImpl(
         turretMoving={turretMoving}
         turretMovingTarget={turretMovingTarget}
         cameraOpen={cameraOpen}
+        umPerPixel={umPerPixel}
+        onUpdateShape={onUpdateShape}
       />
     </Box>
   );
