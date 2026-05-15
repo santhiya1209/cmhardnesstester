@@ -124,6 +124,9 @@ type Props = {
    * Defaults to false for safety.
    */
   turretMoving?: boolean;
+  /** Live camera open flag. Forwarded to AutoMeasureOverlay so it can hard-
+   *  gate drawing — no yellow lines may paint when the camera is closed. */
+  cameraOpen?: boolean;
 };
 
 export type CameraWindowHandle = {
@@ -147,8 +150,8 @@ export type CameraWindowHandle = {
     quality?: number;
   }) => string | null;
   refetchStatus: () => Promise<void>;
-  clearLiveCanvas: () => void;
-  clearLiveImage: () => void;
+  clearLiveCanvas: (reason?: string) => void;
+  clearLiveImage: (reason?: string) => void;
   waitForFreshFrame: (timeoutMs?: number) => Promise<boolean>;
 };
 
@@ -184,6 +187,7 @@ function CameraWindowImpl(
     onClearShapeKind,
     lineStrokeWidth,
     turretMoving = false,
+    cameraOpen = true,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -521,7 +525,7 @@ function CameraWindowImpl(
     [frozen, imageSize]
   );
 
-  const clearLiveCanvas = useCallback(() => {
+  const clearLiveCanvas = useCallback((reason: string = 'objective-change') => {
     const live = canvasRef.current;
     if (!live) return;
     const ctx = live.getContext('2d');
@@ -534,7 +538,7 @@ function CameraWindowImpl(
     const newEpoch = bumpFrameEpochOnCanvasClear();
     // eslint-disable-next-line no-console
     console.log(
-      `[camera-frame-clear] reason=objective-change clearedAt=${liveCanvasClearedAtRef.current} newEpoch=${newEpoch}`
+      `[camera-frame-clear] reason=${reason} clearedAt=${liveCanvasClearedAtRef.current} newEpoch=${newEpoch}`
     );
     // Why: do NOT null imageSize here. The camera resolution is unchanged on
     // objective change — the magnification is optical, not pixel. Nulling
@@ -596,13 +600,14 @@ function CameraWindowImpl(
     return undefined;
   }, [turretMoving]);
 
-  const clearLiveImage = useCallback(() => {
+  const clearLiveImage = useCallback((reason: string = 'camera-close') => {
     const snap = freezeCanvasRef.current;
     const snapCtx = snap?.getContext('2d');
     if (snap && snapCtx) snapCtx.clearRect(0, 0, snap.width, snap.height);
     imageSourceRef.current = 'live-camera';
     setFrozen(false);
-    clearLiveCanvas();
+    setImageSize(null);
+    clearLiveCanvas(reason);
   }, [clearLiveCanvas]);
 
   const waitForFreshFrame = useCallback(async (timeoutMs = 1500) => {
@@ -859,6 +864,7 @@ function CameraWindowImpl(
           strokeWidth={lineStrokeWidth}
           activeObjective={manualMeasureObjective}
           clearNonce={autoMeasureClearNonce}
+          cameraOpen={cameraOpen}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}

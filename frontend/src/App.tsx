@@ -4230,6 +4230,14 @@ function App() {
             console.log('[camera-close] requested');
             // eslint-disable-next-line no-console
             console.log('[camera-close]');
+            // eslint-disable-next-line no-console
+            console.log('[camera-close-ui-clear]');
+            // Force AutoMeasureOverlay to imperatively clearRect its canvas
+            // synchronously, before the IPC round-trip. Without this, a rAF
+            // queued by the live draw loop can repaint the 4 yellow lines
+            // AFTER the React state nulling but BEFORE device:close returns,
+            // leaving stale lines visible across the close.
+            setAutoMeasureClearNonce((n) => n + 1);
             // Drop all Auto Measure overlay state synchronously, BEFORE the
             // IPC round-trip. The render gate at App.tsx:`displayedAutoMeasure
             // Graphics` is `cameraOpen ? raw : null` — flipping cameraOpen
@@ -4279,10 +4287,13 @@ function App() {
             // overlay that belongs to the live camera frame so the viewport
             // actually appears empty after close.
             await cameraRef.current?.refetchStatus();
-            cameraRef.current?.clearLiveImage();
+            cameraRef.current?.clearLiveImage('camera-close');
             setCameraOpen(false);
             setCommittedAutoMeasureOverlay(null);
             setPreviewAutoMeasureOverlay(null);
+            // Second bump after IPC closes the stream — guarantees any rAF
+            // that landed mid-IPC is invalidated and the canvas is blank.
+            setAutoMeasureClearNonce((n) => n + 1);
             autoMeasurePreviewSnapshotRef.current = null;
             committedAutoMeasureFrameRef.current = null;
             previewMeasurementRef.current = null;
@@ -4532,6 +4543,7 @@ function App() {
           onClearShapeKind={overlay.clearByKind}
           lineStrokeWidth={lineThickness.strokeWidth}
           turretMoving={turretMoving}
+          cameraOpen={cameraOpen}
         />
         <RightPanel
           measurements={measurements}

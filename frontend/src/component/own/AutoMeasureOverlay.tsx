@@ -50,6 +50,10 @@ type Props = {
   /** Bump this number to force an imperative `clearRect` on the canvas
    *  regardless of React render scheduling or skip-redraw caches. */
   clearNonce?: number;
+  /** Hard render gate. When false, the overlay clears its canvas and skips
+   *  drawing on every redraw pass — defends against stale yellow lines
+   *  surviving a Close Camera while a rAF was already queued. */
+  cameraOpen?: boolean;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -135,6 +139,7 @@ function AutoMeasureOverlayImpl({
   strokeWidth,
   activeObjective = null,
   clearNonce = 0,
+  cameraOpen = true,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -285,7 +290,14 @@ function AutoMeasureOverlayImpl({
     localCornersRef.current = null;
     // eslint-disable-next-line no-console
     console.log(`[overlay-canvas-force-clear] reason=${reason}`);
+    // eslint-disable-next-line no-console
+    console.log(`[overlay-force-clear] reason=${reason}`);
   }, []);
+
+  useEffect(() => {
+    if (cameraOpen) return;
+    forceClearCanvas('camera-close');
+  }, [cameraOpen, forceClearCanvas]);
 
   useEffect(() => {
     if (clearNonce === 0) return;
@@ -304,6 +316,18 @@ function AutoMeasureOverlayImpl({
       const canvas = canvasRef.current;
       const wrap = wrapRef.current;
       if (!canvas || !wrap) return;
+
+      // Hard render guard: never paint yellow lines while the camera is
+      // closed. A rAF queued by the live stream can outlive the close, so
+      // verify the live gate here and clear instead of drawing on mismatch.
+      if (!cameraOpen) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        lastDrawKeyRef.current = '';
+        // eslint-disable-next-line no-console
+        console.log('[overlay-render-guard] cameraOpen=false cleared=true');
+        return;
+      }
 
       const dpr = window.devicePixelRatio || 1;
       const width = Math.max(1, wrap.clientWidth);
@@ -443,7 +467,7 @@ function AutoMeasureOverlayImpl({
         );
       }
     });
-  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective]);
+  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen]);
 
   // Latest `draw` reference for the ResizeObserver callback. The observer
   // is installed once with `[]` deps; without this ref it would either
