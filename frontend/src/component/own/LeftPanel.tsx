@@ -98,6 +98,7 @@ type Props = {
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
   lineStrokeWidth?: number;
   turretMoving?: boolean;
+  turretMovingTarget?: string | null;
   cameraOpen?: boolean;
 };
 
@@ -119,6 +120,7 @@ function LeftPanelImpl(
     onClearShapeKind,
     lineStrokeWidth,
     turretMoving,
+    turretMovingTarget,
     cameraOpen,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
@@ -144,6 +146,7 @@ function LeftPanelImpl(
         onClearShapeKind={onClearShapeKind}
         lineStrokeWidth={lineStrokeWidth}
         turretMoving={turretMoving}
+        turretMovingTarget={turretMovingTarget}
         cameraOpen={cameraOpen}
       />
     </Box>

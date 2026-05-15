@@ -89,7 +89,7 @@ type TabContentProps = {
   refetchAlbumItems: () => Promise<void>;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   onTurretIntent?: () => void;
-  onObjectiveChangeIntent?: () => void;
+  onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
 };
 
 function renderTab(
@@ -159,7 +159,7 @@ type Props = {
   onMeasurementsCleared?: () => void;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   onTurretIntent?: () => void;
-  onObjectiveChangeIntent?: () => void;
+  onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;

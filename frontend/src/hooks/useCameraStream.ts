@@ -170,6 +170,10 @@ function installMainThreadPaintHandler() {
       // the freshly-cleared canvas.
       if (paintEpoch < frameEpoch) {
         recordCameraFrameDrop('stale-epoch', resolvedFrameId);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-frame-drop] reason=stale-before-objective-switch frameId=${resolvedFrameId} paintEpoch=${paintEpoch} currentEpoch=${frameEpoch}`
+        );
         decoderBusy = false;
         // Still ack so main process releases its slot — the frame was
         // delivered + decoded; main shouldn't be stuck waiting.

@@ -124,6 +124,11 @@ type Props = {
    * Defaults to false for safety.
    */
   turretMoving?: boolean;
+  /** Target objective for the in-progress turret move (e.g. "10X").
+   *  Surfaced in the "Turret moving to X..." popup so the operator knows
+   *  what magnification the camera is switching to. Optional — falls back
+   *  to the generic "Turret moving..." string if unknown. */
+  turretMovingTarget?: string | null;
   /** Live camera open flag. Forwarded to AutoMeasureOverlay so it can hard-
    *  gate drawing — no yellow lines may paint when the camera is closed. */
   cameraOpen?: boolean;
@@ -187,6 +192,7 @@ function CameraWindowImpl(
     onClearShapeKind,
     lineStrokeWidth,
     turretMoving = false,
+    turretMovingTarget = null,
     cameraOpen = true,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
@@ -567,11 +573,27 @@ function CameraWindowImpl(
       console.log('[camera-image-clear] reason=turret-moving');
       // eslint-disable-next-line no-console
       console.log('[camera-render-blocked] reason=turret-moving');
+      // eslint-disable-next-line no-console
+      console.log('[camera-frame-clear] reason=objective-switch');
       const live = canvasRef.current;
       if (live) {
         const ctx = live.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, live.width, live.height);
       }
+      // The freeze canvas survives independently of the live canvas and
+      // overlays it (display:block when frozen). If Auto Measure or a
+      // manual freeze captured a frame under the previous objective, that
+      // frozen image keeps painting through the turret-moving window and
+      // shows the OLD objective for ~1s until the new frame arrives. Drop
+      // it + exit frozen state so the only thing visible is the
+      // "Turret moving..." popup, then the fresh post-switch frame.
+      const snap = freezeCanvasRef.current;
+      if (snap) {
+        const snapCtx = snap.getContext('2d');
+        if (snapCtx) snapCtx.clearRect(0, 0, snap.width, snap.height);
+      }
+      imageSourceRef.current = 'live-camera';
+      setFrozen(false);
       liveCanvasClearedAtRef.current = Date.now();
       bumpFrameEpochOnCanvasClear();
       return;
@@ -921,7 +943,7 @@ function CameraWindowImpl(
               zIndex: 10,
             }}
           >
-            Turret moving...
+            {turretMovingTarget ? `Turret moving to ${turretMovingTarget}...` : 'Turret moving...'}
           </Box>
         ) : null}
         {zoom !== 1 ? (

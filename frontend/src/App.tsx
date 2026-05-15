@@ -845,6 +845,10 @@ function App() {
   // arrives, so a dropped ACK can never permanently suppress overlay
   // rendering.
   const [turretMoving, setTurretMoving] = useState(false);
+  // Target objective for an in-progress turret move ("10X" / "40X").
+  // Surfaced in the CameraWindow "Turret moving to X..." popup so the
+  // operator knows exactly what the camera is switching to.
+  const [turretMovingTarget, setTurretMovingTarget] = useState<string | null>(null);
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const rawDisplayedAutoMeasureGraphics =
@@ -884,6 +888,10 @@ function App() {
   // - There is NO silent fallback to a hardcoded default. If this is ever
   //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
+  const activeObjectiveRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeObjectiveRef.current = activeObjective;
+  }, [activeObjective]);
 
   // Strict session-based Auto Measure gating.
   // - sessionId: bumps every time the user opens a fresh Auto Measure session
@@ -3339,6 +3347,15 @@ function App() {
     console.log(`[objective-change-start] objective=${confirmed}`);
     // eslint-disable-next-line no-console
     console.log(`[objective-confirmed] objective=${confirmed}`);
+    // L1 / L2 are the slot positions; the machine echoes L<n>OK on
+    // mechanical landing. Surface the ack token explicitly so the operator
+    // (and the bug-repro logs) can correlate the UI commit with the wire.
+    const ackToken =
+      confirmed === '10X' ? 'L1OK' : confirmed === '40X' ? 'L2OK' : 'unknown';
+    // eslint-disable-next-line no-console
+    console.log(
+      `[objective-switch-confirmed] objective=${confirmed} ack=${ackToken}`
+    );
     // eslint-disable-next-line no-console
     console.log(`[camera-objective-change] objective=${confirmed}`);
     // eslint-disable-next-line no-console
@@ -3402,9 +3419,14 @@ function App() {
         return;
       }
       setObjectiveChangeInProgress(false);
+      const fid = getLastPaintedFrameId();
       // eslint-disable-next-line no-console
       console.log(
         `[camera-frame-after-objective-change] objective=${confirmed} frameId=${getLastPaintEpoch()}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-first-fresh-frame-after-objective] objective=${confirmed} frameId=${fid}`
       );
     })();
   }, [
@@ -3422,13 +3444,27 @@ function App() {
     }
   }, []);
   const markTurretIntent = useCallback(
-    (reason: 'turret-click' | 'objective-change-click') => {
+    (
+      reason: 'turret-click' | 'objective-change-click',
+      target?: string | null
+    ) => {
       const logTag =
         reason === 'objective-change-click'
           ? '[overlay-clear-before-objective-change]'
           : '[overlay-clear-before-turret]';
       // eslint-disable-next-line no-console
       console.log(`${logTag} reason=${reason}`);
+      if (reason === 'objective-change-click') {
+        const from = (activeObjectiveRef.current ?? 'unknown') || 'unknown';
+        const to = (target ?? 'unknown') || 'unknown';
+        setTurretMovingTarget(to === 'unknown' ? null : to);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[objective-switch-start] from=${from} to=${to} clearFrame=true`
+        );
+        // eslint-disable-next-line no-console
+        console.log('[overlay-force-clear] reason=objective-switch');
+      }
       // Force-clear overlay state. clearAutoMeasureOverlay nulls
       // committedAutoMeasureOverlay → AutoMeasureOverlay re-renders empty.
       // Bumping manualMeasureResetKey clears the manual measure overlay's
@@ -3447,6 +3483,7 @@ function App() {
       turretMovingTimerRef.current = window.setTimeout(() => {
         turretMovingTimerRef.current = null;
         setTurretMoving(false);
+        setTurretMovingTarget(null);
         // eslint-disable-next-line no-console
         console.log('[overlay-render-resume] reason=watchdog-timeout');
       }, 4000);
@@ -3493,6 +3530,7 @@ function App() {
     // here and must not leave the gate stuck on if a prior watchdog set it).
     clearTurretMovingTimer();
     setTurretMoving(false);
+    setTurretMovingTarget(null);
     // eslint-disable-next-line no-console
     console.log('[overlay-render-resume] reason=turret-ack');
     // eslint-disable-next-line no-console
@@ -4543,6 +4581,7 @@ function App() {
           onClearShapeKind={overlay.clearByKind}
           lineStrokeWidth={lineThickness.strokeWidth}
           turretMoving={turretMoving}
+          turretMovingTarget={turretMovingTarget}
           cameraOpen={cameraOpen}
         />
         <RightPanel
@@ -4554,7 +4593,9 @@ function App() {
           onMeasurementsCleared={handleMeasurementsCleared}
           onObjectiveChange={handleObjectiveChangeFromUI}
           onTurretIntent={() => markTurretIntent('turret-click')}
-          onObjectiveChangeIntent={() => markTurretIntent('objective-change-click')}
+          onObjectiveChangeIntent={(target) =>
+            markTurretIntent('objective-change-click', target)
+          }
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={() => setTrimMeasureOpen(false)}
           onTrimAdjust={handleTrimAdjust}

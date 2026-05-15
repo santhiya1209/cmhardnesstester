@@ -39,7 +39,7 @@ type MachineControlTabProps = {
    * the optical zoom. Overlays must clear immediately, before the machine
    * RX confirms.
    */
-  onObjectiveChangeIntent?: () => void;
+  onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
 };
 
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
@@ -330,7 +330,9 @@ function MachineControlTabImpl({
         console.log(`[machine-objective-ui] selected=${value}`);
         // Fire overlay-clear intent immediately so stale yellow lines are
         // gone before the optical zoom actually changes.
-        onObjectiveChangeIntent?.();
+        if (value === '10X' || value === '40X') {
+          onObjectiveChangeIntent?.(value);
+        }
         void pushChange(field, value).then((state) => {
           if ((value === '10X' || value === '40X') && state?.objective === value) {
             onObjectiveChange?.(value);
