@@ -22,8 +22,12 @@ import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
+import IndustrialStatCard from './IndustrialStatCard';
 
 type MachineControlTabProps = {
+  hvDisplay?: string;
+  hvTypeValue?: string | null;
+  hardnessValue?: string;
   /** Called after the backend accepts a 10X / 40X lens change. */
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   /**
@@ -52,6 +56,23 @@ const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
 const LIGHTNESS_INPUT_PROPS = { min: 0, max: 10, step: 1 } as const;
 const LOAD_TIME_INPUT_PROPS = { min: 1, max: 99, step: 1 } as const;
 
+const HARDNESS_SUBTITLE_BY_TYPE: Record<string, string> = {
+  HV: 'VICKERS',
+  HK: 'KNOOP',
+  HBW: 'BRINELL',
+  HRA: 'ROCKWELL A',
+  HRB: 'ROCKWELL B',
+  HRC: 'ROCKWELL C',
+  HRD: 'ROCKWELL D',
+  HRF: 'ROCKWELL F',
+  HR15N: 'ROCKWELL 15N',
+  HR30N: 'ROCKWELL 30N',
+  HR45N: 'ROCKWELL 45N',
+  HR15T: 'ROCKWELL 15T',
+  HR30T: 'ROCKWELL 30T',
+  HR45T: 'ROCKWELL 45T',
+};
+
 type FormState = {
   force: string;
   lightness: string;
@@ -68,6 +89,12 @@ const DEFAULT_FORM_STATE: FormState = {
   hardnessLevel: 'Middle',
 };
 
+const ROOT_SX: SxProps<Theme> = {
+  flex: 1,
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+};
 const INDENTER_SECTION_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: '200px auto auto',
@@ -103,21 +130,23 @@ const SETTINGS_GRID_SX: SxProps<Theme> = {
   borderColor: 'divider',
 };
 const SETTING_LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const STATUS_ROW_SX: SxProps<Theme> = {
+const HV_BOTTOM_SECTION_SX: SxProps<Theme> = {
+  flex: 1,
+  minHeight: 0,
   display: 'flex',
-  alignItems: 'center',
-  gap: 1,
   px: 1.5,
-  py: 1,
+  py: 1.25,
   borderTop: 1,
   borderColor: 'divider',
 };
-const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const STATUS_DOT_SX: SxProps<Theme> = {
-  width: 8,
-  height: 8,
-  borderRadius: '50%',
-  flexShrink: 0,
+const HV_BOTTOM_ROW_SX: SxProps<Theme> = {
+  flex: 1,
+  minHeight: 0,
+  width: '100%',
+  display: 'grid',
+  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+  gap: 1.25,
+  alignItems: 'stretch',
 };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
@@ -161,7 +190,14 @@ function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boo
   return numeric >= 1 && numeric <= 99;
 }
 
+function getHardnessSubtitle(hvType: string): string {
+  return HARDNESS_SUBTITLE_BY_TYPE[hvType] ?? 'HARDNESS';
+}
+
 function MachineControlTabImpl({
+  hvDisplay = '',
+  hvTypeValue = null,
+  hardnessValue = 'N/A',
   onObjectiveChange,
   onTurretIntent,
   onObjectiveChangeIntent,
@@ -172,6 +208,16 @@ function MachineControlTabImpl({
   const { move: moveTurret, busy: turretBusy, error: turretError } = useTurret();
 
   const formState = useMemo(() => machineToForm(machineState), [machineState]);
+  const bottomHvDisplay = hvDisplay.trim() ? hvDisplay : 'N/A';
+  const bottomHvTypeDisplay = useMemo(() => {
+    const trimmed = hvTypeValue?.trim();
+    return trimmed ? trimmed : 'HV';
+  }, [hvTypeValue]);
+  const bottomHardnessDisplay = hardnessValue.trim() ? hardnessValue : 'N/A';
+  const bottomHardnessSubtitle = useMemo(
+    () => getHardnessSubtitle(bottomHvTypeDisplay),
+    [bottomHvTypeDisplay]
+  );
 
   // Local input state for Lightness so the field reflects what the user just
   // typed without waiting for the backend → RS232 → ACK → SSE round trip. The
@@ -228,6 +274,21 @@ function MachineControlTabImpl({
     formState.loadTime,
     formState.objective,
   ]);
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[machine-control-bottom-hv-value-render] value=${bottomHvDisplay}`);
+  }, [bottomHvDisplay]);
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[machine-control-bottom-hvtype-value-render] value=${bottomHvTypeDisplay}`);
+  }, [bottomHvTypeDisplay]);
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[machine-control-bottom-hardness-value-render] value=${bottomHardnessDisplay}`);
+  }, [bottomHardnessDisplay]);
 
   // Mirror confirmedObjectiveFromMachine into a ref so impress logs can read
   // the freshest value without re-binding the click handler on every SSE tick.
@@ -555,22 +616,8 @@ function MachineControlTabImpl({
     return indentError ?? turretError ?? setError ?? streamError ?? null;
   }, [indentError, machineState?.lastError, recovered, setError, streamError, turretError]);
 
-  const statusLabel = useMemo(() => {
-    if (!connected) return 'Disconnected';
-    if (errorMessage) return 'Error';
-    if (isIndentInFlight) return 'Impressing';
-    if (isBusy) return 'Busy';
-    return 'Ready';
-  }, [connected, errorMessage, isBusy, isIndentInFlight]);
-
-  const statusDotColor = useMemo(() => {
-    if (!connected || errorMessage) return 'error.main';
-    if (isBusy || isIndentInFlight) return 'warning.main';
-    return 'success.main';
-  }, [connected, errorMessage, isBusy, isIndentInFlight]);
-
   return (
-    <>
+    <Box sx={ROOT_SX}>
       <Box sx={INDENTER_SECTION_SX}>
         <Button
           variant="outlined"
@@ -685,14 +732,27 @@ function MachineControlTabImpl({
         <Box />
       </Box>
 
-      <Box sx={STATUS_ROW_SX}>
-        <Box sx={{ ...STATUS_DOT_SX, bgcolor: statusDotColor }} />
-        <Typography sx={STATUS_TEXT_SX}>
-          {connected
-            ? `Machine: Connected · COM: ${machineState?.port ?? '?'} · Status: ${statusLabel}`
-            : `Machine: Disconnected · Status: ${statusLabel}`}
-        </Typography>
-        {isBusy ? <CircularProgress size={12} /> : null}
+      <Box sx={HV_BOTTOM_SECTION_SX}>
+        <Box sx={HV_BOTTOM_ROW_SX}>
+          <IndustrialStatCard
+            title="HV"
+            value={bottomHvDisplay}
+            subtitle="VICKERS"
+            accent="secondary"
+          />
+          <IndustrialStatCard
+            title="HV TYPE"
+            value={bottomHvTypeDisplay}
+            subtitle="HARDNESS TYPE"
+            accent="primary"
+          />
+          <IndustrialStatCard
+            title="HARDNESS"
+            value={bottomHardnessDisplay}
+            subtitle={bottomHardnessSubtitle}
+            accent="warning"
+          />
+        </Box>
       </Box>
 
       {errorMessage ? (
@@ -730,7 +790,7 @@ function MachineControlTabImpl({
           </DialogActions>
         ) : null}
       </Dialog>
-    </>
+    </Box>
   );
 }
 

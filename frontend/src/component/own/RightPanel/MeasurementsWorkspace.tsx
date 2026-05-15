@@ -3,9 +3,6 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
-import FormControl from '@mui/material/FormControl';
-import MenuItem from '@mui/material/MenuItem';
-import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -15,6 +12,7 @@ import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
 import ExportReportDialog from '@/component/own/ExportReportDialog';
+import HvSummaryRow from './HvSummaryRow';
 import { convertVickers, type ConvertTargetType } from '@/utils/hardnessConvert';
 
 const CONVERT_TYPE_OPTIONS = [
@@ -37,58 +35,6 @@ const CONVERT_TYPE_OPTIONS = [
 const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1, display: 'flex', flexDirection: 'column', gap: 1 };
 const SUMMARY_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-// Top HV value box: bold, larger, accent colour so the latest hardness result
-// reads at a glance from across the bench. Industrial-clean — no chip,
-// no shadow — just typography weight + theme-aware accent.
-const HV_DISPLAY_SX: SxProps<Theme> = {
-  flex: 1,
-  minWidth: 80,
-  minHeight: 34,
-  px: 1,
-  py: 0.5,
-  fontSize: 18,
-  fontWeight: 800,
-  letterSpacing: 0.3,
-  color: 'primary.main',
-  fontVariantNumeric: 'tabular-nums',
-  border: 1,
-  borderColor: 'divider',
-  borderRadius: 0.5,
-  bgcolor: 'background.paper',
-  display: 'flex',
-  alignItems: 'center',
-};
-// Top HV-type Select: same vertical rhythm, bold value text. Compact
-// industrial dropdown — uses theme tokens for dark/light.
-const HV_FIELD_SX: SxProps<Theme> = {
-  flex: 1,
-  minWidth: 80,
-  '& .MuiSelect-select': {
-    fontWeight: 700,
-    fontSize: 14,
-    letterSpacing: 0.5,
-  },
-};
-// Companion "Convert Value" display next to the type dropdown — keeps the
-// converted hardness visible separately so the original HV is never
-// replaced visually.
-const CONVERT_VALUE_DISPLAY_SX: SxProps<Theme> = {
-  flex: 1,
-  minWidth: 80,
-  minHeight: 34,
-  px: 1,
-  py: 0.5,
-  fontSize: 14,
-  fontWeight: 600,
-  color: 'text.primary',
-  fontVariantNumeric: 'tabular-nums',
-  border: 1,
-  borderColor: 'divider',
-  borderRadius: 0.5,
-  bgcolor: 'background.paper',
-  display: 'flex',
-  alignItems: 'center',
-};
 const MICROMETER_FIELD_SX: SxProps<Theme> = { width: 130 };
 const ACTION_ROW_SX: SxProps<Theme> = {
   display: 'grid',
@@ -109,7 +55,14 @@ type Props = {
   onOpenStatisticsTab: () => void;
   onOpenTestRecords: (measurementIds: string[]) => void;
   onMeasurementsCleared?: () => void;
+  onDisplayValuesChange?: (values: MeasurementDisplayValues) => void;
   refetch: () => Promise<void>;
+};
+
+export type MeasurementDisplayValues = {
+  hvDisplay: string;
+  hvType: string;
+  hardnessValue: string;
 };
 
 function formatNumber(value: number | null | undefined): string {
@@ -127,6 +80,7 @@ function MeasurementsWorkspaceImpl({
   onOpenStatisticsTab,
   onOpenTestRecords,
   onMeasurementsCleared,
+  onDisplayValuesChange,
   refetch,
 }: Props) {
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
@@ -162,6 +116,8 @@ function MeasurementsWorkspaceImpl({
   );
   const latestMeasurement = measurements[0] ?? null;
   const displayedMeasurement = selectedMeasurement ?? latestMeasurement;
+  const displayedHvText = formatNumber(displayedMeasurement?.hv);
+  const displayedHvType = CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV';
   const mutationError = error ?? deleteError ?? convertSyncError;
   const busy = loading || deleting;
 
@@ -199,6 +155,14 @@ function MeasurementsWorkspaceImpl({
     );
     return display;
   }, [displayedMeasurement, convertType]);
+
+  useEffect(() => {
+    onDisplayValuesChange?.({
+      hvDisplay: displayedHvText,
+      hvType: displayedHvType,
+      hardnessValue: displayConvertValue,
+    });
+  }, [displayConvertValue, displayedHvText, displayedHvType, onDisplayValuesChange]);
 
   // Sync the dropdown to whichever row is being shown so switching selection
   // reflects that row's saved convertType. Empty/legacy rows show 'HV'.
@@ -360,8 +324,16 @@ function MeasurementsWorkspaceImpl({
     <>
       <Box sx={SECTION_SX}>
         <Box sx={SUMMARY_ROW_SX}>
-          <Typography sx={LABEL_SX}>HV</Typography>
-          <Box sx={HV_DISPLAY_SX}>{formatNumber(displayedMeasurement?.hv)}</Box>
+          <HvSummaryRow
+            hvDisplay={displayedHvText}
+            hvType={displayedHvType}
+            hardnessDisplay={displayConvertValue}
+            hvTypeOptions={CONVERT_TYPE_OPTIONS}
+            disabled={busy}
+            onHvTypeChange={(value) =>
+              void handleConvertTypeChange(value as (typeof CONVERT_TYPE_OPTIONS)[number])
+            }
+          />
           {(() => {
             // Render-time fallback: if an HV value is showing but the
             // dropdown state somehow isn't one of the known options (race
@@ -378,35 +350,6 @@ function MeasurementsWorkspaceImpl({
             );
             return null;
           })()}
-          <FormControl size="small" sx={HV_FIELD_SX}>
-            <Select
-              value={
-                CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV'
-              }
-              disabled={busy}
-              displayEmpty
-              renderValue={(value) => {
-                const v = (value as string | undefined) ?? '';
-                return CONVERT_TYPE_OPTIONS.includes(
-                  v as (typeof CONVERT_TYPE_OPTIONS)[number]
-                )
-                  ? v
-                  : 'HV';
-              }}
-              onChange={(event: SelectChangeEvent<(typeof CONVERT_TYPE_OPTIONS)[number]>) =>
-                void handleConvertTypeChange(
-                  event.target.value as (typeof CONVERT_TYPE_OPTIONS)[number]
-                )
-              }
-            >
-              {CONVERT_TYPE_OPTIONS.map((option) => (
-                <MenuItem key={option} value={option}>
-                  {option}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Box sx={CONVERT_VALUE_DISPLAY_SX}>{displayConvertValue}</Box>
           <Typography sx={LABEL_SX}>Micrometer</Typography>
           <MicrometerDisplay sx={MICROMETER_FIELD_SX} />
         </Box>

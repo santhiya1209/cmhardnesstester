@@ -20,6 +20,7 @@ export type ToolDispatchContext = {
   resumeImage?: () => void;
   zoomIn?: () => void;
   zoomOut?: () => void;
+  openCalibration?: () => void;
   // file/camera — wired in Phase 5
   openImage?: () => void;
   saveImage?: () => void;
@@ -28,6 +29,7 @@ export type ToolDispatchContext = {
 };
 
 const FRIENDLY_LABEL: Record<ToolbarActionId, string> = {
+  'config:calibration': 'Calibration',
   'file:open': 'Open Image',
   'file:save': 'Save Image',
   'device:openCamera': 'Open Device',
@@ -148,6 +150,14 @@ export function dispatchToolbarAction(
     case 'tools:zoomOut':
       ctx.zoomOut?.();
       ctx.setStatus(label);
+      return;
+    case 'config:calibration':
+      if (ctx.openCalibration) {
+        ctx.openCalibration();
+        ctx.setStatus(`${label} opened`);
+      } else {
+        ctx.notifyUnavailable(label);
+      }
       return;
 
     case 'tools:autoSearchEdge':

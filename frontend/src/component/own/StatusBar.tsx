@@ -1,10 +1,11 @@
-import { memo } from 'react';
+import { memo, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { colors } from '@/theme/theme';
 import { useMicrometerReading } from '@/hooks/useMicrometerReading';
+import type { MachineState } from '@/types/machine';
 
 const BAR_SX: SxProps<Theme> = {
   display: 'flex',
@@ -26,7 +27,7 @@ const MESSAGE_SX: SxProps<Theme> = {
 const READOUT_SX: SxProps<Theme> = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 0.75,
+  gap: 1.5,
   ml: 'auto',
 };
 
@@ -40,6 +41,19 @@ const CONNECTION_SX: SxProps<Theme> = {
   fontSize: 12,
   color: 'common.white',
   opacity: 0.86,
+};
+const MACHINE_READOUT_SX: SxProps<Theme> = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 0.75,
+  color: 'common.white',
+  flexShrink: 0,
+};
+const MACHINE_DOT_SX: SxProps<Theme> = {
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  flexShrink: 0,
 };
 
 export type CameraStatusState =
@@ -81,7 +95,62 @@ type Props = {
   cameraStatus?: CameraStatusState;
   objective?: string | null;
   autoMeasureStatus?: AutoMeasureStatusState;
+  machineState?: MachineState | null;
 };
+
+type MachineStatusLabel = 'Ready' | 'Moving' | 'Error';
+
+function getMachineStatusLabel(machineState: MachineState | null | undefined): MachineStatusLabel {
+  if (
+    machineState?.lastError ||
+    machineState?.syncStatus === 'failed' ||
+    machineState?.indentStatus === 'error'
+  ) {
+    return 'Error';
+  }
+
+  if (
+    machineState?.syncStatus === 'pending' ||
+    machineState?.indenting ||
+    machineState?.indentStatus === 'started' ||
+    machineState?.indentStatus === 'running' ||
+    machineState?.machineStatus?.toLowerCase().includes('running')
+  ) {
+    return 'Moving';
+  }
+
+  return 'Ready';
+}
+
+function getMachineDotColor(connected: boolean, status: MachineStatusLabel): string {
+  if (!connected || status === 'Error') return 'error.main';
+  if (status === 'Moving') return 'warning.main';
+  return 'success.main';
+}
+
+type MachineReadoutProps = {
+  connected: boolean;
+  port: string;
+  status: MachineStatusLabel;
+};
+
+function MachineReadoutImpl({ connected, port, status }: MachineReadoutProps) {
+  return (
+    <Box sx={MACHINE_READOUT_SX}>
+      <Box sx={{ ...MACHINE_DOT_SX, bgcolor: getMachineDotColor(connected, status) }} />
+      <Typography component="span" sx={VALUE_SX}>
+        {`Machine: ${connected ? 'Connected' : 'Disconnected'}`}
+      </Typography>
+      <Typography component="span" sx={VALUE_SX}>
+        {`COM: ${port}`}
+      </Typography>
+      <Typography component="span" sx={VALUE_SX}>
+        {`Status: ${status}`}
+      </Typography>
+    </Box>
+  );
+}
+const MachineReadout = memo(MachineReadoutImpl);
 
 function MicrometerReadoutImpl() {
   const { connected, displayText, updatedAt } = useMicrometerReading();
@@ -108,7 +177,19 @@ function StatusBarImpl({
   cameraStatus,
   objective,
   autoMeasureStatus,
+  machineState,
 }: Props) {
+  const machineConnected = machineState?.connected ?? false;
+  const machinePort = machineState?.port?.trim() || '-';
+  const machineStatus = getMachineStatusLabel(machineState);
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-statusbar-render] machine=${machineConnected ? 'Connected' : 'Disconnected'} com=${machinePort} status=${machineStatus}`
+    );
+  }, [machineConnected, machinePort, machineStatus]);
+
   return (
     <Box component="footer" sx={BAR_SX}>
       <Typography sx={MESSAGE_SX}>{message}</Typography>
@@ -122,6 +203,11 @@ function StatusBarImpl({
         <Typography sx={MESSAGE_SX}>{`Auto Measure: ${AUTO_MEASURE_STATUS_LABEL[autoMeasureStatus]}`}</Typography>
       ) : null}
       <Box sx={READOUT_SX}>
+        <MachineReadout
+          connected={machineConnected}
+          port={machinePort}
+          status={machineStatus}
+        />
         <MicrometerReadout />
       </Box>
     </Box>

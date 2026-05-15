@@ -6,6 +6,8 @@ export type ToolId =
   | 'magnifier';
 
 export type ToolbarActionId =
+  // configuration shortcuts exposed in the toolbar
+  | 'config:calibration'
   // file
   | 'file:open'
   | 'file:save'

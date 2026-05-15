@@ -1643,6 +1643,47 @@ function App() {
     setManualMeasureResetKey((current) => current + 1);
   }, []);
 
+  const openCalibrationPanel = useCallback(
+    (source: 'menu' | 'toolbar' | 'snackbar' = 'menu') => {
+      if (source === 'toolbar') {
+        // eslint-disable-next-line no-console
+        console.log('[toolbar-calibration-click]');
+      }
+
+      // eslint-disable-next-line no-console
+      console.log('[tool-mode-clear] reason=calibration-open');
+
+      if (activeTool === 'measureLength') {
+        // eslint-disable-next-line no-console
+        console.log('[measure-length-reset] reason=calibration-open');
+        overlay.clearByKind('length');
+      }
+
+      if (magnifierEnabled) {
+        // eslint-disable-next-line no-console
+        console.log('[magnifier-close] reason=calibration-open');
+        setMagnifierEnabled(false);
+      }
+
+      if (activeTool === 'manualMeasure') {
+        resetManualMeasure();
+      }
+
+      calibrationManualModeRef.current = false;
+      setCalibrationMeasureMode('none', 'calibration-open');
+      setActiveTool('pointer');
+      setActiveDialog('calibration');
+    },
+    [
+      activeTool,
+      magnifierEnabled,
+      overlay.clearByKind,
+      resetManualMeasure,
+      setActiveTool,
+      setCalibrationMeasureMode,
+    ]
+  );
+
 
   const handleManualMeasurementUpdated = useCallback(
     (result: ManualMeasureDragResult) => {
@@ -4158,6 +4199,7 @@ function App() {
         const z = cameraRef.current?.zoomOut() ?? 1;
         setStatusMessage(`System Status: Zoom ${Math.round(z * 100)}%`);
       },
+      openCalibration: () => openCalibrationPanel('toolbar'),
       openImage: () => {
         void (async () => {
           try {
@@ -4517,6 +4559,7 @@ function App() {
       resetManualMeasure,
       clearAutoMeasureOverlay,
       handleAutoMeasure,
+      openCalibrationPanel,
       setActiveTool,
       serialPortSetting,
       connectMachineFn,
@@ -4540,9 +4583,13 @@ function App() {
   }, []);
 
   const openConfigDialog = useCallback((id: ConfigDialogId) => {
-    const map: Record<ConfigDialogId, DialogKey> = {
+    if (id === 'config:calibration') {
+      openCalibrationPanel('menu');
+      return;
+    }
+
+    const map: Record<Exclude<ConfigDialogId, 'config:calibration'>, DialogKey> = {
       'config:lineColor': 'lineColor',
-      'config:calibration': 'calibration',
       'config:autoMeasure': 'autoMeasure',
       'config:serialPort': 'serialPort',
       'config:camera': 'camera',
@@ -4551,7 +4598,7 @@ function App() {
       'config:restoreFactory': 'restoreFactory',
     };
     setActiveDialog(map[id]);
-  }, []);
+  }, [openCalibrationPanel]);
 
   const handleMenuSelect = useCallback(
     (action: MenuActionId) => {
@@ -4571,6 +4618,7 @@ function App() {
   const handleToolbarSelect = useCallback(
     (action: ToolbarActionId) => {
       const enteringMagnifier = action === 'tools:magnifier';
+      const openingCalibration = action === 'config:calibration';
       const mappedTool = TOOL_ACTION_TO_TOOL[action];
 
       // Manual Measure must clear any active Auto Measure overlay/session so
@@ -4597,7 +4645,7 @@ function App() {
       // Measure Length keeps its one-shot behavior on tool switch. Measure
       // Angle is intentionally persistent and multi-measurement: Clear
       // Graphics is the explicit removal path for those overlays.
-      if (activeTool === 'measureLength' && mappedTool !== 'measureLength') {
+      if (activeTool === 'measureLength' && mappedTool !== 'measureLength' && !openingCalibration) {
         // eslint-disable-next-line no-console
         console.log('[measure-length-reset] reason=tool-switch');
         overlay.clearByKind('length');
@@ -4607,7 +4655,7 @@ function App() {
       // toggleMagnifier). When the user switches to a tool other than
       // Manual Measure, force the magnifier off so it does not bleed into
       // Pointer/Auto Measure/calibration.
-      if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure') {
+      if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure' && !openingCalibration) {
         // eslint-disable-next-line no-console
         console.log('[magnifier-close] reason=tool-switch');
         setMagnifierEnabled(false);
@@ -4767,6 +4815,7 @@ function App() {
         cameraStatus={cameraStatus}
         objective={activeObjective}
         autoMeasureStatus={autoMeasureStatus}
+        machineState={liveMachineState}
       />
 
       <AutoMeasureSettingsDialog
@@ -4863,7 +4912,7 @@ function App() {
                 size="small"
                 onClick={() => {
                   setUnavailableMsg(null);
-                  setActiveDialog('calibration');
+                  openCalibrationPanel('snackbar');
                 }}
               >
                 Go to Calibration

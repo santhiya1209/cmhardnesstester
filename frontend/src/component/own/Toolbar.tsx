@@ -24,6 +24,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import LineWeightIcon from '@mui/icons-material/LineWeight';
+import TuneIcon from '@mui/icons-material/Tune';
 
 type ToolbarItemDef = {
   action: ToolbarActionId;
@@ -50,6 +51,7 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
 
   { action: 'tools:resumeImage', label: 'Resume Image', icon: RestartAltIcon },
   { action: 'tools:centerCrossLine', label: 'Center Cross Line', icon: AddIcon, groupEnd: true },
+  { action: 'config:calibration', label: 'Calibration', icon: TuneIcon, groupEnd: true },
 ];
 
 const LINE_THICKNESS_MENU: ReadonlyArray<{

@@ -1,4 +1,4 @@
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useState, type ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
@@ -10,7 +10,7 @@ import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
 import { colors } from '@/theme/theme';
 
-import MeasurementsWorkspace from './MeasurementsWorkspace';
+import MeasurementsWorkspace, { type MeasurementDisplayValues } from './MeasurementsWorkspace';
 import MachineControlTab from './MachineControlTab';
 import XYZPlatformTab from './XYZPlatformTab';
 import MultipointTab from './MultipointTab';
@@ -87,6 +87,7 @@ type TabContentProps = {
   refetchPatternPrograms: () => Promise<void>;
   albumItems: AlbumItem[];
   refetchAlbumItems: () => Promise<void>;
+  measurementDisplay: MeasurementDisplayValues;
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   onTurretIntent?: () => void;
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
@@ -102,6 +103,7 @@ function renderTab(
     refetchPatternPrograms,
     albumItems,
     refetchAlbumItems,
+    measurementDisplay,
     onObjectiveChange,
     onTurretIntent,
     onObjectiveChangeIntent,
@@ -111,6 +113,9 @@ function renderTab(
     case 0:
       return (
         <MachineControlTab
+          hvDisplay={measurementDisplay.hvDisplay}
+          hvTypeValue={measurementDisplay.hvType}
+          hardnessValue={measurementDisplay.hardnessValue}
           onObjectiveChange={onObjectiveChange}
           onTurretIntent={onTurretIntent}
           onObjectiveChangeIntent={onObjectiveChangeIntent}
@@ -201,6 +206,20 @@ function RightPanelImpl({
     data: albumItems,
     refetch: refetchAlbumItems,
   } = useAlbumItems();
+  const [measurementDisplay, setMeasurementDisplay] = useState<MeasurementDisplayValues>({
+    hvDisplay: '',
+    hvType: 'HV',
+    hardnessValue: 'N/A',
+  });
+  const handleMeasurementDisplayValuesChange = useCallback((next: MeasurementDisplayValues) => {
+    setMeasurementDisplay((current) =>
+      current.hvDisplay === next.hvDisplay &&
+      current.hvType === next.hvType &&
+      current.hardnessValue === next.hardnessValue
+        ? current
+        : next
+    );
+  }, []);
 
   return (
     <Box sx={PANEL_SX}>
@@ -215,6 +234,7 @@ function RightPanelImpl({
             onOpenStatisticsTab={() => setTab(4)}
             onOpenTestRecords={onOpenTestRecords}
             onMeasurementsCleared={onMeasurementsCleared}
+            onDisplayValuesChange={handleMeasurementDisplayValuesChange}
           />
 
           <Tabs
@@ -237,6 +257,7 @@ function RightPanelImpl({
             refetchPatternPrograms,
             albumItems,
             refetchAlbumItems,
+            measurementDisplay,
             onObjectiveChange,
             onTurretIntent,
             onObjectiveChangeIntent,
