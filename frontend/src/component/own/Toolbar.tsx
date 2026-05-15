@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useState, type ComponentType } from 'react';
+import { Fragment, memo, useCallback, useEffect, useState, type ComponentType } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Menu from '@mui/material/Menu';
@@ -25,6 +25,7 @@ import AddIcon from '@mui/icons-material/Add';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import LineWeightIcon from '@mui/icons-material/LineWeight';
 import TuneIcon from '@mui/icons-material/Tune';
+import CameraAltIcon from '@mui/icons-material/CameraAlt';
 
 type ToolbarItemDef = {
   action: ToolbarActionId;
@@ -33,12 +34,24 @@ type ToolbarItemDef = {
   groupEnd?: boolean;
 };
 
+const OPEN_CAMERA_ITEM: ToolbarItemDef = {
+  action: 'device:openCamera',
+  label: 'Open Camera',
+  icon: PlayArrowIcon,
+};
+
+const CLOSE_CAMERA_ITEM: ToolbarItemDef = {
+  action: 'device:closeCamera',
+  label: 'Close Camera',
+  icon: PauseIcon,
+};
+
 const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'file:open', label: 'Open Image', icon: FolderOpenIcon },
   { action: 'file:save', label: 'Save Image', icon: SaveIcon, groupEnd: true },
 
-  { action: 'device:openCamera', label: 'Open Camera', icon: PlayArrowIcon },
-  { action: 'device:closeCamera', label: 'Close Camera', icon: PauseIcon, groupEnd: true },
+  OPEN_CAMERA_ITEM,
+  { action: 'config:camera', label: 'Camera Settings', icon: CameraAltIcon, groupEnd: true },
 
   { action: 'tools:autoMeasure', label: 'Auto Measure', icon: CenterFocusStrongIcon },
   { action: 'tools:manualMeasure', label: 'Manual Measure', icon: TouchAppIcon, groupEnd: true },
@@ -101,17 +114,51 @@ const ICON_BUTTON_SX: SxProps<Theme> = {
 type ToolbarButtonProps = {
   item: ToolbarItemDef;
   onSelect: (action: ToolbarActionId) => void;
+  cameraState?: 'open' | 'closed';
 };
 
-const ToolbarButton = memo(function ToolbarButton({ item, onSelect }: ToolbarButtonProps) {
+const ToolbarButton = memo(function ToolbarButton({
+  item,
+  onSelect,
+  cameraState,
+}: ToolbarButtonProps) {
   const Icon = item.icon;
+  const isCameraToggle = cameraState !== undefined;
+  const isCameraSettings = item.action === 'config:camera';
+
+  useEffect(() => {
+    if (!isCameraSettings) return;
+    // eslint-disable-next-line no-console
+    console.log('[camera-settings-toolbar-render]');
+  }, [isCameraSettings]);
 
   const handleClick = useCallback(() => {
+    if (isCameraToggle) {
+      // eslint-disable-next-line no-console
+      console.log('[toolbar-camera-toggle-click]');
+    }
+    if (isCameraSettings) {
+      // eslint-disable-next-line no-console
+      console.log('[toolbar-camera-settings-click]');
+    }
     onSelect(item.action);
-  }, [item.action, onSelect]);
+  }, [isCameraSettings, isCameraToggle, item.action, onSelect]);
+
+  const handleTooltipOpen = useCallback(() => {
+    if (!cameraState) return;
+    // eslint-disable-next-line no-console
+    console.log(`[toolbar-camera-tooltip] state=${cameraState}`);
+  }, [cameraState]);
 
   return (
-    <Tooltip title={item.label} arrow placement="bottom" enterDelay={300} disableInteractive>
+    <Tooltip
+      title={item.label}
+      arrow
+      placement="bottom"
+      enterDelay={300}
+      disableInteractive
+      onOpen={handleTooltipOpen}
+    >
       <IconButton
         size="small"
         onClick={handleClick}
@@ -183,17 +230,30 @@ const LineThicknessMenuButton = memo(function LineThicknessMenuButton({
 
 type Props = {
   onSelect: (action: ToolbarActionId) => void;
+  cameraOpen: boolean;
 };
 
-function ToolbarImpl({ onSelect }: Props) {
+function ToolbarImpl({ onSelect, cameraOpen }: Props) {
+  const cameraState = cameraOpen ? 'open' : 'closed';
+  const cameraItem = cameraOpen ? CLOSE_CAMERA_ITEM : OPEN_CAMERA_ITEM;
+
   return (
     <Box sx={BAR_SX}>
-      {TOOLBAR_ITEMS.map((item) => (
-        <Fragment key={item.action}>
-          <ToolbarButton item={item} onSelect={onSelect} />
-          {item.groupEnd && <Box sx={SPACER_SX} />}
-        </Fragment>
-      ))}
+      {TOOLBAR_ITEMS.map((item) => {
+        const isCameraSlot = item.action === 'device:openCamera';
+        const resolvedItem = isCameraSlot ? cameraItem : item;
+
+        return (
+          <Fragment key={item.action}>
+            <ToolbarButton
+              item={resolvedItem}
+              onSelect={onSelect}
+              cameraState={isCameraSlot ? cameraState : undefined}
+            />
+            {resolvedItem.groupEnd && <Box sx={SPACER_SX} />}
+          </Fragment>
+        );
+      })}
       <LineThicknessMenuButton onSelect={onSelect} />
     </Box>
   );

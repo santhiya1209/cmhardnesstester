@@ -4146,6 +4146,12 @@ function App() {
     []
   );
 
+  const openCameraSettingsPanel = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[camera-settings-panel-open]');
+    setActiveDialog('camera');
+  }, []);
+
   const buildSharedCtx = useCallback(
     (): ToolDispatchContext => ({
       setActiveTool,
@@ -4200,6 +4206,7 @@ function App() {
         setStatusMessage(`System Status: Zoom ${Math.round(z * 100)}%`);
       },
       openCalibration: () => openCalibrationPanel('toolbar'),
+      openCameraSettings: openCameraSettingsPanel,
       openImage: () => {
         void (async () => {
           try {
@@ -4560,6 +4567,7 @@ function App() {
       clearAutoMeasureOverlay,
       handleAutoMeasure,
       openCalibrationPanel,
+      openCameraSettingsPanel,
       setActiveTool,
       serialPortSetting,
       connectMachineFn,
@@ -4587,18 +4595,21 @@ function App() {
       openCalibrationPanel('menu');
       return;
     }
+    if (id === 'config:camera') {
+      openCameraSettingsPanel();
+      return;
+    }
 
-    const map: Record<Exclude<ConfigDialogId, 'config:calibration'>, DialogKey> = {
+    const map: Record<Exclude<ConfigDialogId, 'config:calibration' | 'config:camera'>, DialogKey> = {
       'config:lineColor': 'lineColor',
       'config:autoMeasure': 'autoMeasure',
       'config:serialPort': 'serialPort',
-      'config:camera': 'camera',
       'config:generic': 'generic',
       'config:other': 'other',
       'config:restoreFactory': 'restoreFactory',
     };
     setActiveDialog(map[id]);
-  }, [openCalibrationPanel]);
+  }, [openCalibrationPanel, openCameraSettingsPanel]);
 
   const handleMenuSelect = useCallback(
     (action: MenuActionId) => {
@@ -4618,7 +4629,7 @@ function App() {
   const handleToolbarSelect = useCallback(
     (action: ToolbarActionId) => {
       const enteringMagnifier = action === 'tools:magnifier';
-      const openingCalibration = action === 'config:calibration';
+      const openingConfigPanel = action === 'config:calibration' || action === 'config:camera';
       const mappedTool = TOOL_ACTION_TO_TOOL[action];
 
       // Manual Measure must clear any active Auto Measure overlay/session so
@@ -4645,7 +4656,7 @@ function App() {
       // Measure Length keeps its one-shot behavior on tool switch. Measure
       // Angle is intentionally persistent and multi-measurement: Clear
       // Graphics is the explicit removal path for those overlays.
-      if (activeTool === 'measureLength' && mappedTool !== 'measureLength' && !openingCalibration) {
+      if (activeTool === 'measureLength' && mappedTool !== 'measureLength' && !openingConfigPanel) {
         // eslint-disable-next-line no-console
         console.log('[measure-length-reset] reason=tool-switch');
         overlay.clearByKind('length');
@@ -4655,7 +4666,7 @@ function App() {
       // toggleMagnifier). When the user switches to a tool other than
       // Manual Measure, force the magnifier off so it does not bleed into
       // Pointer/Auto Measure/calibration.
-      if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure' && !openingCalibration) {
+      if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure' && !openingConfigPanel) {
         // eslint-disable-next-line no-console
         console.log('[magnifier-close] reason=tool-switch');
         setMagnifierEnabled(false);
@@ -4728,7 +4739,7 @@ function App() {
   return (
     <Box sx={ROOT_SX}>
       <MenuBar onSelect={handleMenuSelect} />
-      <Toolbar onSelect={handleToolbarSelect} />
+      <Toolbar onSelect={handleToolbarSelect} cameraOpen={cameraOpen} />
 
       <Box sx={WORKSPACE_SX}>
         <LeftPanel

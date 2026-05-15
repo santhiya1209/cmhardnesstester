@@ -21,6 +21,7 @@ export type ToolDispatchContext = {
   zoomIn?: () => void;
   zoomOut?: () => void;
   openCalibration?: () => void;
+  openCameraSettings?: () => void;
   // file/camera — wired in Phase 5
   openImage?: () => void;
   saveImage?: () => void;
@@ -30,6 +31,7 @@ export type ToolDispatchContext = {
 
 const FRIENDLY_LABEL: Record<ToolbarActionId, string> = {
   'config:calibration': 'Calibration',
+  'config:camera': 'Camera Settings',
   'file:open': 'Open Image',
   'file:save': 'Save Image',
   'device:openCamera': 'Open Device',
@@ -80,6 +82,8 @@ export function dispatchToolbarAction(
 
     case 'device:openCamera':
       if (ctx.openCameraDevice) {
+        // eslint-disable-next-line no-console
+        console.log('[camera-toggle-open-request]');
         ctx.openCameraDevice();
         ctx.setStatus(`${label} requested`);
       } else {
@@ -88,6 +92,8 @@ export function dispatchToolbarAction(
       return;
     case 'device:closeCamera':
       if (ctx.closeCameraDevice) {
+        // eslint-disable-next-line no-console
+        console.log('[camera-toggle-close-request]');
         ctx.closeCameraDevice();
         ctx.setStatus(`${label} requested`);
       } else {
@@ -154,6 +160,14 @@ export function dispatchToolbarAction(
     case 'config:calibration':
       if (ctx.openCalibration) {
         ctx.openCalibration();
+        ctx.setStatus(`${label} opened`);
+      } else {
+        ctx.notifyUnavailable(label);
+      }
+      return;
+    case 'config:camera':
+      if (ctx.openCameraSettings) {
+        ctx.openCameraSettings();
         ctx.setStatus(`${label} opened`);
       } else {
         ctx.notifyUnavailable(label);

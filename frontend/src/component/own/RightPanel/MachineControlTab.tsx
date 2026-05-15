@@ -13,7 +13,8 @@ import Stack from '@mui/material/Stack';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
-import type { SxProps, Theme } from '@mui/material/styles';
+import Paper from '@mui/material/Paper';
+import { alpha, type SxProps, type Theme } from '@mui/material/styles';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
@@ -22,7 +23,6 @@ import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
-import IndustrialStatCard from './IndustrialStatCard';
 
 type MachineControlTabProps = {
   hvDisplay?: string;
@@ -55,23 +55,6 @@ const OBJECTIVE_OPTIONS = ['10X', 'IND', '40X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
 const LIGHTNESS_INPUT_PROPS = { min: 0, max: 10, step: 1 } as const;
 const LOAD_TIME_INPUT_PROPS = { min: 1, max: 99, step: 1 } as const;
-
-const HARDNESS_SUBTITLE_BY_TYPE: Record<string, string> = {
-  HV: 'VICKERS',
-  HK: 'KNOOP',
-  HBW: 'BRINELL',
-  HRA: 'ROCKWELL A',
-  HRB: 'ROCKWELL B',
-  HRC: 'ROCKWELL C',
-  HRD: 'ROCKWELL D',
-  HRF: 'ROCKWELL F',
-  HR15N: 'ROCKWELL 15N',
-  HR30N: 'ROCKWELL 30N',
-  HR45N: 'ROCKWELL 45N',
-  HR15T: 'ROCKWELL 15T',
-  HR30T: 'ROCKWELL 30T',
-  HR45T: 'ROCKWELL 45T',
-};
 
 type FormState = {
   force: string;
@@ -131,22 +114,69 @@ const SETTINGS_GRID_SX: SxProps<Theme> = {
 };
 const SETTING_LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const HV_BOTTOM_SECTION_SX: SxProps<Theme> = {
-  flex: 1,
-  minHeight: 0,
-  display: 'flex',
+  width: '100%',
   px: 1.5,
-  py: 1.25,
+  py: 1,
   borderTop: 1,
   borderColor: 'divider',
 };
 const HV_BOTTOM_ROW_SX: SxProps<Theme> = {
-  flex: 1,
-  minHeight: 0,
   width: '100%',
   display: 'grid',
   gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
   gap: 1.25,
   alignItems: 'stretch',
+};
+const HV_COMPACT_CARD_SX: SxProps<Theme> = (theme) => ({
+  minWidth: 0,
+  overflow: 'hidden',
+  display: 'grid',
+  gridTemplateRows: `${theme.spacing(3)} ${theme.spacing(6.5)}`,
+  borderRadius: 0.5,
+  border: 1,
+  borderColor: 'primary.dark',
+  bgcolor: 'primary.dark',
+  boxShadow: `inset 0 0 0 1px ${alpha(theme.palette.common.white, 0.06)}`,
+});
+const HV_COMPACT_TITLE_SX: SxProps<Theme> = {
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  px: 1,
+  bgcolor: 'primary.main',
+  color: 'primary.contrastText',
+};
+const HV_COMPACT_TITLE_TEXT_SX: SxProps<Theme> = {
+  color: 'inherit',
+  fontWeight: 800,
+  letterSpacing: 0,
+  lineHeight: 1,
+  textTransform: 'uppercase',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+const HV_COMPACT_VALUE_SX: SxProps<Theme> = (theme) => ({
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  px: 1,
+  bgcolor: 'primary.dark',
+  borderTop: `1px solid ${alpha(theme.palette.common.white, 0.12)}`,
+  color: 'primary.contrastText',
+});
+const HV_COMPACT_VALUE_TEXT_SX: SxProps<Theme> = {
+  color: 'inherit',
+  fontSize: (theme) => theme.typography.pxToRem(24),
+  fontWeight: 800,
+  lineHeight: 1,
+  letterSpacing: 0,
+  fontVariantNumeric: 'tabular-nums',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
@@ -190,8 +220,26 @@ function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boo
   return numeric >= 1 && numeric <= 99;
 }
 
-function getHardnessSubtitle(hvType: string): string {
-  return HARDNESS_SUBTITLE_BY_TYPE[hvType] ?? 'HARDNESS';
+type CompactHvCardProps = {
+  title: string;
+  value: string;
+};
+
+function CompactHvCard({ title, value }: CompactHvCardProps) {
+  return (
+    <Paper elevation={0} sx={HV_COMPACT_CARD_SX}>
+      <Box sx={HV_COMPACT_TITLE_SX}>
+        <Typography variant="overline" sx={HV_COMPACT_TITLE_TEXT_SX}>
+          {title}
+        </Typography>
+      </Box>
+      <Box sx={HV_COMPACT_VALUE_SX}>
+        <Typography title={value} sx={HV_COMPACT_VALUE_TEXT_SX}>
+          {value}
+        </Typography>
+      </Box>
+    </Paper>
+  );
 }
 
 function MachineControlTabImpl({
@@ -214,10 +262,6 @@ function MachineControlTabImpl({
     return trimmed ? trimmed : 'HV';
   }, [hvTypeValue]);
   const bottomHardnessDisplay = hardnessValue.trim() ? hardnessValue : 'N/A';
-  const bottomHardnessSubtitle = useMemo(
-    () => getHardnessSubtitle(bottomHvTypeDisplay),
-    [bottomHvTypeDisplay]
-  );
 
   // Local input state for Lightness so the field reflects what the user just
   // typed without waiting for the backend → RS232 → ACK → SSE round trip. The
@@ -277,17 +321,17 @@ function MachineControlTabImpl({
 
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log(`[machine-control-bottom-hv-value-render] value=${bottomHvDisplay}`);
+    console.log(`[machine-control-bottom-hv-compact-render] value=${bottomHvDisplay}`);
   }, [bottomHvDisplay]);
 
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log(`[machine-control-bottom-hvtype-value-render] value=${bottomHvTypeDisplay}`);
+    console.log(`[machine-control-bottom-hvtype-compact-render] value=${bottomHvTypeDisplay}`);
   }, [bottomHvTypeDisplay]);
 
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log(`[machine-control-bottom-hardness-value-render] value=${bottomHardnessDisplay}`);
+    console.log(`[machine-control-bottom-hardness-compact-render] value=${bottomHardnessDisplay}`);
   }, [bottomHardnessDisplay]);
 
   // Mirror confirmedObjectiveFromMachine into a ref so impress logs can read
@@ -734,24 +778,9 @@ function MachineControlTabImpl({
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
         <Box sx={HV_BOTTOM_ROW_SX}>
-          <IndustrialStatCard
-            title="HV"
-            value={bottomHvDisplay}
-            subtitle="VICKERS"
-            accent="secondary"
-          />
-          <IndustrialStatCard
-            title="HV TYPE"
-            value={bottomHvTypeDisplay}
-            subtitle="HARDNESS TYPE"
-            accent="primary"
-          />
-          <IndustrialStatCard
-            title="HARDNESS"
-            value={bottomHardnessDisplay}
-            subtitle={bottomHardnessSubtitle}
-            accent="warning"
-          />
+          <CompactHvCard title="HV" value={bottomHvDisplay} />
+          <CompactHvCard title="HV TYPE" value={bottomHvTypeDisplay} />
+          <CompactHvCard title="HARDNESS" value={bottomHardnessDisplay} />
         </Box>
       </Box>
 

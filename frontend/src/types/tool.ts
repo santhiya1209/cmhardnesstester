@@ -8,6 +8,7 @@ export type ToolId =
 export type ToolbarActionId =
   // configuration shortcuts exposed in the toolbar
   | 'config:calibration'
+  | 'config:camera'
   // file
   | 'file:open'
   | 'file:save'
