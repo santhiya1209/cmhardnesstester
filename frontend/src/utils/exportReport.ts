@@ -54,8 +54,12 @@ const HEADERS = [
   'Convert Type',
   'Convert Value',
   'Depth',
-  'Measure Time',
 ];
+
+// eslint-disable-next-line no-console
+console.log(
+  '[report-layout-update]\nremoveCp=true\nremoveCpk=true\nremoveMeasureTime=true'
+);
 
 // --- formatters (single source of truth for CSV / XLSX / DOCX) ---
 
@@ -100,22 +104,6 @@ function formatDepth(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(3)} mm` : '';
 }
 
-const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-function formatMeasureTime(iso: string | null | undefined): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = MONTHS_SHORT[d.getMonth()];
-  const year = d.getFullYear();
-  let h = d.getHours();
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${day}-${month}-${year} ${String(h).padStart(2, '0')}:${min} ${ampm}`;
-}
-
 function formatInspectionDate(d = new Date()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -138,7 +126,6 @@ type ReportRow = {
   convertType: string;
   convertValue: string;
   depth: string;
-  measureTime: string;
 };
 
 function normalizeReportRow(m: Measurement, idx: number): ReportRow {
@@ -194,7 +181,6 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     convertType,
     convertValue,
     depth: formatDepth(m.depthMm),
-    measureTime: formatMeasureTime(m.timestamp),
   };
 
   // eslint-disable-next-line no-console
@@ -214,7 +200,7 @@ function rowAsArray(row: ReportRow): string[] {
   return [
     row.index, row.xMm, row.yMm, row.hardness, row.objective, row.method,
     row.hardnessType, row.qualified, row.d1Um, row.d2Um, row.davgUm,
-    row.convertType, row.convertValue, row.depth, row.measureTime,
+    row.convertType, row.convertValue, row.depth,
   ];
 }
 
@@ -437,7 +423,7 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
   }
 
   // Column widths (chars)
-  const widths = [4, 9, 9, 10, 10, 12, 14, 10, 11, 11, 11, 13, 14, 12, 22];
+  const widths = [4, 9, 9, 10, 10, 12, 14, 10, 11, 11, 11, 13, 14, 12];
   ws.columns = widths.map((w) => ({ width: w }));
 
   ws.autoFilter = { from: { row: 3, column: 1 }, to: { row: lastRow, column: HEADERS.length } };
@@ -628,7 +614,7 @@ function fmtStat(v: number | null, decimals = 2): string {
 }
 
 function buildStatisticsTable(stats: Statistics): Table {
-  const headers = ['NO', 'MAX', 'MIN', 'AVE', 'VAR', 'STD', 'Cp', 'Cpk'];
+  const headers = ['NO', 'MAX', 'MIN', 'AVE', 'VAR', 'STD'];
   const colW = PAGE_WIDTH_DXA / headers.length;
   const headerRow = new TableRow({
     tableHeader: true,
@@ -642,8 +628,6 @@ function buildStatisticsTable(stats: Statistics): Table {
       makeCell(fmtStat(stats.avg, 2), colW),
       makeCell(fmtStat(stats.variance, 3), colW),
       makeCell(fmtStat(stats.std, 3), colW),
-      makeCell(fmtStat(stats.cp, 3), colW),
-      makeCell(fmtStat(stats.cpk, 3), colW),
     ],
   });
   return new Table({
@@ -665,10 +649,11 @@ function buildDetailedDataTable(rows: ReportRow[]): Table {
     'Convert Type',
     'Convert Value',
     'Qualified',
-    'Measure Time',
   ];
-  // Hand-tuned widths summing to ~15400.
-  const widths = [500, 1400, 1400, 1400, 1700, 1700, 1700, 1700, 1500, 2400];
+  // Hand-tuned widths summing to ~15400 (Measure Time column's 2400 was
+  // redistributed: 500 → +200 on hardness/convert columns and +100 on the
+  // index/qualified columns so the table still fills the page width).
+  const widths = [600, 1600, 1600, 1600, 1900, 1900, 1900, 1900, 1700];
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h, i) => makeCell(h, widths[i], { bold: true, shaded: true })),
@@ -676,12 +661,8 @@ function buildDetailedDataTable(rows: ReportRow[]): Table {
   const dataRows = rows.map((r) => {
     // eslint-disable-next-line no-console
     console.log(
-      `[report-detail] row=${r.index} convertType=${r.convertType} convertValue=${r.convertValue} measureTime=${r.measureTime || '-'}`
+      `[report-detail] row=${r.index} convertType=${r.convertType} convertValue=${r.convertValue}`
     );
-    if (!r.measureTime) {
-      // eslint-disable-next-line no-console
-      console.log(`[report-export] missing-field field=measureTime row=${r.index}`);
-    }
     return new TableRow({
       children: [
         makeCell(r.index, widths[0]),
@@ -693,7 +674,6 @@ function buildDetailedDataTable(rows: ReportRow[]): Table {
         makeCell(r.convertType, widths[6]),
         makeCell(r.convertValue, widths[7]),
         makeCell(r.qualified, widths[8]),
-        makeCell(r.measureTime || '-', widths[9]),
       ],
     });
   });

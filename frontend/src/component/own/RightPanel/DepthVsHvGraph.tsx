@@ -145,6 +145,8 @@ function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
   }, [chdIntersection, chdTargetHv, plot, points]);
 
   if (!plot) {
+    // eslint-disable-next-line no-console
+    console.log('[depth-graph-render] points=0 rendered=false reason=no-valid-rows');
     return (
       <Box sx={EMPTY_SX}>
         <Typography variant="h3">Case Hardness Profile</Typography>
@@ -152,6 +154,8 @@ function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
       </Box>
     );
   }
+  // eslint-disable-next-line no-console
+  console.log(`[depth-graph-render] points=${points.length} rendered=true`);
 
   const hovered = hoverIndex === null ? null : points[hoverIndex] ?? null;
   const plotBottom = SIZE.h - PAD.bottom;

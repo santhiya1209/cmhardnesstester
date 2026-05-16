@@ -70,24 +70,43 @@ function readDistanceUm(row: MeasurementGraphRow): number | null {
 }
 
 export function buildDepthHvGraphPoints(measurements: Measurement[]): DepthHvGraphPoint[] {
+  // eslint-disable-next-line no-console
+  console.log(`[depth-graph-source] count=${measurements.length}`);
   const points = measurements.flatMap((measurement, sourceIndex) => {
     const row = measurement as MeasurementGraphRow;
     const distanceUm = readDistanceUm(row);
     const hv = readFiniteNumber(row.hv, row.hardness, row.hardnessValue);
-    const usable =
-      distanceUm !== null &&
-      Number.isFinite(distanceUm) &&
-      distanceUm >= 0 &&
-      hv !== null &&
-      Number.isFinite(hv) &&
-      hv > 0;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[depth-graph-row] id=${measurement.id} hv=${row.hv ?? 'null'} depthMm=${row.depthMm ?? 'null'} distanceUm=${distanceUm ?? 'null'} resolvedHv=${hv ?? 'null'}`
+    );
+    const hvValid = hv !== null && Number.isFinite(hv) && hv > 0;
+    const depthValid = distanceUm !== null && Number.isFinite(distanceUm) && distanceUm >= 0;
+    const usable = hvValid && depthValid;
 
-    return usable ? [{ id: measurement.id, sourceIndex, index: 0, distanceUm, hv }] : [];
+    if (usable) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[depth-graph-valid-row] id=${measurement.id} distanceUm=${distanceUm} hv=${hv}`
+      );
+      return [{ id: measurement.id, sourceIndex, index: 0, distanceUm: distanceUm as number, hv: hv as number }];
+    }
+    const reason = !hvValid && !depthValid
+      ? 'hv-invalid,depth-invalid'
+      : !hvValid
+        ? 'hv-invalid'
+        : 'depth-invalid';
+    // eslint-disable-next-line no-console
+    console.log(`[depth-graph-invalid-row] id=${measurement.id} reason=${reason}`);
+    return [];
   });
 
-  return points
+  const sorted = points
     .sort((left, right) => left.distanceUm - right.distanceUm || left.sourceIndex - right.sourceIndex)
     .map((point, index) => ({ ...point, index: index + 1 }));
+  // eslint-disable-next-line no-console
+  console.log(`[depth-graph-points] count=${sorted.length}`);
+  return sorted;
 }
 
 function niceNumber(value: number, round: boolean): number {
