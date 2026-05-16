@@ -1059,6 +1059,10 @@ function App() {
     console.log(
       `[auto-measure-settings-sync] objective=${activeObjective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
     );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-defaults-apply] objective=${activeObjective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
     setAutoMeasurePreviewSettings((prev) => {
       if (prev.smoothing === defaults.smoothing && prev.threshold === defaults.threshold) {
         return prev;
@@ -4582,8 +4586,19 @@ function App() {
   }, [initialTestRecordMeasurementIds, measurements]);
 
   const closeDialog = useCallback(() => {
-    setActiveDialog(null);
+    setActiveDialog((prev) => {
+      if (prev === 'autoMeasure') {
+        // eslint-disable-next-line no-console
+        console.log('[modal-close-handler] modal=auto-measure-settings open=false');
+      } else if (prev === 'camera') {
+        // eslint-disable-next-line no-console
+        console.log('[modal-close-handler] modal=camera-settings open=false');
+      }
+      return null;
+    });
     setInitialTestRecordMeasurementIds([]);
+    // eslint-disable-next-line no-console
+    console.log('[modal-open-state] autoMeasureSettings=false cameraSettings=false');
   }, []);
 
   const openConfigDialog = useCallback((id: ConfigDialogId) => {

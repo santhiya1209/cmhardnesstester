@@ -9,7 +9,7 @@ export const AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE: Record<
   { smoothing: number; threshold: number }
 > = {
   '10X': { smoothing: 4, threshold: 44 },
-  '40X': { smoothing: 6, threshold: 71 },
+  '40X': { smoothing: 6, threshold: 91 },
 };
 export const THRESHOLD_MODE_OPTIONS = ['otsu', 'adaptive', 'manual'] as const;
 

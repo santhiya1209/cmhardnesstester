@@ -132,6 +132,10 @@ function AutoMeasureSettingsDialogImpl({
         console.log(
           `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
         );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-defaults-apply] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+        );
       }
       formRef.current = next;
       setForm(next);
@@ -171,6 +175,10 @@ function AutoMeasureSettingsDialogImpl({
     // eslint-disable-next-line no-console
     console.log(
       `[auto-measure-settings][settings-sync] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-defaults-apply] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
     );
     formRef.current = next;
     setForm(next);
@@ -314,12 +322,33 @@ function AutoMeasureSettingsDialogImpl({
   );
 
   const handleDefault = useCallback(() => {
-    formRef.current = DEFAULT_AUTO_MEASURE_SETTINGS;
-    setForm(DEFAULT_AUTO_MEASURE_SETTINGS);
+    // Resolve defaults from the live objective so 10X/40X get their tuned
+    // smoothing/threshold (not the generic DEFAULT_AUTO_MEASURE_SETTINGS).
+    const synced =
+      normalizeObjectiveKey(activeObjective) ??
+      normalizeObjectiveKey(formRef.current.objectiveForMeasure) ??
+      DEFAULT_AUTO_MEASURE_SETTINGS.objectiveForMeasure;
+    const objectiveDefaults = AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE[synced];
+    const next = normalizeAutoMeasureSettings({
+      ...DEFAULT_AUTO_MEASURE_SETTINGS,
+      objectiveForMeasure: synced,
+      smoothing: objectiveDefaults.smoothing,
+      threshold: objectiveDefaults.threshold,
+    });
+    formRef.current = next;
+    setForm(next);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-settings-default-click] objective=${synced} smoothing=${objectiveDefaults.smoothing} threshold=${objectiveDefaults.threshold}`
+    );
+    // eslint-disable-next-line no-console
+    console.log('[settings-preview-callback] source=default');
     flushPreview('default');
-  }, [flushPreview]);
+  }, [activeObjective, flushPreview]);
 
   const handleCancel = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[modal-close-click] modal=auto-measure-settings');
     clearPreviewDebounce('cancel');
     formRef.current = savedBaseline;
     setForm(savedBaseline);
@@ -345,6 +374,11 @@ function AutoMeasureSettingsDialogImpl({
   // tracking the cursor even if it briefly leaves the header.
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    // Don't start a drag if pointerdown originated inside the close button (or
+    // any interactive child). Otherwise setPointerCapture swallows the click
+    // and the X looks dead.
+    const target = event.target as HTMLElement | null;
+    if (target && target.closest('button')) return;
     const panel = event.currentTarget.parentElement as HTMLElement | null;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();

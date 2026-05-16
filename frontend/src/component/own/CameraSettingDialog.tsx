@@ -414,6 +414,8 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   ]);
 
   const handleCancel = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[modal-close-click] modal=camera-settings');
     if (liveAvailable && data) {
       dropPendingCameraFrames('gain-change');
       void window.hardnessCamera.setGain(data.analogGain).catch(() => {});
@@ -425,6 +427,11 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    // Don't start a drag if pointerdown originated inside the close button (or
+    // any interactive child). Otherwise setPointerCapture swallows the click
+    // and the X looks dead.
+    const target = event.target as HTMLElement | null;
+    if (target && target.closest('button')) return;
     const panel = event.currentTarget.parentElement as HTMLElement | null;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();

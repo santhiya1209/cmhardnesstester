@@ -36,13 +36,26 @@ const CANVAS_STYLE: React.CSSProperties = {
 const STROKE_ANGLE = colors.measureAngleLine;
 const STROKE_CROSS = '#FF00FF';
 const STROKE_LENGTH = '#E040FB';
-const LENGTH_FONT = '12px "Cascadia Mono", Consolas, ui-monospace, monospace';
-const ANGLE_FONT = '12px "Cascadia Mono", Consolas, ui-monospace, monospace';
-const LENGTH_TICK_HALF = 6;
+const LENGTH_FONT = '600 15px "Cascadia Mono", Consolas, ui-monospace, monospace';
+const ANGLE_FONT = '600 15px "Cascadia Mono", Consolas, ui-monospace, monospace';
+const LENGTH_LINE_WIDTH = 2.25;
+const ANGLE_LINE_WIDTH = 2.25;
+const LENGTH_TICK_HALF = 7;
 const LENGTH_ENDPOINT_HIT_RADIUS = 8;
 const ANGLE_POINT_HIT_RADIUS = 9;
-const ANGLE_LINE_WIDTH = 1.15;
-const ANGLE_HANDLE_RADIUS = 2.25;
+const ANGLE_HANDLE_RADIUS = 3;
+// Halo (dark stroke under the label fill) for readability against the live
+// camera image. Kept thin so the metrology-software look stays sharp.
+const LABEL_HALO_COLOR = 'rgba(0, 0, 0, 0.75)';
+const LABEL_HALO_WIDTH = 3;
+// eslint-disable-next-line no-console
+console.log(
+  `[measure-overlay-style]\ntool=length\nfontSize=15\nlineWidth=${LENGTH_LINE_WIDTH}`
+);
+// eslint-disable-next-line no-console
+console.log(
+  `[measure-overlay-style]\ntool=angle\nfontSize=15\nlineWidth=${ANGLE_LINE_WIDTH}`
+);
 const ANGLE_ARC_MIN_RADIUS = 18;
 const ANGLE_ARC_MAX_RADIUS = 44;
 const ANGLE_LOG_INTERVAL_MS = 100;
@@ -245,7 +258,7 @@ function drawLengthShape(
 ) {
   ctx.save();
   ctx.strokeStyle = STROKE_LENGTH;
-  ctx.lineWidth = 1.25;
+  ctx.lineWidth = LENGTH_LINE_WIDTH;
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
@@ -294,9 +307,13 @@ function drawLengthShape(
   ctx.textBaseline = 'bottom';
   ctx.translate(midX, midY);
   ctx.rotate(angle);
-  ctx.fillStyle = STROKE_LENGTH;
   if (label !== null) {
-    ctx.fillText(label, 0, -6);
+    ctx.lineWidth = LABEL_HALO_WIDTH;
+    ctx.strokeStyle = LABEL_HALO_COLOR;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, 0, -8);
+    ctx.fillStyle = STROKE_LENGTH;
+    ctx.fillText(label, 0, -8);
   }
   ctx.restore();
 }
@@ -366,7 +383,7 @@ function drawAngleShape(
     ctx.stroke();
 
     const label = `${value.toFixed(1)}°`;
-    const labelRadius = radius + 17;
+    const labelRadius = radius + 19;
     ctx.font = ANGLE_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -379,7 +396,18 @@ function drawAngleShape(
       },
       opts.imageRect
     );
+    const prevLineWidth = ctx.lineWidth;
+    const prevStroke = ctx.strokeStyle;
+    const prevJoin = ctx.lineJoin;
+    ctx.lineWidth = LABEL_HALO_WIDTH;
+    ctx.strokeStyle = LABEL_HALO_COLOR;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, labelPoint.x, labelPoint.y);
+    ctx.fillStyle = STROKE_ANGLE;
     ctx.fillText(label, labelPoint.x, labelPoint.y);
+    ctx.lineWidth = prevLineWidth;
+    ctx.strokeStyle = prevStroke;
+    ctx.lineJoin = prevJoin;
   }
 
   drawAngleHandle(ctx, display.vertex, ANGLE_HANDLE_RADIUS + 0.35);
