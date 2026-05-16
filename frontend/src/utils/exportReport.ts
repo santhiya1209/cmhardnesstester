@@ -21,6 +21,14 @@ import {
 import ExcelJS from 'exceljs';
 import type { Measurement } from '@/types/measurement';
 import type { ReportHeaderSettingPayload } from '@/types/reportHeaderSetting';
+import {
+  buildAxis,
+  buildDepthHvGraphPoints,
+  buildMinorTicks,
+  buildSmoothPath,
+  findChdIntersection,
+  formatHv,
+} from '@/component/own/RightPanel/DepthVsHvGraph.utils';
 
 export type ReportType =
   | 'csv'
@@ -142,8 +150,12 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
       ? `HV${m.testForceKgf}`
       : 'HV');
 
+  // Match the in-app MeasurementsTable rendering exactly so the report
+  // never disagrees with what the user just saw on screen. The table falls
+  // back to hardnessType when no convertType was saved on the row, and uses
+  // the row's HV as the convertValue whenever the resolved type is HV.
   const convertTypeRaw = formatBlank(m.convertType);
-  const convertType = convertTypeRaw || 'NONE';
+  const convertType = convertTypeRaw || hardnessType || 'NONE';
 
   let convertValueNum: number | null = null;
   if (typeof m.convertValue === 'number' && Number.isFinite(m.convertValue)) {
@@ -152,19 +164,28 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     const parsed = Number(m.convertValue);
     if (Number.isFinite(parsed)) convertValueNum = parsed;
   }
-  // Fallback chain so Convert Value never exports as a blank cell:
-  // 1. Saved convertValue (number or numeric string).
-  // 2. If a Convert Type is set but no value, fall back to the row's hardness
-  //    value (HV is the source of every conversion).
-  // 3. Otherwise '-'.
-  let convertValue: string;
-  if (convertValueNum !== null) {
-    convertValue = formatHardness(convertValueNum);
-  } else if (convertTypeRaw && typeof m.hv === 'number' && Number.isFinite(m.hv)) {
-    convertValue = formatHardness(m.hv);
-  } else {
-    convertValue = '-';
+  const convertTypeIsHv =
+    convertType === 'HV' ||
+    convertType === 'NONE' ||
+    /^HV\d/i.test(convertType);
+  if (
+    convertValueNum === null &&
+    convertTypeIsHv &&
+    typeof m.hv === 'number' &&
+    Number.isFinite(m.hv)
+  ) {
+    convertValueNum = m.hv;
   }
+  const convertValue: string =
+    convertValueNum !== null ? formatHardness(convertValueNum) : '-';
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-row-map] id=${m.id} convertType=${convertType} convertValue=${convertValue} rawConvertType=${m.convertType ?? 'null'} rawConvertValue=${m.convertValue ?? 'null'}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-render-conversion] type=${convertType} value=${convertValue}`
+  );
 
   const row: ReportRow = {
     index: String(idx + 1),
@@ -271,91 +292,133 @@ async function svgStringToPngBuffer(
   }
 }
 
-const DEPTH_PADDING = { top: 24, right: 32, bottom: 48, left: 72 };
+// Match the on-screen DepthVsHvGraph layout 1:1 so the report image is a
+// faithful rasterization of what the user just saw on the Depth Image tab.
+const DEPTH_SIZE = { w: 760, h: 360 };
+const DEPTH_PAD = { top: 66, right: 32, bottom: 62, left: 86 };
+const DEPTH_X_TICK_COUNT = 5;
+const DEPTH_Y_TICK_COUNT = 8;
+// MUI default palette equivalents (theme is not available in this util).
+const DEPTH_COLORS = {
+  axis: '#212121',
+  curve: '#1976d2',
+  gridMajor: '#e0e0e0',
+  gridMinor: '#f5f5f5',
+  label: '#212121',
+  muted: '#616161',
+  paper: '#ffffff',
+  pointFill: '#ffffff',
+  reference: '#d32f2f',
+};
 
-function buildDepthSvg(measurements: Measurement[]): string {
-  const w = 720;
-  const h = 320;
-  const innerW = w - DEPTH_PADDING.left - DEPTH_PADDING.right;
-  const innerH = h - DEPTH_PADDING.top - DEPTH_PADDING.bottom;
-
-  const points = measurements
-    .filter((m) => typeof m.hv === 'number' && Number.isFinite(m.hv))
-    .map((m, idx) => {
-      const x =
-        typeof m.depthMm === 'number' && Number.isFinite(m.depthMm) && (m.depthMm ?? 0) > 0
-          ? (m.depthMm as number)
-          : (idx + 1) * 0.2;
-      return { x, y: m.hv as number, index: idx + 1 };
-    });
+function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null): string {
+  const { w, h } = DEPTH_SIZE;
+  const pad = DEPTH_PAD;
+  const points = buildDepthHvGraphPoints(measurements);
 
   // eslint-disable-next-line no-console
-  console.log('[report-depth-chart] points=', points.length);
+  console.log(
+    `[report-depth-graph-data] points=${points.length} chdTargetHv=${chdTargetHv ?? 'null'}`
+  );
 
-  const xMax = Math.max(0.2, ...points.map((p) => p.x)) * 1.05;
-  const yMax = Math.max(10, ...points.map((p) => p.y)) * 1.1;
-  const sx = (v: number) => DEPTH_PADDING.left + (v / xMax) * innerW;
-  const sy = (v: number) => DEPTH_PADDING.top + innerH - (v / yMax) * innerH;
-
-  const yTicks: number[] = [];
-  const xTicks: number[] = [];
-  for (let i = 0; i <= 10; i += 1) {
-    yTicks.push((yMax / 10) * i);
-    xTicks.push((xMax / 10) * i);
+  if (points.length === 0) {
+    // eslint-disable-next-line no-console
+    console.log('[report-depth-graph-render] rendered=false reason=no-valid-rows');
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <rect x="0" y="0" width="${w}" height="${h}" fill="${DEPTH_COLORS.paper}"/>
+  <text x="${w / 2}" y="${h / 2 - 8}" font-size="21" font-weight="700" fill="${DEPTH_COLORS.label}" text-anchor="middle">Case Hardness Profile</text>
+  <text x="${w / 2}" y="${h / 2 + 14}" font-size="12" fill="${DEPTH_COLORS.muted}" text-anchor="middle">No measurement data available</text>
+</svg>`;
   }
 
-  const grid = '#cccccc';
-  const axis = '#000000';
-  const text = '#000000';
+  const xAxis = buildAxis(points.map((p) => p.distanceUm), DEPTH_X_TICK_COUNT, true);
+  const yValues =
+    chdTargetHv !== null && Number.isFinite(chdTargetHv)
+      ? [...points.map((p) => p.hv), chdTargetHv]
+      : points.map((p) => p.hv);
+  const yAxis = buildAxis(yValues, DEPTH_Y_TICK_COUNT, false);
+  const innerW = w - pad.left - pad.right;
+  const innerH = h - pad.top - pad.bottom;
+  const sx = (v: number) => pad.left + ((v - xAxis.min) / (xAxis.max - xAxis.min || 1)) * innerW;
+  const sy = (v: number) => pad.top + innerH - ((v - yAxis.min) / (yAxis.max - yAxis.min || 1)) * innerH;
+  const linePath = buildSmoothPath(points, sx, sy);
+  const minorXTicks = buildMinorTicks(xAxis.ticks);
+  const minorYTicks = buildMinorTicks(yAxis.ticks);
+  const chdIntersection = findChdIntersection(points, chdTargetHv);
+  const plotBottom = h - pad.bottom;
+  const plotRight = w - pad.right;
 
-  const yGrid = yTicks
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-depth-graph-render] points=${points.length} xMinUm=${xAxis.min} xMaxUm=${xAxis.max} yMinHv=${yAxis.min} yMaxHv=${yAxis.max}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-depth-graph-chd] targetHv=${chdTargetHv ?? 'null'} intersectionUm=${chdIntersection ? chdIntersection.distanceUm : 'none'} intersectionMm=${chdIntersection ? chdIntersection.depthMm : 'none'}`
+  );
+
+  const minorY = minorYTicks
+    .map(
+      (t) => `<line x1="${pad.left}" x2="${plotRight}" y1="${sy(t)}" y2="${sy(t)}" stroke="${DEPTH_COLORS.gridMinor}" stroke-width="0.7"/>`
+    )
+    .join('');
+  const minorX = minorXTicks
+    .map(
+      (t) => `<line x1="${sx(t)}" x2="${sx(t)}" y1="${pad.top}" y2="${plotBottom}" stroke="${DEPTH_COLORS.gridMinor}" stroke-width="0.7"/>`
+    )
+    .join('');
+  const majorY = yAxis.ticks
     .map(
       (t) =>
-        `<line x1="${DEPTH_PADDING.left}" x2="${w - DEPTH_PADDING.right}" y1="${sy(t)}" y2="${sy(t)}" stroke="${grid}" stroke-width="0.5"/>` +
-        `<text x="${DEPTH_PADDING.left - 6}" y="${sy(t)}" font-size="10" fill="${text}" text-anchor="end" dominant-baseline="middle">${Math.round(t)}</text>`
+        `<line x1="${pad.left}" x2="${plotRight}" y1="${sy(t)}" y2="${sy(t)}" stroke="${DEPTH_COLORS.gridMajor}" stroke-width="1"/>` +
+        `<text x="${pad.left - 10}" y="${sy(t)}" font-size="13" font-weight="600" fill="${DEPTH_COLORS.label}" text-anchor="end" dominant-baseline="middle">${formatHv(t)}</text>`
+    )
+    .join('');
+  const majorX = xAxis.ticks
+    .map(
+      (t) =>
+        `<line x1="${sx(t)}" x2="${sx(t)}" y1="${pad.top}" y2="${plotBottom}" stroke="${DEPTH_COLORS.gridMajor}" stroke-width="1"/>` +
+        `<text x="${sx(t)}" y="${plotBottom + 23}" font-size="13" font-weight="600" fill="${DEPTH_COLORS.label}" text-anchor="middle">${Math.round(t)}</text>`
+    )
+    .join('');
+  const frame = `<rect x="${pad.left}" y="${pad.top}" width="${plotRight - pad.left}" height="${plotBottom - pad.top}" fill="none" stroke="${DEPTH_COLORS.axis}" stroke-width="1.5"/>`;
+  const xTitle = `<text x="${pad.left + (plotRight - pad.left) / 2}" y="${h - 14}" font-size="15" font-weight="700" fill="${DEPTH_COLORS.label}" text-anchor="middle">Distance from Surface (µm)</text>`;
+  const yTitleY = pad.top + (plotBottom - pad.top) / 2;
+  const yTitle = `<text x="24" y="${yTitleY}" font-size="15" font-weight="700" fill="${DEPTH_COLORS.label}" text-anchor="middle" transform="rotate(-90 24 ${yTitleY})">Hardness (HV)</text>`;
+  const titleEl = `<text x="${w / 2}" y="29" font-size="21" font-weight="700" fill="${DEPTH_COLORS.label}" text-anchor="middle">Case Hardness Profile</text>`;
+  const subtitleEl = `<text x="${w / 2}" y="49" font-size="12" font-weight="600" fill="${DEPTH_COLORS.muted}" text-anchor="middle">Industrial metallurgical hardness profile</text>`;
+
+  const curvePath = points.length >= 2
+    ? `<path d="${linePath}" fill="none" stroke="${DEPTH_COLORS.curve}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`
+    : '';
+  const dots = points
+    .map(
+      (p) =>
+        `<circle cx="${sx(p.distanceUm)}" cy="${sy(p.hv)}" r="4.5" fill="${DEPTH_COLORS.pointFill}" stroke="${DEPTH_COLORS.curve}" stroke-width="2"/>`
     )
     .join('');
 
-  const xGrid = xTicks
-    .map(
-      (t) =>
-        `<line x1="${sx(t)}" x2="${sx(t)}" y1="${DEPTH_PADDING.top}" y2="${h - DEPTH_PADDING.bottom}" stroke="${grid}" stroke-width="0.5"/>` +
-        `<text x="${sx(t)}" y="${h - DEPTH_PADDING.bottom + 14}" font-size="10" fill="${text}" text-anchor="middle">${t.toFixed(3)}</text>`
-    )
-    .join('');
-
-  const axes =
-    `<line x1="${DEPTH_PADDING.left}" x2="${DEPTH_PADDING.left}" y1="${DEPTH_PADDING.top}" y2="${h - DEPTH_PADDING.bottom}" stroke="${axis}" stroke-width="1"/>` +
-    `<line x1="${DEPTH_PADDING.left}" x2="${w - DEPTH_PADDING.right}" y1="${h - DEPTH_PADDING.bottom}" y2="${h - DEPTH_PADDING.bottom}" stroke="${axis}" stroke-width="1"/>` +
-    // X axis title
-    `<text x="${DEPTH_PADDING.left + innerW / 2}" y="${h - 8}" font-size="11" fill="${text}" text-anchor="middle" font-weight="bold">Depth (mm)</text>` +
-    // Y axis title (rotated)
-    `<text x="${16}" y="${DEPTH_PADDING.top + innerH / 2}" font-size="11" fill="${text}" text-anchor="middle" font-weight="bold" transform="rotate(-90 16 ${DEPTH_PADDING.top + innerH / 2})">Hardness (HV)</text>`;
-
-  let line = '';
-  let dots = '';
-  let label = '';
-  if (points.length >= 2) {
-    const d = points
-      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${sx(p.x).toFixed(2)} ${sy(p.y).toFixed(2)}`)
-      .join(' ');
-    line = `<path d="${d}" fill="none" stroke="${axis}" stroke-width="1.2"/>`;
-  }
-  dots = points
-    .map((p) => `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="2.5" fill="${axis}"/>`)
-    .join('');
-  const sel = points[points.length - 1];
-  if (sel) {
-    label =
-      `<line x1="${sx(sel.x)}" x2="${sx(sel.x)}" y1="${sy(sel.y)}" y2="${h - DEPTH_PADDING.bottom}" stroke="${axis}" stroke-width="0.75"/>` +
-      `<line x1="${DEPTH_PADDING.left}" x2="${sx(sel.x)}" y1="${sy(sel.y)}" y2="${sy(sel.y)}" stroke="${axis}" stroke-width="0.75" stroke-dasharray="3 3"/>` +
-      `<text x="${sx(sel.x) + 6}" y="${sy(sel.y) - 6}" font-size="10" fill="${axis}">(${sel.index}, ${sel.x.toFixed(3)}mm, ${Math.round(sel.y)})</text>`;
+  let chdOverlay = '';
+  if (chdTargetHv !== null && Number.isFinite(chdTargetHv)) {
+    const refY = sy(chdTargetHv);
+    const labelY = Math.max(pad.top + 14, refY - 8);
+    chdOverlay =
+      `<line x1="${pad.left}" x2="${plotRight}" y1="${refY}" y2="${refY}" stroke="${DEPTH_COLORS.reference}" stroke-width="2" stroke-dasharray="8 6"/>` +
+      `<text x="${plotRight - 10}" y="${labelY}" font-size="14" font-weight="700" fill="${DEPTH_COLORS.reference}" text-anchor="end">${formatHv(chdTargetHv)} HV</text>`;
+    if (chdIntersection) {
+      const ix = sx(chdIntersection.distanceUm);
+      chdOverlay +=
+        `<line x1="${ix}" x2="${ix}" y1="${refY}" y2="${plotBottom}" stroke="${DEPTH_COLORS.reference}" stroke-width="2" stroke-dasharray="8 6"/>` +
+        `<circle cx="${ix}" cy="${refY}" r="5" fill="${DEPTH_COLORS.paper}" stroke="${DEPTH_COLORS.reference}" stroke-width="2"/>` +
+        `<text x="${ix + 8}" y="${plotBottom - 10}" font-size="14" font-weight="700" fill="${DEPTH_COLORS.reference}">CHD</text>`;
+    }
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-  <rect x="0" y="0" width="${w}" height="${h}" fill="#ffffff"/>
-  ${yGrid}${xGrid}${axes}${line}${dots}${label}
+  <rect x="0" y="0" width="${w}" height="${h}" fill="${DEPTH_COLORS.paper}"/>
+  ${titleEl}${subtitleEl}${minorY}${minorX}${majorY}${majorX}${frame}${xTitle}${yTitle}${curvePath}${chdOverlay}${dots}
 </svg>`;
 }
 
@@ -795,10 +858,15 @@ async function exportWord(
   rows: ReportRow[],
   measurements: Measurement[],
   header: ReportHeaderSettingPayload,
-  loadTimeSeconds: number | null
+  loadTimeSeconds: number | null,
+  chdTargetHv: number | null
 ): Promise<void> {
   const includeImage = type === 'word-image' || type === 'word-image-depth';
   const includeDepth = type === 'word-depth' || type === 'word-image-depth';
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-mode] mode=${type === 'word-depth' ? 'depth-hardness' : type === 'word-image-depth' ? 'image-depth-hardness' : type}`
+  );
 
   // eslint-disable-next-line no-console
   console.log('[report-word] building type=', type, 'rows=', rows.length);
@@ -852,16 +920,16 @@ async function exportWord(
   let depthAdded = false;
   if (includeDepth) {
     try {
-      const svg = buildDepthSvg(measurements);
-      const png = await svgStringToPngBuffer(svg, 720, 320);
-      children.push(sectionHeading('Deep Hardness'));
+      const svg = buildDepthSvg(measurements, chdTargetHv);
+      const png = await svgStringToPngBuffer(svg, DEPTH_SIZE.w, DEPTH_SIZE.h);
+      children.push(sectionHeading('Case Hardness Profile'));
       children.push(
         new Paragraph({
           alignment: AlignmentType.CENTER,
           children: [
             new ImageRun({
               data: png,
-              transformation: { width: 720, height: 320 },
+              transformation: { width: DEPTH_SIZE.w, height: DEPTH_SIZE.h },
               type: 'png',
             }),
           ],
@@ -912,10 +980,14 @@ export type ExportReportInput = {
   measurements: Measurement[];
   header: ReportHeaderSettingPayload;
   loadTimeSeconds: number | null;
+  // CHD target hardness (HV) for the Case Hardness Profile reference line.
+  // Pass the same value the user has in the Depth Image tab's "CHD HV" field;
+  // null hides the reference line.
+  chdTargetHv?: number | null;
 };
 
 export async function exportReport(input: ExportReportInput): Promise<{ filename: string }> {
-  const { type, measurements, header, loadTimeSeconds } = input;
+  const { type, measurements, header, loadTimeSeconds, chdTargetHv = null } = input;
   const t0 = performance.now();
   // eslint-disable-next-line no-console
   console.log(
@@ -938,7 +1010,7 @@ export async function exportReport(input: ExportReportInput): Promise<{ filename
   try {
     if (type === 'csv') exportCsv(rows);
     else if (type === 'xlsx') await exportXlsx(rows, header);
-    else await exportWord(type, rows, measurements, header, loadTimeSeconds);
+    else await exportWord(type, rows, measurements, header, loadTimeSeconds, chdTargetHv);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[report-error] type=', type, 'reason=', err);

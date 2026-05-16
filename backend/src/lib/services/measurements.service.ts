@@ -60,6 +60,8 @@ export const measurementsService = createCrudService<
       yMm: input.yMm ?? null,
       qualified: input.qualified ?? null,
       hardnessType: input.hardnessType ?? null,
+      convertType: input.convertType ?? null,
+      convertValue: input.convertValue ?? null,
       createdAt: now,
       updatedAt: now,
     };

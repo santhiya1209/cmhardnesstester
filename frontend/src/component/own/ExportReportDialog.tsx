@@ -37,11 +37,17 @@ type Props = {
 
 function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
   const [selected, setSelected] = useState<ReportType>('word-data');
+  const [chdTargetInput, setChdTargetInput] = useState('550');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const { values: header, setValues, persist, loading } = useReportHeaderSetting(open);
   const { data: machineState } = useMachineState();
+  const showChdInput = selected === 'word-depth' || selected === 'word-image-depth';
+  const chdTargetHv = (() => {
+    const parsed = Number(chdTargetInput.trim());
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  })();
 
   useEffect(() => {
     if (open) {
@@ -85,6 +91,7 @@ function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
         measurements,
         header,
         loadTimeSeconds,
+        chdTargetHv: showChdInput ? chdTargetHv : null,
       });
       // eslint-disable-next-line no-console
       console.log('[report-export] success path=', filename);
@@ -97,7 +104,15 @@ function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [header, machineState?.loadTime, measurements, persist, selected]);
+  }, [
+    chdTargetHv,
+    header,
+    machineState?.loadTime,
+    measurements,
+    persist,
+    selected,
+    showChdInput,
+  ]);
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
@@ -197,6 +212,21 @@ function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
             ))}
           </RadioGroup>
         </FormControl>
+        {showChdInput ? (
+          <Box sx={{ mt: 1.5 }}>
+            <TextField
+              label="CHD HV"
+              size="small"
+              type="number"
+              value={chdTargetInput}
+              onChange={(e) => setChdTargetInput(e.target.value)}
+              disabled={busy}
+              inputProps={{ min: 1, step: 1 }}
+              helperText="Reference hardness for the Case Hardness Profile red line"
+              sx={{ width: 200 }}
+            />
+          </Box>
+        ) : null}
         {error ? (
           <Alert severity="error" sx={{ mt: 1.5 }}>
             {error}
