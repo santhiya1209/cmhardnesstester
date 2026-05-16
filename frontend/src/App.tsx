@@ -2495,7 +2495,7 @@ function App() {
     if (impressInProgressRef.current) {
       // eslint-disable-next-line no-console
       console.log(
-        `[auto-measure-blocked] reason=impress-in-progress source=${callSource} preview=${preview}`
+        `[auto-measure-blocked-during-impress] source=${callSource} preview=${preview}`
       );
       return;
     }
@@ -3743,15 +3743,11 @@ function App() {
       (next === 'started' || next === 'running') && prev !== 'started' && prev !== 'running';
     if (enteringRun) {
       impressInProgressRef.current = true;
-      setCommittedAutoMeasureOverlay(null);
-      setPreviewAutoMeasureOverlay(null);
-      autoMeasurePreviewSnapshotRef.current = null;
-      committedAutoMeasureFrameRef.current = null;
-      previewMeasurementRef.current = null;
-      autoMeasurementIdRef.current = null;
+      clearAutoMeasureOverlay('impress-start');
       setManualMeasureResetKey((current) => current + 1);
+      setAutoMeasureClearNonce((n) => n + 1);
       // eslint-disable-next-line no-console
-      console.log('[overlay-clear] reason=impress-start');
+      console.log('[impress-start-clear-overlay]');
       // eslint-disable-next-line no-console
       console.log(`[impress-started] timestamp=${Date.now()} indentStatus=${next}`);
       return;
@@ -3761,6 +3757,13 @@ function App() {
       const completedAt = Date.now();
       // eslint-disable-next-line no-console
       console.log(`[impress-complete] timestamp=${completedAt}`);
+      // Clear any cached/preview overlay state so the live frame paints clean.
+      // No auto-detection runs here — yellow lines only appear when the user
+      // clicks Auto Measure explicitly.
+      clearAutoMeasureOverlay('impress-done');
+      setAutoMeasureClearNonce((n) => n + 1);
+      // eslint-disable-next-line no-console
+      console.log('[impress-done-clear-overlay]');
       void (async () => {
         // eslint-disable-next-line no-console
         console.log('[camera-wait-fresh-frame] reason=after-impress');
@@ -3769,7 +3772,7 @@ function App() {
         if (!fresh) {
           // eslint-disable-next-line no-console
           console.warn(
-            '[camera-fresh-frame] reason=after-impress result=timeout — auto-detect skipped, user can re-run Auto Measure manually'
+            '[camera-fresh-frame] reason=after-impress result=timeout — live frame may be stale, user can re-run Auto Measure manually'
           );
           impressInProgressRef.current = false;
           return;
@@ -3778,17 +3781,14 @@ function App() {
         console.log(
           `[camera-fresh-frame] frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
         );
-        // Reset the duplicate-fingerprint guard so the post-impress detection
-        // can write a row even if pixel coordinates happen to land near the
-        // last committed values. The new indentation is, by definition, a
-        // new measurement.
+        // Reset the duplicate-fingerprint guard so a later manual Auto Measure
+        // click can write a row even if pixel coordinates happen to land near
+        // the previous committed values. The new indentation is, by
+        // definition, a new measurement.
         committedFingerprintsRef.current = [];
         impressInProgressRef.current = false;
         // eslint-disable-next-line no-console
-        console.log(`[auto-measure-after-impress-start] frameId=${getLastPaintEpoch()}`);
-        // eslint-disable-next-line no-console
-        console.log('[measurement-row-create] method=Auto impress=completed');
-        runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
+        console.log('[impress-camera-refresh-only]');
       })();
       return;
     }
@@ -3800,11 +3800,7 @@ function App() {
         console.log(`[impress-flag-clear] reason=indentStatus=${next}`);
       }
     }
-  }, [
-    autoMeasurePreviewSettings,
-    liveMachineState?.indentStatus,
-    runAutoMeasure,
-  ]);
+  }, [clearAutoMeasureOverlay, liveMachineState?.indentStatus]);
 
   // When Manual Measure activates, refresh the live objective so the initial
   // diamond size matches the magnification the user just toggled to.

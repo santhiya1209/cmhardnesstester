@@ -12,8 +12,6 @@ import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
 
 const COLUMNS = [
   '#',
-  'X(mm)',
-  'Y(mm)',
   'Hardness',
   'Objective',
   'Method',
@@ -25,7 +23,6 @@ const COLUMNS = [
   'Convert Type',
   'Convert Value',
   'Depth',
-  'Measure Time',
 ] as const;
 
 const TABLE_WRAP_SX: SxProps<Theme> = {
@@ -73,12 +70,6 @@ type Props = {
   onSelect: (measurementId: string) => void;
 };
 
-function formatCoordinate(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? value.toFixed(4)
-    : '0.0000';
-}
-
 function format3(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value)
     ? '-'
@@ -111,13 +102,6 @@ function formatDepth(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value)
     ? '--'
     : formatMicrometerValue(value);
-}
-
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat('en-IN', {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-  }).format(new Date(value));
 }
 
 function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, onSelect }: Props) {
@@ -253,8 +237,6 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   onClick={() => onSelect(measurement.id)}
                 >
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatCoordinate(measurement.xMm)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatCoordinate(measurement.yMm)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{formatHardness(measurement.hv)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
@@ -274,7 +256,6 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                       return formatDepth(measurement.depthMm);
                     })()}
                   </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatTimestamp(measurement.timestamp)}</TableCell>
                 </TableRow>
               );
             })

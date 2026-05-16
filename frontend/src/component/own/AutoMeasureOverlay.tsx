@@ -307,6 +307,8 @@ function AutoMeasureOverlayImpl({
   useEffect(() => {
     if (graphics !== null) return;
     forceClearCanvas('graphics-null');
+    // eslint-disable-next-line no-console
+    console.log('[overlay-clear-not-auto-measure-tool]');
   }, [graphics, forceClearCanvas]);
 
   const draw = useCallback(() => {
