@@ -897,6 +897,65 @@ function App() {
     activeDialog === 'autoMeasure' && previewAutoMeasureOverlay ? 'preview' : 'auto';
   const displayedAutoMeasureGraphicsRef = useRef<AutoMeasureGraphics | null>(null);
   const autoMeasurementIdRef = useRef<string | null>(null);
+  // Frame-anchored active measurement: the single row currently "owned" by
+  // the frozen frame the user is interacting with. Auto Measure, Manual
+  // Measure, line drag, and Calibration all consult this so they update the
+  // same row instead of creating duplicates. Cleared on new frame / explicit
+  // new measurement boundaries (overlay clear, settings cancel, etc.).
+  const activeMeasurementIdRef = useRef<string | null>(null);
+  const activeMeasurementFrameIdRef = useRef<number | null>(null);
+  // Method last written to the active row. Lets us emit honest
+  // [measurement-mode-update] old=…new=… logs without re-reading the table.
+  const activeMeasurementMethodRef = useRef<string | null>(null);
+  // Camera-open scoped measurement session. Bumped on every camera open and
+  // cleared on close — its only role is to scope the "one active row per
+  // session" rule so we can log session boundaries clearly.
+  const cameraMeasurementSessionIdRef = useRef<number>(0);
+  // Returns the current active row id, regardless of which live frame is
+  // painted. The earlier strict-frame-id gate was buggy: while the user holds
+  // a frozen Auto Measure result and opens Calibration, the live camera keeps
+  // painting new frame ids, so getLastPaintedFrameId() drifts away from the
+  // frame the row was tagged with — and reuse fell through to POST, creating
+  // duplicate rows. The active id is invalidated ONLY by the explicit "new
+  // measurement" boundaries below (new image, camera close, clear table,
+  // clear-graphics).
+  const getActiveMeasurementId = useCallback((): string | undefined => {
+    const id = activeMeasurementIdRef.current ?? undefined;
+    if (id) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-active-row] hit id=${id} frameId=${activeMeasurementFrameIdRef.current ?? 'n/a'}`
+      );
+    }
+    return id;
+  }, []);
+  const setActiveMeasurement = useCallback(
+    (id: string, frameId: number | null, reason: string) => {
+      activeMeasurementIdRef.current = id;
+      activeMeasurementFrameIdRef.current = frameId;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-active-row-set] id=${id} frameId=${frameId ?? 'n/a'} reason=${reason}`
+      );
+    },
+    []
+  );
+  const clearActiveMeasurement = useCallback((reason: string) => {
+    if (
+      activeMeasurementIdRef.current === null &&
+      activeMeasurementFrameIdRef.current === null &&
+      activeMeasurementMethodRef.current === null
+    ) {
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[measurement-active-row] cleared reason=${reason} prevId=${activeMeasurementIdRef.current ?? 'none'} prevFrameId=${activeMeasurementFrameIdRef.current ?? 'none'} prevMethod=${activeMeasurementMethodRef.current ?? 'none'}`
+    );
+    activeMeasurementIdRef.current = null;
+    activeMeasurementFrameIdRef.current = null;
+    activeMeasurementMethodRef.current = null;
+  }, []);
   // Duplicate-measurement guard for every committed Auto Measure row in the
   // current measurement session. It survives overlay clears and repeat Auto
   // Measure clicks; only table clear, new image/session resets, or row removal
@@ -1536,6 +1595,14 @@ function App() {
       await waitForOverlayPaint();
       const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
 
+      // Method must reflect the measurement tool the user just operated
+      // inside Calibration — not a hardcoded 'Manual'. The auto-measure
+      // branch of Calibration trips calibrationMeasureModeRef='auto'; the
+      // manual branch trips 'manual'. Fall back to 'Manual' for legacy paths
+      // that don't set the ref (e.g. direct-from-pixels with no overlay).
+      const calibrationMode = calibrationMeasureModeRef.current;
+      const resolvedMethod: 'Auto' | 'Manual' =
+        calibrationMode === 'auto' ? 'Auto' : 'Manual';
       const rowPayload = {
         d1: d1Um,
         d2: d2Um,
@@ -1553,7 +1620,7 @@ function App() {
         objective: normalizedObjective,
         testForceKgf: forceKgf,
         depthMm,
-        method: 'Manual' as const,
+        method: resolvedMethod,
         unit: 'um' as const,
         timestamp: new Date().toISOString(),
         imageDataUrl,
@@ -1569,7 +1636,35 @@ function App() {
       );
 
       try {
-        const saved = await saveManualMeasurement({ values: rowPayload });
+        const calibrationFrameId = getLastPaintedFrameId();
+        const reuseId = getActiveMeasurementId();
+        if (reuseId) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-new-row-blocked] reason=camera-session-already-has-active-row flow=calibration reuseId=${reuseId} frameId=${calibrationFrameId ?? 'n/a'}`
+          );
+        }
+        const previousMethod = activeMeasurementMethodRef.current;
+        const saved = await saveManualMeasurement({ id: reuseId, values: rowPayload });
+        setActiveMeasurement(saved.id, calibrationFrameId, 'calibration-save');
+        manualMeasurementIdRef.current = saved.id;
+        autoMeasurementIdRef.current = saved.id;
+        const savedMethod = saved.method ?? resolvedMethod;
+        activeMeasurementMethodRef.current = savedMethod;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-row-update] id=${saved.id} reused=${reuseId ? 'yes' : 'no'} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} method=${savedMethod}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-mode-update] id=${saved.id} old=${previousMethod ?? 'none'} new=${savedMethod} reason=calibration-${calibrationMode === 'auto' ? 'auto' : 'manual'}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          reuseId
+            ? `[measurement-row-update] id=${saved.id} method=${savedMethod} reason=same-camera-session flow=calibration`
+            : `[measurement-row-create] id=${saved.id} method=${savedMethod} reason=first-measurement-in-camera-session flow=calibration`
+        );
         // eslint-disable-next-line no-console
         console.log(
           `[calibration-auto-row-saved] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} objective=${saved.objective}`
@@ -1605,6 +1700,8 @@ function App() {
       calibrationSettingsList,
       refetchMeasurements,
       saveManualMeasurement,
+      getActiveMeasurementId,
+      setActiveMeasurement,
     ]
   );
 
@@ -1904,10 +2001,34 @@ function App() {
           console.log(
             `[measurement-save-payload] depthMm=${'depthMm' in rowPayload ? (rowPayload as { depthMm?: number | null }).depthMm ?? 'null' : 'preserved'}`
           );
+          const manualFrameId = getLastPaintedFrameId();
+          const manualReuseId =
+            manualMeasurementIdRef.current ?? getActiveMeasurementId();
+          if (manualReuseId && manualMeasurementIdRef.current === null) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[measurement-new-row-blocked] reason=camera-session-already-has-active-row flow=manual reuseId=${manualReuseId} frameId=${manualFrameId ?? 'n/a'}`
+            );
+          }
           const saved = await saveManualMeasurement({
-            id: manualMeasurementIdRef.current ?? undefined,
+            id: manualReuseId ?? undefined,
             values: rowPayload,
           });
+          const previousManualMethod = activeMeasurementMethodRef.current;
+          const savedManualMethod = saved.method ?? 'Manual';
+          // eslint-disable-next-line no-console
+          console.log(
+            manualReuseId
+              ? `[measurement-row-update] id=${saved.id} method=${savedManualMethod} reason=same-camera-session flow=manual`
+              : `[measurement-row-create] id=${saved.id} method=${savedManualMethod} reason=first-measurement-in-camera-session flow=manual`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-mode-update] id=${saved.id} old=${previousManualMethod ?? 'none'} new=${savedManualMethod} reason=manual-save`
+          );
+          setActiveMeasurement(saved.id, manualFrameId, 'manual-save');
+          activeMeasurementMethodRef.current = savedManualMethod;
+          autoMeasurementIdRef.current = saved.id;
           // eslint-disable-next-line no-console
           console.log(
             `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
@@ -1957,6 +2078,8 @@ function App() {
       activeObjective,
       refetchMeasurements,
       saveManualMeasurement,
+      getActiveMeasurementId,
+      setActiveMeasurement,
     ]
   );
 
@@ -2243,7 +2366,21 @@ function App() {
       previewMeasurementRef.current = null;
 
       const timestamp = new Date().toISOString();
-      const saveRowId = source === 'auto-click' ? undefined : autoMeasurementIdRef.current ?? undefined;
+      // For auto-click, the existing fingerprint match at line ~2167 may have
+      // already restored autoMeasurementIdRef. If not, also reuse the active
+      // row when the user previously placed a Manual/Calibration row on this
+      // same frozen frame — otherwise we'd duplicate the indent.
+      let saveRowId: string | undefined =
+        autoMeasurementIdRef.current ?? undefined;
+      if (saveRowId === undefined) {
+        saveRowId = getActiveMeasurementId();
+        if (saveRowId) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[measurement-new-row-blocked] reason=camera-session-already-has-active-row flow=auto reuseId=${saveRowId} frameId=${fingerprint.frameId ?? 'n/a'}`
+          );
+        }
+      }
       // Depth is captured ONLY when creating a new auto-measure row. On
       // re-detection of an existing row we must keep the originally saved
       // micrometer reading — overwriting would violate "old saved row must
@@ -2413,7 +2550,22 @@ function App() {
       // eslint-disable-next-line no-console
       console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
+      const previousAutoMethod = activeMeasurementMethodRef.current;
+      const savedAutoMethod = saved.method ?? autoRowPayload.method;
       autoMeasurementIdRef.current = saved.id;
+      manualMeasurementIdRef.current = saved.id;
+      setActiveMeasurement(saved.id, fingerprint.frameId, 'auto-save');
+      activeMeasurementMethodRef.current = savedAutoMethod;
+      // eslint-disable-next-line no-console
+      console.log(
+        isNewAutoMeasurement
+          ? `[measurement-row-create] id=${saved.id} method=${savedAutoMethod} reason=first-measurement-in-camera-session flow=auto frameId=${fingerprint.frameId ?? 'n/a'}`
+          : `[measurement-row-update] id=${saved.id} method=${savedAutoMethod} reason=same-camera-session flow=auto frameId=${fingerprint.frameId ?? 'n/a'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-mode-update] id=${saved.id} old=${previousAutoMethod ?? 'none'} new=${savedAutoMethod} reason=auto-save`
+      );
       const committedGraphics = cloneAutoMeasureGraphics(graphics);
       committedFingerprintsRef.current = upsertCommittedAutoMeasureFingerprint(
         committedFingerprintsRef.current,
@@ -2488,6 +2640,8 @@ function App() {
       calibrations,
       refetchMeasurements,
       saveManualMeasurement,
+      getActiveMeasurementId,
+      setActiveMeasurement,
     ]
   );
 
@@ -4031,6 +4185,22 @@ function App() {
             // eslint-disable-next-line no-console
             console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
             autoMeasurementIdRef.current = saved.id;
+            manualMeasurementIdRef.current = saved.id;
+            {
+              const adjFrameId = getLastPaintedFrameId();
+              const previousAdjMethod = activeMeasurementMethodRef.current;
+              const savedAdjMethod = saved.method ?? 'Auto (Adjusted)';
+              setActiveMeasurement(saved.id, adjFrameId, 'auto-adjust-save');
+              activeMeasurementMethodRef.current = savedAdjMethod;
+              // eslint-disable-next-line no-console
+              console.log(
+                `[measurement-row-update] id=${saved.id} method=${savedAdjMethod} reason=line-adjustment frameId=${adjFrameId ?? 'n/a'}`
+              );
+              // eslint-disable-next-line no-console
+              console.log(
+                `[measurement-mode-update] id=${saved.id} old=${previousAdjMethod ?? 'none'} new=${savedAdjMethod} reason=line-adjustment`
+              );
+            }
             const centerX = (corners.left.x + corners.right.x) / 2;
             const centerY = (corners.top.y + corners.bottom.y) / 2;
             const stableCenterX = roundAutoMeasurePixel(centerX);
@@ -4104,6 +4274,7 @@ function App() {
       activeObjective,
       refetchMeasurements,
       saveManualMeasurement,
+      setActiveMeasurement,
     ]
   );
 
@@ -4172,6 +4343,10 @@ function App() {
         committedAutoMeasureFrameRef.current = null;
         previewMeasurementRef.current = null;
         autoMeasurementIdRef.current = null;
+        manualMeasurementIdRef.current = null;
+        // Note: active measurement row is NOT cleared from the clear-graphics
+        // menu. Per spec only camera close/open ends the session and allows
+        // a new row.
         resetManualMeasure();
       },
       autoMeasure: handleAutoMeasure,
@@ -4234,6 +4409,9 @@ function App() {
               committedAutoMeasureFrameRef.current = null;
               previewMeasurementRef.current = null;
               autoMeasurementIdRef.current = null;
+              manualMeasurementIdRef.current = null;
+              // Note: active measurement row is NOT cleared on new-image
+              // load. Per spec only camera close/open starts a new row.
               committedFingerprintsRef.current = [];
               // eslint-disable-next-line no-console
               console.log('[measurement-session-reset] reason=new-image');
@@ -4332,6 +4510,12 @@ function App() {
             clearAutoMeasureOverlay('camera-open');
             resetManualMeasure();
             setCameraOpen(true);
+            cameraMeasurementSessionIdRef.current += 1;
+            clearActiveMeasurement('camera-session-start');
+            // eslint-disable-next-line no-console
+            console.log(
+              `[camera-session-start] sessionId=${cameraMeasurementSessionIdRef.current}`
+            );
             // eslint-disable-next-line no-console
             console.log('[camera-open] noAutoMeasure=true');
 
@@ -4466,6 +4650,12 @@ function App() {
             committedAutoMeasureFrameRef.current = null;
             previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
+            manualMeasurementIdRef.current = null;
+            // eslint-disable-next-line no-console
+            console.log(
+              `[camera-session-end] sessionId=${cameraMeasurementSessionIdRef.current}`
+            );
+            clearActiveMeasurement('camera-close-pre');
             committedFingerprintsRef.current = [];
             // Cancel any pending coalesced trailing detection. The in-flight
             // finally block re-reads this ref; clearing it stops the queued
@@ -4509,6 +4699,8 @@ function App() {
             committedAutoMeasureFrameRef.current = null;
             previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
+            manualMeasurementIdRef.current = null;
+            clearActiveMeasurement('camera-close');
             committedFingerprintsRef.current = [];
             // eslint-disable-next-line no-console
             console.log('[overlay-clear] reason=camera-close');
@@ -4743,9 +4935,11 @@ function App() {
   const handleMeasurementsCleared = useCallback(() => {
     committedFingerprintsRef.current = [];
     autoMeasurementIdRef.current = null;
+    manualMeasurementIdRef.current = null;
+    clearActiveMeasurement('clear-table');
     // eslint-disable-next-line no-console
     console.log('[measurement-session-reset] reason=clear-table');
-  }, []);
+  }, [clearActiveMeasurement]);
 
   return (
     <Box sx={ROOT_SX}>
