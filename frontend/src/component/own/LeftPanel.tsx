@@ -1,13 +1,13 @@
-import { forwardRef, memo, useState } from 'react';
+import { forwardRef, memo } from 'react';
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
-import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 import CameraWindow, { type CameraWindowHandle } from '@/component/own/CameraWindow';
-import { dropPendingCameraFrames } from '@/hooks/useCameraStream';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
+
+// eslint-disable-next-line no-console
+console.log('[camera-ui] fps-overlay-hidden=true');
 
 const PANEL_SX: SxProps<Theme> = {
   flex: 2.0,
@@ -19,67 +19,6 @@ const PANEL_SX: SxProps<Theme> = {
   borderColor: 'divider',
   overflow: 'hidden',
 };
-
-// Camera-area toolbar. Currently just the "Live 30 FPS" quick action — a
-// dedicated button so the user doesn't have to open Camera Settings to lower
-// exposure for smooth live preview. Calls the dedicated IPC path in preload
-// (logs at every layer) so any silent skip is visible in the terminal.
-function CameraToolbar() {
-  const [pending, setPending] = useState(false);
-  const [lastReply, setLastReply] = useState<string | null>(null);
-  return (
-    <Box
-      sx={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 1,
-        px: 1.5,
-        py: 0.5,
-        borderBottom: 1,
-        borderColor: 'divider',
-        bgcolor: 'background.default',
-        minHeight: 36,
-      }}
-    >
-      <Button
-        size="small"
-        variant="contained"
-        disabled={pending}
-        onClick={() => {
-          const targetFps = 30;
-          // eslint-disable-next-line no-console
-          console.log(`[live-fps-button-click] targetFps=${targetFps}`);
-          setPending(true);
-          dropPendingCameraFrames('exposure-change');
-          void window.hardnessCamera
-            .setLiveExposureForFps(targetFps)
-            .then((reply) => {
-              // eslint-disable-next-line no-console
-              console.log('[live-fps-button-reply]', reply);
-              if (reply && reply.ok && typeof reply.exposureMs === 'number') {
-                setLastReply(`exposure=${reply.exposureMs.toFixed(2)}ms`);
-              } else {
-                setLastReply(reply && reply.message ? `error: ${reply.message}` : 'no reply');
-              }
-            })
-            .catch((err: unknown) => {
-              // eslint-disable-next-line no-console
-              console.error('[live-fps-button-error]', err);
-              setLastReply(err instanceof Error ? `error: ${err.message}` : 'threw');
-            })
-            .finally(() => setPending(false));
-        }}
-      >
-        Live 30 FPS
-      </Button>
-      {lastReply ? (
-        <Typography variant="caption" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
-          {lastReply}
-        </Typography>
-      ) : null}
-    </Box>
-  );
-}
 
 type Props = {
   activeTool: ToolId;
@@ -131,7 +70,6 @@ function LeftPanelImpl(
 ) {
   return (
     <Box sx={PANEL_SX}>
-      <CameraToolbar />
       <CameraWindow
         ref={ref}
         activeTool={activeTool}

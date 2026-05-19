@@ -26,6 +26,7 @@ class MakerNSIS extends MakerBase {
         appId: cfg.appId || `com.${(packageJSON.name || 'app').toLowerCase()}.app`,
         productName: cfg.productName || appName,
         directories: { output: outDir },
+        win: cfg.win,
         nsis: {
           oneClick: cfg.oneClick ?? false,
           allowToChangeInstallationDirectory: cfg.allowToChangeInstallationDirectory ?? true,

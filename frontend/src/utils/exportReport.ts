@@ -21,6 +21,7 @@ import {
 import ExcelJS from 'exceljs';
 import type { Measurement } from '@/types/measurement';
 import type { ReportHeaderSettingPayload } from '@/types/reportHeaderSetting';
+import { getHardnessColor } from '@/utils/hardnessColor';
 import {
   buildAxis,
   buildDepthHvGraphPoints,
@@ -109,7 +110,9 @@ function formatQualified(value: unknown): 'YES' | 'NO' {
 }
 
 function formatDepth(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(3)} mm` : '';
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toFixed(3)} mm`
+    : '-';
 }
 
 function formatInspectionDate(d = new Date()): string {
@@ -124,6 +127,9 @@ type ReportRow = {
   xMm: string;
   yMm: string;
   hardness: string;
+  // Raw HV number (null when missing). Used to color the Hardness Value cell
+  // in DOCX exports against the operator's target HV band.
+  hardnessNumeric: number | null;
   objective: string;
   method: string;
   hardnessType: string;
@@ -187,11 +193,34 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     `[report-render-conversion] type=${convertType} value=${convertValue}`
   );
 
+  // Resolve depth from the saved row only — never from a live micrometer
+  // reading. depthMm is the effective value; fall back to the per-source
+  // fields for legacy rows that may have one populated but not the other.
+  const isFiniteNum = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isFinite(v);
+  const resolvedDepthMm =
+    (isFiniteNum(m.depthMm) ? m.depthMm : null) ??
+    (isFiniteNum(m.manualDepthMm) ? m.manualDepthMm : null) ??
+    (isFiniteNum(m.deviceDepthMm) ? m.deviceDepthMm : null);
+  const depthSourceLabel =
+    m.depthSource === 'device' || m.depthSource === 'manual'
+      ? m.depthSource
+      : isFiniteNum(m.manualDepthMm) && !isFiniteNum(m.deviceDepthMm)
+        ? 'manual'
+        : isFiniteNum(m.deviceDepthMm)
+          ? 'device'
+          : 'unknown';
+  // eslint-disable-next-line no-console
+  console.log(
+    `[report-row-depth] id=${m.id} depth=${resolvedDepthMm ?? 'null'} source=${depthSourceLabel}`
+  );
+
   const row: ReportRow = {
     index: String(idx + 1),
     xMm: formatCoordinate(m.xMm),
     yMm: formatCoordinate(m.yMm),
     hardness: formatHardness(m.hv),
+    hardnessNumeric: typeof m.hv === 'number' && Number.isFinite(m.hv) ? m.hv : null,
     objective: safeText(m.objective, '-'),
     method: safeText(m.method, '-'),
     hardnessType,
@@ -201,7 +230,7 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     davgUm: formatMicron(davgUm),
     convertType,
     convertValue,
-    depth: formatDepth(m.depthMm),
+    depth: formatDepth(resolvedDepthMm),
   };
 
   // eslint-disable-next-line no-console
@@ -242,7 +271,7 @@ function buildCsv(rows: ReportRow[]): string {
   return lines.join('\r\n');
 }
 
-function downloadBlob(blob: Blob, filename: string): void {
+function downloadBlobBrowser(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -251,6 +280,58 @@ function downloadBlob(blob: Blob, filename: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// Save the generated report. In Electron, round-trip through the main process
+// so we end up with a concrete file path and can auto-open the file in MS Word
+// (or the OS default handler). When the IPC bridge isn't present (pure-web
+// dev, tests), fall back to the <a download> path.
+async function saveReportBlob(blob: Blob, filename: string): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log(`[report-save-start] filename=${filename} size=${blob.size}`);
+  const ipc = typeof window !== 'undefined' ? window.api : undefined;
+  if (!ipc || typeof ipc.invoke !== 'function') {
+    downloadBlobBrowser(blob, filename);
+    // eslint-disable-next-line no-console
+    console.log(`[report-save-success] path=${filename} mode=browser-download`);
+    return;
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  try {
+    const reply = await ipc.invoke('dialog:saveReport', {
+      defaultName: filename,
+      bytes,
+      autoOpen: true,
+    });
+    if (!reply.ok) {
+      if ('canceled' in reply && reply.canceled) {
+        // eslint-disable-next-line no-console
+        console.log('[report-save-canceled]');
+        return;
+      }
+      const message = 'message' in reply && reply.message ? reply.message : 'unknown';
+      // eslint-disable-next-line no-console
+      console.warn(`[report-save-failed] error=${message}`);
+      throw new Error(`Report save failed: ${message}`);
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[report-save-success] path=${reply.filePath}`);
+    if (reply.opened) {
+      // eslint-disable-next-line no-console
+      console.log(`[report-auto-open-success] path=${reply.filePath}`);
+    } else if (reply.openError) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[report-auto-open-failed] path=${reply.filePath} error=${reply.openError}`
+      );
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[report-auto-open-failed] reason=ipc-error error=${err instanceof Error ? err.message : String(err)} — falling back to browser download`
+    );
+    downloadBlobBrowser(blob, filename);
+  }
 }
 
 async function dataUrlToArrayBuffer(dataUrl: string): Promise<ArrayBuffer> {
@@ -422,10 +503,10 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
 </svg>`;
 }
 
-function exportCsv(rows: ReportRow[]): void {
+async function exportCsv(rows: ReportRow[]): Promise<void> {
   const csv = buildCsv(rows);
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
-  downloadBlob(blob, REPORT_FILENAMES.csv);
+  await saveReportBlob(blob, REPORT_FILENAMES.csv);
   // eslint-disable-next-line no-console
   console.log('[report-csv] rows=', rows.length, 'path=', REPORT_FILENAMES.csv);
 }
@@ -495,7 +576,7 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
   const blob = new Blob([buf], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
-  downloadBlob(blob, REPORT_FILENAMES.xlsx);
+  await saveReportBlob(blob, REPORT_FILENAMES.xlsx);
   // eslint-disable-next-line no-console
   console.log('[report-excel] rows=', rows.length, 'path=', REPORT_FILENAMES.xlsx);
 }
@@ -526,6 +607,9 @@ function makeCell(
     align?: typeof AlignmentType[keyof typeof AlignmentType];
     shaded?: boolean;
     columnSpan?: number;
+    // Hex color for the text run (e.g. 'D32F2F'). Pass without '#'; the docx
+    // library accepts both, but bare 6-char hex is the canonical form.
+    color?: string;
   }
 ): TableCell {
   return new TableCell({
@@ -543,6 +627,7 @@ function makeCell(
             bold: opts?.bold ?? false,
             size: opts?.size ?? DOCX_BODY_SIZE,
             font: DOCX_FONT,
+            color: opts?.color,
           }),
         ],
       }),
@@ -701,22 +786,28 @@ function buildStatisticsTable(stats: Statistics): Table {
   });
 }
 
-function buildDetailedDataTable(rows: ReportRow[]): Table {
+function buildDetailedDataTable(
+  rows: ReportRow[],
+  targetMinHv: number | null,
+  targetMaxHv: number | null
+): Table {
   const headers = [
     '#',
     'D1(um)',
     'D2(um)',
     'Davg(um)',
+    'Depth(mm)',
     'Hardness Type',
     'Hardness Value',
     'Convert Type',
     'Convert Value',
     'Qualified',
   ];
-  // Hand-tuned widths summing to ~15400 (Measure Time column's 2400 was
-  // redistributed: 500 → +200 on hardness/convert columns and +100 on the
-  // index/qualified columns so the table still fills the page width).
-  const widths = [600, 1600, 1600, 1600, 1900, 1900, 1900, 1900, 1700];
+  // Widths sum to ~15400 (same target as before); Depth(mm) carved out of the
+  // hardness/convert columns so the table still fills the page width.
+  const widths = [600, 1500, 1500, 1500, 1500, 1750, 1750, 1750, 1750, 1700];
+  // eslint-disable-next-line no-console
+  console.log('[report-depth-column-render]');
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h, i) => makeCell(h, widths[i], { bold: true, shaded: true })),
@@ -726,17 +817,23 @@ function buildDetailedDataTable(rows: ReportRow[]): Table {
     console.log(
       `[report-detail] row=${r.index} convertType=${r.convertType} convertValue=${r.convertValue}`
     );
+    // docx TextRun.color wants a bare hex string with no '#'. Strip it.
+    const hardnessColor = getHardnessColor(r.hardnessNumeric, targetMinHv, targetMaxHv).color.replace(
+      /^#/,
+      ''
+    );
     return new TableRow({
       children: [
         makeCell(r.index, widths[0]),
         makeCell(r.d1Um, widths[1]),
         makeCell(r.d2Um, widths[2]),
         makeCell(r.davgUm, widths[3]),
-        makeCell(r.hardnessType, widths[4]),
-        makeCell(r.hardness, widths[5]),
-        makeCell(r.convertType, widths[6]),
-        makeCell(r.convertValue, widths[7]),
-        makeCell(r.qualified, widths[8]),
+        makeCell(r.depth || '-', widths[4]),
+        makeCell(r.hardnessType, widths[5]),
+        makeCell(r.hardness, widths[6], { color: hardnessColor, bold: true }),
+        makeCell(r.convertType, widths[7]),
+        makeCell(r.convertValue, widths[8]),
+        makeCell(r.qualified, widths[9]),
       ],
     });
   });
@@ -859,7 +956,9 @@ async function exportWord(
   measurements: Measurement[],
   header: ReportHeaderSettingPayload,
   loadTimeSeconds: number | null,
-  chdTargetHv: number | null
+  chdTargetHv: number | null,
+  targetMinHv: number | null,
+  targetMaxHv: number | null
 ): Promise<void> {
   const includeImage = type === 'word-image' || type === 'word-image-depth';
   const includeDepth = type === 'word-depth' || type === 'word-image-depth';
@@ -901,7 +1000,7 @@ async function exportWord(
 
   // 4. Detailed Data
   children.push(sectionHeading('Detailed data'));
-  children.push(buildDetailedDataTable(rows));
+  children.push(buildDetailedDataTable(rows, targetMinHv, targetMaxHv));
   children.push(blankParagraph());
 
   // 5. Pictures
@@ -970,7 +1069,7 @@ async function exportWord(
     ],
   });
   const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, REPORT_FILENAMES[type]);
+  await saveReportBlob(blob, REPORT_FILENAMES[type]);
   // eslint-disable-next-line no-console
   console.log('[report-word] export success path=', REPORT_FILENAMES[type]);
 }
@@ -984,10 +1083,22 @@ export type ExportReportInput = {
   // Pass the same value the user has in the Depth Image tab's "CHD HV" field;
   // null hides the reference line.
   chdTargetHv?: number | null;
+  // Operator-configured target HV band. Drives the hardness color rule in the
+  // detailed-data table (red inside the band, dark blue outside).
+  targetMinHv?: number | null;
+  targetMaxHv?: number | null;
 };
 
 export async function exportReport(input: ExportReportInput): Promise<{ filename: string }> {
-  const { type, measurements, header, loadTimeSeconds, chdTargetHv = null } = input;
+  const {
+    type,
+    measurements,
+    header,
+    loadTimeSeconds,
+    chdTargetHv = null,
+    targetMinHv = null,
+    targetMaxHv = null,
+  } = input;
   const t0 = performance.now();
   // eslint-disable-next-line no-console
   console.log(
@@ -1008,9 +1119,19 @@ export async function exportReport(input: ExportReportInput): Promise<{ filename
   const rows = normalizeAll(measurements);
 
   try {
-    if (type === 'csv') exportCsv(rows);
+    if (type === 'csv') await exportCsv(rows);
     else if (type === 'xlsx') await exportXlsx(rows, header);
-    else await exportWord(type, rows, measurements, header, loadTimeSeconds, chdTargetHv);
+    else
+      await exportWord(
+        type,
+        rows,
+        measurements,
+        header,
+        loadTimeSeconds,
+        chdTargetHv,
+        targetMinHv,
+        targetMaxHv
+      );
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[report-error] type=', type, 'reason=', err);

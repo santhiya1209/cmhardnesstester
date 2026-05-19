@@ -70,6 +70,10 @@ type Props = {
   disabled?: boolean;
   readOnly?: boolean;
   onHvTypeChange?: (value: string) => void;
+  // Resolved color for the HV value (red when in [target min, max], dark blue
+  // otherwise). When undefined the theme primary color is used so the box
+  // doesn't change appearance in callsites that haven't opted in.
+  hvColor?: string;
 };
 
 function HvSummaryRowImpl({
@@ -80,13 +84,16 @@ function HvSummaryRowImpl({
   disabled = false,
   readOnly = false,
   onHvTypeChange,
+  hvColor,
 }: Props) {
   const options = hvTypeOptions.includes(hvType) ? hvTypeOptions : [hvType, ...hvTypeOptions];
 
   return (
     <>
       <Typography sx={LABEL_SX}>HV</Typography>
-      <Box sx={HV_DISPLAY_SX}>{hvDisplay}</Box>
+      <Box sx={{ ...(HV_DISPLAY_SX as object), ...(hvColor ? { color: hvColor } : null) }}>
+        {hvDisplay}
+      </Box>
       <FormControl size="small" sx={HV_FIELD_SX}>
         <Select
           value={hvType}

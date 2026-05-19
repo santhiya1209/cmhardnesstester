@@ -315,7 +315,15 @@ function AutoMeasureSettingsDialogImpl({
   const handleCheckboxChange = useCallback(
     (field: 'turretAfterImpress' | 'measureAfterImpress') =>
       (event: React.ChangeEvent<HTMLInputElement>) => {
-        writeLocal({ [field]: event.target.checked } as Partial<AutoMeasureSettingsPayload>);
+        const value = event.target.checked;
+        if (field === 'measureAfterImpress') {
+          // eslint-disable-next-line no-console
+          console.log(`[measure-after-impress-checkbox-change] value=${value}`);
+        } else {
+          // eslint-disable-next-line no-console
+          console.log(`[turret-after-impress-checkbox-change] value=${value}`);
+        }
+        writeLocal({ [field]: value } as Partial<AutoMeasureSettingsPayload>);
         flushPreview(`checkbox:${field}`);
       },
     [flushPreview, writeLocal]

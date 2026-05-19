@@ -42,6 +42,7 @@ function saveDatabase(database: DatabaseState): void {
   const rows: Record<CollectionName, unknown[]> = {
     machineSettings: state.machineSettings,
     measurements: state.measurements,
+    micrometerConfig: state.micrometerConfig,
     autoMeasureSettings: state.autoMeasureSettings,
     calibrationSettings: state.calibrationSettings,
     calibrations: state.calibrations,

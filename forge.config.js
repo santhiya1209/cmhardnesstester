@@ -1,7 +1,11 @@
 module.exports = {
   packagerConfig: {
-    name: 'HardnessTester',
-    appBundleId: 'com.chennaimetco.hardnesstester',
+    name: 'VickersMeasurementSoftware',
+    executableName: 'VickersMeasurementSoftware',
+    appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
+    // electron-packager appends the platform-correct extension (.ico on win32,
+    // .icns on darwin, .png on linux). Drop the artwork into build/icon.{ico,icns,png}.
+    icon: 'build/icon',
     asar: true,
     extraResource: [
       '.env.prod',
@@ -30,12 +34,19 @@ module.exports = {
       name: './makers/nsis-maker.js',
       platforms: ['win32'],
       config: {
-        appId: 'com.chennaimetco.hardnesstester',
-        productName: 'HardnessTester',
+        appId: 'com.chennaimetco.vickersmeasurementsoftware',
+        productName: 'Vickers Measurement Software',
         oneClick: false,
         allowToChangeInstallationDirectory: true,
         perMachine: false,
-        shortcutName: 'HardnessTester',
+        shortcutName: 'Vickers Measurement Software',
+        win: {
+          icon: 'build/icon.ico',
+        },
+        nsis: {
+          installerIcon: 'build/icon.ico',
+          uninstallerIcon: 'build/icon.ico',
+        },
       },
     },
     { name: '@electron-forge/maker-zip', platforms: ['darwin'] },

@@ -14,6 +14,7 @@ import MicrometerDisplay from '@/component/own/MicrometerDisplay';
 import ExportReportDialog from '@/component/own/ExportReportDialog';
 import HvSummaryRow from './HvSummaryRow';
 import { convertVickers, type ConvertTargetType } from '@/utils/hardnessConvert';
+import { getHardnessColor } from '@/utils/hardnessColor';
 
 const CONVERT_TYPE_OPTIONS = [
   'HV',
@@ -57,6 +58,9 @@ type Props = {
   onMeasurementsCleared?: () => void;
   onDisplayValuesChange?: (values: MeasurementDisplayValues) => void;
   refetch: () => Promise<void>;
+  micrometerEnabled: boolean;
+  targetMinHv: number | null;
+  targetMaxHv: number | null;
 };
 
 export type MeasurementDisplayValues = {
@@ -82,6 +86,9 @@ function MeasurementsWorkspaceImpl({
   onMeasurementsCleared,
   onDisplayValuesChange,
   refetch,
+  micrometerEnabled,
+  targetMinHv,
+  targetMaxHv,
 }: Props) {
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
@@ -284,6 +291,69 @@ function MeasurementsWorkspaceImpl({
     setSelectedMeasurementId((current) => (current === measurementId ? null : measurementId));
   }, []);
 
+  const handleManualDepthChange = useCallback(
+    async (measurementId: string, depthMm: number | null) => {
+      const target = measurements.find((m) => m.id === measurementId);
+      if (!target) return;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[manual-depth-update] rowId=${measurementId} value=${depthMm ?? 'null'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[depth-source] source=manual value=${depthMm ?? 'null'}`);
+      // The backend's buildUpdateSchema injects `null` defaults for fields
+      // missing from the PUT body (same trap documented on the convertType
+      // handler above). A naive `{depthMm, depthSource, manualDepthMm}` PUT
+      // therefore wipes convertType/convertValue/hv to null. Pass every
+      // preservable field through so the partial update is non-destructive.
+      const convertValue =
+        typeof target.convertValue === 'number' ? target.convertValue : null;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[convert-preserve-before] rowId=${measurementId} convertType=${target.convertType ?? 'null'} convertValue=${convertValue ?? 'null'} hv=${target.hv ?? 'null'}`
+      );
+      try {
+        await updateMeasurement(measurementId, {
+          d1: target.d1,
+          d2: target.d2,
+          hv: target.hv ?? null,
+          d1Px: target.d1Px ?? null,
+          d2Px: target.d2Px ?? null,
+          d1Um: target.d1Um ?? null,
+          d2Um: target.d2Um ?? null,
+          averageUm: target.averageUm ?? null,
+          averageMm: target.averageMm ?? null,
+          micronPerPixel: target.micronPerPixel ?? null,
+          calibrationName: target.calibrationName ?? null,
+          objective: target.objective ?? null,
+          testForceKgf: target.testForceKgf ?? null,
+          hardnessType: target.hardnessType ?? null,
+          convertType: target.convertType ?? null,
+          convertValue,
+          depthMm,
+          depthSource: 'manual',
+          deviceDepthMm: target.deviceDepthMm ?? null,
+          manualDepthMm: depthMm,
+        });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-row-update] reason=manual-depth rowId=${measurementId} preserveConvert=true`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[convert-preserve-after] rowId=${measurementId} convertType=${target.convertType ?? 'null'} convertValue=${convertValue ?? 'null'} hv=${target.hv ?? 'null'}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(`[depth-freeze-save] rowId=${measurementId} value=${depthMm ?? 'null'}`);
+        await refetch();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[manual-depth-save-error]', err);
+      }
+    },
+    [measurements, refetch]
+  );
+
   const handleDelete = useCallback(async () => {
     if (!selectedMeasurement) {
       return;
@@ -330,6 +400,13 @@ function MeasurementsWorkspaceImpl({
             hardnessDisplay={displayConvertValue}
             hvTypeOptions={CONVERT_TYPE_OPTIONS}
             disabled={busy}
+            hvColor={
+              getHardnessColor(
+                typeof displayedMeasurement?.hv === 'number' ? displayedMeasurement.hv : null,
+                targetMinHv,
+                targetMaxHv
+              ).color
+            }
             onHvTypeChange={(value) =>
               void handleConvertTypeChange(value as (typeof CONVERT_TYPE_OPTIONS)[number])
             }
@@ -351,7 +428,7 @@ function MeasurementsWorkspaceImpl({
             return null;
           })()}
           <Typography sx={LABEL_SX}>Micrometer</Typography>
-          <MicrometerDisplay sx={MICROMETER_FIELD_SX} />
+          <MicrometerDisplay sx={MICROMETER_FIELD_SX} enabled={micrometerEnabled} />
         </Box>
       </Box>
 
@@ -366,6 +443,10 @@ function MeasurementsWorkspaceImpl({
         loading={loading}
         selectedMeasurementId={selectedMeasurementId}
         onSelect={handleSelectMeasurement}
+        micrometerEnabled={micrometerEnabled}
+        onManualDepthChange={handleManualDepthChange}
+        targetMinHv={targetMinHv}
+        targetMaxHv={targetMaxHv}
       />
 
       <Box sx={ACTION_ROW_SX}>
@@ -413,6 +494,8 @@ function MeasurementsWorkspaceImpl({
         onClose={() => setReportOpen(false)}
         measurements={measurements}
         cameraImageDataUrl={(displayedMeasurement?.imageDataUrl ?? null) || null}
+        targetMinHv={targetMinHv}
+        targetMaxHv={targetMaxHv}
       />
 
       <Stack direction="row" sx={STATUS_ROW_SX}>

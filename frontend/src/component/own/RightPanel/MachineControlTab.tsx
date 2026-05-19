@@ -546,6 +546,10 @@ function MachineControlTabImpl({
     console.log('[impress-popup] open');
     // eslint-disable-next-line no-console
     console.log('[impress-popup] status=running');
+    // eslint-disable-next-line no-console
+    console.log(
+      `[impress-command-sent] objective=${objectiveForCommand} force=${formState.force} loadTime=${formState.loadTime}`
+    );
     void startIndent().catch((err) => {
       const reason = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console

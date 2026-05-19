@@ -33,9 +33,17 @@ type Props = {
   onClose: () => void;
   measurements: Measurement[];
   cameraImageDataUrl?: string | null;
+  targetMinHv?: number | null;
+  targetMaxHv?: number | null;
 };
 
-function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
+function ExportReportDialogImpl({
+  open,
+  onClose,
+  measurements,
+  targetMinHv = null,
+  targetMaxHv = null,
+}: Props) {
   const [selected, setSelected] = useState<ReportType>('word-data');
   const [chdTargetInput, setChdTargetInput] = useState('550');
   const [busy, setBusy] = useState(false);
@@ -92,6 +100,8 @@ function ExportReportDialogImpl({ open, onClose, measurements }: Props) {
         header,
         loadTimeSeconds,
         chdTargetHv: showChdInput ? chdTargetHv : null,
+        targetMinHv,
+        targetMaxHv,
       });
       // eslint-disable-next-line no-console
       console.log('[report-export] success path=', filename);

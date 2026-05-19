@@ -42,6 +42,9 @@ export const measurementsService = createCrudService<
       average,
       hv: input.hv ?? null,
       depthMm: input.depthMm ?? null,
+      depthSource: input.depthSource ?? null,
+      deviceDepthMm: input.deviceDepthMm ?? null,
+      manualDepthMm: input.manualDepthMm ?? null,
       method: input.method ?? 'Manual',
       unit: input.unit ?? 'um',
       d1Px,
@@ -71,6 +74,12 @@ export const measurementsService = createCrudService<
     const d2 = input.d2 ?? current.d2;
     const hv = input.hv === undefined ? current.hv : input.hv;
     const depthMm = input.depthMm === undefined ? current.depthMm ?? null : input.depthMm;
+    const depthSource =
+      input.depthSource === undefined ? current.depthSource ?? null : input.depthSource;
+    const deviceDepthMm =
+      input.deviceDepthMm === undefined ? current.deviceDepthMm ?? null : input.deviceDepthMm;
+    const manualDepthMm =
+      input.manualDepthMm === undefined ? current.manualDepthMm ?? null : input.manualDepthMm;
     const d1Px = input.d1Px === undefined ? current.d1Px ?? null : input.d1Px;
     const d2Px = input.d2Px === undefined ? current.d2Px ?? null : input.d2Px;
     const d1Um = input.d1Um === undefined ? current.d1Um ?? null : input.d1Um;
@@ -94,6 +103,9 @@ export const measurementsService = createCrudService<
       average: averageUm ?? computeAverage(d1, d2),
       hv,
       depthMm,
+      depthSource,
+      deviceDepthMm,
+      manualDepthMm,
       d1Px,
       d2Px,
       d1Um,

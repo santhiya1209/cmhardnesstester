@@ -4,20 +4,25 @@ import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 import {
+  AXIS_LABEL,
   buildAxis,
+  buildAxisGraphPoints,
   buildDepthHvGraphPoints,
   buildMinorTicks,
   buildSmoothPath,
   findChdIntersection,
-  formatDistance,
+  findGenericYCrossing,
   formatHv,
   type Axis,
+  type AxisGraphPoint,
   type DepthHvGraphPoint,
+  type XAxisKey,
+  type YAxisKey,
 } from './DepthVsHvGraph.utils';
 import { renderChdReference, renderTooltip } from './DepthVsHvGraphOverlays';
 
-export { buildDepthHvGraphPoints };
-export type { DepthHvGraphPoint };
+export { buildDepthHvGraphPoints, buildAxisGraphPoints };
+export type { DepthHvGraphPoint, AxisGraphPoint, XAxisKey, YAxisKey };
 
 const GRAPH_SX: SxProps<Theme> = { flex: 1, minHeight: 0, display: 'flex', p: 1 };
 const EMPTY_SX: SxProps<Theme> = {
@@ -63,11 +68,20 @@ type GraphColors = {
 };
 
 type Props = {
-  points: DepthHvGraphPoint[];
+  points: AxisGraphPoint[];
   chdTargetHv: number | null;
+  xKey: XAxisKey;
+  yKey: YAxisKey;
 };
 
-function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
+function formatAxisValue(value: number): string {
+  if (!Number.isFinite(value)) return '';
+  if (Math.abs(value) >= 1000) return Math.round(value).toLocaleString('en-IN');
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(2);
+}
+
+function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
   const theme = useTheme();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const colors = useMemo<GraphColors>(
@@ -86,14 +100,37 @@ function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
     }),
     [theme]
   );
+  // CHD reference only makes physical sense when the curve is depth vs HV;
+  // hide it for any other axis combination (the user-selected axes may be
+  // diagonals or measurement #, where a horizontal HV line is meaningless).
+  const isDepthVsHv =
+    (xKey === 'depthMm' || xKey === 'depthUm') && yKey === 'hv';
+  // Map generic {x, y} into the legacy {distanceUm, hv} shape consumed by the
+  // overlay helpers — semantically neutral, they only use the numeric fields
+  // for spatial layout.
+  const legacyPoints: DepthHvGraphPoint[] = useMemo(
+    () =>
+      points.map((point) => ({
+        id: point.id,
+        sourceIndex: point.sourceIndex,
+        index: point.index,
+        distanceUm: point.x,
+        hv: point.y,
+      })),
+    [points]
+  );
   const plot = useMemo<Plot | null>(() => {
     if (points.length === 0) return null;
 
-    const xAxis = buildAxis(points.map((point) => point.distanceUm), X_TICK_COUNT, true);
+    const xAxis = buildAxis(
+      points.map((point) => point.x),
+      X_TICK_COUNT,
+      xKey !== 'hv'
+    );
     const yValues =
-      chdTargetHv !== null && Number.isFinite(chdTargetHv)
-        ? [...points.map((point) => point.hv), chdTargetHv]
-        : points.map((point) => point.hv);
+      isDepthVsHv && chdTargetHv !== null && Number.isFinite(chdTargetHv)
+        ? [...points.map((point) => point.y), chdTargetHv]
+        : points.map((point) => point.y);
     const yAxis = buildAxis(yValues, Y_TICK_COUNT, false);
     const innerW = SIZE.w - PAD.left - PAD.right;
     const innerH = SIZE.h - PAD.top - PAD.bottom;
@@ -105,44 +142,36 @@ function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
       yAxis,
       sx,
       sy,
-      linePath: buildSmoothPath(points, sx, sy),
+      linePath: buildSmoothPath(legacyPoints, sx, sy),
       minorXTicks: buildMinorTicks(xAxis.ticks),
       minorYTicks: buildMinorTicks(yAxis.ticks),
     };
-  }, [chdTargetHv, points]);
+  }, [chdTargetHv, isDepthVsHv, legacyPoints, points, xKey]);
   const chdIntersection = useMemo(
-    () => findChdIntersection(points, chdTargetHv),
-    [chdTargetHv, points]
+    () => (isDepthVsHv ? findChdIntersection(legacyPoints, chdTargetHv) : null),
+    [chdTargetHv, isDepthVsHv, legacyPoints]
   );
+  const genericYCrossing = useMemo(
+    () => (!isDepthVsHv ? findGenericYCrossing(points, chdTargetHv) : null),
+    [chdTargetHv, isDepthVsHv, points]
+  );
+  // eslint-disable-next-line no-console
+  console.log(`[depth-graph-chd-visible] visible=${isDepthVsHv} xKey=${xKey} yKey=${yKey}`);
+  void genericYCrossing;
 
   useEffect(() => {
-    console.log(`[case-hardness-profile-render] points=${points.length}`);
-    console.log(`[hv-depth-graph-update] points=${points.length} targetHv=${chdTargetHv ?? 'null'}`);
-    console.log(
-      `[graph-measurement-points] ${JSON.stringify(
-        points.map((point) => ({ depthMm: point.distanceUm / 1000, distanceUm: point.distanceUm, hv: point.hv }))
-      )}`
-    );
-    console.log(`[chd-calc] targetHv=${chdTargetHv ?? 'null'} points=${points.length}`);
+    console.log(`[case-hardness-profile-render] points=${points.length} xKey=${xKey} yKey=${yKey}`);
     if (plot) {
       console.log(
-        `[case-hardness-profile-axis] xMinUm=${plot.xAxis.min} xMaxUm=${plot.xAxis.max} yMinHv=${plot.yAxis.min} yMaxHv=${plot.yAxis.max}`
+        `[case-hardness-profile-axis] xMin=${plot.xAxis.min} xMax=${plot.xAxis.max} yMin=${plot.yAxis.min} yMax=${plot.yAxis.max}`
       );
     }
-    points.forEach((point) => {
-      console.log(`[case-hardness-profile-point] distanceUm=${point.distanceUm} hv=${point.hv}`);
-    });
-    if (chdIntersection) {
+    if (isDepthVsHv && chdIntersection) {
       console.log(
-        `[chd-intersection] targetHv=${chdIntersection.hv} depthMm=${chdIntersection.depthMm} distanceUm=${chdIntersection.distanceUm} segmentStart=${chdIntersection.segmentStart.id} segmentEnd=${chdIntersection.segmentEnd.id}`
+        `[chd-intersection] targetHv=${chdIntersection.hv} depthMm=${chdIntersection.depthMm} distanceUm=${chdIntersection.distanceUm}`
       );
-    } else {
-      console.log(`[chd-intersection] targetHv=${chdTargetHv ?? 'null'} depthMm=null distanceUm=null`);
     }
-    console.log(
-      `[graph-red-line-render] targetHv=${chdTargetHv ?? 'null'} intersection=${chdIntersection ? chdIntersection.distanceUm : 'none'}`
-    );
-  }, [chdIntersection, chdTargetHv, plot, points]);
+  }, [chdIntersection, isDepthVsHv, plot, points, xKey, yKey]);
 
   if (!plot) {
     // eslint-disable-next-line no-console
@@ -157,9 +186,11 @@ function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
   // eslint-disable-next-line no-console
   console.log(`[depth-graph-render] points=${points.length} rendered=true`);
 
-  const hovered = hoverIndex === null ? null : points[hoverIndex] ?? null;
+  const hovered = hoverIndex === null ? null : legacyPoints[hoverIndex] ?? null;
   const plotBottom = SIZE.h - PAD.bottom;
   const plotRight = SIZE.w - PAD.right;
+  const xLabel = AXIS_LABEL[xKey];
+  const yLabel = AXIS_LABEL[yKey];
 
   return (
     <Box sx={GRAPH_SX}>
@@ -179,26 +210,28 @@ function DepthVsHvGraphImpl({ points, chdTargetHv }: Props) {
         {plot.yAxis.ticks.map((tick) => (
           <g key={`y-${tick}`}>
             <line x1={PAD.left} x2={plotRight} y1={plot.sy(tick)} y2={plot.sy(tick)} stroke={colors.gridMajor} strokeWidth={1} />
-            <text x={PAD.left - 10} y={plot.sy(tick)} fontSize={13} fontWeight={600} fill={colors.label} textAnchor="end" dominantBaseline="middle">{formatHv(tick)}</text>
+            <text x={PAD.left - 10} y={plot.sy(tick)} fontSize={13} fontWeight={600} fill={colors.label} textAnchor="end" dominantBaseline="middle">{yKey === 'hv' ? formatHv(tick) : formatAxisValue(tick)}</text>
           </g>
         ))}
         {plot.xAxis.ticks.map((tick) => (
           <g key={`x-${tick}`}>
             <line x1={plot.sx(tick)} x2={plot.sx(tick)} y1={PAD.top} y2={plotBottom} stroke={colors.gridMajor} strokeWidth={1} />
-            <text x={plot.sx(tick)} y={plotBottom + 23} fontSize={13} fontWeight={600} fill={colors.label} textAnchor="middle">{Math.round(tick)}</text>
+            <text x={plot.sx(tick)} y={plotBottom + 23} fontSize={13} fontWeight={600} fill={colors.label} textAnchor="middle">{formatAxisValue(tick)}</text>
           </g>
         ))}
         <rect x={PAD.left} y={PAD.top} width={plotRight - PAD.left} height={plotBottom - PAD.top} fill="none" stroke={colors.axis} strokeWidth={1.5} />
-        <text x={PAD.left + (plotRight - PAD.left) / 2} y={SIZE.h - 14} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle">{'Distance from Surface (\u00B5m)'}</text>
-        <text x={24} y={PAD.top + (plotBottom - PAD.top) / 2} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle" transform={`rotate(-90 24 ${PAD.top + (plotBottom - PAD.top) / 2})`}>Hardness (HV)</text>
-        {points.length >= 2 ? <path d={plot.linePath} fill="none" stroke={colors.curve} strokeWidth={3} strokeLinejoin="round" strokeLinecap="round" /> : null}
-        {renderChdReference(chdTargetHv, chdIntersection, plot, colors, { size: SIZE, pad: PAD })}
-        {points.map((point, index) => (
+        <text x={PAD.left + (plotRight - PAD.left) / 2} y={SIZE.h - 14} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle">{xLabel}</text>
+        <text x={24} y={PAD.top + (plotBottom - PAD.top) / 2} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle" transform={`rotate(-90 24 ${PAD.top + (plotBottom - PAD.top) / 2})`}>{yLabel}</text>
+        {legacyPoints.length >= 2 ? <path d={plot.linePath} fill="none" stroke={colors.curve} strokeWidth={3} strokeLinejoin="round" strokeLinecap="round" /> : null}
+        {isDepthVsHv
+          ? renderChdReference(chdTargetHv, chdIntersection, plot, colors, { size: SIZE, pad: PAD })
+          : null}
+        {legacyPoints.map((point, index) => (
           <circle key={`${point.id}-${point.index}`} cx={plot.sx(point.distanceUm)} cy={plot.sy(point.hv)} r={POINT_RADIUS} fill={index === hoverIndex ? colors.curve : colors.pointFill} stroke={colors.curve} strokeWidth={2} />
         ))}
-        {points.map((point, index) => (
+        {legacyPoints.map((point, index) => (
           <circle key={`${point.id}-${point.index}-hit`} cx={plot.sx(point.distanceUm)} cy={plot.sy(point.hv)} r={HIT_RADIUS} fill="transparent" onPointerEnter={() => setHoverIndex(index)} onPointerMove={() => setHoverIndex(index)}>
-            <title>{`Distance: ${formatDistance(point.distanceUm)}\nHV: ${formatHv(point.hv)}`}</title>
+            <title>{`${xLabel}: ${formatAxisValue(point.distanceUm)}\n${yLabel}: ${yKey === 'hv' ? formatHv(point.hv) : formatAxisValue(point.hv)}`}</title>
           </circle>
         ))}
         {hovered ? renderTooltip(hovered, plot, colors, { size: SIZE, pad: PAD }) : null}

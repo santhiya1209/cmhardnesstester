@@ -4,6 +4,7 @@ export type ConfigDialogId =
   | 'config:lineColor'
   | 'config:calibration'
   | 'config:autoMeasure'
+  | 'config:micrometer'
   | 'config:serialPort'
   | 'config:camera'
   | 'config:generic'

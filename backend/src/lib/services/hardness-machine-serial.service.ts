@@ -15,6 +15,7 @@ import {
 } from './hardness-machine-protocol';
 import { machineSettingsService } from './machine-settings.service';
 import type { MachineSettingsPayload } from '../../models/machine-settings';
+import { autoMeasureSettingsService } from './auto-measure-settings.service';
 
 // Defensive require so the backend keeps booting even if `serialport` is not
 // rebuilt for the current Node ABI yet. Connect attempts will surface a clean
@@ -156,6 +157,10 @@ class HardnessMachineSerialService extends EventEmitter {
   private pendingAckCommandLabel: string | null = null;
   private pendingAckCommandId: number | null = null;
   private commandSequence = 0;
+  // Set when an impress command is sent with turretAfterImpress=true. The next
+  // machine-confirmed objective RX (L1OK/L2OK) emits a
+  // [turret-after-impress-move-confirmed] log, then clears this flag.
+  private pendingTurretAfterImpressConfirm = false;
   private txQueue: Promise<void> = Promise.resolve();
   // Persisted-settings record bookkeeping. The latest row is loaded once at
   // service construction; subsequent saves update that same row instead of
@@ -731,6 +736,13 @@ class HardnessMachineSerialService extends EventEmitter {
             fullPatch.lastObjectiveRx = rxAscii;
             fullPatch.confirmedObjectiveFromMachine = String(frame.values.objective);
             fullPatch.lastObjectivePhysicalCheck = 'unknown';
+            if (this.pendingTurretAfterImpressConfirm) {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[turret-after-impress-move-confirmed] objective=${frame.values.objective}`
+              );
+              this.pendingTurretAfterImpressConfirm = false;
+            }
             // eslint-disable-next-line no-console
             console.log(
               `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.values.objective}`
@@ -813,6 +825,13 @@ class HardnessMachineSerialService extends EventEmitter {
             patch.objective = frame.objective;
             patch.lastObjectiveRx = rxAscii;
             patch.confirmedObjectiveFromMachine = frame.objective;
+            if (this.pendingTurretAfterImpressConfirm) {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[turret-after-impress-move-confirmed] objective=${frame.objective}`
+              );
+              this.pendingTurretAfterImpressConfirm = false;
+            }
             patch.lastObjectivePhysicalCheck = 'unknown';
             patch.syncMessage = `RX objective=${frame.objective} turret slot=${frame.slot}`;
             // eslint-disable-next-line no-console
@@ -876,6 +895,13 @@ class HardnessMachineSerialService extends EventEmitter {
               // Reset physical check on every fresh machine confirmation —
               // the human has not yet visually verified this new position.
               patch.lastObjectivePhysicalCheck = 'unknown';
+              if (this.pendingTurretAfterImpressConfirm) {
+                // eslint-disable-next-line no-console
+                console.log(
+                  `[turret-after-impress-move-confirmed] objective=${frame.value}`
+                );
+                this.pendingTurretAfterImpressConfirm = false;
+              }
               // eslint-disable-next-line no-console
               console.log(
                 `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.value}`
@@ -1459,7 +1485,40 @@ class HardnessMachineSerialService extends EventEmitter {
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
-    const frame = buildStartIndentCommand(this.state.force, this.state.loadTime, true);
+    let turretAfterImpress = true;
+    let measureObjective: string | null = null;
+    try {
+      const all = await autoMeasureSettingsService.getAll();
+      const settings = all[0] ?? null;
+      if (settings) {
+        turretAfterImpress = settings.turretAfterImpress !== false;
+        measureObjective =
+          typeof settings.objectiveForMeasure === 'string'
+            ? settings.objectiveForMeasure
+            : null;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[turret-after-impress-settings-read-failed] error=${err instanceof Error ? err.message : String(err)} — defaulting to enabled`
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[turret-after-impress] enabled=${turretAfterImpress} action=${turretAfterImpress ? 'move' : 'stay-current'}`
+    );
+    if (turretAfterImpress) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[turret-after-impress-move-start] target=${measureObjective ?? 'unknown'}`
+      );
+      this.pendingTurretAfterImpressConfirm = true;
+    } else {
+      this.pendingTurretAfterImpressConfirm = false;
+      // eslint-disable-next-line no-console
+      console.log('[turret-after-impress-skip] reason=setting-disabled');
+    }
+    const frame = buildStartIndentCommand(this.state.force, this.state.loadTime, turretAfterImpress);
     if (!frame) {
       const message = this.unverifiedMessage('indent');
       // eslint-disable-next-line no-console
@@ -1475,7 +1534,7 @@ class HardnessMachineSerialService extends EventEmitter {
         (Number.isFinite(numericLoadTime) ? numericLoadTime * 1000 : 0) + INDENT_FINISH_GRACE_MS;
       // eslint-disable-next-line no-console
       console.log(
-        `[machine-impress-context] force=${this.state.force} loadTime=${this.state.loadTime} objective=${this.state.objective} turretAfterImpress=true ascii=${JSON.stringify(frame.toString('ascii'))} hex="${frame.toString('hex')}" expectedRx=FINISH timeoutMs=${indentTimeoutMs}`
+        `[machine-impress-context] force=${this.state.force} loadTime=${this.state.loadTime} objective=${this.state.objective} turretAfterImpress=${turretAfterImpress} ascii=${JSON.stringify(frame.toString('ascii'))} hex="${frame.toString('hex')}" expectedRx=FINISH timeoutMs=${indentTimeoutMs}`
       );
       // Indent triggers physical motion. The original DLL decodes FINISH as
       // the completion acknowledgement, so keep the UI pending until RX proves it.

@@ -12,6 +12,43 @@ type MeasurementGraphRow = Measurement & {
   micrometerValue?: unknown;
   hardness?: unknown;
   hardnessValue?: unknown;
+  davg?: unknown;
+  davgUm?: unknown;
+  measurementNumber?: unknown;
+};
+
+// Axis keys exposed in the UI. Keep these stable — they're persisted in
+// localStorage and shown in the X/Y selects in the Depth Image tab.
+export const X_AXIS_KEYS = [
+  'depthUm',
+  'depthMm',
+  'd1Um',
+  'd2Um',
+  'davgUm',
+  'measurementIndex',
+  'hv',
+] as const;
+export const Y_AXIS_KEYS = ['hv', 'depthMm', 'depthUm', 'd1Um', 'd2Um', 'davgUm'] as const;
+export type XAxisKey = (typeof X_AXIS_KEYS)[number];
+export type YAxisKey = (typeof Y_AXIS_KEYS)[number];
+export type AxisKey = XAxisKey | YAxisKey;
+
+export const AXIS_LABEL: Record<AxisKey, string> = {
+  depthMm: 'Depth (mm)',
+  depthUm: 'Depth (µm)',
+  d1Um: 'D1 (µm)',
+  d2Um: 'D2 (µm)',
+  davgUm: 'Davg (µm)',
+  measurementIndex: 'Measurement #',
+  hv: 'Hardness Value',
+};
+
+export type AxisGraphPoint = {
+  id: string;
+  sourceIndex: number;
+  index: number;
+  x: number;
+  y: number;
 };
 
 export type DepthHvGraphPoint = {
@@ -67,6 +104,101 @@ function readDistanceUm(row: MeasurementGraphRow): number | null {
 
   const depthMm = readFiniteNumber(row.depthMm, row.depth, row.distance, row.micrometer, row.micrometerValue);
   return depthMm === null ? null : depthMm * UM_PER_MM;
+}
+
+function readDepthMm(row: MeasurementGraphRow): number | null {
+  const direct = readFiniteNumber(
+    row.depthMm,
+    row.depth,
+    row.distance,
+    row.micrometer,
+    row.micrometerValue,
+    (row as { manualDepthMm?: unknown }).manualDepthMm,
+    (row as { deviceDepthMm?: unknown }).deviceDepthMm
+  );
+  if (direct !== null) return direct;
+  const um = readFiniteNumber(row.distanceUm, row.distanceMicrometer, row.distanceMicrometers);
+  return um === null ? null : um / UM_PER_MM;
+}
+
+// Resolve a generic axis value from a row. Returns null when the row doesn't
+// carry the requested field (or it isn't a positive finite number).
+function readAxisValue(
+  row: MeasurementGraphRow,
+  key: AxisKey,
+  sourceIndex: number
+): number | null {
+  switch (key) {
+    case 'depthMm':
+      return readDepthMm(row);
+    case 'depthUm':
+      return readDistanceUm(row);
+    case 'd1Um':
+      return readFiniteNumber(row.d1Um, row.unit === 'um' ? row.d1 : null);
+    case 'd2Um':
+      return readFiniteNumber(row.d2Um, row.unit === 'um' ? row.d2 : null);
+    case 'davgUm':
+      return readFiniteNumber(
+        row.averageUm,
+        row.davgUm,
+        row.davg,
+        row.unit === 'um' ? row.average : null
+      );
+    case 'measurementIndex':
+      // 1-based row number (matches the table's # column).
+      return sourceIndex + 1;
+    case 'hv':
+      return readFiniteNumber(row.hv, row.hardness, row.hardnessValue);
+    default:
+      return null;
+  }
+}
+
+// Build generic {x, y} points for any X/Y axis pair. Skips rows where either
+// axis can't be resolved. Sorted by x ascending (so the connecting line goes
+// left→right) and re-indexed for tooltip / overlay use.
+export function buildAxisGraphPoints(
+  measurements: Measurement[],
+  xKey: XAxisKey,
+  yKey: YAxisKey
+): AxisGraphPoint[] {
+  // eslint-disable-next-line no-console
+  console.log(`[depth-graph-source] count=${measurements.length} xKey=${xKey} yKey=${yKey}`);
+  const points = measurements.flatMap((measurement, sourceIndex) => {
+    const row = measurement as MeasurementGraphRow;
+    const x = readAxisValue(row, xKey, sourceIndex);
+    const y = readAxisValue(row, yKey, sourceIndex);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[depth-graph-row-map] rowId=${measurement.id} x=${x ?? 'null'} y=${y ?? 'null'}`
+    );
+    const xValid = x !== null && Number.isFinite(x);
+    const yValid = y !== null && Number.isFinite(y);
+    // X may legitimately be zero (depth=0 surface). Y must additionally be
+    // positive for the HV axis to make physical sense; for non-HV Y values
+    // (depth, diagonals) zero is also valid, so use the same finite check.
+    if (!xValid || !yValid) {
+      const reason = !xValid && !yValid ? 'x-invalid,y-invalid' : !xValid ? 'x-invalid' : 'y-invalid';
+      // eslint-disable-next-line no-console
+      console.log(`[depth-graph-invalid-row] rowId=${measurement.id} reason=${reason}`);
+      return [];
+    }
+    return [
+      {
+        id: measurement.id,
+        sourceIndex,
+        index: 0,
+        x: x as number,
+        y: y as number,
+      },
+    ];
+  });
+  const sorted = points
+    .sort((left, right) => left.x - right.x || left.sourceIndex - right.sourceIndex)
+    .map((point, index) => ({ ...point, index: index + 1 }));
+  // eslint-disable-next-line no-console
+  console.log(`[depth-graph-points] count=${sorted.length}`);
+  return sorted;
 }
 
 export function buildDepthHvGraphPoints(measurements: Measurement[]): DepthHvGraphPoint[] {
@@ -139,6 +271,31 @@ export function buildAxis(values: number[], tickCount: number, includeZero: bool
   }
 
   return { min: axisMin, max: axisMax, ticks };
+}
+
+// Find where the curve crosses a constant Y value. When the graph is in
+// generic-axis mode this powers the CHD reference line — but it's only
+// meaningful when X is depth and Y is HV. Returns null otherwise.
+export function findGenericYCrossing(
+  points: AxisGraphPoint[],
+  targetY: number | null
+): { x: number; y: number; segmentStart: AxisGraphPoint; segmentEnd: AxisGraphPoint } | null {
+  if (targetY === null || !Number.isFinite(targetY) || points.length === 0) return null;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (point.y === targetY) {
+      return { x: point.x, y: targetY, segmentStart: point, segmentEnd: point };
+    }
+    const next = points[index + 1];
+    if (!next) continue;
+    const low = Math.min(point.y, next.y);
+    const high = Math.max(point.y, next.y);
+    if (targetY < low || targetY > high || point.y === next.y) continue;
+    const ratio = (targetY - point.y) / (next.y - point.y);
+    const x = point.x + ratio * (next.x - point.x);
+    return { x, y: targetY, segmentStart: point, segmentEnd: next };
+  }
+  return null;
 }
 
 export function findChdIntersection(

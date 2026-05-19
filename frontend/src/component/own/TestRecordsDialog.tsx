@@ -2,13 +2,10 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
-import Checkbox from '@mui/material/Checkbox';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
-import Divider from '@mui/material/Divider';
-import FormControlLabel from '@mui/material/FormControlLabel';
 import MenuItem from '@mui/material/MenuItem';
 import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
@@ -74,7 +71,7 @@ function toPayload(formState: FormState): TestRecordSavePayload | null {
   const sampleName = formState.sampleName.trim();
   const testMethod = formState.testMethod.trim();
 
-  if (!sampleName || !testMethod || formState.measurementIds.length === 0) {
+  if (!sampleName || !testMethod) {
     return null;
   }
 
@@ -108,17 +105,6 @@ function formatTimestamp(value: string): string {
   }).format(new Date(value));
 }
 
-function formatMeasurementLabel(measurement: Measurement): string {
-  const hv = measurement.hv === null ? '-' : measurement.hv;
-  const d1Px = measurement.d1Px ?? (measurement.unit === 'px' ? measurement.d1 : null);
-  const d2Px = measurement.d2Px ?? (measurement.unit === 'px' ? measurement.d2 : null);
-  const d1Um = measurement.d1Um ?? (measurement.unit === 'um' ? measurement.d1 : null);
-  const d2Um = measurement.d2Um ?? (measurement.unit === 'um' ? measurement.d2 : null);
-  const pxText = d1Px !== null && d2Px !== null ? ` | D1 ${d1Px} px | D2 ${d2Px} px` : '';
-  const umText = d1Um !== null && d2Um !== null ? ` | D1 ${d1Um} µm | D2 ${d2Um} µm` : '';
-  return `HV ${hv}${pxText}${umText}`;
-}
-
 function TestRecordsDialogImpl({
   open,
   onClose,
@@ -140,7 +126,7 @@ function TestRecordsDialogImpl({
   const payload = useMemo(() => toPayload(formState), [formState]);
   const validationError =
     showValidationError && payload === null
-      ? 'Sample name, test method, and at least one measurement are required.'
+      ? 'Sample name and test method are required.'
       : null;
   const errorMessage = loadError ?? saveError ?? deleteError ?? validationError;
   const busy = loading || saving || deleting;
@@ -153,10 +139,21 @@ function TestRecordsDialogImpl({
 
   useEffect(() => {
     if (open && !loading) {
-      setFormState(toFormState(selectedRecord, initialMeasurementIds));
+      // The Measurements-selection section was removed from Sample Info, so
+      // there's no per-row checkbox UI any more. Editing an existing record
+      // intersects the record's saved measurementIds with the current
+      // measurements table so stale references (rows the operator deleted
+      // since the record was last saved) are dropped automatically; creating
+      // a new record auto-links every measurement currently in the table.
+      const allCurrentIds = measurements.map((m) => m.id);
+      const liveIdSet = new Set(allCurrentIds);
+      const seed = selectedRecord
+        ? initialMeasurementIds.filter((id) => liveIdSet.has(id))
+        : allCurrentIds;
+      setFormState(toFormState(selectedRecord, seed));
       setShowValidationError(false);
     }
-  }, [initialMeasurementIds, loading, open, selectedRecord]);
+  }, [initialMeasurementIds, loading, measurements, open, selectedRecord]);
 
   const handleRecordChange = useCallback((event: SelectChangeEvent) => {
     const value = event.target.value;
@@ -177,25 +174,15 @@ function TestRecordsDialogImpl({
     []
   );
 
-  const handleMeasurementToggle = useCallback((measurementId: string) => {
-    setShowValidationError(false);
-    setFormState((current) => {
-      const isSelected = current.measurementIds.includes(measurementId);
-
-      return {
-        ...current,
-        measurementIds: isSelected
-          ? current.measurementIds.filter((id) => id !== measurementId)
-          : [...current.measurementIds, measurementId],
-      };
-    });
-  }, []);
-
   const handleNew = useCallback(() => {
     setSelectedRecordId('');
-    setFormState(toFormState(null, initialMeasurementIds));
+    // New record on the way: pre-link every measurement currently in the
+    // table so the record still carries the full set, matching the prior
+    // behavior the (now-removed) selection UI provided.
+    const allCurrentIds = measurements.map((m) => m.id);
+    setFormState(toFormState(null, allCurrentIds));
     setShowValidationError(false);
-  }, [initialMeasurementIds]);
+  }, [measurements]);
 
   const handleSave = useCallback(async () => {
     if (!payload) {
@@ -203,19 +190,65 @@ function TestRecordsDialogImpl({
       return;
     }
 
+    // Stale-id guard: the form state may carry measurementIds that point to
+    // measurements which have since been deleted from the table. The backend
+    // rejects the whole save with "All measurementIds must reference existing
+    // measurements..." if even one is missing. Filter the payload against the
+    // current measurements list so the save succeeds against the rows the
+    // operator actually sees on screen.
+    const liveIds = new Set(measurements.map((m) => m.id));
+    const requestedIds = payload.measurementIds;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[report-save-measurement-ids] count=${requestedIds.length} ids=${requestedIds.join(',') || '-'}`
+    );
+    const validIds: string[] = [];
+    const invalidIds: string[] = [];
+    for (const id of requestedIds) {
+      if (liveIds.has(id)) {
+        validIds.push(id);
+        // eslint-disable-next-line no-console
+        console.log(`[report-valid-measurement-id] id=${id}`);
+      } else {
+        invalidIds.push(id);
+        // eslint-disable-next-line no-console
+        console.warn(`[report-invalid-measurement-id] id=${id} reason=not-in-measurements-table`);
+      }
+    }
+    if (invalidIds.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[report-save-cleaned-ids] dropped=${invalidIds.length} kept=${validIds.length}`
+      );
+    }
+    if (validIds.length === 0) {
+      setShowValidationError(true);
+      onStatusChange?.('Please create at least one measurement before saving report.');
+      return;
+    }
+    const cleanedPayload = { ...payload, measurementIds: validIds };
+
     const saved = await saveTestRecord({
       id: selectedRecord?.id,
-      values: payload,
+      values: cleanedPayload,
     });
+    // eslint-disable-next-line no-console
+    console.log(
+      `[sample-info-target-range-save] min=${cleanedPayload.targetMinHv ?? 'null'} max=${cleanedPayload.targetMaxHv ?? 'null'}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[hv-target-range-save] min=${cleanedPayload.targetMinHv ?? 'null'} max=${cleanedPayload.targetMaxHv ?? 'null'}`
+    );
 
     // Recompute Qualified for each linked measurement against the (possibly
     // changed) target range and persist. Per-measurement persistence keeps
     // the existing MeasurementsTable renderer working as-is — it just reads
     // measurement.qualified.
-    const targetMin = saved.targetMinHv ?? payload.targetMinHv ?? null;
-    const targetMax = saved.targetMaxHv ?? payload.targetMaxHv ?? null;
+    const targetMin = saved.targetMinHv ?? cleanedPayload.targetMinHv ?? null;
+    const targetMax = saved.targetMaxHv ?? cleanedPayload.targetMaxHv ?? null;
     const measurementById = new Map(measurements.map((m) => [m.id, m] as const));
-    for (const measurementId of payload.measurementIds) {
+    for (const measurementId of cleanedPayload.measurementIds) {
       const m = measurementById.get(measurementId);
       if (!m) continue;
       const qualified = computeQualified(m.hv, targetMin, targetMax);
@@ -319,34 +352,6 @@ function TestRecordsDialogImpl({
                 onChange={handleFieldChange('targetMaxHv')}
               />
             </Box>
-          </Box>
-
-          <Divider />
-
-          <Box>
-            <Typography variant="caption">Measurements</Typography>
-            <Stack sx={{ mt: 1 }}>
-              {measurements.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">
-                  No measurements available yet.
-                </Typography>
-              ) : (
-                measurements.map((measurement) => (
-                  <FormControlLabel
-                    key={measurement.id}
-                    control={
-                      <Checkbox
-                        size="small"
-                        checked={formState.measurementIds.includes(measurement.id)}
-                        disabled={busy}
-                        onChange={() => handleMeasurementToggle(measurement.id)}
-                      />
-                    }
-                    label={formatMeasurementLabel(measurement)}
-                  />
-                ))
-              )}
-            </Stack>
           </Box>
 
           {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}

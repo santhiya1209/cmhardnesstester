@@ -5,9 +5,10 @@ import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 
 type Props = {
   sx?: SxProps<Theme>;
+  enabled?: boolean;
 };
 
-function MicrometerDisplayImpl({ sx }: Props) {
+function MicrometerDisplayImpl({ sx, enabled = true }: Props) {
   const { connected, status, value, displayText, lastError, rawHex, updatedAt } =
     useMicrometerReading();
 
@@ -30,13 +31,15 @@ function MicrometerDisplayImpl({ sx }: Props) {
     }
   }, [status, value, displayText, connected]);
 
-  const compact = latched ?? 'Waiting for data...';
+  const compact = !enabled ? 'Manual Mode' : latched ?? 'Waiting for data...';
 
-  const tooltip = !connected
-    ? lastError ?? 'Disconnected'
-    : status !== 'valid'
-      ? `Connected${rawHex ? ` | hex: ${rawHex}` : ''}`
-      : `${displayText} | Connected | Updated ${updatedAt ?? ''}`;
+  const tooltip = !enabled
+    ? 'Micrometer disabled — depth is entered manually per row in the Measurements table.'
+    : !connected
+      ? lastError ?? 'Disconnected'
+      : status !== 'valid'
+        ? `Connected${rawHex ? ` | hex: ${rawHex}` : ''}`
+        : `${displayText} | Connected | Updated ${updatedAt ?? ''}`;
 
   return (
     <TextField

@@ -1,8 +1,9 @@
 {
   "name": "hardness-tester",
+  "productName": "Vickers Measurement Software",
   "version": "0.1.0",
   "private": true,
-  "description": "Electron + React 19 + Node.js hardness tester app",
+  "description": "Electron + React 19 + Node.js Vickers measurement software",
   "main": "electron/main.js",
   "scripts": {
     "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../backend/native/hardness-addon && npm install && cd ../../.. && npm run rebuild-native",

@@ -3,6 +3,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
+import { getHardnessColor } from '@/utils/hardnessColor';
 
 const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 2, display: 'flex', flexDirection: 'column', gap: 1 };
 const GRID_SX: SxProps<Theme> = {
@@ -27,6 +28,8 @@ const VALUE_SX: SxProps<Theme> = { ...CELL_SX, minHeight: 30, color: 'text.secon
 
 type Props = {
   measurements?: Measurement[];
+  targetMinHv?: number | null;
+  targetMaxHv?: number | null;
 };
 
 function formatNumber(value: number | null): string {
@@ -37,7 +40,9 @@ function formatNumber(value: number | null): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
-function StatisticsInfoTabImpl({ measurements = [] }: Props) {
+function StatisticsInfoTabImpl({ measurements = [], targetMinHv = null, targetMaxHv = null }: Props) {
+  const colorFor = (value: number | null): string =>
+    getHardnessColor(value, targetMinHv, targetMaxHv).color;
   const stats = useMemo(() => {
     const hardnessValues = measurements
       .map((measurement) => measurement.hv)
@@ -78,17 +83,23 @@ function StatisticsInfoTabImpl({ measurements = [] }: Props) {
         <Typography sx={VALUE_SX}>{formatNumber(stats.variance)}</Typography>
 
         <Typography sx={LABEL_SX}>Min</Typography>
-        <Typography sx={VALUE_SX}>{formatNumber(stats.min)}</Typography>
+        <Typography sx={{ ...(VALUE_SX as object), color: colorFor(stats.min), fontWeight: 600 }}>
+          {formatNumber(stats.min)}
+        </Typography>
         <Typography sx={LABEL_SX}>StdDev</Typography>
         <Typography sx={VALUE_SX}>{formatNumber(stats.stdDev)}</Typography>
 
         <Typography sx={LABEL_SX}>Max</Typography>
-        <Typography sx={VALUE_SX}>{formatNumber(stats.max)}</Typography>
+        <Typography sx={{ ...(VALUE_SX as object), color: colorFor(stats.max), fontWeight: 600 }}>
+          {formatNumber(stats.max)}
+        </Typography>
         <Box />
         <Box />
 
         <Typography sx={LABEL_SX}>Average</Typography>
-        <Typography sx={VALUE_SX}>{formatNumber(stats.average)}</Typography>
+        <Typography sx={{ ...(VALUE_SX as object), color: colorFor(stats.average), fontWeight: 600 }}>
+          {formatNumber(stats.average)}
+        </Typography>
         <Box />
         <Box />
       </Box>

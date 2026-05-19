@@ -1,10 +1,15 @@
 import type { ManualMeasureMethod, ManualMeasureUnit } from './manualMeasure';
 
+export type DepthSource = 'device' | 'manual';
+
 export type MeasurementPayload = {
   d1: number;
   d2: number;
   hv: number | null;
   depthMm: number | null;
+  depthSource?: DepthSource | null;
+  deviceDepthMm?: number | null;
+  manualDepthMm?: number | null;
   method: ManualMeasureMethod;
   unit: ManualMeasureUnit;
   d1Px: number | null;
@@ -32,6 +37,9 @@ export type MeasurementSavePayload = {
   d2: number;
   hv?: number | null;
   depthMm?: number | null;
+  depthSource?: DepthSource | null;
+  deviceDepthMm?: number | null;
+  manualDepthMm?: number | null;
   method?: ManualMeasureMethod;
   unit?: ManualMeasureUnit;
   d1Px?: number | null;

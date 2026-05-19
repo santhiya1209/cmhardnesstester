@@ -13,6 +13,7 @@ import { DepthImageSettingModel } from './depth-image-setting';
 import { IsoDateTimeSchema } from './common';
 import { MachineSettingsModel } from './machine-settings';
 import { MeasurementModel } from './measurement';
+import { MicrometerConfigModel } from './micrometer-config';
 import { PatternProgramModel } from './pattern-program';
 import { TestRecordModel } from './test-record';
 import { ToolbarStateModel } from './toolbar-state';
@@ -27,6 +28,7 @@ export const DatabaseSchema = z.object({
   meta: DatabaseMetaSchema,
   machineSettings: z.array(MachineSettingsModel).default([]),
   measurements: z.array(MeasurementModel).default([]),
+  micrometerConfig: z.array(MicrometerConfigModel).default([]),
   autoMeasureSettings: z.array(AutoMeasureSettingsModel).default([]),
   calibrationSettings: z.array(CalibrationSettingsModel).default([]),
   calibrations: z.array(CalibrationModel).default([]),
@@ -49,6 +51,7 @@ export type DatabaseState = z.infer<typeof DatabaseSchema>;
 export const COLLECTION_NAMES = [
   'machineSettings',
   'measurements',
+  'micrometerConfig',
   'autoMeasureSettings',
   'calibrationSettings',
   'calibrations',
@@ -76,6 +79,7 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     },
     machineSettings: [],
     measurements: [],
+    micrometerConfig: [],
     autoMeasureSettings: [],
     calibrationSettings: [],
     calibrations: [],

@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs/promises');
 const { TextDecoder } = require('node:util');
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const { cameraService } = require('./cameraService');
 const { micrometerService } = require('./micrometerService');
 
@@ -11,6 +11,30 @@ const IMAGE_FILTERS = [
   { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff'] },
   { name: 'All Files', extensions: ['*'] },
 ];
+
+const REPORT_FILTERS_BY_EXT = {
+  docx: [
+    { name: 'Word Document', extensions: ['docx'] },
+    { name: 'All Files', extensions: ['*'] },
+  ],
+  pdf: [
+    { name: 'PDF Document', extensions: ['pdf'] },
+    { name: 'All Files', extensions: ['*'] },
+  ],
+  xlsx: [
+    { name: 'Excel Workbook', extensions: ['xlsx'] },
+    { name: 'All Files', extensions: ['*'] },
+  ],
+  csv: [
+    { name: 'CSV', extensions: ['csv'] },
+    { name: 'All Files', extensions: ['*'] },
+  ],
+};
+
+function reportFiltersFor(defaultName) {
+  const ext = String(defaultName || '').split('.').pop().toLowerCase();
+  return REPORT_FILTERS_BY_EXT[ext] ?? [{ name: 'All Files', extensions: ['*'] }];
+}
 
 function ownerWindow(event) {
   return BrowserWindow.fromWebContents(event.sender) ?? null;
@@ -523,6 +547,97 @@ function registerIpc() {
       canceled: false,
       filePath: result.filePath,
       fileName: path.basename(result.filePath),
+    };
+  });
+
+  // Save a generated report (docx/pdf/xlsx/csv) and auto-open it. The renderer
+  // hands us the bytes + a default filename; we prompt for a path, write the
+  // file, then shell.openPath the result so MS Word (or the OS default) picks
+  // it up immediately. The renderer's old <a download> path doesn't expose
+  // the saved file path, which is why we round-trip through main here.
+  ipcMain.handle('dialog:saveReport', async (event, payload) => {
+    const win = ownerWindow(event);
+    const defaultName =
+      payload && typeof payload.defaultName === 'string' && payload.defaultName.trim().length > 0
+        ? payload.defaultName
+        : `report-${Date.now()}.docx`;
+    const bytes = payload && payload.bytes;
+    if (!(bytes instanceof Uint8Array) && !Buffer.isBuffer(bytes) && !(bytes instanceof ArrayBuffer)) {
+      // eslint-disable-next-line no-console
+      console.warn('[report-save] invalid payload: missing bytes');
+      return { ok: false, canceled: false, error: 'invalid-payload' };
+    }
+    const buffer = Buffer.isBuffer(bytes)
+      ? bytes
+      : bytes instanceof ArrayBuffer
+        ? Buffer.from(new Uint8Array(bytes))
+        : Buffer.from(bytes);
+    const autoOpen = payload && payload.autoOpen !== false;
+    const filters = reportFiltersFor(defaultName);
+    const opts = { title: 'Save Report', defaultPath: defaultName, filters };
+    // eslint-disable-next-line no-console
+    console.log(`[report-save-start] defaultName=${defaultName} bytes=${buffer.length}`);
+
+    const result = win
+      ? await dialog.showSaveDialog(win, opts)
+      : await dialog.showSaveDialog(opts);
+
+    if (result.canceled || !result.filePath) {
+      // eslint-disable-next-line no-console
+      console.log('[report-save-canceled]');
+      return { ok: false, canceled: true };
+    }
+
+    try {
+      await fs.writeFile(result.filePath, buffer);
+      // eslint-disable-next-line no-console
+      console.log(`[report-save-success] path=${result.filePath}`);
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[report-save-failed] path=${result.filePath} error=${message}`);
+      return {
+        ok: false,
+        canceled: false,
+        filePath: result.filePath,
+        error: 'write-failed',
+        message,
+      };
+    }
+
+    let opened = false;
+    let openError = null;
+    if (autoOpen) {
+      // eslint-disable-next-line no-console
+      console.log(`[report-auto-open] path=${result.filePath}`);
+      try {
+        // openPath returns '' on success or an error string. Falls back to the
+        // OS default handler for the extension, so .docx hits Word (or
+        // LibreOffice / Pages / whatever the user has registered).
+        const openMessage = await shell.openPath(result.filePath);
+        if (openMessage) {
+          openError = openMessage;
+          // eslint-disable-next-line no-console
+          console.warn(`[report-auto-open-failed] path=${result.filePath} error=${openMessage}`);
+        } else {
+          opened = true;
+          // eslint-disable-next-line no-console
+          console.log(`[report-auto-open-success] path=${result.filePath}`);
+        }
+      } catch (err) {
+        openError = err && err.message ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`[report-auto-open-failed] path=${result.filePath} error=${openError}`);
+      }
+    }
+
+    return {
+      ok: true,
+      canceled: false,
+      filePath: result.filePath,
+      fileName: path.basename(result.filePath),
+      opened,
+      openError,
     };
   });
 }

@@ -23,6 +23,7 @@ const ALLOWED_INVOKE = new Set([
   'device:close',
   'dialog:openImage',
   'dialog:saveImage',
+  'dialog:saveReport',
   'micrometer:open',
   'micrometer:close',
   'micrometer:get-state',

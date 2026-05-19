@@ -5,6 +5,7 @@ import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog
 import CalibrationDialog from '@/component/own/CalibrationDialog';
 import CameraSettingDialog from '@/component/own/CameraSettingDialog';
 import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
+import MicrometerConfigDialog from '@/component/own/MicrometerConfigDialog';
 import GenericSettingDialog from '@/component/own/GenericSettingDialog';
 import OtherSettingDialog from '@/component/own/OtherSettingDialog';
 import RestoreFactoryDialog from '@/component/own/RestoreFactoryDialog';
@@ -14,6 +15,8 @@ import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
+import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
+import { useTestRecords } from '@/hooks/queries/useTestRecords';
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot';
 import { useMachineState } from '@/hooks/queries/useMachineState';
@@ -127,6 +130,45 @@ async function readLatestMicrometerDepthMm(): Promise<number | null> {
   }
 }
 
+type DepthSavePayload = {
+  depthMm: number | null;
+  depthSource: 'device' | 'manual';
+  deviceDepthMm: number | null;
+  manualDepthMm: number | null;
+};
+
+// Captures the depth snapshot to save on a NEW measurement row. Enabled =
+// freeze the live micrometer reading into deviceDepthMm + depthMm with
+// source='device'. Disabled = leave depth fields null with source='manual'
+// so the operator can type the value into the table afterward. Callers MUST
+// only invoke this for new rows; existing rows are preserved via the
+// `{}`-spread path so saved depth never gets clobbered by a re-detect.
+async function buildNewRowDepthPayload(
+  micrometerEnabled: boolean
+): Promise<DepthSavePayload> {
+  if (micrometerEnabled) {
+    const deviceValue = await readLatestMicrometerDepthMm();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[depth-source] source=device value=${deviceValue ?? 'null'}`
+    );
+    return {
+      depthMm: deviceValue,
+      depthSource: 'device',
+      deviceDepthMm: deviceValue,
+      manualDepthMm: null,
+    };
+  }
+  // eslint-disable-next-line no-console
+  console.log('[depth-source] source=manual value=null');
+  return {
+    depthMm: null,
+    depthSource: 'manual',
+    deviceDepthMm: null,
+    manualDepthMm: null,
+  };
+}
+
 const POINT_TOL_PX = 0.5;
 function pointAlmostEqual(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
   return Math.abs(a.x - b.x) < POINT_TOL_PX && Math.abs(a.y - b.y) < POINT_TOL_PX;
@@ -205,7 +247,7 @@ type CommittedAutoMeasureFingerprint = {
   graphics: AutoMeasureGraphics;
 };
 
-type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save';
+type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save' | 'after-impress';
 
 type CapturedAutoMeasureFrame = Extract<
   ReturnType<CameraWindowHandle['captureDisplayedFrame']>,
@@ -219,7 +261,12 @@ type RunAutoMeasure = (
 ) => void;
 
 function logUnexpectedAutoMeasureCall(source: string) {
-  if (source === 'auto-click' || source === 'settings-preview' || source === 'settings-save') {
+  if (
+    source === 'auto-click' ||
+    source === 'settings-preview' ||
+    source === 'settings-save' ||
+    source === 'after-impress'
+  ) {
     return;
   }
   // eslint-disable-next-line no-console
@@ -776,6 +823,7 @@ type DialogKey =
   | 'camera'
   | 'generic'
   | 'lineColor'
+  | 'micrometer'
   | 'other'
   | 'restoreFactory'
   | 'serialPort'
@@ -818,6 +866,42 @@ function App() {
   } = useCalibrationSettings();
   const { data: calibrations, refetch: refetchCalibrations } = useCalibrations();
   const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
+  const { data: micrometerConfig, refetch: refetchMicrometerConfig } = useMicrometerConfig();
+  const micrometerEnabled = micrometerConfig?.enabled ?? true;
+  // Latest TestRecord drives the live target HV band used to color HV values
+  // across the app (table, top HV display, report). Records are pre-sorted by
+  // updatedAt descending in useTestRecords.
+  const { data: testRecordsList } = useTestRecords();
+  const latestTestRecord = testRecordsList[0] ?? null;
+  const targetMinHv =
+    typeof latestTestRecord?.targetMinHv === 'number' &&
+    Number.isFinite(latestTestRecord.targetMinHv)
+      ? latestTestRecord.targetMinHv
+      : null;
+  const targetMaxHv =
+    typeof latestTestRecord?.targetMaxHv === 'number' &&
+    Number.isFinite(latestTestRecord.targetMaxHv)
+      ? latestTestRecord.targetMaxHv
+      : null;
+  // Mirror to a ref so async save closures always see the latest value without
+  // re-creating callbacks every time the config toggles.
+  const micrometerEnabledRef = useRef(micrometerEnabled);
+  const lastLoggedMicrometerEnabledRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    micrometerEnabledRef.current = micrometerEnabled;
+    if (lastLoggedMicrometerEnabledRef.current !== micrometerEnabled) {
+      const previous = lastLoggedMicrometerEnabledRef.current;
+      lastLoggedMicrometerEnabledRef.current = micrometerEnabled;
+      // First emission after the persisted row resolves is a load; subsequent
+      // transitions are saves driven by the settings dialog.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[${previous === null ? 'micrometer-config-load' : 'micrometer-config-save'}] enabled=${micrometerEnabled}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-config] enabled=${micrometerEnabled}`);
+    }
+  }, [micrometerEnabled]);
   const { refetch: refetchCameraSetting } = useCameraSetting();
   const { data: serialPortSetting } = useSerialPortSetting();
   const { connect: connectMachineFn, disconnect: disconnectMachineFn } = useConnectMachine();
@@ -826,6 +910,13 @@ function App() {
   // SSE-reactive machine state — same hook MachineControlTab uses, so the
   // value App reads here is the same as the highlighted lens button.
   const { data: liveMachineState } = useMachineState();
+  // Mirror to a ref so impress-complete / turret-after-impress closures can
+  // snapshot the current machine state without re-firing the effect on every
+  // state batch.
+  const liveMachineStateRef = useRef(liveMachineState);
+  useEffect(() => {
+    liveMachineStateRef.current = liveMachineState;
+  }, [liveMachineState]);
   const restoredToolbarActionRef = useRef(false);
   const manualMeasurementIdRef = useRef<string | null>(null);
   const { activeTool, setActiveTool } = useActiveTool('pointer');
@@ -839,6 +930,20 @@ function App() {
   // mid-motion, and any detection would commit a row for the wrong instant.
   const impressInProgressRef = useRef(false);
   const lastSeenIndentStatusRef = useRef<IndentStatus>('idle');
+  // Set when an impress completes WITH turretAfterImpress=true. The next
+  // confirmed-objective RX (L1OK / L2OK / objective state-update) clears
+  // this and, when measureAfterImpress is also true, triggers detection
+  // against a fresh post-rotation frame. Without this gate the auto-detect
+  // would fire on the FINISH event before the turret has settled.
+  const pendingTurretAfterImpressRef = useRef<
+    | {
+        armedAt: number;
+        measureAfterImpress: boolean;
+        lastSeenObjectiveRx: string | null;
+      }
+    | null
+  >(null);
+  const turretAfterImpressWatchdogRef = useRef<number | null>(null);
   // Latest preview settings that arrived while a detection was in flight.
   // Why: Slider drags fire faster than the native detection completes
   // (~60–200ms). Without coalescing, the user's final slider position can be
@@ -1810,17 +1915,52 @@ function App() {
           const manualPreflightActiveId = getActiveMeasurementId();
           const isNewManualMeasurement =
             manualMeasurementIdRef.current === null && !manualPreflightActiveId;
-          const depthPayload = isNewManualMeasurement
-            ? { depthMm: await readLatestMicrometerDepthMm() }
-            : {};
+          const manualDepthCapture: DepthSavePayload | null = isNewManualMeasurement
+            ? await buildNewRowDepthPayload(micrometerEnabledRef.current)
+            : null;
           const manualExistingRowId =
             manualMeasurementIdRef.current ?? manualPreflightActiveId ?? null;
-          const manualExistingDepth = manualExistingRowId
-            ? measurements.find((m) => m.id === manualExistingRowId)?.depthMm ?? null
+          const manualExistingRow = manualExistingRowId
+            ? measurements.find((m) => m.id === manualExistingRowId) ?? null
             : null;
+          const manualExistingDepth = manualExistingRow?.depthMm ?? null;
+          // For an updated row (line drag, re-measure) we must echo back the
+          // saved depth + conversion fields. The backend's buildUpdateSchema
+          // injects null defaults for fields missing from the PUT body, so
+          // omitting them would wipe depthMm / depthSource / device + manual
+          // depth / convertType / convertValue. New rows freeze the device
+          // value (or none, if disabled) via manualDepthCapture.
+          const depthPayload = manualDepthCapture
+            ? {
+                depthMm: manualDepthCapture.depthMm,
+                depthSource: manualDepthCapture.depthSource,
+                deviceDepthMm: manualDepthCapture.deviceDepthMm,
+                manualDepthMm: manualDepthCapture.manualDepthMm,
+              }
+            : manualExistingRow
+              ? {
+                  depthMm: manualExistingRow.depthMm ?? null,
+                  depthSource: manualExistingRow.depthSource ?? null,
+                  deviceDepthMm: manualExistingRow.deviceDepthMm ?? null,
+                  manualDepthMm: manualExistingRow.manualDepthMm ?? null,
+                  convertType: manualExistingRow.convertType ?? null,
+                  convertValue:
+                    typeof manualExistingRow.convertValue === 'number'
+                      ? manualExistingRow.convertValue
+                      : null,
+                }
+              : {};
           // eslint-disable-next-line no-console
           console.log(
             `[line-adjust-update] flow=manual targetId=${manualExistingRowId ?? 'none'} isNew=${isNewManualMeasurement}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[line-drag-update-start] flow=manual rowId=${manualExistingRowId ?? 'new'} isNew=${isNewManualMeasurement}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[line-drag-update-payload] hasDepth=false rowId=${manualExistingRowId ?? 'new'} preserveDepth=${manualExistingRow ? 'true' : 'false'}`
           );
           // eslint-disable-next-line no-console
           console.log(
@@ -1828,16 +1968,12 @@ function App() {
           );
           // eslint-disable-next-line no-console
           console.log(
-            `[measurement-save] depth from micrometer=${depthPayload.depthMm ?? '-'} new=${isNewManualMeasurement}`
+            `[measurement-save] depth=${manualDepthCapture?.depthMm ?? '-'} source=${manualDepthCapture?.depthSource ?? 'preserved'} new=${isNewManualMeasurement}`
           );
-          if (isNewManualMeasurement) {
+          if (isNewManualMeasurement && manualDepthCapture) {
             // eslint-disable-next-line no-console
             console.log(
-              `[measurement-row-depth-snapshot] rowId=pending depth=${depthPayload.depthMm ?? 'null'} source=currentMicrometer`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measurement-row-depth-assign] depthMm=${depthPayload.depthMm ?? 'null'}`
+              `[measurement-row-depth-snapshot] rowId=pending depth=${manualDepthCapture.depthMm ?? 'null'} source=${manualDepthCapture.depthSource}`
             );
           }
           const pixelValues = calculateManualDiagonalsFromPixels(
@@ -2045,6 +2181,15 @@ function App() {
           console.log(
             `[depth-preserve-after] flow=manual id=${saved.id} depth=${saved.depthMm ?? 'null'}`
           );
+          if (isNewManualMeasurement && manualDepthCapture) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[depth-freeze-save] rowId=${saved.id} value=${manualDepthCapture.depthMm ?? 'null'}`
+            );
+          } else if (!isNewManualMeasurement) {
+            // eslint-disable-next-line no-console
+            console.log(`[depth-preserve] rowId=${saved.id} preserved=true`);
+          }
           // eslint-disable-next-line no-console
           console.log(
             `[measurement-mode-update] id=${saved.id} old=${previousManualMethod ?? 'none'} new=${savedManualMethod} reason=manual-save`
@@ -2410,19 +2555,17 @@ function App() {
       // micrometer reading — overwriting would violate "old saved row must
       // not change" and copy the current depth across all re-detected rows.
       const isNewAutoMeasurement = saveRowId === undefined;
-      const depthMm = isNewAutoMeasurement ? await readLatestMicrometerDepthMm() : null;
+      const depthCapture: DepthSavePayload | null = isNewAutoMeasurement
+        ? await buildNewRowDepthPayload(micrometerEnabledRef.current)
+        : null;
       // eslint-disable-next-line no-console
       console.log(
-        `[measurement-save] depth from micrometer=${depthMm ?? '-'} new=${isNewAutoMeasurement}`
+        `[measurement-save] depth=${depthCapture?.depthMm ?? '-'} source=${depthCapture?.depthSource ?? 'preserved'} new=${isNewAutoMeasurement}`
       );
-      if (isNewAutoMeasurement) {
+      if (isNewAutoMeasurement && depthCapture) {
         // eslint-disable-next-line no-console
         console.log(
-          `[measurement-row-depth-snapshot] rowId=pending depth=${depthMm ?? 'null'} source=currentMicrometer`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-row-depth-assign] depthMm=${depthMm ?? 'null'}`
+          `[measurement-row-depth-snapshot] rowId=pending depth=${depthCapture.depthMm ?? 'null'} source=${depthCapture.depthSource}`
         );
       }
 
@@ -2505,7 +2648,14 @@ function App() {
         calibrationName: values.calibrationName,
         objective: values.normalizedObjective,
         testForceKgf: values.forceKgf,
-        ...(isNewAutoMeasurement ? { depthMm } : {}),
+        ...(isNewAutoMeasurement && depthCapture
+          ? {
+              depthMm: depthCapture.depthMm,
+              depthSource: depthCapture.depthSource,
+              deviceDepthMm: depthCapture.deviceDepthMm,
+              manualDepthMm: depthCapture.manualDepthMm,
+            }
+          : {}),
         method: 'Auto' as const,
         unit: 'um' as const,
         timestamp,
@@ -2551,6 +2701,15 @@ function App() {
         console.log(
           `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
         );
+        if (isNewAutoMeasurement && depthCapture) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[depth-freeze-save] rowId=${saved.id} value=${depthCapture.depthMm ?? 'null'}`
+          );
+        } else if (!isNewAutoMeasurement) {
+          // eslint-disable-next-line no-console
+          console.log(`[depth-preserve] rowId=${saved.id} preserved=true`);
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[measurement-row-save-error] method=Auto', err);
@@ -2569,7 +2728,7 @@ function App() {
       );
       // eslint-disable-next-line no-console
       console.log(
-        `[auto-measure][table-save] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv} hardnessType=${autoRowPayload.hardnessType} objective=${saved.objective} method=Auto depthMm=${depthMm ?? 'preserved'} timestamp=${timestamp}`
+        `[auto-measure][table-save] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv} hardnessType=${autoRowPayload.hardnessType} objective=${saved.objective} method=Auto depthMm=${depthCapture?.depthMm ?? 'preserved'} timestamp=${timestamp}`
       );
       // eslint-disable-next-line no-console
       console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
@@ -2739,7 +2898,13 @@ function App() {
       // The session ends on the next clearAutoMeasureOverlay invalidator
       // (objective change, turret change, camera close).
       setAutoMeasureSessionActive(true);
-      if (callSource === 'auto-click') {
+      // 'after-impress' is a system-triggered detection that mirrors an
+      // explicit user click — same camera-freeze + fresh-frame semantics, no
+      // prior committed snapshot to reuse. Without this branch the source
+      // fell into the else-path below and tried to reuse a non-existent
+      // committedAutoMeasureFrameRef, silently aborting detection.
+      const isFreshCapture = callSource === 'auto-click' || callSource === 'after-impress';
+      if (isFreshCapture) {
         setAutoMeasureStatus('detecting');
         setCameraStatus('frozen');
       }
@@ -2817,8 +2982,12 @@ function App() {
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         let displayedFrame;
-        if (callSource === 'auto-click') {
+        if (isFreshCapture) {
           displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-capture-displayed-frame] source=${callSource} ok=${displayedFrame?.ok ?? 'null'}`
+          );
         } else {
           displayedFrame = committedAutoMeasureFrameRef.current;
           if (displayedFrame) {
@@ -2834,7 +3003,7 @@ function App() {
           }
         }
         let capturedFrameIdForRun: number | null = autoMeasureCapturedFrameId;
-        if (callSource === 'auto-click') {
+        if (isFreshCapture) {
           const capturedFrameId = getLastPaintedFrameId();
           capturedFrameIdForRun = capturedFrameId;
           setAutoMeasureCapturedFrameId(capturedFrameId);
@@ -2864,7 +3033,7 @@ function App() {
         // Measure during that gap, wait once for a fresh frame and retry the
         // capture so detection runs against real pixels, not a black canvas.
         if (
-          callSource === 'auto-click' &&
+          isFreshCapture &&
           displayedFrame &&
           !displayedFrame.ok &&
           displayedFrame.error === 'awaiting-fresh-frame'
@@ -2900,7 +3069,7 @@ function App() {
             setUnavailableMsg(`Auto Measure rejected: ${stale}. Please use manual measure.`);
             setStatusMessage(`System Status: Auto Measure rejected: ${stale}`);
             clearAutoMeasureOverlay('auto-measure-failed');
-            if (callSource === 'auto-click') setAutoMeasureStatus('failed');
+            if (isFreshCapture) setAutoMeasureStatus('failed');
             // liveObjectiveForNative is declared further down — this branch
             // fires before it's computed (no displayed image), so log it as
             // 'unknown'.
@@ -2930,12 +3099,12 @@ function App() {
             setStatusMessage('System Status: Auto Measure rejected: invalid-detection-frame');
             setUnavailableMsg('Auto Measure rejected: invalid-detection-frame. Please retry.');
             clearAutoMeasureOverlay('auto-measure-failed');
-            if (callSource === 'auto-click') setAutoMeasureStatus('failed');
+            if (isFreshCapture) setAutoMeasureStatus('failed');
           }
           return;
         }
 
-        if (callSource === 'auto-click') {
+        if (isFreshCapture) {
           committedAutoMeasureFrameRef.current = cloneCapturedFrame(displayedFrame);
         }
         const runSmoothing = settings.smoothing;
@@ -3110,7 +3279,7 @@ function App() {
             setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
             setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
             clearAutoMeasureOverlay('auto-measure-failed');
-            if (callSource === 'auto-click') setAutoMeasureStatus('failed');
+            if (isFreshCapture) setAutoMeasureStatus('failed');
           }
           return;
         }
@@ -3516,6 +3685,14 @@ function App() {
     runAutoMeasureRef.current = runAutoMeasure;
   }, [runAutoMeasure]);
 
+  // Mirror the live preview settings to a ref so the impress-complete async
+  // closure reads the current "Measure after Impress" flag without forcing
+  // that effect to re-subscribe on every settings change.
+  const autoMeasurePreviewSettingsRef = useRef<AutoMeasureSettingsPayload>(autoMeasurePreviewSettings);
+  useEffect(() => {
+    autoMeasurePreviewSettingsRef.current = autoMeasurePreviewSettings;
+  }, [autoMeasurePreviewSettings]);
+
   useEffect(() => {
     if (activeDialog !== 'autoMeasure') {
       autoMeasureSettingsOpenRef.current = false;
@@ -3607,6 +3784,10 @@ function App() {
       const normalized = normalizeAutoMeasureSettings(settings);
       latestAutoMeasurePreviewSettingsRef.current = normalized;
       setAutoMeasurePreviewSettings(normalized);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-settings-save] measureAfterImpress=${normalized.measureAfterImpress} turretAfterImpress=${normalized.turretAfterImpress} objectiveForMeasure=${normalized.objectiveForMeasure}`
+      );
       void refetchAutoMeasureSettings();
 
       const commitPreviewOrDetect = () => {
@@ -3935,42 +4116,177 @@ function App() {
       return;
     }
 
-    if (next === 'completed' && (prev === 'started' || prev === 'running')) {
+    // Trigger post-impress flow on ANY transition into `completed` (including
+    // `idle → completed`, which the machine sends when a cycle completes
+    // faster than the running batch can land). The earlier
+    // `prev === 'started' || 'running'` guard caused the auto-detect to be
+    // silently skipped on fast hardware paths.
+    if (next === 'completed') {
       const completedAt = Date.now();
       // eslint-disable-next-line no-console
-      console.log(`[impress-complete] timestamp=${completedAt}`);
-      // Clear any cached/preview overlay state so the live frame paints clean.
-      // No auto-detection runs here — yellow lines only appear when the user
-      // clicks Auto Measure explicitly.
+      console.log(`[impress-complete] timestamp=${completedAt} prev=${prev}`);
+      // eslint-disable-next-line no-console
+      console.log(`[impress-done] timestamp=${completedAt}`);
+      // eslint-disable-next-line no-console
+      console.log(`[impress-done-ack-received] timestamp=${completedAt}`);
+      // Read from the synchronously-updated ref (latestAutoMeasurePreviewSettingsRef)
+      // — autoMeasurePreviewSettingsRef lags by one render because it's
+      // synced via useEffect. If the operator saves Auto Measure Settings
+      // and clicks Impress in the same tick, the laggy ref can still hold
+      // the pre-save value.
+      const latestSettings = latestAutoMeasurePreviewSettingsRef.current;
+      const measureAfterImpressEnabled = latestSettings.measureAfterImpress === true;
+      const turretAfterImpressEnabled = latestSettings.turretAfterImpress === true;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measure-after-impress-read] value=${measureAfterImpressEnabled} enabled=${measureAfterImpressEnabled} source=latest-ref`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[turret-after-impress-read] value=${turretAfterImpressEnabled} enabled=${turretAfterImpressEnabled} source=latest-ref`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[measure-after-impress-check] enabled=${measureAfterImpressEnabled}`);
+      if (!measureAfterImpressEnabled) {
+        // eslint-disable-next-line no-console
+        console.log('[measure-after-impress-skipped] enabled=false');
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measure-after-impress] enabled=${measureAfterImpressEnabled} action=${
+          measureAfterImpressEnabled ? 'auto-detect' : 'skip'
+        }`
+      );
+      // Always clear cached/preview overlay so the new frame paints clean. If
+      // auto-detect is disabled we leave it cleared; if enabled, runAutoMeasure
+      // will repaint the 4 yellow lines once the fresh frame arrives.
       clearAutoMeasureOverlay('impress-done');
       setAutoMeasureClearNonce((n) => n + 1);
       // eslint-disable-next-line no-console
       console.log('[impress-done-clear-overlay]');
+      // When the machine is about to rotate the turret after impress, defer
+      // detection until the L*OK confirmation arrives. The other effect that
+      // watches confirmedObjectiveFromMachine + lastObjectiveRx clears
+      // pendingTurretAfterImpressRef and kicks off the fresh-frame wait +
+      // detection. Without this gate, auto-measure would fire on the next
+      // available camera frame mid-rotation and detect on a moving image.
+      if (turretAfterImpressEnabled) {
+        // eslint-disable-next-line no-console
+        console.log('[turret-after-impress-start] waiting=l-ok-confirm');
+        pendingTurretAfterImpressRef.current = {
+          armedAt: completedAt,
+          measureAfterImpress: measureAfterImpressEnabled,
+          lastSeenObjectiveRx: liveMachineStateRef.current?.lastObjectiveRx ?? null,
+        };
+        impressInProgressRef.current = false;
+        // Watchdog: if L*OK never arrives within 10s the operator can still
+        // hit Auto Measure manually. Drop the gate so a future impress isn't
+        // permanently armed.
+        if (turretAfterImpressWatchdogRef.current !== null) {
+          window.clearTimeout(turretAfterImpressWatchdogRef.current);
+        }
+        turretAfterImpressWatchdogRef.current = window.setTimeout(() => {
+          if (pendingTurretAfterImpressRef.current) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[turret-after-impress-done] reason=watchdog-timeout — L*OK never arrived; releasing gate'
+            );
+            pendingTurretAfterImpressRef.current = null;
+          }
+          turretAfterImpressWatchdogRef.current = null;
+        }, 10000);
+        return;
+      }
       void (async () => {
+        // eslint-disable-next-line no-console
+        console.log('[stable-frame-wait-start]');
+        // eslint-disable-next-line no-console
+        console.log('[post-impress-stable-frame-wait-start]');
         // eslint-disable-next-line no-console
         console.log('[camera-wait-fresh-frame] reason=after-impress');
         const camera = cameraRef.current;
         const fresh = camera ? await camera.waitForFreshFrame(2500) : false;
         if (!fresh) {
+          // Even if waitForFreshFrame timed out (camera ref not attached, or
+          // dev mode with paused frames), still attempt detection — the
+          // operator's intent is clear and the detect-pipeline has its own
+          // frame-readiness guards. Was previously a hard return.
           // eslint-disable-next-line no-console
           console.warn(
-            '[camera-fresh-frame] reason=after-impress result=timeout — live frame may be stale, user can re-run Auto Measure manually'
+            '[camera-fresh-frame] reason=after-impress result=timeout — proceeding with current frame'
           );
-          impressInProgressRef.current = false;
-          return;
+        } else {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[camera-fresh-frame] frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
+          );
         }
         // eslint-disable-next-line no-console
-        console.log(
-          `[camera-fresh-frame] frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
-        );
-        // Reset the duplicate-fingerprint guard so a later manual Auto Measure
-        // click can write a row even if pixel coordinates happen to land near
-        // the previous committed values. The new indentation is, by
-        // definition, a new measurement.
+        console.log(`[stable-frame-wait-done] timestamp=${Date.now()}`);
+        // eslint-disable-next-line no-console
+        console.log(`[post-impress-stable-frame-ready] timestamp=${Date.now()}`);
+        // eslint-disable-next-line no-console
+        console.log(`[stable-frame-ready] reason=after-impress timestamp=${Date.now()}`);
+        // Reset the duplicate-fingerprint guard so the auto-detected (or later
+        // manual) run can write a row even if pixel coordinates happen to land
+        // near the previous committed values. The new indentation is, by
+        // definition, a new measurement. Also drop the impress-in-progress
+        // flag here so runAutoMeasure isn't blocked by its own gate.
         committedFingerprintsRef.current = [];
         impressInProgressRef.current = false;
+        if (!measureAfterImpressEnabled) {
+          // eslint-disable-next-line no-console
+          console.log('[impress-camera-refresh-only]');
+          return;
+        }
+        // If a prior detection (settings-preview, settings-save) is still in
+        // flight, the after-impress run would be coalesced/dropped by
+        // runAutoMeasure's inFlight guard — wait up to 2s for it to clear so
+        // the auto-detect actually executes.
+        if (autoMeasureInFlightRef.current) {
+          const waitStart = Date.now();
+          // eslint-disable-next-line no-console
+          console.log('[measure-after-impress-wait-in-flight] reason=prior-detection-busy');
+          while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
+            await new Promise((resolve) => window.setTimeout(resolve, 60));
+          }
+          if (autoMeasureInFlightRef.current) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[auto-measure-after-impress-failed] reason=in-flight-detection-did-not-clear-within-2s'
+            );
+            return;
+          }
+        }
         // eslint-disable-next-line no-console
-        console.log('[impress-camera-refresh-only]');
+        console.log('[measure-after-impress-trigger] reason=stable-frame-ready');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-click] source=measure-after-impress');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-start] source=measure-after-impress');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-after-impress-start]');
+        try {
+          suppressAutoMeasurePreviewRef.current = false;
+          const runner = runAutoMeasureRef.current;
+          if (!runner) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[auto-measure-after-impress-failed] reason=runAutoMeasure-ref-missing'
+            );
+            return;
+          }
+          runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure-success] source=measure-after-impress note=runner-dispatched');
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure-after-impress-success]');
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-after-impress-failed] reason=runner-threw error=${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       })();
       return;
     }
@@ -3983,6 +4299,106 @@ function App() {
       }
     }
   }, [clearAutoMeasureOverlay, liveMachineState?.indentStatus]);
+
+  // Resolve the turret-after-impress gate: when the machine confirms the new
+  // objective slot (L*OK / objective state-update), the rotation has settled.
+  // Then wait for a fresh stable frame and, if measureAfterImpress is also on,
+  // run detection. Watching lastObjectiveRx is robust to multiple confirms
+  // landing in the same RX batch.
+  useEffect(() => {
+    const pending = pendingTurretAfterImpressRef.current;
+    if (!pending) return;
+    const currentRx = liveMachineState?.lastObjectiveRx ?? null;
+    if (!currentRx || currentRx === pending.lastSeenObjectiveRx) return;
+    pendingTurretAfterImpressRef.current = null;
+    if (turretAfterImpressWatchdogRef.current !== null) {
+      window.clearTimeout(turretAfterImpressWatchdogRef.current);
+      turretAfterImpressWatchdogRef.current = null;
+    }
+    const confirmedAt = Date.now();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[turret-after-impress-done] rx=${currentRx} timestamp=${confirmedAt} elapsedMs=${
+        confirmedAt - pending.armedAt
+      }`
+    );
+    void (async () => {
+      // eslint-disable-next-line no-console
+      console.log('[stable-frame-wait-start] reason=after-impress-turret');
+      // eslint-disable-next-line no-console
+      console.log('[post-impress-stable-frame-wait-start] reason=after-impress-turret');
+      // eslint-disable-next-line no-console
+      console.log('[camera-wait-fresh-frame] reason=after-impress-turret');
+      const camera = cameraRef.current;
+      const fresh = camera ? await camera.waitForFreshFrame(2500) : false;
+      if (!fresh) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[camera-fresh-frame] reason=after-impress-turret result=timeout — proceeding with current frame'
+        );
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[stable-frame-wait-done] reason=after-impress-turret timestamp=${Date.now()}`);
+      // eslint-disable-next-line no-console
+      console.log(`[post-impress-stable-frame-ready] reason=after-impress-turret timestamp=${Date.now()}`);
+      // eslint-disable-next-line no-console
+      console.log(`[stable-frame-ready] reason=after-impress-turret timestamp=${Date.now()}`);
+      committedFingerprintsRef.current = [];
+      // eslint-disable-next-line no-console
+      console.log(`[measure-after-impress-check] enabled=${pending.measureAfterImpress}`);
+      if (!pending.measureAfterImpress) {
+        // eslint-disable-next-line no-console
+        console.log('[measure-after-impress-skipped] enabled=false');
+        // eslint-disable-next-line no-console
+        console.log('[impress-camera-refresh-only] reason=turret-only');
+        return;
+      }
+      if (autoMeasureInFlightRef.current) {
+        const waitStart = Date.now();
+        // eslint-disable-next-line no-console
+        console.log('[measure-after-impress-wait-in-flight] reason=prior-detection-busy turret-branch');
+        while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
+          await new Promise((resolve) => window.setTimeout(resolve, 60));
+        }
+        if (autoMeasureInFlightRef.current) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[auto-measure-after-impress-failed] reason=in-flight-detection-did-not-clear-within-2s turret-branch'
+          );
+          return;
+        }
+      }
+      // eslint-disable-next-line no-console
+      console.log('[measure-after-impress-trigger] reason=turret-settled');
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-click] source=measure-after-impress');
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-start] source=measure-after-impress');
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-after-impress-start]');
+      try {
+        suppressAutoMeasurePreviewRef.current = false;
+        const runner = runAutoMeasureRef.current;
+        if (!runner) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[auto-measure-after-impress-failed] reason=runAutoMeasure-ref-missing turret-branch'
+          );
+          return;
+        }
+        runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-success] source=measure-after-impress note=runner-dispatched');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-after-impress-success]');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[auto-measure-after-impress-failed] error=${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    })();
+  }, [liveMachineState?.lastObjectiveRx]);
 
   // When Manual Measure activates, refresh the live objective so the initial
   // diamond size matches the magnification the user just toggled to.
@@ -4198,6 +4614,34 @@ function App() {
               // eslint-disable-next-line no-console
               console.warn('[album] missing image for measurementId=', targetId ?? 'new');
             }
+            // eslint-disable-next-line no-console
+            console.log(
+              `[line-drag-update-start] flow=auto-adjust rowId=${targetId ?? 'new'} hv=${values.hv ?? 'null'}`
+            );
+            // Depth + conversion fields must survive a line drag. The backend's
+            // buildUpdateSchema injects `null` defaults for fields missing from
+            // the PUT body, so an "omit depth" payload would wipe depthMm /
+            // depthSource / deviceDepthMm / manualDepthMm / convertType /
+            // convertValue to null on every adjust. Pass them through from the
+            // existing row when we're updating (not creating).
+            const preservedConvertValue =
+              typeof targetExisting?.convertValue === 'number'
+                ? targetExisting.convertValue
+                : null;
+            const preserveFields = targetExisting
+              ? {
+                  depthMm: targetExisting.depthMm ?? null,
+                  depthSource: targetExisting.depthSource ?? null,
+                  deviceDepthMm: targetExisting.deviceDepthMm ?? null,
+                  manualDepthMm: targetExisting.manualDepthMm ?? null,
+                  convertType: targetExisting.convertType ?? null,
+                  convertValue: preservedConvertValue,
+                }
+              : {};
+            // eslint-disable-next-line no-console
+            console.log(
+              `[line-drag-update-payload] hasDepth=false rowId=${targetId ?? 'new'} preserveDepth=${targetExisting ? 'true' : 'false'}`
+            );
             const saved = await saveManualMeasurement({
               id: targetId,
               values: {
@@ -4216,6 +4660,7 @@ function App() {
                 calibrationName: values.calibrationName,
                 objective: values.normalizedObjective,
                 testForceKgf: values.forceKgf,
+                ...preserveFields,
                 method: 'Auto (Adjusted)',
                 unit: 'um',
                 timestamp,
@@ -4852,6 +5297,7 @@ function App() {
     const map: Record<Exclude<ConfigDialogId, 'config:calibration' | 'config:camera'>, DialogKey> = {
       'config:lineColor': 'lineColor',
       'config:autoMeasure': 'autoMeasure',
+      'config:micrometer': 'micrometer',
       'config:serialPort': 'serialPort',
       'config:generic': 'generic',
       'config:other': 'other',
@@ -5017,6 +5463,9 @@ function App() {
           onUpdateShape={handleUpdateShape}
         />
         <RightPanel
+          micrometerEnabled={micrometerEnabled}
+          targetMinHv={targetMinHv}
+          targetMaxHv={targetMaxHv}
           measurements={measurements}
           measurementsError={measurementsError}
           measurementsLoading={measurementsLoading}
@@ -5094,6 +5543,14 @@ function App() {
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
         onSaved={() => {
           void refetchLineColor();
+        }}
+      />
+      <MicrometerConfigDialog
+        open={activeDialog === 'micrometer'}
+        onClose={closeDialog}
+        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onSaved={() => {
+          void refetchMicrometerConfig();
         }}
       />
       <SerialPortSettingDialog

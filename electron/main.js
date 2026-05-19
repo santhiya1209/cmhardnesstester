@@ -1,5 +1,24 @@
 const path = require('path');
+const fs = require('fs');
 const { app, BrowserWindow, Menu } = require('electron');
+
+const APP_TITLE = 'Vickers Measurement Software';
+// Resolve the app icon. In dev we look under <repo>/build/icon.ico; in the
+// packaged app we look next to the executable and in resources. If none of
+// the candidates exist, Electron falls back to its default icon — the title
+// still gets set either way.
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, '..', 'build', 'icon.ico'),
+    path.join(__dirname, '..', 'build', 'icon.png'),
+    path.join(process.resourcesPath || '', 'icon.ico'),
+    path.join(process.resourcesPath || '', 'icon.png'),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 // NODE_OPTIONS=--force-node-api-uncaught-exceptions-policy=true is set by
 // scripts/dev-electron.js so throws inside native callbacks become real
@@ -40,9 +59,13 @@ async function startEmbeddedBackend() {
 }
 
 async function createWindow() {
+  const iconPath = resolveAppIcon();
+  console.log(`[electron-icon] loaded=${Boolean(iconPath)} path=${iconPath ?? 'default'}`);
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    title: APP_TITLE,
+    icon: iconPath ?? undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -50,6 +73,16 @@ async function createWindow() {
       sandbox: false,
     },
   });
+  // Some Windows builds ignore the constructor `title` once the renderer
+  // sets <title>; force it again so the title bar / taskbar match the brand.
+  mainWindow.setTitle(APP_TITLE);
+  console.log(`[electron-title] ${APP_TITLE}`);
+
+  // Hide the native Electron menu bar (File / Edit / View / Window / Help).
+  // The app's own blue toolbar/menu (rendered in the renderer) stays visible.
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setAutoHideMenuBar(true);
+  console.log('[electron-menu] native menu bar hidden');
 
   const targetUrl = isDev ? DEV_URL : await startEmbeddedBackend();
   if (!isDev) {
@@ -91,6 +124,12 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   // Menu.setApplicationMenu(null);
+  // Brand the Windows taskbar group so pinning/launch shows the productName
+  // and our icon instead of the bare electron.exe label.
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.chennaimetco.vickersmeasurementsoftware');
+  }
+  app.setName('Vickers Measurement Software');
   registerIpc();
   createWindow();
 });

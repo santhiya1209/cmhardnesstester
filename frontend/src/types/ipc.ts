@@ -8,7 +8,13 @@ import type {
   VickersAutoMeasureParameters,
   VickersAutoMeasureResult,
 } from './autoMeasure';
-import type { OpenImageResult, SaveImageRequest, SaveImageResult } from './dialog';
+import type {
+  OpenImageResult,
+  SaveImageRequest,
+  SaveImageResult,
+  SaveReportRequest,
+  SaveReportResult,
+} from './dialog';
 import type {
   MicrometerCloseResult,
   MicrometerGetLatestReadingResult,
@@ -117,6 +123,7 @@ export type IpcInvokeChannel =
   | 'device:close'
   | 'dialog:openImage'
   | 'dialog:saveImage'
+  | 'dialog:saveReport'
   | 'micrometer:open'
   | 'micrometer:close'
   | 'micrometer:get-state'
@@ -192,6 +199,7 @@ export type IpcInvokeMap = {
   'device:close': { request: void; response: DeviceCloseResponse };
   'dialog:openImage': { request: void; response: OpenImageResult };
   'dialog:saveImage': { request: SaveImageRequest | void; response: SaveImageResult };
+  'dialog:saveReport': { request: SaveReportRequest; response: SaveReportResult };
   'micrometer:open': { request: { port?: string } | void; response: MicrometerOpenResult };
   'micrometer:close': { request: void; response: MicrometerCloseResult };
   'micrometer:get-state': { request: void; response: MicrometerGetStateResult };

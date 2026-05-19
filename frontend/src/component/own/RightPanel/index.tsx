@@ -91,6 +91,8 @@ type TabContentProps = {
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   onTurretIntent?: () => void;
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
+  targetMinHv: number | null;
+  targetMaxHv: number | null;
 };
 
 function renderTab(
@@ -107,6 +109,8 @@ function renderTab(
     onObjectiveChange,
     onTurretIntent,
     onObjectiveChangeIntent,
+    targetMinHv,
+    targetMaxHv,
   }: TabContentProps
 ) {
   switch (tab) {
@@ -140,7 +144,14 @@ function renderTab(
           refetchPatternPrograms={refetchPatternPrograms}
         />
       );
-    case 4: return <StatisticsInfoTab measurements={measurements} />;
+    case 4:
+      return (
+        <StatisticsInfoTab
+          measurements={measurements}
+          targetMinHv={targetMinHv}
+          targetMaxHv={targetMaxHv}
+        />
+      );
     case 5:
       return <AlbumTab measurements={measurements} />;
     case 6:
@@ -177,6 +188,9 @@ type Props = {
    * user calibrates — no modal blocking, matches industrial-software UX.
    */
   calibrationSlot?: ReactNode;
+  micrometerEnabled: boolean;
+  targetMinHv: number | null;
+  targetMaxHv: number | null;
 };
 
 function RightPanelImpl({
@@ -194,6 +208,9 @@ function RightPanelImpl({
   onTrimAdjust,
   calibrationActive = false,
   calibrationSlot,
+  micrometerEnabled,
+  targetMinHv,
+  targetMaxHv,
 }: Props) {
   const [tab, setTab] = useState(0);
   const {
@@ -235,6 +252,9 @@ function RightPanelImpl({
             onOpenTestRecords={onOpenTestRecords}
             onMeasurementsCleared={onMeasurementsCleared}
             onDisplayValuesChange={handleMeasurementDisplayValuesChange}
+            micrometerEnabled={micrometerEnabled}
+            targetMinHv={targetMinHv}
+            targetMaxHv={targetMaxHv}
           />
 
           <Tabs
@@ -261,6 +281,8 @@ function RightPanelImpl({
             onObjectiveChange,
             onTurretIntent,
             onObjectiveChangeIntent,
+            targetMinHv,
+            targetMaxHv,
           })}
 
           <TrimMeasurePanel

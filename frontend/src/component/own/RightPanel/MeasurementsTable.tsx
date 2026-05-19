@@ -1,14 +1,16 @@
-import { memo, useEffect } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
 import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
+import TextField from '@mui/material/TextField';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { colors } from '@/theme/theme';
 import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
+import { getHardnessColor } from '@/utils/hardnessColor';
 
 const COLUMNS = [
   '#',
@@ -68,7 +70,79 @@ type Props = {
   loading: boolean;
   selectedMeasurementId: string | null;
   onSelect: (measurementId: string) => void;
+  micrometerEnabled: boolean;
+  onManualDepthChange?: (measurementId: string, depthMm: number | null) => void;
+  targetMinHv: number | null;
+  targetMaxHv: number | null;
 };
+
+type DepthCellProps = {
+  measurement: Measurement;
+  micrometerEnabled: boolean;
+  onManualDepthChange?: (measurementId: string, depthMm: number | null) => void;
+};
+
+function DepthCell({ measurement, micrometerEnabled, onManualDepthChange }: DepthCellProps) {
+  // Device branch: read the frozen device value (falling back to depthMm for
+  // rows saved before deviceDepthMm existed). Manual branch: read manualDepthMm
+  // (falling back to depthMm). depthMm is always the effective display value
+  // for legacy rows.
+  const deviceDisplay =
+    typeof measurement.deviceDepthMm === 'number' && Number.isFinite(measurement.deviceDepthMm)
+      ? measurement.deviceDepthMm
+      : measurement.depthMm ?? null;
+  const persistedManual =
+    typeof measurement.manualDepthMm === 'number' && Number.isFinite(measurement.manualDepthMm)
+      ? measurement.manualDepthMm
+      : measurement.depthSource === 'manual'
+        ? measurement.depthMm ?? null
+        : null;
+  const [draft, setDraft] = useState<string>(
+    persistedManual === null ? '' : String(persistedManual)
+  );
+  // Keep the input in sync when the row's persisted manual value changes from
+  // outside (e.g. a different row was edited and the list refetched).
+  useEffect(() => {
+    setDraft(persistedManual === null ? '' : String(persistedManual));
+  }, [persistedManual]);
+
+  const commit = useCallback(() => {
+    const trimmed = draft.trim();
+    const next = trimmed === '' ? null : Number(trimmed);
+    if (trimmed !== '' && !Number.isFinite(next)) {
+      // Reject non-numeric input — restore last persisted value.
+      setDraft(persistedManual === null ? '' : String(persistedManual));
+      return;
+    }
+    if (next === persistedManual) return;
+    onManualDepthChange?.(measurement.id, next);
+  }, [draft, measurement.id, onManualDepthChange, persistedManual]);
+
+  if (micrometerEnabled) {
+    return <>{formatDepth(deviceDisplay)}</>;
+  }
+  return (
+    <TextField
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          (event.target as HTMLInputElement).blur();
+        }
+      }}
+      onClick={(event) => event.stopPropagation()}
+      size="small"
+      variant="standard"
+      slotProps={{
+        htmlInput: { inputMode: 'decimal', style: { fontSize: 12, padding: 0 } },
+      }}
+      sx={{ width: 80 }}
+      placeholder="--"
+    />
+  );
+}
 
 function format3(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value)
@@ -104,7 +178,16 @@ function formatDepth(value: number | null | undefined): string {
     : formatMicrometerValue(value);
 }
 
-function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, onSelect }: Props) {
+function MeasurementsTableImpl({
+  measurements,
+  loading,
+  selectedMeasurementId,
+  onSelect,
+  micrometerEnabled,
+  onManualDepthChange,
+  targetMinHv,
+  targetMaxHv,
+}: Props) {
   useEffect(() => {
     const first = measurements[0];
     const firstD1Um = first ? first.d1Um ?? (first.unit === 'um' ? first.d1 : null) : null;
@@ -237,7 +320,15 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   onClick={() => onSelect(measurement.id)}
                 >
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatHardness(measurement.hv)}</TableCell>
+                  <TableCell
+                    sx={{
+                      ...(BODY_CELL_SX as object),
+                      color: getHardnessColor(measurement.hv, targetMinHv, targetMaxHv).color,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {formatHardness(measurement.hv)}
+                  </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
@@ -248,13 +339,11 @@ function MeasurementsTableImpl({ measurements, loading, selectedMeasurementId, o
                   <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>
-                    {(() => {
-                      // eslint-disable-next-line no-console
-                      console.log(
-                        `[measurement-table-depth-render] rowId=${measurement.id} depth=${measurement.depthMm ?? 'null'}`
-                      );
-                      return formatDepth(measurement.depthMm);
-                    })()}
+                    <DepthCell
+                      measurement={measurement}
+                      micrometerEnabled={micrometerEnabled}
+                      onManualDepthChange={onManualDepthChange}
+                    />
                   </TableCell>
                 </TableRow>
               );

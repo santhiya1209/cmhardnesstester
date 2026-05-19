@@ -4,7 +4,11 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import CircularProgress from '@mui/material/CircularProgress';
+import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import InputLabel from '@mui/material/InputLabel';
+import MenuItem from '@mui/material/MenuItem';
+import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -12,7 +16,28 @@ import { useSaveDepthImageSetting } from '@/hooks/mutations/useSaveDepthImageSet
 import { useDepthImageSettings } from '@/hooks/queries/useDepthImageSettings';
 import { useCreateAlbumItem } from '@/hooks/mutations/useCreateAlbumItem';
 import type { Measurement } from '@/types/measurement';
-import DepthVsHvGraph, { buildDepthHvGraphPoints } from './DepthVsHvGraph';
+import DepthVsHvGraph, { buildAxisGraphPoints } from './DepthVsHvGraph';
+import {
+  AXIS_LABEL,
+  X_AXIS_KEYS,
+  Y_AXIS_KEYS,
+  type XAxisKey,
+  type YAxisKey,
+} from './DepthVsHvGraph.utils';
+
+const DEFAULT_X_AXIS: XAxisKey = 'depthUm';
+const DEFAULT_Y_AXIS: YAxisKey = 'hv';
+const LS_X_KEY = 'depthImage.xAxis';
+const LS_Y_KEY = 'depthImage.yAxis';
+function readPersistedAxis<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const value = window.localStorage.getItem(key);
+    if (value && (allowed as readonly string[]).includes(value)) return value as T;
+  } catch {
+    /* localStorage unavailable */
+  }
+  return fallback;
+}
 
 const SECTION_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 280 };
 const PREVIEW_SX: SxProps<Theme> = {
@@ -26,6 +51,18 @@ const PREVIEW_SX: SxProps<Theme> = {
   alignItems: 'stretch',
   justifyContent: 'stretch',
   overflow: 'hidden',
+};
+const AXIS_ROW_SX: SxProps<Theme> = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 1.5,
+  px: 1.5,
+  pt: 1,
+};
+const AXIS_FIELD_SX: SxProps<Theme> = {
+  minWidth: 160,
+  '& .MuiInputBase-input': { fontSize: 12, py: 0.5 },
+  '& .MuiInputLabel-root': { fontSize: 12 },
 };
 const ACTION_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 2, px: 1.5, pb: 1.5 };
 const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
@@ -54,8 +91,33 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   const [hardnessImage, setHardnessImage] = useState(false);
   const [saveImageError, setSaveImageError] = useState<string | null>(null);
   const [chdTargetInput, setChdTargetInput] = useState('550');
+  const [xAxisKey, setXAxisKey] = useState<XAxisKey>(() =>
+    readPersistedAxis(LS_X_KEY, X_AXIS_KEYS, DEFAULT_X_AXIS)
+  );
+  const [yAxisKey, setYAxisKey] = useState<YAxisKey>(() =>
+    readPersistedAxis(LS_Y_KEY, Y_AXIS_KEYS, DEFAULT_Y_AXIS)
+  );
   const previewRef = useRef<HTMLDivElement | null>(null);
-  const points = useMemo(() => buildDepthHvGraphPoints(measurements), [measurements]);
+  const points = useMemo(
+    () => buildAxisGraphPoints(measurements, xAxisKey, yAxisKey),
+    [measurements, xAxisKey, yAxisKey]
+  );
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[depth-graph-axis-select] x=${xAxisKey} y=${yAxisKey}`);
+    try {
+      window.localStorage.setItem(LS_X_KEY, xAxisKey);
+      window.localStorage.setItem(LS_Y_KEY, yAxisKey);
+    } catch {
+      /* localStorage unavailable */
+    }
+  }, [xAxisKey, yAxisKey]);
+  const handleXChange = useCallback((event: SelectChangeEvent) => {
+    setXAxisKey(event.target.value as XAxisKey);
+  }, []);
+  const handleYChange = useCallback((event: SelectChangeEvent) => {
+    setYAxisKey(event.target.value as YAxisKey);
+  }, []);
   const chdTargetHv = useMemo(() => {
     const trimmed = chdTargetInput.trim();
     if (trimmed.length === 0) return null;
@@ -126,7 +188,7 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
     const capturedAt = new Date().toISOString();
     const latest = points[points.length - 1];
     const previewLabel = latest
-      ? `HV ${latest.hv.toFixed(2)} @ ${Math.round(latest.distanceUm)} \u00B5m`
+      ? `${AXIS_LABEL[yAxisKey]}: ${latest.y.toFixed(2)} @ ${AXIS_LABEL[xAxisKey]}: ${Math.round(latest.x)}`
       : 'Depth image';
     const title = `Depth Image ${new Date(capturedAt).toLocaleString('en-IN')}`;
 
@@ -158,8 +220,45 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
 
   return (
     <Box sx={SECTION_SX}>
+      <Box sx={AXIS_ROW_SX}>
+        <FormControl size="small" sx={AXIS_FIELD_SX} disabled={isBusy}>
+          <InputLabel id="depth-graph-x-axis-label">X Axis</InputLabel>
+          <Select
+            labelId="depth-graph-x-axis-label"
+            label="X Axis"
+            value={xAxisKey}
+            onChange={handleXChange}
+          >
+            {X_AXIS_KEYS.map((key) => (
+              <MenuItem key={key} value={key}>
+                {AXIS_LABEL[key]}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={AXIS_FIELD_SX} disabled={isBusy}>
+          <InputLabel id="depth-graph-y-axis-label">Y Axis</InputLabel>
+          <Select
+            labelId="depth-graph-y-axis-label"
+            label="Y Axis"
+            value={yAxisKey}
+            onChange={handleYChange}
+          >
+            {Y_AXIS_KEYS.map((key) => (
+              <MenuItem key={key} value={key}>
+                {AXIS_LABEL[key]}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
       <Box sx={PREVIEW_SX} ref={previewRef}>
-        <DepthVsHvGraph points={points} chdTargetHv={chdTargetHv} />
+        <DepthVsHvGraph
+          points={points}
+          chdTargetHv={chdTargetHv}
+          xKey={xAxisKey}
+          yKey={yAxisKey}
+        />
       </Box>
       <Box sx={ACTION_ROW_SX}>
         <Button variant="outlined" size="small" sx={BTN_SX} disabled={isBusy} onClick={handleRefresh}>

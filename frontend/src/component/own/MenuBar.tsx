@@ -75,6 +75,7 @@ const TOP_MENUS: TopMenuDef[] = [
       { label: 'Line Color Setting', action: 'config:lineColor' },
       { label: 'Calibration', action: 'config:calibration' },
       { label: 'Auto Measure Setting', action: 'config:autoMeasure' },
+      { label: 'Micrometer Setting', action: 'config:micrometer' },
       { label: 'Camera Setting', action: 'config:camera', dividerBefore: true },
       { label: 'Serial Port Setting', action: 'config:serialPort' },
       { label: 'XY Platform Setting', action: 'config:xyPlatform' },
