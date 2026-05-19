@@ -1803,10 +1803,29 @@ function App() {
           );
           const machineState = await getMachineStateSnapshot();
           const timestamp = new Date().toISOString();
-          const isNewManualMeasurement = manualMeasurementIdRef.current === null;
+          // "New" means there's no row to update — neither the manual id
+          // nor the cross-flow active id. Without this, dragging a Manual
+          // line after an Auto save re-reads the micrometer and clobbers
+          // the existing row's depth.
+          const manualPreflightActiveId = getActiveMeasurementId();
+          const isNewManualMeasurement =
+            manualMeasurementIdRef.current === null && !manualPreflightActiveId;
           const depthPayload = isNewManualMeasurement
             ? { depthMm: await readLatestMicrometerDepthMm() }
             : {};
+          const manualExistingRowId =
+            manualMeasurementIdRef.current ?? manualPreflightActiveId ?? null;
+          const manualExistingDepth = manualExistingRowId
+            ? measurements.find((m) => m.id === manualExistingRowId)?.depthMm ?? null
+            : null;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[line-adjust-update] flow=manual targetId=${manualExistingRowId ?? 'none'} isNew=${isNewManualMeasurement}`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[depth-preserve-before] flow=manual id=${manualExistingRowId ?? 'none'} depth=${manualExistingDepth ?? 'null'} willOverwrite=${isNewManualMeasurement ? 'yes' : 'no'}`
+          );
           // eslint-disable-next-line no-console
           console.log(
             `[measurement-save] depth from micrometer=${depthPayload.depthMm ?? '-'} new=${isNewManualMeasurement}`
@@ -2019,8 +2038,12 @@ function App() {
           // eslint-disable-next-line no-console
           console.log(
             manualReuseId
-              ? `[measurement-row-update] id=${saved.id} method=${savedManualMethod} reason=same-camera-session flow=manual`
+              ? `[measurement-row-update] id=${saved.id} method=${savedManualMethod} reason=same-camera-session flow=manual preserveDepth=${isNewManualMeasurement ? 'false' : 'true'}`
               : `[measurement-row-create] id=${saved.id} method=${savedManualMethod} reason=first-measurement-in-camera-session flow=manual`
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[depth-preserve-after] flow=manual id=${saved.id} depth=${saved.depthMm ?? 'null'}`
           );
           // eslint-disable-next-line no-console
           console.log(
@@ -2080,6 +2103,7 @@ function App() {
       saveManualMeasurement,
       getActiveMeasurementId,
       setActiveMeasurement,
+      measurements,
     ]
   );
 
@@ -4088,8 +4112,24 @@ function App() {
               `[auto-measure-adjust] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)}`
             );
 
-            const targetId = autoMeasurementIdRef.current ?? undefined;
+            // Line drag must NEVER create a new row — that's how depth was
+            // silently being lost. Fall back to the active row id so an
+            // empty autoMeasurementIdRef (cross-flow edge case) still
+            // resolves to PUT instead of POST.
+            const targetId =
+              autoMeasurementIdRef.current ?? getActiveMeasurementId() ?? undefined;
             const timestamp = new Date().toISOString();
+            const targetExisting = targetId
+              ? measurements.find((m) => m.id === targetId)
+              : null;
+            // eslint-disable-next-line no-console
+            console.log(
+              `[line-adjust-update] flow=auto targetId=${targetId ?? 'none'} willCreateRow=${targetId ? 'no' : 'yes'}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[depth-preserve-before] flow=auto-adjust id=${targetId ?? 'none'} depth=${targetExisting?.depthMm ?? 'null'}`
+            );
 
             const conversion = calculateVickersFromPixels({
               calibrationSettings,
@@ -4194,11 +4234,15 @@ function App() {
               activeMeasurementMethodRef.current = savedAdjMethod;
               // eslint-disable-next-line no-console
               console.log(
-                `[measurement-row-update] id=${saved.id} method=${savedAdjMethod} reason=line-adjustment frameId=${adjFrameId ?? 'n/a'}`
+                `[measurement-row-update] id=${saved.id} method=${savedAdjMethod} reason=line-adjustment frameId=${adjFrameId ?? 'n/a'} preserveDepth=true`
               );
               // eslint-disable-next-line no-console
               console.log(
                 `[measurement-mode-update] id=${saved.id} old=${previousAdjMethod ?? 'none'} new=${savedAdjMethod} reason=line-adjustment`
+              );
+              // eslint-disable-next-line no-console
+              console.log(
+                `[depth-preserve-after] flow=auto-adjust id=${saved.id} depth=${saved.depthMm ?? 'null'}`
               );
             }
             const centerX = (corners.left.x + corners.right.x) / 2;
@@ -4275,6 +4319,8 @@ function App() {
       refetchMeasurements,
       saveManualMeasurement,
       setActiveMeasurement,
+      getActiveMeasurementId,
+      measurements,
     ]
   );
 
