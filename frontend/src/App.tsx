@@ -11,7 +11,6 @@ import OtherSettingDialog from '@/component/own/OtherSettingDialog';
 import RestoreFactoryDialog from '@/component/own/RestoreFactoryDialog';
 import SerialPortSettingDialog from '@/component/own/SerialPortSettingDialog';
 import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
-import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
@@ -23,7 +22,6 @@ import { useMachineState } from '@/hooks/queries/useMachineState';
 import { useConnectMachine } from '@/hooks/mutations/useConnectMachine';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { getLatestMicrometerReading } from '@/api/getLatestMicrometerReading';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 import { measureVickersAuto, measureVickersAutoPreview } from '@/api/measureVickersAuto';
 import { getCameraSetting } from '@/api/getCameraSetting';
 import {
@@ -58,6 +56,7 @@ import {
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
+import { listSerialPorts } from '@/api/listSerialPorts';
 import { openImageDialog } from '@/api/openImageDialog';
 import { saveImageDialog } from '@/api/saveImageDialog';
 import { exitApp } from '@/api/exitApp';
@@ -903,8 +902,48 @@ function App() {
     }
   }, [micrometerEnabled]);
   const { refetch: refetchCameraSetting } = useCameraSetting();
-  const { data: serialPortSetting } = useSerialPortSetting();
   const { connect: connectMachineFn, disconnect: disconnectMachineFn } = useConnectMachine();
+  // Machine COM port is in-memory only. The Serial Port Setting dialog is the
+  // single source of truth: confirming a port routes through applyMachinePort
+  // below, which disconnects the previous selection and connects the new one.
+  // Nothing about the machine port is persisted — on next launch this returns
+  // to null and the operator must pick again.
+  const [currentMachinePort, setCurrentMachinePort] = useState<string | null>(null);
+  const applyMachinePort = useCallback(
+    async (nextPort: string | null) => {
+      const trimmed = typeof nextPort === 'string' && nextPort.trim() ? nextPort.trim() : null;
+      // eslint-disable-next-line no-console
+      console.log(`[machine-port-selected-current] port=${trimmed ?? '-'}`);
+      if (currentMachinePort && currentMachinePort !== trimmed) {
+        // eslint-disable-next-line no-console
+        console.log(`[machine-disconnect-old-port] port=${currentMachinePort}`);
+        try {
+          await disconnectMachineFn();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[machine-disconnect-old-port] failed:', err);
+        }
+      }
+      setCurrentMachinePort(trimmed);
+      if (!trimmed) {
+        // eslint-disable-next-line no-console
+        console.log('[machine-connect-skip] reason=no-current-selection');
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[machine-connect-request] port=${trimmed}`);
+      try {
+        await connectMachineFn({ port: trimmed });
+        // eslint-disable-next-line no-console
+        console.log(`[machine-connect-success] port=${trimmed}`);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-connect-error] port=${trimmed}`, err);
+        throw err;
+      }
+    },
+    [connectMachineFn, currentMachinePort, disconnectMachineFn]
+  );
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
   // SSE-reactive machine state — same hook MachineControlTab uses, so the
@@ -4968,10 +5007,50 @@ function App() {
             } catch {
               /* non-fatal — calibration-confirm path will retry */
             }
+            // Enumerate OS-reported serial ports up front so we can validate
+            // the saved Machine / Micrometer selections against what the
+            // operating system actually exposes — no hardcoded fallbacks.
+            const portList = await listSerialPorts().catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn('[serial-ports-list] renderer call failed:', err);
+              return { ok: false as const, ports: [], error: 'list-failed' };
+            });
+            const availablePortPaths = Array.isArray(portList?.ports)
+              ? portList.ports.map((p) => p.path).filter(Boolean)
+              : [];
+            // eslint-disable-next-line no-console
+            console.log(
+              `[serial-ports-list] count=${availablePortPaths.length} paths=${availablePortPaths.join(',') || '-'}`
+            );
+
+            const savedMicrometerPort =
+              typeof micrometerConfig?.comPort === 'string' && micrometerConfig.comPort.trim()
+                ? micrometerConfig.comPort.trim()
+                : null;
+            const micrometerPortAvailable =
+              !!savedMicrometerPort && availablePortPaths.includes(savedMicrometerPort);
+            const shouldOpenMicrometer =
+              !!micrometerConfig?.enabled && micrometerPortAvailable;
+            if (!shouldOpenMicrometer) {
+              const reason = !micrometerConfig?.enabled
+                ? 'disabled-or-no-port'
+                : !savedMicrometerPort
+                  ? 'disabled-or-no-port'
+                  : 'port-missing';
+              // eslint-disable-next-line no-console
+              console.log(
+                `[micrometer-connect-skip] reason=${reason} saved=${savedMicrometerPort ?? '-'} enabled=${!!micrometerConfig?.enabled}`
+              );
+            }
+
             // eslint-disable-next-line no-console
             console.log('[ipc] device:open →');
             setCameraStatus('opening');
-            const reply = await window.hardnessCamera.openDevice({ index: 0 });
+            const reply = await window.hardnessCamera.openDevice(
+              shouldOpenMicrometer && savedMicrometerPort
+                ? { index: 0, micrometerPort: savedMicrometerPort }
+                : { index: 0 }
+            );
             // eslint-disable-next-line no-console
             console.log('[ipc] device:open ←', reply);
             // eslint-disable-next-line no-console
@@ -5065,8 +5144,9 @@ function App() {
               /* non-fatal */
             }
 
-            // Surface micrometer outcome (COM3 open is performed inside the
-            // device:open main handler — never on app startup).
+            // Surface micrometer outcome. The micrometer port is opened only
+            // when the user has enabled it AND selected a port that exists in
+            // the OS-reported list — never via a hardcoded fallback.
             if (reply.micrometer) {
               if (reply.micrometer.connected) {
                 setStatusMessage(
@@ -5081,26 +5161,13 @@ function App() {
               }
             }
 
-            // Best-effort: also open the hardness machine COM port. Defaults
-            // to COM7 (the wired-in port for this machine) if the user hasn't
-            // configured one via Serial Port settings. Failure here must NOT
-            // break the camera/micrometer flow.
-            // Hardness machine is wired to COM7 on this PC. The
-            // serial-port-setting record's mainPortName is used by the XYZ
-            // platform / micrometer flow, not the machine, so we do NOT read
-            // from it here. If the COM port ever changes, update this literal.
-            const machinePort = 'COM7';
-            void serialPortSetting;
-            try {
+            // Machine COM port is not persisted: we never auto-connect from a
+            // DB value. The operator must pick a port in Serial Port Settings,
+            // which routes through applyMachinePort and connects immediately.
+            // Camera open is unaffected by machine state.
+            if (!currentMachinePort) {
               // eslint-disable-next-line no-console
-              console.log('[machine-main] connect requested', machinePort);
-              await connectMachineFn({ port: machinePort });
-              setStatusMessage(`System Status: Machine connected on ${machinePort}`);
-            } catch (mErr) {
-              // eslint-disable-next-line no-console
-              console.warn('[machine-main] connect failed:', mErr);
-              const detail = getApiErrorMessage(mErr, 'unknown error');
-              setUnavailableMsg(`Machine connect failed on ${machinePort}: ${detail}`);
+              console.log('[machine-connect-skip] reason=no-current-selection');
             }
           } catch (err) {
             setUnavailableMsg(
@@ -5252,7 +5319,8 @@ function App() {
       openCalibrationPanel,
       openCameraSettingsPanel,
       setActiveTool,
-      serialPortSetting,
+      currentMachinePort,
+      micrometerConfig,
       connectMachineFn,
       disconnectMachineFn,
       refetchCameraSetting,
@@ -5557,6 +5625,8 @@ function App() {
         open={activeDialog === 'serialPort'}
         onClose={closeDialog}
         onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        currentMachinePort={currentMachinePort}
+        onApplyMachinePort={applyMachinePort}
       />
       <CameraSettingDialog
         open={activeDialog === 'camera'}

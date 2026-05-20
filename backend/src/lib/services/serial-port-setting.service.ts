@@ -18,9 +18,8 @@ export const serialPortSettingService = createCrudService<
   schema: SerialPortSettingModel,
   createEntity: (input, { id, now }) => ({
     id,
-    mainPortName: input.mainPortName,
-    xyPortName: input.xyPortName,
-    zPortName: input.zPortName,
+    xyPortName: input.xyPortName ?? null,
+    zPortName: input.zPortName ?? null,
     createdAt: now,
     updatedAt: now,
   }),

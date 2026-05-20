@@ -15,6 +15,7 @@ import type {
   SaveReportRequest,
   SaveReportResult,
 } from './dialog';
+import type { SerialPortListResult } from './serial';
 import type {
   MicrometerCloseResult,
   MicrometerGetLatestReadingResult,
@@ -82,7 +83,7 @@ export interface HardnessCameraApi {
   setGain(value: number): Promise<CameraReply<{ gain: number }>>;
   getExposureRange(): Promise<CameraReply<CameraRange>>;
   getGainRange(): Promise<CameraReply<CameraRange>>;
-  openDevice(payload?: { index?: number }): Promise<DeviceOpenResponse>;
+  openDevice(payload?: { index?: number; micrometerPort?: string }): Promise<DeviceOpenResponse>;
   closeDevice(): Promise<DeviceCloseResponse>;
 }
 
@@ -124,6 +125,7 @@ export type IpcInvokeChannel =
   | 'dialog:openImage'
   | 'dialog:saveImage'
   | 'dialog:saveReport'
+  | 'serial:list-ports'
   | 'micrometer:open'
   | 'micrometer:close'
   | 'micrometer:get-state'
@@ -200,6 +202,7 @@ export type IpcInvokeMap = {
   'dialog:openImage': { request: void; response: OpenImageResult };
   'dialog:saveImage': { request: SaveImageRequest | void; response: SaveImageResult };
   'dialog:saveReport': { request: SaveReportRequest; response: SaveReportResult };
+  'serial:list-ports': { request: void; response: SerialPortListResult };
   'micrometer:open': { request: { port?: string } | void; response: MicrometerOpenResult };
   'micrometer:close': { request: void; response: MicrometerCloseResult };
   'micrometer:get-state': { request: void; response: MicrometerGetStateResult };

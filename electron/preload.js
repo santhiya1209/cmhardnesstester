@@ -24,6 +24,7 @@ const ALLOWED_INVOKE = new Set([
   'dialog:openImage',
   'dialog:saveImage',
   'dialog:saveReport',
+  'serial:list-ports',
   'micrometer:open',
   'micrometer:close',
   'micrometer:get-state',

@@ -15,29 +15,36 @@ import Typography from '@mui/material/Typography';
 
 import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useSaveSerialPortSetting } from '@/hooks/mutations/useSaveSerialPortSetting';
+import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
+import { useSaveMicrometerConfig } from '@/hooks/mutations/useSaveMicrometerConfig';
 import {
-  COM_PORT_OPTIONS,
   DEFAULT_SERIAL_PORT_SETTING,
-  type ComPort,
   type SerialPortSetting,
   type SerialPortSettingPayload,
 } from '@/types/serialPortSetting';
+import { listSerialPorts } from '@/api/listSerialPorts';
+import type { SerialPortInfo } from '@/types/serial';
 import { colors } from '@/theme/theme';
 
 type Props = {
   open: boolean;
   onClose: () => void;
   onStatusChange?: (message: string) => void;
+  // Current in-memory machine COM port. Lives in App state — never read from
+  // or written to the database. `null` means "no current selection".
+  currentMachinePort: string | null;
+  // Callback that disconnects the previous port (if any) and connects the
+  // new one. Handles all machine connect/disconnect logging.
+  onApplyMachinePort: (nextPort: string | null) => Promise<void>;
 };
 
-type FormField = 'mainPortName' | 'xyPortName' | 'zPortName';
+type StagePortField = 'xyPortName' | 'zPortName';
 
 function toFormState(settings: SerialPortSetting | null): SerialPortSettingPayload {
   if (!settings) return DEFAULT_SERIAL_PORT_SETTING;
   return {
-    mainPortName: settings.mainPortName,
-    xyPortName: settings.xyPortName,
-    zPortName: settings.zPortName,
+    xyPortName: settings.xyPortName ?? null,
+    zPortName: settings.zPortName ?? null,
   };
 }
 
@@ -46,28 +53,69 @@ const SECTION_PAPER_SX = { p: 2, mb: 1.5 };
 const SECTION_TITLE_SX = { color: colors.headingSecondary, fontWeight: 600, mb: 1 };
 const ROW_LABEL_SX = { minWidth: 90 };
 
-type SectionProps = {
-  title: string;
-  value: ComPort;
-  field: FormField;
+function renderPortLabel(port: SerialPortInfo): string {
+  if (port.friendlyName) return `${port.path} — ${port.friendlyName}`;
+  if (port.manufacturer) return `${port.path} — ${port.manufacturer}`;
+  return port.path;
+}
+
+type DevicePortSelectProps = {
+  value: string;
+  availablePorts: SerialPortInfo[];
   disabled: boolean;
-  onChange: (field: FormField, value: ComPort) => void;
+  onChange: (next: string) => void;
+};
+
+const DevicePortSelect = memo(function DevicePortSelect({
+  value,
+  availablePorts,
+  disabled,
+  onChange,
+}: DevicePortSelectProps) {
+  const handleChange = useCallback(
+    (event: SelectChangeEvent) => {
+      onChange(event.target.value);
+    },
+    [onChange]
+  );
+  const savedMissing =
+    !!value && availablePorts.length > 0 && !availablePorts.some((p) => p.path === value);
+  return (
+    <FormControl size="small" sx={{ flex: 1 }} disabled={disabled}>
+      <Select value={value} displayEmpty onChange={handleChange}>
+        <MenuItem value="">
+          <em>(none)</em>
+        </MenuItem>
+        {savedMissing ? (
+          <MenuItem value={value}>{`${value} — not detected`}</MenuItem>
+        ) : null}
+        {availablePorts.map((port) => (
+          <MenuItem key={port.path} value={port.path}>
+            {renderPortLabel(port)}
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
+  );
+});
+
+type PortSectionProps = {
+  title: string;
+  rowLabel: string;
+  value: string;
+  disabled: boolean;
+  availablePorts: SerialPortInfo[];
+  onChange: (next: string) => void;
 };
 
 const PortSection = memo(function PortSection({
   title,
+  rowLabel,
   value,
-  field,
   disabled,
+  availablePorts,
   onChange,
-}: SectionProps) {
-  const handleChange = useCallback(
-    (event: SelectChangeEvent) => {
-      onChange(field, event.target.value as ComPort);
-    },
-    [field, onChange]
-  );
-
+}: PortSectionProps) {
   return (
     <Paper variant="outlined" sx={SECTION_PAPER_SX}>
       <Typography variant="subtitle2" sx={SECTION_TITLE_SX}>
@@ -75,35 +123,66 @@ const PortSection = memo(function PortSection({
       </Typography>
       <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
         <Typography variant="body2" sx={ROW_LABEL_SX}>
-          Port Name
+          {rowLabel}
         </Typography>
-        <FormControl size="small" sx={{ flex: 1 }}>
-          <Select value={value} onChange={handleChange} disabled={disabled}>
-            {COM_PORT_OPTIONS.map((opt) => (
-              <MenuItem key={opt} value={opt}>
-                {opt}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <DevicePortSelect
+          value={value}
+          availablePorts={availablePorts}
+          disabled={disabled}
+          onChange={onChange}
+        />
       </Stack>
     </Paper>
   );
 });
 
-function SerialPortSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
+function SerialPortSettingDialogImpl({
+  open,
+  onClose,
+  onStatusChange,
+  currentMachinePort,
+  onApplyMachinePort,
+}: Props) {
   const { data, error: loadError, loading, refetch } = useSerialPortSetting();
   const { saveSerialPortSetting, saving, error: saveError } = useSaveSerialPortSetting();
+  const {
+    data: micrometerData,
+    error: micLoadError,
+    loading: micLoading,
+    refetch: refetchMicrometer,
+  } = useMicrometerConfig();
+  const {
+    saveMicrometerConfig,
+    saving: micSaving,
+    error: micSaveError,
+  } = useSaveMicrometerConfig();
   const [form, setForm] = useState<SerialPortSettingPayload>(DEFAULT_SERIAL_PORT_SETTING);
+  // Machine COM port lives only in component state while the dialog is open.
+  // Seeded from the current in-memory selection; never persisted.
+  const [machineComPort, setMachineComPort] = useState<string>('');
+  const [micrometerComPort, setMicrometerComPort] = useState<string>('');
+  const [availablePorts, setAvailablePorts] = useState<SerialPortInfo[]>([]);
+  const [portsError, setPortsError] = useState<string | null>(null);
+  const [applyingMachine, setApplyingMachine] = useState(false);
 
-  const busy = loading || saving;
-  const errorMessage = loadError ?? saveError;
+  const busy = loading || saving || micLoading || micSaving || applyingMachine;
+  const errorMessage = loadError ?? saveError ?? micLoadError ?? micSaveError;
 
   useEffect(() => {
     if (open) {
       void refetch();
+      void refetchMicrometer();
+      void listSerialPorts().then((reply) => {
+        if (reply.ok) {
+          setAvailablePorts(reply.ports);
+          setPortsError(null);
+        } else {
+          setAvailablePorts([]);
+          setPortsError(reply.error || 'Failed to enumerate serial ports.');
+        }
+      });
     }
-  }, [open, refetch]);
+  }, [open, refetch, refetchMicrometer]);
 
   useEffect(() => {
     if (open && !loading) {
@@ -111,46 +190,143 @@ function SerialPortSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     }
   }, [data, loading, open]);
 
-  const handleFieldChange = useCallback((field: FormField, value: ComPort) => {
-    setForm((current) => ({ ...current, [field]: value }));
+  useEffect(() => {
+    if (open) {
+      setMachineComPort(currentMachinePort ?? '');
+    }
+  }, [currentMachinePort, open]);
+
+  useEffect(() => {
+    if (open && !micLoading) {
+      setMicrometerComPort(micrometerData?.comPort ?? '');
+    }
+  }, [micrometerData, micLoading, open]);
+
+  const handleStagePortChange = useCallback((field: StagePortField, value: string) => {
+    setForm((current) => ({ ...current, [field]: value.length > 0 ? value : null }));
+  }, []);
+  const handleXyPortChange = useCallback(
+    (next: string) => handleStagePortChange('xyPortName', next),
+    [handleStagePortChange]
+  );
+  const handleZPortChange = useCallback(
+    (next: string) => handleStagePortChange('zPortName', next),
+    [handleStagePortChange]
+  );
+
+  const handleMachineComPortChange = useCallback((next: string) => {
+    setMachineComPort(next);
   }, []);
 
+  const handleMicrometerComPortChange = useCallback((next: string) => {
+    setMicrometerComPort(next);
+    // eslint-disable-next-line no-console
+    console.log(`[micrometer-port-selected-current] port=${next || 'null'}`);
+  }, []);
+
+  const portConflict =
+    !!machineComPort && !!micrometerComPort && machineComPort === micrometerComPort;
+
   const handleConfirm = useCallback(async () => {
+    if (portConflict) return;
     try {
+      // Persist XY/Z stage ports + micrometer port. Machine port is in-memory
+      // only and is handed off via onApplyMachinePort below.
       await saveSerialPortSetting({ id: data?.id, values: form });
+
+      const persistedMicrometerPort =
+        micrometerComPort.trim().length > 0 ? micrometerComPort.trim() : null;
+      await saveMicrometerConfig({
+        id: micrometerData?.id,
+        values: {
+          enabled: micrometerData?.enabled ?? true,
+          comPort: persistedMicrometerPort,
+        },
+      });
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-port-selected-current] port=${persistedMicrometerPort ?? 'null'}`);
+      if (persistedMicrometerPort) {
+        // eslint-disable-next-line no-console
+        console.log(`[micrometer-connect-request] port=${persistedMicrometerPort}`);
+      }
+
+      const nextMachinePort = machineComPort.trim().length > 0 ? machineComPort.trim() : null;
+      setApplyingMachine(true);
+      try {
+        await onApplyMachinePort(nextMachinePort);
+      } finally {
+        setApplyingMachine(false);
+      }
+
       onStatusChange?.('Serial port setting saved.');
       onClose();
     } catch {
-      // surfaced via saveError
+      // surfaced via saveError / micSaveError / connect error logs
     }
-  }, [data?.id, form, onClose, onStatusChange, saveSerialPortSetting]);
+  }, [
+    data?.id,
+    form,
+    machineComPort,
+    micrometerComPort,
+    micrometerData?.enabled,
+    micrometerData?.id,
+    onApplyMachinePort,
+    onClose,
+    onStatusChange,
+    portConflict,
+    saveMicrometerConfig,
+    saveSerialPortSetting,
+  ]);
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="xs">
       <DialogTitle sx={TITLE_SX}>Serial Port Setting</DialogTitle>
       <DialogContent dividers>
         <PortSection
-          title="Main"
-          value={form.mainPortName}
-          field="mainPortName"
+          title="Machine"
+          rowLabel="COM Port"
+          value={machineComPort}
           disabled={busy}
-          onChange={handleFieldChange}
+          availablePorts={availablePorts}
+          onChange={handleMachineComPortChange}
         />
+
+        <PortSection
+          title="Micrometer"
+          rowLabel="COM Port"
+          value={micrometerComPort}
+          disabled={busy}
+          availablePorts={availablePorts}
+          onChange={handleMicrometerComPortChange}
+        />
+
         <PortSection
           title="X/Y"
-          value={form.xyPortName}
-          field="xyPortName"
+          rowLabel="Port Name"
+          value={form.xyPortName ?? ''}
           disabled={busy}
-          onChange={handleFieldChange}
+          availablePorts={availablePorts}
+          onChange={handleXyPortChange}
         />
         <PortSection
           title="Z"
-          value={form.zPortName}
-          field="zPortName"
+          rowLabel="Port Name"
+          value={form.zPortName ?? ''}
           disabled={busy}
-          onChange={handleFieldChange}
+          availablePorts={availablePorts}
+          onChange={handleZPortChange}
         />
 
+        {portConflict ? (
+          <Alert severity="warning" sx={{ mt: 1 }}>
+            Machine and Micrometer cannot use same COM port
+          </Alert>
+        ) : null}
+        {portsError ? (
+          <Alert severity="warning" sx={{ mt: 1 }}>
+            {`Port list unavailable: ${portsError}`}
+          </Alert>
+        ) : null}
         {errorMessage ? (
           <Alert severity="error" sx={{ mt: 1 }}>
             {errorMessage}
@@ -159,7 +335,11 @@ function SerialPortSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       </DialogContent>
       <DialogActions>
         <Box sx={{ flex: 1 }} />
-        <Button variant="contained" onClick={() => void handleConfirm()} disabled={busy}>
+        <Button
+          variant="contained"
+          onClick={() => void handleConfirm()}
+          disabled={busy || portConflict}
+        >
           Confirm
         </Button>
         <Button onClick={onClose} disabled={busy}>

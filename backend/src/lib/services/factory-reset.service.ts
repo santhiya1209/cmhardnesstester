@@ -47,9 +47,8 @@ export async function resetToFactory(): Promise<void> {
     const serialPortSettings = [
       SerialPortSettingModel.parse({
         id: randomUUID(),
-        mainPortName: 'COM1',
-        xyPortName: 'COM2',
-        zPortName: 'COM3',
+        xyPortName: null,
+        zPortName: null,
         ...stamp,
       }),
     ];

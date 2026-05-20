@@ -5,7 +5,20 @@ const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const { cameraService } = require('./cameraService');
 const { micrometerService } = require('./micrometerService');
 
-const DEFAULT_MICROMETER_PORT = process.env.MICROMETER_PORT || 'COM3';
+// Resolve SerialPort lazily so the rest of the IPC layer still works even if
+// the native module isn't rebuilt for the current Electron ABI yet. The list
+// endpoint will return an empty array + a clear error message in that case
+// instead of crashing the renderer.
+function loadSerialPortClass() {
+  try {
+    const mod = require('serialport');
+    return mod && mod.SerialPort ? mod.SerialPort : null;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[serial-ports-list] serialport require failed:', err && err.message);
+    return null;
+  }
+}
 
 const IMAGE_FILTERS = [
   { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff'] },
@@ -342,12 +355,63 @@ function registerIpc() {
     return cameraService.measureVickersAuto(safePayload);
   });
 
+  /* ------------------ serial port enumeration ------------------ */
+  // Lists the operating system's currently-available serial ports so the
+  // Configuration dialogs can populate Machine / Micrometer dropdowns from
+  // real hardware instead of hardcoded COM numbers.
+  ipcMain.handle('serial:list-ports', async () => {
+    const SerialPort = loadSerialPortClass();
+    if (!SerialPort || typeof SerialPort.list !== 'function') {
+      // eslint-disable-next-line no-console
+      console.warn('[serial-ports-list] unavailable reason=serialport-not-loaded');
+      return { ok: false, ports: [], error: 'serialport-unavailable' };
+    }
+    try {
+      const raw = await SerialPort.list();
+      const ports = Array.isArray(raw)
+        ? raw.map((entry) => ({
+            path: typeof entry.path === 'string' ? entry.path : '',
+            manufacturer: typeof entry.manufacturer === 'string' ? entry.manufacturer : null,
+            serialNumber: typeof entry.serialNumber === 'string' ? entry.serialNumber : null,
+            pnpId: typeof entry.pnpId === 'string' ? entry.pnpId : null,
+            friendlyName:
+              typeof entry.friendlyName === 'string'
+                ? entry.friendlyName
+                : typeof entry.locationId === 'string'
+                  ? entry.locationId
+                  : null,
+            vendorId: typeof entry.vendorId === 'string' ? entry.vendorId : null,
+            productId: typeof entry.productId === 'string' ? entry.productId : null,
+          }))
+        : [];
+      // eslint-disable-next-line no-console
+      console.log(
+        `[serial-ports-list] count=${ports.length} paths=${ports.map((p) => p.path).join(',') || '-'}`
+      );
+      return { ok: true, ports };
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.warn(`[serial-ports-list] error=${message}`);
+      return { ok: false, ports: [], error: message };
+    }
+  });
+
   /* ------------------ micrometer channels ------------------ */
   ipcMain.handle('micrometer:open', async (_e, payload) => {
     const portName =
       payload && typeof payload.port === 'string' && payload.port.trim().length > 0
         ? payload.port.trim()
-        : DEFAULT_MICROMETER_PORT;
+        : null;
+    if (!portName) {
+      // eslint-disable-next-line no-console
+      console.log('[micrometer-connect-skip] reason=disabled-or-no-port');
+      return {
+        ok: false,
+        error: 'NO_PORT_SELECTED',
+        message: 'Select micrometer COM port first',
+      };
+    }
     // eslint-disable-next-line no-console
     console.log('[ipc] micrometer:open port=', portName);
     return micrometerService.open(portName);
@@ -410,9 +474,9 @@ function registerIpc() {
   });
 
   /* ------------------ device channels ------------------ */
-  // "Open Device" — opens camera, starts stream, and opens the micrometer
-  // serial port (default COM3). The micrometer port is opened ONLY here, never
-  // on app startup.
+  // "Open Device" — opens camera, starts stream, and (if the renderer
+  // supplied a micrometer port) opens the micrometer serial port. There is no
+  // default port: the operator picks one in the Micrometer dialog.
   ipcMain.handle('device:open', async (_e, payload) => {
     const index = payload && Number.isFinite(Number(payload.index)) ? Number(payload.index) : 0;
     // eslint-disable-next-line no-console
@@ -431,28 +495,35 @@ function registerIpc() {
     // eslint-disable-next-line no-console
     console.log('[ipc] device:open camera→start-stream ok=', camStream.ok);
 
-    // Best-effort: open micrometer COM3 as part of the same Open Device action.
-    // A failure here MUST NOT break the camera flow — surface as { connected:false, error }.
+    // Best-effort: open the micrometer ONLY if the renderer explicitly passed
+    // a port. No hardcoded fallback — if the operator hasn't selected one,
+    // the device stays closed and depth entry remains manual.
+    const micPortName =
+      payload && typeof payload.micrometerPort === 'string' && payload.micrometerPort.trim().length > 0
+        ? payload.micrometerPort.trim()
+        : null;
     let micrometer;
-    try {
-      const micPortName =
-        payload && typeof payload.micrometerPort === 'string' && payload.micrometerPort.trim().length > 0
-          ? payload.micrometerPort.trim()
-          : DEFAULT_MICROMETER_PORT;
-      const micResult = await micrometerService.open(micPortName);
+    if (!micPortName) {
       // eslint-disable-next-line no-console
-      console.log('[ipc] device:open micrometer→open ok=', !!micResult.ok, 'port=', micPortName);
-      micrometer = {
-        connected: !!micResult.ok,
-        port: micPortName,
-        error: micResult.ok ? undefined : micResult.error,
-        message: micResult.ok ? undefined : micResult.message,
-      };
-    } catch (err) {
-      const msg = err && err.message ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.warn('[ipc] device:open micrometer threw:', msg);
-      micrometer = { connected: false, port: DEFAULT_MICROMETER_PORT, error: 'OPEN_THREW', message: msg };
+      console.log('[micrometer-connect-skip] reason=disabled-or-no-port');
+      micrometer = undefined;
+    } else {
+      try {
+        const micResult = await micrometerService.open(micPortName);
+        // eslint-disable-next-line no-console
+        console.log('[ipc] device:open micrometer→open ok=', !!micResult.ok, 'port=', micPortName);
+        micrometer = {
+          connected: !!micResult.ok,
+          port: micPortName,
+          error: micResult.ok ? undefined : micResult.error,
+          message: micResult.ok ? undefined : micResult.message,
+        };
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn('[ipc] device:open micrometer threw:', msg);
+        micrometer = { connected: false, port: micPortName, error: 'OPEN_THREW', message: msg };
+      }
     }
 
     return {

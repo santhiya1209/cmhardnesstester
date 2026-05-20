@@ -11,7 +11,6 @@ const {
 } = require('./micrometerDecoder');
 const { loadCaptures } = require('./micrometerCaptures');
 
-const DEFAULT_PORT = 'COM3';
 const DATA_BITS = 8;
 const PARITY = 'none';
 const STOP_BITS = 1;
@@ -32,6 +31,8 @@ function buildScanCandidates(portName) {
   return [
     {
       path: portName,
+      // Spec says 2400 8N1, but the hardware's actual clock measures at 2300
+      // — opening at 2400 produces framing errors and no readings.
       baudRate: 2300,
       dataBits: DATA_BITS,
       parity: PARITY,
@@ -256,8 +257,16 @@ class MicrometerService {
     return null;
   }
 
-  async open(portName = DEFAULT_PORT) {
-    const normalizedPort = typeof portName === 'string' && portName.trim() ? portName.trim() : DEFAULT_PORT;
+  async open(portName) {
+    const normalizedPort = typeof portName === 'string' && portName.trim() ? portName.trim() : null;
+    if (!normalizedPort) {
+      return {
+        ok: false,
+        error: 'NO_PORT_SELECTED',
+        message: 'Select micrometer COM port first',
+        state: this.getState(),
+      };
+    }
 
     if (this.portOpen) {
       console.log(

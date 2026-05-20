@@ -1,22 +1,9 @@
-export const COM_PORT_OPTIONS = [
-  'COM1',
-  'COM2',
-  'COM3',
-  'COM4',
-  'COM5',
-  'COM6',
-  'COM7',
-  'COM8',
-  'COM9',
-  'COM10',
-] as const;
-
-export type ComPort = (typeof COM_PORT_OPTIONS)[number];
-
+// Machine COM port is intentionally NOT part of this payload — it's a
+// per-session selection held in App state. Saving it would cause the app to
+// auto-reconnect a stale port on next launch.
 export type SerialPortSettingPayload = {
-  mainPortName: ComPort;
-  xyPortName: ComPort;
-  zPortName: ComPort;
+  xyPortName: string | null;
+  zPortName: string | null;
 };
 
 export type SerialPortSetting = SerialPortSettingPayload & {
@@ -31,7 +18,11 @@ export type SerialPortSettingSavePayload = {
 };
 
 export const DEFAULT_SERIAL_PORT_SETTING: SerialPortSettingPayload = {
-  mainPortName: 'COM1',
-  xyPortName: 'COM2',
-  zPortName: 'COM3',
+  xyPortName: null,
+  zPortName: null,
 };
+
+// Machine RS-232 wire format is fixed by the hardness tester firmware
+// (9600 8N1). The operator selects only the COM port — baud is never
+// configurable from the UI.
+export const MACHINE_BAUD_RATE = 9600;

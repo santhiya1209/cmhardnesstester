@@ -7,13 +7,19 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
+import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import InputLabel from '@mui/material/InputLabel';
+import MenuItem from '@mui/material/MenuItem';
+import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 
 import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
 import { useSaveMicrometerConfig } from '@/hooks/mutations/useSaveMicrometerConfig';
 import { DEFAULT_MICROMETER_CONFIG } from '@/types/micrometerConfig';
+import { listSerialPorts } from '@/api/listSerialPorts';
+import type { SerialPortInfo } from '@/types/serial';
 import { colors } from '@/theme/theme';
 
 type Props = {
@@ -27,6 +33,9 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
   const { data, error: loadError, loading, refetch } = useMicrometerConfig();
   const { saveMicrometerConfig, saving, error: saveError } = useSaveMicrometerConfig();
   const [enabled, setEnabled] = useState<boolean>(DEFAULT_MICROMETER_CONFIG.enabled);
+  const [comPort, setComPort] = useState<string>('');
+  const [availablePorts, setAvailablePorts] = useState<SerialPortInfo[]>([]);
+  const [portsError, setPortsError] = useState<string | null>(null);
   // Drag offset relative to the dialog's centered default position. Reset on
   // every open so the popup re-centers if the user closes and re-opens.
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -46,14 +55,32 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
     if (open) {
       void refetch();
       setDragOffset({ x: 0, y: 0 });
+      void listSerialPorts().then((reply) => {
+        if (reply.ok) {
+          setAvailablePorts(reply.ports);
+          setPortsError(null);
+        } else {
+          setAvailablePorts([]);
+          setPortsError(reply.error || 'Failed to enumerate serial ports.');
+        }
+      });
     }
   }, [open, refetch]);
 
   useEffect(() => {
     if (open && !loading) {
       setEnabled(data?.enabled ?? DEFAULT_MICROMETER_CONFIG.enabled);
+      setComPort(data?.comPort ?? '');
     }
   }, [data, loading, open]);
+
+  // Surface a clear hint when the saved port no longer exists in the live
+  // OS-reported list (operator unplugged the USB-serial cable, swapped
+  // adapters, etc.). Otherwise the silent fall-through looks like the
+  // setting was lost.
+  const savedPortMissing =
+    enabled && !!comPort && availablePorts.length > 0 &&
+    !availablePorts.some((port) => port.path === comPort);
 
   const clampOffset = useCallback((nextX: number, nextY: number) => {
     const paper = paperRef.current;
@@ -139,16 +166,36 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
 
   const handleSave = useCallback(async () => {
     try {
-      await saveMicrometerConfig({ id: data?.id, values: { enabled } });
+      const trimmedPort = comPort.trim();
+      const persistedPort = trimmedPort.length > 0 ? trimmedPort : null;
+      await saveMicrometerConfig({
+        id: data?.id,
+        values: {
+          enabled,
+          comPort: persistedPort,
+        },
+      });
       // eslint-disable-next-line no-console
-      console.log(`[micrometer-config] enabled=${enabled}`);
-      onStatusChange?.(`Micrometer ${enabled ? 'enabled' : 'disabled'}.`);
+      console.log(
+        `[micrometer-config] enabled=${enabled} comPort=${persistedPort ?? 'null'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-enabled] value=${enabled}`);
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-port-selected] port=${persistedPort ?? 'null'}`);
+      onStatusChange?.(
+        enabled
+          ? persistedPort
+            ? `Micrometer enabled on ${persistedPort}.`
+            : 'Micrometer enabled — select a COM port to connect.'
+          : 'Micrometer disabled.'
+      );
       onSaved?.(enabled);
       onClose();
     } catch {
       // surfaced via saveError
     }
-  }, [data?.id, enabled, onClose, onSaved, onStatusChange, saveMicrometerConfig]);
+  }, [comPort, data?.id, enabled, onClose, onSaved, onStatusChange, saveMicrometerConfig]);
 
   return (
     <Dialog
@@ -213,6 +260,47 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
             Enable: the live micrometer reading is frozen into each measurement row at save time.
             Disable: the Depth column accepts manual entry per row.
           </Typography>
+          <FormControl size="small" sx={{ flex: 1 }} disabled={busy || !enabled}>
+            <InputLabel id="micrometer-com-port-label">COM Port</InputLabel>
+            <Select
+              labelId="micrometer-com-port-label"
+              label="COM Port"
+              value={comPort}
+              displayEmpty
+              onChange={(event: SelectChangeEvent) => setComPort(event.target.value)}
+            >
+              <MenuItem value="">
+                <em>(none)</em>
+              </MenuItem>
+              {comPort && !availablePorts.some((port) => port.path === comPort) ? (
+                <MenuItem value={comPort}>{`${comPort} — not detected`}</MenuItem>
+              ) : null}
+              {availablePorts.map((port) => (
+                <MenuItem key={port.path} value={port.path}>
+                  {port.friendlyName
+                    ? `${port.path} — ${port.friendlyName}`
+                    : port.manufacturer
+                      ? `${port.path} — ${port.manufacturer}`
+                      : port.path}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {enabled && !comPort ? (
+            <Alert severity="info" sx={{ py: 0.5 }}>
+              Select micrometer COM port.
+            </Alert>
+          ) : null}
+          {savedPortMissing ? (
+            <Alert severity="warning" sx={{ py: 0.5 }}>
+              {`Micrometer port missing: ${comPort} not detected.`}
+            </Alert>
+          ) : null}
+          {portsError ? (
+            <Alert severity="warning" sx={{ py: 0.5 }}>
+              {`Port list unavailable: ${portsError}`}
+            </Alert>
+          ) : null}
         </Stack>
 
         {errorMessage ? (
