@@ -15,6 +15,7 @@ import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
+import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useTestRecords } from '@/hooks/queries/useTestRecords';
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot';
@@ -944,6 +945,56 @@ function App() {
     },
     [connectMachineFn, currentMachinePort, disconnectMachineFn]
   );
+
+  // Persisted serial-port settings. Loaded once at mount via useSerialPortSetting;
+  // the one-shot auto-connect effect below uses the saved machineComPort so the
+  // operator doesn't have to re-pick a port every launch. Camera open/close
+  // never touches this record — selection survives across sessions.
+  const { data: serialPortSetting } = useSerialPortSetting();
+  const machineAutoConnectAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (machineAutoConnectAttemptedRef.current) return;
+    if (!serialPortSetting) return;
+    machineAutoConnectAttemptedRef.current = true;
+    const savedMachine = serialPortSetting.machineComPort ?? null;
+    const savedMicrometer =
+      typeof micrometerConfig?.comPort === 'string' && micrometerConfig.comPort.trim()
+        ? micrometerConfig.comPort.trim()
+        : null;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[serial-settings-load] machine=${savedMachine ?? 'null'} micrometer=${savedMicrometer ?? 'null'} xy=${serialPortSetting.xyPortName ?? 'null'} z=${serialPortSetting.zPortName ?? 'null'}`
+    );
+    if (!savedMachine) return;
+    void (async () => {
+      const listing = await listSerialPorts().catch(() => ({
+        ok: false as const,
+        ports: [],
+        error: 'list-failed',
+      }));
+      const available = listing.ok
+        ? listing.ports.map((p) => p.path).filter(Boolean)
+        : [];
+      if (!available.includes(savedMachine)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[saved-com-missing] device=machine port=${savedMachine}`
+        );
+        setStatusMessage(
+          `Saved COM port not detected. Please check connection or select another port. (machine=${savedMachine})`
+        );
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[machine-connect-saved-com] port=${savedMachine}`);
+      try {
+        await applyMachinePort(savedMachine);
+      } catch {
+        // applyMachinePort already logs the error
+      }
+    })();
+  }, [applyMachinePort, micrometerConfig, serialPortSetting]);
+
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
   // SSE-reactive machine state — same hook MachineControlTab uses, so the
@@ -2301,6 +2352,19 @@ function App() {
     displayedAutoMeasureGraphicsRef.current = displayedAutoMeasureGraphics;
   }, [displayedAutoMeasureGraphics]);
 
+  // Refs mirroring state used by the after-impress sentinel (further below).
+  // The sentinel runs ~1.3s after detection dispatches and must decide whether
+  // the four yellow guide lines actually landed. setState values aren't
+  // readable from inside a setTimeout closure, so we mirror them here.
+  const committedAutoMeasureOverlayRef = useRef<AutoMeasureGraphics | null>(null);
+  const autoMeasureSessionActiveRef = useRef(false);
+  useEffect(() => {
+    committedAutoMeasureOverlayRef.current = committedAutoMeasureOverlay;
+  }, [committedAutoMeasureOverlay]);
+  useEffect(() => {
+    autoMeasureSessionActiveRef.current = autoMeasureSessionActive;
+  }, [autoMeasureSessionActive]);
+
   const handleAutoMeasureSettingsPreviewChange = useCallback((settings: AutoMeasureSettingsPayload) => {
     const normalized = normalizeAutoMeasureSettings(settings);
     latestAutoMeasurePreviewSettingsRef.current = normalized;
@@ -3027,6 +3091,10 @@ function App() {
           console.log(
             `[auto-measure-capture-displayed-frame] source=${callSource} ok=${displayedFrame?.ok ?? 'null'}`
           );
+          if (callSource === 'after-impress') {
+            // eslint-disable-next-line no-console
+            console.log('[frame-frozen]');
+          }
         } else {
           displayedFrame = committedAutoMeasureFrameRef.current;
           if (displayedFrame) {
@@ -3447,6 +3515,13 @@ function App() {
           // spuriously reject every successful detection.
           frameId: capturedFrameIdForRun,
         };
+        if (callSource === 'after-impress' && result.ok) {
+          const c = result.corners;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[indent-corners-detected] left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
+          );
+        }
         if (sessionIdForRun !== autoMeasureSessionIdRef.current) {
           // eslint-disable-next-line no-console
           console.log('[auto-measure-result-discard] reason=session-mismatch');
@@ -3673,6 +3748,18 @@ function App() {
           snapshot,
           callSource === 'settings-save' ? 'settings-save' : 'auto-click'
         );
+        if (callSource === 'after-impress') {
+          // eslint-disable-next-line no-console
+          console.log('[after-impress-detection-success]');
+          // eslint-disable-next-line no-console
+          console.log('[after-impress-overlay-state-set]');
+          // eslint-disable-next-line no-console
+          console.log('[after-impress-overlay-redraw]');
+          // eslint-disable-next-line no-console
+          console.log('[full-guide-overlay-render] lines=4 layout=four-guides');
+          // eslint-disable-next-line no-console
+          console.log('[after-impress-row-update]');
+        }
         return;
 
       } catch (err) {
@@ -4237,40 +4324,73 @@ function App() {
         return;
       }
       void (async () => {
+        // Objective-aware stabilization. 40X is more sensitive to residual
+        // vibration / AGC transients than 10X, so we wait longer for the
+        // image to settle. Read from the closure-safe ref so this picks up
+        // any objective change that landed during the impress.
+        const activeObj = (activeObjectiveRef.current ?? '').trim().toUpperCase();
+        const is40X = activeObj === '40X';
+        const settleMs = is40X ? 500 : 250;
+        const stableFrameCount = is40X ? 3 : 2;
+        // eslint-disable-next-line no-console
+        console.log('[impress-done]');
+        // eslint-disable-next-line no-console
+        console.log('[after-impress-auto-measure-start]');
+        if (is40X) {
+          // eslint-disable-next-line no-console
+          console.log('[40x-stabilization-start]');
+        }
         // eslint-disable-next-line no-console
         console.log('[stable-frame-wait-start]');
         // eslint-disable-next-line no-console
         console.log('[post-impress-stable-frame-wait-start]');
         // eslint-disable-next-line no-console
+        console.log('[after-impress-frame-freeze]');
+        // eslint-disable-next-line no-console
         console.log('[camera-wait-fresh-frame] reason=after-impress');
         const camera = cameraRef.current;
-        const fresh = camera ? await camera.waitForFreshFrame(2500) : false;
-        if (!fresh) {
-          // Even if waitForFreshFrame timed out (camera ref not attached, or
-          // dev mode with paused frames), still attempt detection — the
-          // operator's intent is clear and the detect-pipeline has its own
-          // frame-readiness guards. Was previously a hard return.
-          // eslint-disable-next-line no-console
-          console.warn(
-            '[camera-fresh-frame] reason=after-impress result=timeout — proceeding with current frame'
-          );
-        } else {
+        // Wait for N consecutive fresh frames so we know the stream has
+        // genuinely advanced past the impress transient — a single fresh
+        // frame can still be the first noisy frame post-rotation.
+        let lastFreshOk = false;
+        for (let i = 0; i < stableFrameCount; i += 1) {
+          const ok = camera ? await camera.waitForFreshFrame(1500) : false;
+          lastFreshOk = ok;
+          if (!ok) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[camera-fresh-frame] reason=after-impress index=${i} result=timeout`
+            );
+            break;
+          }
+        }
+        if (lastFreshOk) {
           // eslint-disable-next-line no-console
           console.log(
-            `[camera-fresh-frame] frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
+            `[camera-fresh-frame] frames=${stableFrameCount} frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
           );
         }
+        // Industrial-style settle delay: let the post-impress frame fully
+        // stabilize (any final brightness/AGC transient, plus any objective
+        // state-update echo that might trigger an objective-change effect)
+        // before we lock the frame for detection. 40X needs longer.
+        await new Promise((resolve) => window.setTimeout(resolve, settleMs));
+        if (is40X) {
+          // eslint-disable-next-line no-console
+          console.log(`[40x-stabilization-complete] settleMs=${settleMs}`);
+        }
+        // eslint-disable-next-line no-console
+        console.log('[frame-freeze]');
+        // eslint-disable-next-line no-console
+        console.log(`[frame-stabilized] timestamp=${Date.now()}`);
+        // eslint-disable-next-line no-console
+        console.log(`[after-impress-frame-stable] timestamp=${Date.now()}`);
         // eslint-disable-next-line no-console
         console.log(`[stable-frame-wait-done] timestamp=${Date.now()}`);
         // eslint-disable-next-line no-console
         console.log(`[post-impress-stable-frame-ready] timestamp=${Date.now()}`);
         // eslint-disable-next-line no-console
         console.log(`[stable-frame-ready] reason=after-impress timestamp=${Date.now()}`);
-        // Reset the duplicate-fingerprint guard so the auto-detected (or later
-        // manual) run can write a row even if pixel coordinates happen to land
-        // near the previous committed values. The new indentation is, by
-        // definition, a new measurement. Also drop the impress-in-progress
-        // flag here so runAutoMeasure isn't blocked by its own gate.
         committedFingerprintsRef.current = [];
         impressInProgressRef.current = false;
         if (!measureAfterImpressEnabled) {
@@ -4278,10 +4398,6 @@ function App() {
           console.log('[impress-camera-refresh-only]');
           return;
         }
-        // If a prior detection (settings-preview, settings-save) is still in
-        // flight, the after-impress run would be coalesced/dropped by
-        // runAutoMeasure's inFlight guard — wait up to 2s for it to clear so
-        // the auto-detect actually executes.
         if (autoMeasureInFlightRef.current) {
           const waitStart = Date.now();
           // eslint-disable-next-line no-console
@@ -4300,12 +4416,13 @@ function App() {
         // eslint-disable-next-line no-console
         console.log('[measure-after-impress-trigger] reason=stable-frame-ready');
         // eslint-disable-next-line no-console
-        console.log('[auto-measure-click] source=measure-after-impress');
+        console.log('[after-impress-detection-start]');
         // eslint-disable-next-line no-console
-        console.log('[auto-measure-start] source=measure-after-impress');
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure-after-impress-start]');
+        console.log('[auto-detect-after-impress]');
         try {
+          // Defensive: the objective-change effect arms this ref to suppress
+          // settings-preview repaints across magnification switches. After
+          // impress we always want the detection result to paint.
           suppressAutoMeasurePreviewRef.current = false;
           const runner = runAutoMeasureRef.current;
           if (!runner) {
@@ -4317,9 +4434,49 @@ function App() {
           }
           runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
           // eslint-disable-next-line no-console
-          console.log('[auto-measure-success] source=measure-after-impress note=runner-dispatched');
+          console.log('[auto-measure-after-impress-start]');
           // eslint-disable-next-line no-console
-          console.log('[auto-measure-after-impress-success]');
+          console.log('[auto-measure-success] source=measure-after-impress note=runner-dispatched');
+          // Two-stage sentinel:
+          //   T+1.3s — verify detection actually landed AND the render gates
+          //            allowed it to paint. Logs success or failure-mode.
+          //   T+3.0s — verify the overlay is STILL visible. If the first stage
+          //            passed but this one fails, the overlay was nulled by a
+          //            later live-frame / state update — distinct failure mode
+          //            tagged with [overlay-lost-after-live-refresh].
+          window.setTimeout(() => {
+            const committed = committedAutoMeasureOverlayRef.current;
+            const displayed = displayedAutoMeasureGraphicsRef.current;
+            const sessionActive = autoMeasureSessionActiveRef.current;
+            if (displayed) {
+              // eslint-disable-next-line no-console
+              console.log('[auto-measure-after-impress-success]');
+              // eslint-disable-next-line no-console
+              console.log('[overlay-render-success]');
+              // eslint-disable-next-line no-console
+              console.log('[after-impress-four-lines-visible]');
+              window.setTimeout(() => {
+                if (displayedAutoMeasureGraphicsRef.current) {
+                  // eslint-disable-next-line no-console
+                  console.log('[overlay-persisted]');
+                } else {
+                  // eslint-disable-next-line no-console
+                  console.warn('[overlay-lost-after-live-refresh]');
+                }
+              }, 1700);
+              return;
+            }
+            let reason: string;
+            if (!committed) {
+              reason = sessionActive ? 'overlayStateNotSet' : 'overlayCleared';
+            } else if (!sessionActive) {
+              reason = 'overlayCleared';
+            } else {
+              reason = 'renderSkipped';
+            }
+            // eslint-disable-next-line no-console
+            console.warn(`[overlay-missing-after-success] reason=${reason}`);
+          }, 1300);
         } catch (err) {
           // eslint-disable-next-line no-console
           console.warn(
@@ -5041,6 +5198,15 @@ function App() {
               console.log(
                 `[micrometer-connect-skip] reason=${reason} saved=${savedMicrometerPort ?? '-'} enabled=${!!micrometerConfig?.enabled}`
               );
+              if (savedMicrometerPort && reason === 'port-missing') {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  `[saved-com-missing] device=micrometer port=${savedMicrometerPort}`
+                );
+              }
+            } else if (savedMicrometerPort) {
+              // eslint-disable-next-line no-console
+              console.log(`[micrometer-connect-saved-com] port=${savedMicrometerPort}`);
             }
 
             // eslint-disable-next-line no-console
@@ -5161,10 +5327,9 @@ function App() {
               }
             }
 
-            // Machine COM port is not persisted: we never auto-connect from a
-            // DB value. The operator must pick a port in Serial Port Settings,
-            // which routes through applyMachinePort and connects immediately.
-            // Camera open is unaffected by machine state.
+            // Machine COM port is persisted via serial-port-setting and
+            // auto-connected at app startup. Camera open doesn't reselect it;
+            // it just notes the current selection state for diagnostics.
             if (!currentMachinePort) {
               // eslint-disable-next-line no-console
               console.log('[machine-connect-skip] reason=no-current-selection');

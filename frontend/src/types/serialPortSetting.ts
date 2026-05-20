@@ -1,7 +1,8 @@
-// Machine COM port is intentionally NOT part of this payload — it's a
-// per-session selection held in App state. Saving it would cause the app to
-// auto-reconnect a stale port on next launch.
+// Machine COM port persists across launches so operators don't reselect it
+// every session. The Serial Port Setting dialog is the only writer; the App
+// reads it on startup, verifies the port still enumerates, and auto-connects.
 export type SerialPortSettingPayload = {
+  machineComPort: string | null;
   xyPortName: string | null;
   zPortName: string | null;
 };
@@ -18,6 +19,7 @@ export type SerialPortSettingSavePayload = {
 };
 
 export const DEFAULT_SERIAL_PORT_SETTING: SerialPortSettingPayload = {
+  machineComPort: null,
   xyPortName: null,
   zPortName: null,
 };

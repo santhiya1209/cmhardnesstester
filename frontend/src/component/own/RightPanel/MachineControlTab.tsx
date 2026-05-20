@@ -9,15 +9,18 @@ import MenuItem from '@mui/material/MenuItem';
 import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import FormControl from '@mui/material/FormControl';
 import Divider from '@mui/material/Divider';
-import Stack from '@mui/material/Stack';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import Paper from '@mui/material/Paper';
+import Slider from '@mui/material/Slider';
 import { alpha, type SxProps, type Theme } from '@mui/material/styles';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
-import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
+import Brightness5Icon from '@mui/icons-material/Brightness5';
+import Brightness7Icon from '@mui/icons-material/Brightness7';
+import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
+import DiamondOutlinedIcon from '@mui/icons-material/DiamondOutlined';
+import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrowLeft';
+import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
 import { useMachineState } from '@/hooks/queries/useMachineState';
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
@@ -53,8 +56,18 @@ const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.
 // physical turret on this tester only addresses these three slots.
 const OBJECTIVE_OPTIONS = ['10X', 'IND', '40X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
-const LIGHTNESS_INPUT_PROPS = { min: 0, max: 10, step: 1 } as const;
+const LIGHTNESS_MIN = 1;
+const LIGHTNESS_MAX = 10;
+const LIGHTNESS_SEND_DEBOUNCE_MS = 200;
 const LOAD_TIME_INPUT_PROPS = { min: 1, max: 99, step: 1 } as const;
+
+function clampLightness(n: number): number {
+  if (!Number.isFinite(n)) return LIGHTNESS_MIN;
+  const i = Math.round(n);
+  if (i < LIGHTNESS_MIN) return LIGHTNESS_MIN;
+  if (i > LIGHTNESS_MAX) return LIGHTNESS_MAX;
+  return i;
+}
 
 type FormState = {
   force: string;
@@ -94,13 +107,80 @@ const INDENT_BUTTON_SX: SxProps<Theme> = {
   fontWeight: 500,
 };
 const TURRET_LABEL_SX: SxProps<Theme> = { fontSize: 14, color: 'text.secondary', px: 2 };
-const TURRET_BUTTON_SX: SxProps<Theme> = {
-  minWidth: 0,
-  width: 56,
-  height: 44,
-  p: 0,
-  borderRadius: 0.5,
+const TURRET_GROUP_SX: SxProps<Theme> = {
+  display: 'flex',
+  gap: 1.25,
 };
+const TURRET_ICON_ROW_SX: SxProps<Theme> = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 0.5,
+};
+const TURRET_CARD_LABEL_SX: SxProps<Theme> = {
+  fontSize: 12,
+  fontWeight: 700,
+  letterSpacing: 0.4,
+  lineHeight: 1,
+  mt: 0.5,
+};
+
+type TurretVariant = '10X' | 'CENTER' | '40X';
+
+function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
+  return (theme) => {
+    const accent =
+      variant === '10X'
+        ? theme.palette.warning.main
+        : variant === '40X'
+          ? theme.palette.primary.light
+          : theme.palette.grey[500];
+    const accentText =
+      variant === '10X'
+        ? theme.palette.warning.contrastText
+        : variant === '40X'
+          ? theme.palette.primary.contrastText
+          : theme.palette.text.primary;
+    return {
+      flex: 1,
+      minWidth: 96,
+      height: 86,
+      px: 1,
+      py: 1,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 2.5,
+      border: 1,
+      borderColor: active ? accent : 'divider',
+      bgcolor: active ? accent : 'background.paper',
+      color: active ? accentText : 'text.primary',
+      boxShadow: active
+        ? `0 4px 14px ${alpha(accent, 0.45)}`
+        : `0 1px 3px ${alpha(theme.palette.common.black, 0.08)}`,
+      textTransform: 'none',
+      transition: theme.transitions.create(
+        ['background-color', 'box-shadow', 'transform', 'border-color', 'color'],
+        { duration: 180 }
+      ),
+      '&:hover': {
+        bgcolor: active ? accent : alpha(accent, 0.12),
+        borderColor: accent,
+        transform: 'translateY(-1px) scale(1.02)',
+        boxShadow: `0 6px 18px ${alpha(accent, 0.5)}`,
+      },
+      '&:active': {
+        transform: 'translateY(0) scale(0.99)',
+      },
+      '&.Mui-disabled': {
+        bgcolor: 'background.paper',
+        color: 'text.disabled',
+        borderColor: 'divider',
+        boxShadow: 'none',
+      },
+    };
+  };
+}
 const SETTINGS_GRID_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'auto 1fr auto 1fr',
@@ -123,8 +203,8 @@ const HV_BOTTOM_SECTION_SX: SxProps<Theme> = {
 const HV_BOTTOM_ROW_SX: SxProps<Theme> = {
   width: '100%',
   display: 'grid',
-  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-  gap: 1.25,
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gap: 1.5,
   alignItems: 'stretch',
 };
 const HV_COMPACT_CARD_SX: SxProps<Theme> = (theme) => ({
@@ -135,7 +215,10 @@ const HV_COMPACT_CARD_SX: SxProps<Theme> = (theme) => ({
   borderRadius: 0.5,
   border: 1,
   borderColor: 'primary.dark',
-  bgcolor: 'primary.dark',
+  background: `linear-gradient(180deg, ${theme.palette.primary.dark} 0%, ${alpha(
+    theme.palette.primary.dark,
+    0.92
+  )} 100%)`,
   boxShadow: `inset 0 0 0 1px ${alpha(theme.palette.common.white, 0.06)}`,
 });
 const HV_COMPACT_TITLE_SX: SxProps<Theme> = {
@@ -160,10 +243,10 @@ const HV_COMPACT_TITLE_TEXT_SX: SxProps<Theme> = {
 const HV_COMPACT_VALUE_SX: SxProps<Theme> = (theme) => ({
   minWidth: 0,
   display: 'flex',
-  alignItems: 'center',
+  alignItems: 'baseline',
   justifyContent: 'center',
+  gap: 0.75,
   px: 1,
-  bgcolor: 'primary.dark',
   borderTop: `1px solid ${alpha(theme.palette.common.white, 0.12)}`,
   color: 'primary.contrastText',
 });
@@ -178,6 +261,15 @@ const HV_COMPACT_VALUE_TEXT_SX: SxProps<Theme> = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
+const HV_COMPACT_UNIT_TEXT_SX: SxProps<Theme> = (theme) => ({
+  color: alpha(theme.palette.common.white, 0.7),
+  fontSize: theme.typography.pxToRem(13),
+  fontWeight: 500,
+  lineHeight: 1,
+  letterSpacing: 0.5,
+  textTransform: 'uppercase',
+  whiteSpace: 'nowrap',
+});
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
 function machineToForm(state: MachineState | null): FormState {
@@ -216,16 +308,100 @@ function indentLabel(status: IndentStatus): string {
 function isValidNumberField(field: 'lightness' | 'loadTime', value: string): boolean {
   const numeric = Number(value);
   if (!Number.isInteger(numeric)) return false;
-  if (field === 'lightness') return numeric >= 0 && numeric <= 10;
+  if (field === 'lightness') return numeric >= LIGHTNESS_MIN && numeric <= LIGHTNESS_MAX;
   return numeric >= 1 && numeric <= 99;
 }
+
+const LIGHTNESS_CONTAINER_SX: SxProps<Theme> = (theme) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 1.25,
+  px: 1.5,
+  py: 1,
+  minHeight: 64,
+  borderRadius: 3,
+  border: 1,
+  borderColor: 'divider',
+  bgcolor: alpha(theme.palette.text.primary, 0.04),
+});
+const LIGHTNESS_SLIDER_WRAP_SX: SxProps<Theme> = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+};
+const LIGHTNESS_SLIDER_SX: SxProps<Theme> = (theme) => ({
+  color: theme.palette.text.primary,
+  height: 4,
+  py: '12px',
+  '& .MuiSlider-rail': { opacity: 0.55, height: 2 },
+  '& .MuiSlider-track': { height: 2, border: 'none' },
+  '& .MuiSlider-thumb': {
+    width: 16,
+    height: 16,
+    backgroundColor: theme.palette.text.primary,
+    border: `2px solid ${theme.palette.background.paper}`,
+    '&:hover, &.Mui-focusVisible, &.Mui-active': { boxShadow: 'none' },
+  },
+});
+const LIGHTNESS_LABELS_SX: SxProps<Theme> = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  mt: -0.5,
+  px: '2px',
+  color: 'text.secondary',
+  fontSize: 10,
+  lineHeight: 1,
+};
+const LIGHTNESS_ICON_SMALL_SX: SxProps<Theme> = { fontSize: 16, color: 'text.secondary' };
+const LIGHTNESS_ICON_LARGE_SX: SxProps<Theme> = { fontSize: 22, color: 'text.primary' };
+
+type LightnessControlProps = {
+  value: string;
+  disabled: boolean;
+  onDrag: (value: number) => void;
+  onCommit: (value: number) => void;
+};
+
+function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessControlProps) {
+  const parsed = Number(value);
+  const sliderValue = Number.isFinite(parsed) ? clampLightness(parsed) : LIGHTNESS_MIN;
+  return (
+    <Box sx={LIGHTNESS_CONTAINER_SX}>
+      <Brightness5Icon sx={LIGHTNESS_ICON_SMALL_SX} />
+      <Box sx={LIGHTNESS_SLIDER_WRAP_SX}>
+        <Slider
+          value={sliderValue}
+          min={LIGHTNESS_MIN}
+          max={LIGHTNESS_MAX}
+          step={1}
+          disabled={disabled}
+          onChange={(_, v) => onDrag(Array.isArray(v) ? v[0] : v)}
+          onChangeCommitted={(_, v) => onCommit(Array.isArray(v) ? v[0] : v)}
+          sx={LIGHTNESS_SLIDER_SX}
+          aria-label="Lightness"
+        />
+        <Box sx={LIGHTNESS_LABELS_SX}>
+          <span>{LIGHTNESS_MIN}</span>
+          <span>{LIGHTNESS_MAX}</span>
+        </Box>
+      </Box>
+      <Brightness7Icon sx={LIGHTNESS_ICON_LARGE_SX} />
+    </Box>
+  );
+}
+const LightnessControl = memo(LightnessControlImpl);
 
 type CompactHvCardProps = {
   title: string;
   value: string;
+  unit: string;
 };
 
-function CompactHvCard({ title, value }: CompactHvCardProps) {
+function CompactHvCard({ title, value, unit }: CompactHvCardProps) {
+  const showUnit = value !== 'N/A' && unit.length > 0;
+  const titleText = `${value}${showUnit ? ` ${unit}` : ''}`;
   return (
     <Paper elevation={0} sx={HV_COMPACT_CARD_SX}>
       <Box sx={HV_COMPACT_TITLE_SX}>
@@ -233,10 +409,15 @@ function CompactHvCard({ title, value }: CompactHvCardProps) {
           {title}
         </Typography>
       </Box>
-      <Box sx={HV_COMPACT_VALUE_SX}>
-        <Typography title={value} sx={HV_COMPACT_VALUE_TEXT_SX}>
+      <Box sx={HV_COMPACT_VALUE_SX} title={titleText}>
+        <Typography component="span" sx={HV_COMPACT_VALUE_TEXT_SX}>
           {value}
         </Typography>
+        {showUnit ? (
+          <Typography component="span" sx={HV_COMPACT_UNIT_TEXT_SX}>
+            {unit}
+          </Typography>
+        ) : null}
       </Box>
     </Paper>
   );
@@ -280,10 +461,7 @@ function MachineControlTabImpl({
     // is in effect. This also covers operator-driven changes on the panel.
     lightnessDirtyRef.current = false;
     setLightnessInput(incoming);
-    const source = machineState?.lastUpdateSource ?? machineState?.lastUpdatedBy ?? 'machine';
-    // eslint-disable-next-line no-console
-    console.log(`[lightness-sync] source=${source} value=${incoming}`);
-  }, [machineState?.lightness, machineState?.lastUpdateSource, machineState?.lastUpdatedBy]);
+  }, [machineState?.lightness]);
 
   // One-shot startup log: surface the values that came back from SQLite via
   // the backend SSE snapshot so operators can verify what was restored.
@@ -454,30 +632,94 @@ function MachineControlTabImpl({
     [formState.objective, onObjectiveChange, onObjectiveChangeIntent, pushChange]
   );
 
-  const handleNumberChange = useCallback(
-    (field: 'lightness' | 'loadTime') => (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLoadTimeChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
       const value = event.target.value;
-      if (field === 'lightness') {
-        // Echo the keystroke into local state immediately so the field never
-        // appears frozen while the IPC + RS232 round trip is in flight.
-        lightnessDirtyRef.current = true;
-        setLightnessInput(value);
-        // eslint-disable-next-line no-console
-        console.log(`[lightness-ui-change] value=${value}`);
-      }
-      // Only push numeric, non-blank values
-      if (value.trim() !== '' && isValidNumberField(field, value)) {
-        if (field === 'lightness') {
-          // eslint-disable-next-line no-console
-          console.log(`[lightness-ipc-send] value=${value}`);
-        }
-        void pushChange(field, value);
+      if (value.trim() !== '' && isValidNumberField('loadTime', value)) {
+        void pushChange('loadTime', value);
       } else if (value.trim() !== '') {
         // eslint-disable-next-line no-console
-        console.warn(`[machine-ui] rejected invalid ${field}=${value}`);
+        console.warn(`[machine-ui] rejected invalid loadTime=${value}`);
       }
     },
     [pushChange]
+  );
+
+  // Debounced backend send for the lightness slider. Drag updates fire
+  // continuously; we coalesce them into one IPC call after the user pauses,
+  // and flush immediately on onChangeCommitted / direct numeric entry.
+  const lightnessSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lightnessPendingRef = useRef<string | null>(null);
+  useEffect(() => {
+    return () => {
+      if (lightnessSendTimerRef.current !== null) {
+        clearTimeout(lightnessSendTimerRef.current);
+      }
+    };
+  }, []);
+
+  const sendLightness = useCallback(
+    (value: string) => {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-lightness-send] value=${value}`);
+      void pushChange('lightness', value)
+        .then((state) => {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-lightness-ack] ok=${state ? 'true' : 'false'}`);
+        })
+        .catch(() => {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-lightness-ack] ok=false`);
+        });
+    },
+    [pushChange]
+  );
+
+  const scheduleLightnessSend = useCallback(
+    (value: string, immediate: boolean) => {
+      lightnessPendingRef.current = value;
+      if (lightnessSendTimerRef.current !== null) {
+        clearTimeout(lightnessSendTimerRef.current);
+        lightnessSendTimerRef.current = null;
+      }
+      if (immediate) {
+        const v = lightnessPendingRef.current;
+        lightnessPendingRef.current = null;
+        if (v !== null) sendLightness(v);
+        return;
+      }
+      lightnessSendTimerRef.current = setTimeout(() => {
+        lightnessSendTimerRef.current = null;
+        const v = lightnessPendingRef.current;
+        lightnessPendingRef.current = null;
+        if (v !== null) sendLightness(v);
+      }, LIGHTNESS_SEND_DEBOUNCE_MS);
+    },
+    [sendLightness]
+  );
+
+  const handleLightnessDrag = useCallback(
+    (next: number) => {
+      const clamped = clampLightness(next);
+      const value = String(clamped);
+      lightnessDirtyRef.current = true;
+      setLightnessInput(value);
+      // eslint-disable-next-line no-console
+      console.log(`[machine-lightness-ui] value=${value}`);
+      scheduleLightnessSend(value, false);
+    },
+    [scheduleLightnessSend]
+  );
+
+  const handleLightnessCommit = useCallback(
+    (next: number) => {
+      const clamped = clampLightness(next);
+      const value = String(clamped);
+      lightnessDirtyRef.current = true;
+      setLightnessInput(value);
+      scheduleLightnessSend(value, true);
+    },
+    [scheduleLightnessSend]
   );
 
   const handleHardnessChange = useCallback(
@@ -677,38 +919,55 @@ function MachineControlTabImpl({
         </Button>
 
         <Typography sx={TURRET_LABEL_SX}>Turret</Typography>
-        <Stack direction="row" spacing={1}>
+        <Box sx={TURRET_GROUP_SX}>
           <Button
-            variant="contained"
-            color="primary"
-            sx={TURRET_BUTTON_SX}
+            variant="text"
+            sx={turretCardSx('10X', formState.objective === '10X')}
             disabled={!connected || isBusy}
             onClick={handleTurretClick('left')}
-            aria-label="Turret left"
+            aria-label="Turret 10X"
+            aria-pressed={formState.objective === '10X'}
           >
-            <ArrowBackIcon fontSize="small" />
+            <Box sx={TURRET_ICON_ROW_SX}>
+              <KeyboardDoubleArrowLeftIcon fontSize="small" />
+              <DiamondOutlinedIcon fontSize="small" />
+            </Box>
+            <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
+              10X
+            </Typography>
           </Button>
           <Button
-            variant="contained"
-            color="primary"
-            sx={TURRET_BUTTON_SX}
+            variant="text"
+            sx={turretCardSx('CENTER', formState.objective === 'IND')}
             disabled={!connected || isBusy}
             onClick={handleTurretClick('front')}
-            aria-label="Turret front"
+            aria-label="Turret Center"
+            aria-pressed={formState.objective === 'IND'}
           >
-            <ArrowDownwardIcon fontSize="small" />
+            <Box sx={TURRET_ICON_ROW_SX}>
+              <CenterFocusStrongIcon fontSize="small" />
+            </Box>
+            <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
+              Center
+            </Typography>
           </Button>
           <Button
-            variant="contained"
-            color="primary"
-            sx={TURRET_BUTTON_SX}
+            variant="text"
+            sx={turretCardSx('40X', formState.objective === '40X')}
             disabled={!connected || isBusy}
             onClick={handleTurretClick('right')}
-            aria-label="Turret right"
+            aria-label="Turret 40X"
+            aria-pressed={formState.objective === '40X'}
           >
-            <ArrowForwardIcon fontSize="small" />
+            <Box sx={TURRET_ICON_ROW_SX}>
+              <DiamondOutlinedIcon fontSize="small" />
+              <KeyboardDoubleArrowRightIcon fontSize="small" />
+            </Box>
+            <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
+              40X
+            </Typography>
           </Button>
-        </Stack>
+        </Box>
       </Box>
 
       <Divider />
@@ -729,13 +988,11 @@ function MachineControlTabImpl({
           </Select>
         </FormControl>
         <Typography sx={SETTING_LABEL_SX}>Lightness</Typography>
-        <TextField
-          size="small"
-          type="number"
+        <LightnessControl
           value={lightnessInput}
           disabled={!connected}
-          onChange={handleNumberChange('lightness')}
-          slotProps={{ htmlInput: LIGHTNESS_INPUT_PROPS }}
+          onDrag={handleLightnessDrag}
+          onCommit={handleLightnessCommit}
         />
 
         <Typography sx={SETTING_LABEL_SX}>Objective</Typography>
@@ -758,7 +1015,7 @@ function MachineControlTabImpl({
           type="number"
           value={formState.loadTime}
           disabled={!connected || isBusy}
-          onChange={handleNumberChange('loadTime')}
+          onChange={handleLoadTimeChange}
           slotProps={{ htmlInput: LOAD_TIME_INPUT_PROPS }}
         />
 
@@ -782,9 +1039,12 @@ function MachineControlTabImpl({
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
         <Box sx={HV_BOTTOM_ROW_SX}>
-          <CompactHvCard title="HV" value={bottomHvDisplay} />
-          <CompactHvCard title="HV TYPE" value={bottomHvTypeDisplay} />
-          <CompactHvCard title="HARDNESS" value={bottomHardnessDisplay} />
+          <CompactHvCard title="HV" value={bottomHvDisplay} unit="HV" />
+          <CompactHvCard
+            title="HARDNESS"
+            value={bottomHardnessDisplay}
+            unit={bottomHvTypeDisplay}
+          />
         </Box>
       </Box>
 

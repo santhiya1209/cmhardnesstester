@@ -5,10 +5,12 @@ import { EntityIdSchema, IsoDateTimeSchema } from './common';
 // /dev/tty* on POSIX). The legacy COM1..COM10 enum is gone — operators
 // routinely see ports above COM10 once a few USB serial adapters are
 // plugged in, and the dropdowns are now populated by SerialPort.list().
-// Machine COM port is intentionally NOT persisted here — it's a per-session
-// selection driven by the Serial Port Setting dialog. Saving it would cause
-// the app to auto-reconnect a stale port on next launch.
+// Machine COM port persists across launches so operators don't reselect it
+// every session. On startup the app verifies the saved port is currently
+// enumerated; if not, it surfaces a warning instead of silently picking
+// another one.
 export const SerialPortSettingPayloadSchema = z.object({
+  machineComPort: z.string().trim().min(1).nullable().default(null),
   xyPortName: z.string().trim().min(1).nullable().default(null),
   zPortName: z.string().trim().min(1).nullable().default(null),
 });
