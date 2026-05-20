@@ -541,14 +541,15 @@ function registerIpc() {
   ipcMain.handle('device:close', async () => {
     // eslint-disable-next-line no-console
     console.log('[ipc] device:close');
+    // Camera-only teardown. The micrometer (and machine) are independent
+    // serial devices and must remain connected across a camera close — they
+    // are only torn down via their own explicit disconnect channels or at
+    // app shutdown.
+    // eslint-disable-next-line no-console
+    console.log('[camera-close][camera-only-cleanup] scope=ipc');
     await cameraService.stopStream().catch(() => {});
     const cam = await cameraService.close();
-    const mic = await micrometerService.close().catch((err) => ({
-      ok: false,
-      error: 'CLOSE_THREW',
-      message: err && err.message ? err.message : String(err),
-    }));
-    return { ok: true, camera: cam, micrometer: mic };
+    return { ok: true, camera: cam };
   });
 
   /* ------------------ dialog channels ------------------ */

@@ -258,7 +258,9 @@ type RunAutoMeasure = (
   settingsInput: AutoMeasureSettingsPayload,
   preview?: boolean,
   source?: AutoMeasureCallSource
-) => void;
+) => Promise<boolean>;
+
+type CommitAutoMeasureSource = 'auto-click' | 'settings-save' | 'after-impress';
 
 function logUnexpectedAutoMeasureCall(source: string) {
   if (
@@ -273,6 +275,21 @@ function logUnexpectedAutoMeasureCall(source: string) {
   console.warn(
     `[auto-measure-unexpected-call] source=${source} stack=${new Error().stack ?? 'unavailable'}`
   );
+}
+
+function formatAfterImpressPoint(point: { x: number; y: number }): string {
+  return `(${point.x.toFixed(2)},${point.y.toFixed(2)})`;
+}
+
+function logAfterImpressDetectionFailed(reason: string) {
+  // eslint-disable-next-line no-console
+  console.log(`[after-impress-auto-measure-result] success=false reason=${reason}`);
+  // eslint-disable-next-line no-console
+  console.log(`[measure-after-impress][auto-detect-failed] reason=${reason}`);
+  // eslint-disable-next-line no-console
+  console.log(`[measure-after-impress][row-skip-no-detection] reason=${reason}`);
+  // eslint-disable-next-line no-console
+  console.warn(`[after-impress-detection-failed] reason=${reason}`);
 }
 
 const AUTO_MEASURE_CENTER_TOLERANCE_PX = 3;
@@ -841,6 +858,10 @@ function waitForOverlayPaint(): Promise<void> {
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function App() {
   const [activeDialog, setActiveDialog] = useState<DialogKey>(null);
   const [statusMessage, setStatusMessage] = useState('System Status: Ready');
@@ -1034,6 +1055,19 @@ function App() {
     | null
   >(null);
   const turretAfterImpressWatchdogRef = useRef<number | null>(null);
+  const afterImpressOverlayPreserveUntilRef = useRef(0);
+  const preserveAfterImpressOverlay = useCallback((durationMs = 5000) => {
+    afterImpressOverlayPreserveUntilRef.current = Math.max(
+      afterImpressOverlayPreserveUntilRef.current,
+      Date.now() + durationMs
+    );
+  }, []);
+  const shouldPreserveAfterImpressOverlay = useCallback(() => {
+    return Date.now() < afterImpressOverlayPreserveUntilRef.current;
+  }, []);
+  const afterImpressAutoMeasureAttemptRef = useRef(0);
+  const afterImpressAutoMeasureRunIdRef = useRef(0);
+  const afterImpressAutoMeasureInFlightRef = useRef(false);
   // Latest preview settings that arrived while a detection was in flight.
   // Why: Slider drags fire faster than the native detection completes
   // (~60–200ms). Without coalescing, the user's final slider position can be
@@ -1323,6 +1357,13 @@ function App() {
       }
       return { ...prev, smoothing: defaults.smoothing, threshold: defaults.threshold };
     });
+    if (shouldPreserveAfterImpressOverlay()) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-state-preserve] reason=after-impress-objective-sync objective=${activeObjective ?? 'null'}`
+      );
+      return;
+    }
     // Objective changed — drop any visible Auto Measure lines, end the
     // current session (so async results from the old objective can't paint),
     // and arm the suppression ref so a settings-preview detection cannot
@@ -1357,7 +1398,7 @@ function App() {
     );
     // eslint-disable-next-line no-console
     console.log('[overlay-visible] false reason=objective-change');
-  }, [activeObjective]);
+  }, [activeObjective, shouldPreserveAfterImpressOverlay]);
   // Last manual-measure pixel diagonals (d1Px = horizontal, d2Px = vertical).
   // Captured in handleManualMeasurementUpdated and passed to CalibrationDialog
   // so opening the dialog auto-fills Pixel Length X / Y. State (not ref) so
@@ -2352,19 +2393,6 @@ function App() {
     displayedAutoMeasureGraphicsRef.current = displayedAutoMeasureGraphics;
   }, [displayedAutoMeasureGraphics]);
 
-  // Refs mirroring state used by the after-impress sentinel (further below).
-  // The sentinel runs ~1.3s after detection dispatches and must decide whether
-  // the four yellow guide lines actually landed. setState values aren't
-  // readable from inside a setTimeout closure, so we mirror them here.
-  const committedAutoMeasureOverlayRef = useRef<AutoMeasureGraphics | null>(null);
-  const autoMeasureSessionActiveRef = useRef(false);
-  useEffect(() => {
-    committedAutoMeasureOverlayRef.current = committedAutoMeasureOverlay;
-  }, [committedAutoMeasureOverlay]);
-  useEffect(() => {
-    autoMeasureSessionActiveRef.current = autoMeasureSessionActive;
-  }, [autoMeasureSessionActive]);
-
   const handleAutoMeasureSettingsPreviewChange = useCallback((settings: AutoMeasureSettingsPayload) => {
     const normalized = normalizeAutoMeasureSettings(settings);
     latestAutoMeasurePreviewSettingsRef.current = normalized;
@@ -2372,7 +2400,7 @@ function App() {
   }, []);
 
   const commitAutoMeasureSnapshot = useCallback(
-    async (snapshot: AutoMeasureDetectionSnapshot, source: 'auto-click' | 'settings-save') => {
+    async (snapshot: AutoMeasureDetectionSnapshot, source: CommitAutoMeasureSource) => {
       const {
         result,
         graphics,
@@ -2498,7 +2526,8 @@ function App() {
         );
       }
 
-      if (source === 'auto-click') {
+      const shouldCheckDuplicate = source === 'auto-click' || source === 'after-impress';
+      if (shouldCheckDuplicate) {
         const existing = committedFingerprintsRef.current;
         let matchedEntry: typeof existing[number] | null = null;
         if (existing.length === 0) {
@@ -2571,6 +2600,32 @@ function App() {
           );
           // eslint-disable-next-line no-console
           console.log('[overlay-set-from-auto-result] reason=duplicate-restore');
+          if (source === 'after-impress') {
+            const restoredCorners = restoredGraphics.corners;
+            setPreviewAutoMeasureOverlay(null);
+            autoMeasurePreviewSnapshotRef.current = null;
+            preserveAfterImpressOverlay(5000);
+            // eslint-disable-next-line no-console
+            console.log(
+              `[after-impress-overlay-set] left=${formatAfterImpressPoint(restoredCorners.left)} right=${formatAfterImpressPoint(restoredCorners.right)} top=${formatAfterImpressPoint(restoredCorners.top)} bottom=${formatAfterImpressPoint(restoredCorners.bottom)}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[measure-after-impress][overlay-set] left=${formatAfterImpressPoint(restoredCorners.left)} right=${formatAfterImpressPoint(restoredCorners.right)} top=${formatAfterImpressPoint(restoredCorners.top)} bottom=${formatAfterImpressPoint(restoredCorners.bottom)}`
+            );
+            await waitForOverlayPaint();
+            // eslint-disable-next-line no-console
+            console.log('[after-impress-camera-redraw]');
+            if (!displayedAutoMeasureGraphicsRef.current) {
+              logAfterImpressDetectionFailed('overlay-not-ready');
+              setAutoMeasureStatus('failed');
+              setStatusMessage('System Status: Auto Measure rejected: overlay not ready');
+              return false;
+            }
+            setAutoMeasureStatus('success');
+            setStatusMessage('System Status: Auto Measure complete');
+            return true;
+          }
           setAutoMeasureStatus('duplicate');
           setStatusMessage(
             'System Status: Auto Measure: same indentation - no duplicate row added.'
@@ -2598,7 +2653,7 @@ function App() {
       // be near-identical to the prior run, leaving the user with the table
       // updated but no fresh yellow lines drawn. The skip is still useful
       // for slider-driven preview spam, so keep it on settings-save only.
-      const forceOverlayRefresh = source === 'auto-click';
+      const forceOverlayRefresh = source === 'auto-click' || source === 'after-impress';
       setCommittedAutoMeasureOverlay((prev) => {
         if (!forceOverlayRefresh && prev && graphicsAlmostEqual(prev, graphics)) {
           // eslint-disable-next-line no-console
@@ -2617,7 +2672,7 @@ function App() {
         console.log(
           `[overlay-draw] source=auto-measure d1=${stableD1Px.toFixed(2)}px d2=${stableD2Px.toFixed(2)}px objective=${objectiveForCalibration ?? 'unknown'}`
         );
-        if (source === 'auto-click') {
+        if (source === 'auto-click' || source === 'after-impress') {
           // eslint-disable-next-line no-console
           console.log(
             `[overlay-show] reason=auto-measure-success objective=${objectiveForCalibration ?? 'unknown'}`
@@ -2633,6 +2688,16 @@ function App() {
         }
         return { ...graphics, corners: { ...graphics.corners } };
       });
+      if (source === 'after-impress') {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[after-impress-overlay-set] left=${formatAfterImpressPoint(c.left)} right=${formatAfterImpressPoint(c.right)} top=${formatAfterImpressPoint(c.top)} bottom=${formatAfterImpressPoint(c.bottom)}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measure-after-impress][overlay-set] left=${formatAfterImpressPoint(c.left)} right=${formatAfterImpressPoint(c.right)} top=${formatAfterImpressPoint(c.top)} bottom=${formatAfterImpressPoint(c.bottom)}`
+        );
+      }
       setPreviewAutoMeasureOverlay(null);
       autoMeasurePreviewSnapshotRef.current = null;
       previewMeasurementRef.current = null;
@@ -2725,6 +2790,17 @@ function App() {
       // eslint-disable-next-line no-console
       console.log('[album] snapshot capture start measurementId=', saveRowId ?? 'new');
       await waitForOverlayPaint();
+      if (source === 'after-impress') {
+        preserveAfterImpressOverlay(5000);
+        // eslint-disable-next-line no-console
+        console.log('[after-impress-camera-redraw]');
+        if (!displayedAutoMeasureGraphicsRef.current) {
+          logAfterImpressDetectionFailed('overlay-not-ready');
+          setAutoMeasureStatus('failed');
+          setStatusMessage('System Status: Auto Measure rejected: overlay not ready');
+          return false;
+        }
+      }
       // eslint-disable-next-line no-console
       console.log('[album] auto measure overlay ready, capturing thumbnail');
       const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
@@ -2800,6 +2876,12 @@ function App() {
           id: saveRowId,
           values: autoRowPayload,
         });
+        if (source === 'after-impress') {
+          // eslint-disable-next-line no-console
+          console.log(`[after-impress-measurement-add] rowId=${saved.id}`);
+          // eslint-disable-next-line no-console
+          console.log(`[measure-after-impress][row-add] rowId=${saved.id}`);
+        }
         // eslint-disable-next-line no-console
         console.log(
           `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
@@ -2886,7 +2968,7 @@ function App() {
       console.log(
         `[measurement-fingerprint-store] rowId=${saved.id} key=${fingerprintKey} total=${committedFingerprintsRef.current.length}`
       );
-      if (source === 'auto-click') {
+      if (source === 'auto-click' || source === 'after-impress') {
         setAutoMeasureStatus('success');
       }
       // eslint-disable-next-line no-console
@@ -2928,10 +3010,12 @@ function App() {
       saveManualMeasurement,
       getActiveMeasurementId,
       setActiveMeasurement,
+      preserveAfterImpressOverlay,
+      setAutoMeasureStatus,
     ]
   );
 
-  const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource) => {
+  const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource): Promise<boolean> => {
     const callSource = source ?? (preview ? 'settings-preview' : 'auto-click');
     logUnexpectedAutoMeasureCall(callSource);
     const requestedAt = performance.now();
@@ -2941,7 +3025,7 @@ function App() {
       console.log(
         `[auto-measure-blocked-during-impress] source=${callSource} preview=${preview}`
       );
-      return;
+      return Promise.resolve(false);
     }
 
     if (autoMeasureInFlightRef.current) {
@@ -2959,12 +3043,12 @@ function App() {
       console.log(
         `[measurement-table][skip-duplicate] reason=same-auto-measure-session preview=${preview}`
       );
-      return;
+      return Promise.resolve(false);
     }
 
-    void (async () => {
+    return (async (): Promise<boolean> => {
       const settings = normalizeAutoMeasureSettings(settingsInput);
-      if (!preview) {
+      if (!preview && callSource !== 'after-impress') {
         // Drop the previously-committed yellow lines before running a new
         // detection — old D1/D2 must never linger over a fresh detection
         // attempt. The new overlay will be set only if detection succeeds.
@@ -3039,6 +3123,9 @@ function App() {
           `[frontend-objective-sync] confirmedObjectiveFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'} machineObjective=${lastEchoed ?? 'null'}`
         );
         if (!objectiveForCalibration) {
+          if (callSource === 'after-impress') {
+            logAfterImpressDetectionFailed('no-active-objective');
+          }
           // eslint-disable-next-line no-console
           console.error(
             '[frontend-objective-sync] no objective available — blocking Auto Measure'
@@ -3049,13 +3136,13 @@ function App() {
           );
           if (preview) {
             setStatusMessage('System Status: Auto Measure preview blocked: no active objective');
-            return;
+            return false;
           }
           setUnavailableMsg(
             'No active objective. Please click 10X or 40X in Machine Control before Auto Measure.'
           );
           setStatusMessage('System Status: Auto Measure blocked: no active objective');
-          return;
+          return false;
         }
         if (machineState?.objective?.trim() && machineState.objective !== activeObjective) {
           setActiveObjective(machineState.objective);
@@ -3086,6 +3173,12 @@ function App() {
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         let displayedFrame;
         if (isFreshCapture) {
+          if (callSource === 'after-impress') {
+            // eslint-disable-next-line no-console
+            console.log('[after-impress-freeze-frame-start]');
+            // eslint-disable-next-line no-console
+            console.log('[measure-after-impress][capture-frame]');
+          }
           displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
           // eslint-disable-next-line no-console
           console.log(
@@ -3165,7 +3258,7 @@ function App() {
             console.log(
               `[auto-settings-preview-reject] reason=${displayedFrame?.error ?? 'no committed frame'} keepLastValid=true`
             );
-            return;
+            return false;
           }
           if (callSource === 'auto-click') {
             // eslint-disable-next-line no-console
@@ -3175,7 +3268,9 @@ function App() {
             const stale = displayedFrame?.error ?? 'no-displayed-image (stale-frame)';
             setUnavailableMsg(`Auto Measure rejected: ${stale}. Please use manual measure.`);
             setStatusMessage(`System Status: Auto Measure rejected: ${stale}`);
-            clearAutoMeasureOverlay('auto-measure-failed');
+            if (callSource !== 'after-impress') {
+              clearAutoMeasureOverlay('auto-measure-failed');
+            }
             if (isFreshCapture) setAutoMeasureStatus('failed');
             // liveObjectiveForNative is declared further down — this branch
             // fires before it's computed (no displayed image), so log it as
@@ -3184,8 +3279,11 @@ function App() {
             console.log(
               `[auto-measure-result] success=false reason=${stale} objective=unknown nativeObjective=n/a`
             );
+            if (callSource === 'after-impress') {
+              logAfterImpressDetectionFailed(stale);
+            }
           }
-          return;
+          return false;
         }
 
         // Hard guard: live-camera detection input MUST be the native
@@ -3205,10 +3303,22 @@ function App() {
           if (!preview) {
             setStatusMessage('System Status: Auto Measure rejected: invalid-detection-frame');
             setUnavailableMsg('Auto Measure rejected: invalid-detection-frame. Please retry.');
-            clearAutoMeasureOverlay('auto-measure-failed');
+            if (callSource !== 'after-impress') {
+              clearAutoMeasureOverlay('auto-measure-failed');
+            }
             if (isFreshCapture) setAutoMeasureStatus('failed');
           }
-          return;
+          if (callSource === 'after-impress') {
+            logAfterImpressDetectionFailed('invalid-detection-frame');
+          }
+          return false;
+        }
+
+        if (callSource === 'after-impress') {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[after-impress-frame-ready] width=${displayedFrame.width} height=${displayedFrame.height} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${objectiveForCalibration}`
+          );
         }
 
         if (isFreshCapture) {
@@ -3236,6 +3346,16 @@ function App() {
             ? (liveObjectiveCandidate as ObjectiveForMeasure)
             : settings.objectiveForMeasure;
         if (!preview) {
+          if (callSource === 'after-impress') {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[after-impress-auto-measure-start] attempt=${afterImpressAutoMeasureAttemptRef.current || 1}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[measure-after-impress][auto-detect-start] attempt=${afterImpressAutoMeasureAttemptRef.current || 1}`
+            );
+          }
           if (callSource === 'auto-click') {
             // eslint-disable-next-line no-console
             console.log('[auto-measure] detection-start');
@@ -3385,10 +3505,15 @@ function App() {
           if (!preview) {
             setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
             setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
-            clearAutoMeasureOverlay('auto-measure-failed');
+            if (callSource !== 'after-impress') {
+              clearAutoMeasureOverlay('auto-measure-failed');
+            }
             if (isFreshCapture) setAutoMeasureStatus('failed');
           }
-          return;
+          if (callSource === 'after-impress') {
+            logAfterImpressDetectionFailed(reason);
+          }
+          return false;
         }
         if (!resolvedDetection.ok) {
           const reason = resolvedDetection.reason;
@@ -3409,7 +3534,7 @@ function App() {
             console.log(
               `[auto-settings-preview-reject] reason=${reason} keepLastValid=true`
             );
-            return;
+            return false;
           }
           // eslint-disable-next-line no-console
           console.log(
@@ -3426,7 +3551,9 @@ function App() {
           // Surface the actual reason in the toast instead of the generic
           // "Auto detection not reliable" line so the operator sees WHY.
           setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
-          clearAutoMeasureOverlay('auto-measure-failed');
+          if (callSource !== 'after-impress') {
+            clearAutoMeasureOverlay('auto-measure-failed');
+          }
           // eslint-disable-next-line no-console
           console.log(
             `[auto-measure:validate] ok=false reason=${reason} D1_px=0 D2_px=0`
@@ -3435,7 +3562,10 @@ function App() {
           console.warn(
             `[measurement-commit-blocked] method=Auto reason=detection-rejected detail="${reason}"`
           );
-          return;
+          if (callSource === 'after-impress') {
+            logAfterImpressDetectionFailed(reason);
+          }
+          return false;
         }
 
         const result = resolvedDetection.result;
@@ -3541,7 +3671,10 @@ function App() {
           console.log(
             `[overlay-ignore-stale] resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
           );
-          return;
+          if (callSource === 'after-impress') {
+            logAfterImpressDetectionFailed('session-mismatch');
+          }
+          return false;
         }
         // Objective + frame guards. Result must belong to the objective the
         // user was viewing at click time AND to the frame captured then —
@@ -3560,8 +3693,15 @@ function App() {
           ) {
             // eslint-disable-next-line no-console
             console.log('[auto-measure-result-discard] reason=objective-mismatch');
-            return;
+            if (callSource === 'after-impress') {
+              logAfterImpressDetectionFailed('objective-mismatch');
+            }
+            return false;
           }
+        }
+        if (callSource === 'after-impress') {
+          // eslint-disable-next-line no-console
+          console.log('[after-impress-auto-measure-result] success=true reason=accepted');
         }
         if (!preview && callSource === 'auto-click') {
           const c = result.corners;
@@ -3660,7 +3800,7 @@ function App() {
             console.log(
               `[auto-measure-settings][preview-skip-stale] reqSmoothing=${settings.smoothing} reqThreshold=${settings.threshold} latestSmoothing=${latest?.smoothing ?? 'n/a'} latestThreshold=${latest?.threshold ?? 'n/a'} detectMs=${detectMs.toFixed(1)}`
             );
-            return;
+            return false;
           }
           const before = displayedAutoMeasureGraphicsRef.current;
           const kernel = readPreviewKernel(result, settings.smoothing);
@@ -3741,12 +3881,16 @@ function App() {
               `[calibration-auto-pixel-update] pixelX=${result.d1Pixels.toFixed(3)} pixelY=${result.d2Pixels.toFixed(3)}`
             );
           }
-          return;
+          return true;
         }
 
-        await commitAutoMeasureSnapshot(
+        const committed = await commitAutoMeasureSnapshot(
           snapshot,
-          callSource === 'settings-save' ? 'settings-save' : 'auto-click'
+          callSource === 'settings-save'
+            ? 'settings-save'
+            : callSource === 'after-impress'
+              ? 'after-impress'
+              : 'auto-click'
         );
         if (callSource === 'after-impress') {
           // eslint-disable-next-line no-console
@@ -3757,10 +3901,12 @@ function App() {
           console.log('[after-impress-overlay-redraw]');
           // eslint-disable-next-line no-console
           console.log('[full-guide-overlay-render] lines=4 layout=four-guides');
-          // eslint-disable-next-line no-console
-          console.log('[after-impress-row-update]');
+          if (committed) {
+            // eslint-disable-next-line no-console
+            console.log('[after-impress-row-update]');
+          }
         }
-        return;
+        return committed;
 
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -3774,10 +3920,17 @@ function App() {
           setStatusMessage('System Status: Auto Measure preview detection failed');
         } else {
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
-          // The overlay was already cleared at start; ensure no stale state
-          // resurrects after a thrown detection error.
-          clearAutoMeasureOverlay('auto-measure-failed');
+          // For explicit user Auto Measure, ensure no stale state resurrects
+          // after a thrown detection error. After-impress keeps the current
+          // overlay state untouched per the impress completion contract.
+          if (callSource !== 'after-impress') {
+            clearAutoMeasureOverlay('auto-measure-failed');
+          }
         }
+        if (callSource === 'after-impress') {
+          logAfterImpressDetectionFailed(err instanceof Error ? err.message : String(err));
+        }
+        return false;
       } finally {
         autoMeasureInFlightRef.current = false;
         setAutoMeasuring(false);
@@ -3818,6 +3971,147 @@ function App() {
   useEffect(() => {
     autoMeasurePreviewSettingsRef.current = autoMeasurePreviewSettings;
   }, [autoMeasurePreviewSettings]);
+
+  const runAutoMeasureAfterImpress = useCallback(async (): Promise<boolean> => {
+    const markAfterImpressFailed = (reason: string) => {
+      logAfterImpressDetectionFailed(reason);
+      setAutoMeasureStatus('failed');
+      setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
+    };
+
+    // eslint-disable-next-line no-console
+    console.log('[after-impress-trigger-called]');
+    impressInProgressRef.current = false;
+    const settings = latestAutoMeasurePreviewSettingsRef.current;
+    const measureAfterImpressEnabled = settings.measureAfterImpress === true;
+    // Defensive sync visibility: surface both the ref (used for the decision)
+    // and the latest React state value so a drift between the two is obvious
+    // in the log trail if the operator saved settings and clicked Impress in
+    // the same tick.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[measure-after-impress][setting-ref] measureAfterImpress=${settings.measureAfterImpress} turretAfterImpress=${settings.turretAfterImpress}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[measure-after-impress][setting-state] measureAfterImpress=${autoMeasurePreviewSettingsRef.current.measureAfterImpress} turretAfterImpress=${autoMeasurePreviewSettingsRef.current.turretAfterImpress}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(`[measure-after-impress-enabled] ${measureAfterImpressEnabled}`);
+    // eslint-disable-next-line no-console
+    console.log(`[measure-after-impress][enabled] ${measureAfterImpressEnabled}`);
+    if (!measureAfterImpressEnabled) {
+      return false;
+    }
+    if (afterImpressAutoMeasureInFlightRef.current) {
+      // eslint-disable-next-line no-console
+      console.log('[after-impress-trigger-skip] reason=in-flight');
+      return false;
+    }
+
+    afterImpressAutoMeasureInFlightRef.current = true;
+    const runId = afterImpressAutoMeasureRunIdRef.current + 1;
+    afterImpressAutoMeasureRunIdRef.current = runId;
+
+    try {
+      suppressAutoMeasurePreviewRef.current = false;
+      preserveAfterImpressOverlay(12000);
+
+      const objective = (
+        liveMachineStateRef.current?.confirmedObjectiveFromMachine ??
+        activeObjectiveRef.current ??
+        liveMachineStateRef.current?.objective ??
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const settleMs = objective === '40X' ? 600 : 350;
+      // eslint-disable-next-line no-console
+      console.log(`[after-impress-wait-camera-settle] ms=${settleMs}`);
+      await delay(settleMs);
+
+      const camera = cameraRef.current;
+      if (!camera) {
+        markAfterImpressFailed('camera-unavailable');
+        return false;
+      }
+
+      const firstFresh = await camera.waitForFreshFrame(1200);
+      if (!firstFresh) {
+        // eslint-disable-next-line no-console
+        console.warn('[camera-fresh-frame] reason=after-impress result=timeout');
+      }
+
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        if (runId !== afterImpressAutoMeasureRunIdRef.current) {
+          markAfterImpressFailed('superseded');
+          return false;
+        }
+        if (attempt > 1) {
+          // eslint-disable-next-line no-console
+          console.log(`[measure-after-impress][capture-retry] attempt=${attempt} delayMs=300`);
+          await delay(300);
+          const fresh = await camera.waitForFreshFrame(1200);
+          if (!fresh) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[camera-fresh-frame] reason=after-impress retry=${attempt} result=timeout`
+            );
+          }
+        }
+        if (autoMeasureInFlightRef.current) {
+          const waitStart = Date.now();
+          // eslint-disable-next-line no-console
+          console.log('[measure-after-impress-wait-in-flight] reason=prior-detection-busy');
+          while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
+            await delay(60);
+          }
+          if (autoMeasureInFlightRef.current) {
+            markAfterImpressFailed('in-flight-detection-did-not-clear-within-2s');
+            return false;
+          }
+        }
+
+        const runner = runAutoMeasureRef.current;
+        if (!runner) {
+          markAfterImpressFailed('runAutoMeasure-ref-missing');
+          return false;
+        }
+
+        afterImpressAutoMeasureAttemptRef.current = attempt;
+        preserveAfterImpressOverlay(12000);
+        suppressAutoMeasurePreviewRef.current = false;
+        // eslint-disable-next-line no-console
+        console.log(`[measure-after-impress][forced-trigger] attempt=${attempt} source=after-impress`);
+        const finished = await runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
+        await waitForOverlayPaint();
+        const overlayReady = displayedAutoMeasureGraphicsRef.current !== null;
+        if (finished && overlayReady) {
+          preserveAfterImpressOverlay(5000);
+          // eslint-disable-next-line no-console
+          console.log(`[measure-after-impress][auto-detect-success] attempt=${attempt}`);
+          // eslint-disable-next-line no-console
+          console.log('[measure-after-impress][final-overlay-visible]');
+          return true;
+        }
+
+        const reason = finished ? 'overlay-not-ready' : 'detection-failed';
+        if (attempt < 3) {
+          // eslint-disable-next-line no-console
+          console.log(`[after-impress-retry] attempt=${attempt + 1} reason=${reason}`);
+          continue;
+        }
+        markAfterImpressFailed(reason);
+        return false;
+      }
+
+      markAfterImpressFailed('max-retries-exhausted');
+      return false;
+    } finally {
+      afterImpressAutoMeasureAttemptRef.current = 0;
+      afterImpressAutoMeasureInFlightRef.current = false;
+    }
+  }, [preserveAfterImpressOverlay, setAutoMeasureStatus]);
 
   useEffect(() => {
     if (activeDialog !== 'autoMeasure') {
@@ -4031,13 +4325,20 @@ function App() {
     // 5) Clear any stale Auto Measure state from the previous magnification —
     //    snapshot frame, frozen overlay, preview overlay, and preview snapshot.
     //    Without this, a 40X frame/overlay can survive into a 10X session.
-    clearAutoMeasureOverlay('objective-change-confirmed');
-    // eslint-disable-next-line no-console
-    console.log(`[auto-measure-clear-on-objective-change] objective=${confirmed}`);
-    // eslint-disable-next-line no-console
-    console.log('[measurement-session-reset] reason=objective-change');
-    // eslint-disable-next-line no-console
-    console.log(`[auto-measure-reset] reason=objective-change objective=${confirmed}`);
+    if (shouldPreserveAfterImpressOverlay()) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-clear-skip] reason=after-impress-objective-confirmed objective=${confirmed}`
+      );
+    } else {
+      clearAutoMeasureOverlay('objective-change-confirmed');
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-clear-on-objective-change] objective=${confirmed}`);
+      // eslint-disable-next-line no-console
+      console.log('[measurement-session-reset] reason=objective-change');
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-reset] reason=objective-change objective=${confirmed}`);
+    }
 
     // eslint-disable-next-line no-console
     console.log(`[viewport-refresh] completed objective=${confirmed}`);
@@ -4076,6 +4377,7 @@ function App() {
     calibrationSettingsList,
     clearAutoMeasureOverlay,
     refetchCalibrationSettings,
+    shouldPreserveAfterImpressOverlay,
   ]);
 
   const turretMovingTimerRef = useRef<number | null>(null);
@@ -4181,7 +4483,12 @@ function App() {
     );
     // eslint-disable-next-line no-console
     console.log('[camera-stream-preserve] reason=turret-command');
-    clearAutoMeasureOverlay('turret-change');
+    if (shouldPreserveAfterImpressOverlay()) {
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-clear-skip] reason=after-impress-turret-change');
+    } else {
+      clearAutoMeasureOverlay('turret-change');
+    }
     // Schedule a one-shot post-RX log on the next paint so the user can
     // verify the stream resumed (frameId advanced) without the camera ever
     // being closed/reset.
@@ -4213,7 +4520,13 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [liveMachineState?.turretPosition, clearAutoMeasureOverlay, cameraStatus, clearTurretMovingTimer]);
+  }, [
+    liveMachineState?.turretPosition,
+    clearAutoMeasureOverlay,
+    cameraStatus,
+    clearTurretMovingTimer,
+    shouldPreserveAfterImpressOverlay,
+  ]);
 
   // Impress lifecycle. Drives:
   //  - overlay clear at TX time (so old yellow lines disappear before motion),
@@ -4232,11 +4545,14 @@ function App() {
       (next === 'started' || next === 'running') && prev !== 'started' && prev !== 'running';
     if (enteringRun) {
       impressInProgressRef.current = true;
+      clearActiveMeasurement('impress-start');
       clearAutoMeasureOverlay('impress-start');
       setManualMeasureResetKey((current) => current + 1);
       setAutoMeasureClearNonce((n) => n + 1);
       // eslint-disable-next-line no-console
       console.log('[impress-start-clear-overlay]');
+      // eslint-disable-next-line no-console
+      console.log('[measure-after-impress][impress-start]');
       // eslint-disable-next-line no-console
       console.log(`[impress-started] timestamp=${Date.now()} indentStatus=${next}`);
       return;
@@ -4249,12 +4565,18 @@ function App() {
     // silently skipped on fast hardware paths.
     if (next === 'completed') {
       const completedAt = Date.now();
+      autoMeasurementIdRef.current = null;
+      clearActiveMeasurement('impress-done');
       // eslint-disable-next-line no-console
       console.log(`[impress-complete] timestamp=${completedAt} prev=${prev}`);
+      // eslint-disable-next-line no-console
+      console.log('[impress-done-received]');
       // eslint-disable-next-line no-console
       console.log(`[impress-done] timestamp=${completedAt}`);
       // eslint-disable-next-line no-console
       console.log(`[impress-done-ack-received] timestamp=${completedAt}`);
+      // eslint-disable-next-line no-console
+      console.log('[measure-after-impress][impress-done-ack]');
       // Read from the synchronously-updated ref (latestAutoMeasurePreviewSettingsRef)
       // — autoMeasurePreviewSettingsRef lags by one render because it's
       // synced via useEffect. If the operator saves Auto Measure Settings
@@ -4263,6 +4585,19 @@ function App() {
       const latestSettings = latestAutoMeasurePreviewSettingsRef.current;
       const measureAfterImpressEnabled = latestSettings.measureAfterImpress === true;
       const turretAfterImpressEnabled = latestSettings.turretAfterImpress === true;
+      const currentObjective = (
+        liveMachineStateRef.current?.confirmedObjectiveFromMachine ??
+        activeObjectiveRef.current ??
+        liveMachineStateRef.current?.objective ??
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const targetObjective = latestSettings.objectiveForMeasure.trim().toUpperCase();
+      const shouldWaitForTurretAfterImpress =
+        turretAfterImpressEnabled &&
+        measureAfterImpressEnabled &&
+        (!currentObjective || currentObjective !== targetObjective);
       // eslint-disable-next-line no-console
       console.log(
         `[measure-after-impress-read] value=${measureAfterImpressEnabled} enabled=${measureAfterImpressEnabled} source=latest-ref`
@@ -4272,7 +4607,13 @@ function App() {
         `[turret-after-impress-read] value=${turretAfterImpressEnabled} enabled=${turretAfterImpressEnabled} source=latest-ref`
       );
       // eslint-disable-next-line no-console
+      console.log(
+        `[turret-after-impress-wait-check] current=${currentObjective || 'unknown'} target=${targetObjective || 'unknown'} wait=${shouldWaitForTurretAfterImpress}`
+      );
+      // eslint-disable-next-line no-console
       console.log(`[measure-after-impress-check] enabled=${measureAfterImpressEnabled}`);
+      // eslint-disable-next-line no-console
+      console.log(`[measure-after-impress-enabled] ${measureAfterImpressEnabled}`);
       if (!measureAfterImpressEnabled) {
         // eslint-disable-next-line no-console
         console.log('[measure-after-impress-skipped] enabled=false');
@@ -4283,20 +4624,13 @@ function App() {
           measureAfterImpressEnabled ? 'auto-detect' : 'skip'
         }`
       );
-      // Always clear cached/preview overlay so the new frame paints clean. If
-      // auto-detect is disabled we leave it cleared; if enabled, runAutoMeasure
-      // will repaint the 4 yellow lines once the fresh frame arrives.
-      clearAutoMeasureOverlay('impress-done');
-      setAutoMeasureClearNonce((n) => n + 1);
-      // eslint-disable-next-line no-console
-      console.log('[impress-done-clear-overlay]');
       // When the machine is about to rotate the turret after impress, defer
       // detection until the L*OK confirmation arrives. The other effect that
       // watches confirmedObjectiveFromMachine + lastObjectiveRx clears
       // pendingTurretAfterImpressRef and kicks off the fresh-frame wait +
       // detection. Without this gate, auto-measure would fire on the next
       // available camera frame mid-rotation and detect on a moving image.
-      if (turretAfterImpressEnabled) {
+      if (shouldWaitForTurretAfterImpress) {
         // eslint-disable-next-line no-console
         console.log('[turret-after-impress-start] waiting=l-ok-confirm');
         pendingTurretAfterImpressRef.current = {
@@ -4312,178 +4646,28 @@ function App() {
           window.clearTimeout(turretAfterImpressWatchdogRef.current);
         }
         turretAfterImpressWatchdogRef.current = window.setTimeout(() => {
-          if (pendingTurretAfterImpressRef.current) {
+          const pending = pendingTurretAfterImpressRef.current;
+          if (pending) {
             // eslint-disable-next-line no-console
             console.warn(
-              '[turret-after-impress-done] reason=watchdog-timeout — L*OK never arrived; releasing gate'
+              '[turret-after-impress-done] reason=watchdog-timeout — L*OK never arrived; running fallback auto measure'
             );
             pendingTurretAfterImpressRef.current = null;
+            if (pending.measureAfterImpress) {
+              void runAutoMeasureAfterImpress();
+            }
           }
           turretAfterImpressWatchdogRef.current = null;
         }, 10000);
         return;
       }
-      void (async () => {
-        // Objective-aware stabilization. 40X is more sensitive to residual
-        // vibration / AGC transients than 10X, so we wait longer for the
-        // image to settle. Read from the closure-safe ref so this picks up
-        // any objective change that landed during the impress.
-        const activeObj = (activeObjectiveRef.current ?? '').trim().toUpperCase();
-        const is40X = activeObj === '40X';
-        const settleMs = is40X ? 500 : 250;
-        const stableFrameCount = is40X ? 3 : 2;
+      if (turretAfterImpressEnabled && measureAfterImpressEnabled) {
         // eslint-disable-next-line no-console
-        console.log('[impress-done]');
-        // eslint-disable-next-line no-console
-        console.log('[after-impress-auto-measure-start]');
-        if (is40X) {
-          // eslint-disable-next-line no-console
-          console.log('[40x-stabilization-start]');
-        }
-        // eslint-disable-next-line no-console
-        console.log('[stable-frame-wait-start]');
-        // eslint-disable-next-line no-console
-        console.log('[post-impress-stable-frame-wait-start]');
-        // eslint-disable-next-line no-console
-        console.log('[after-impress-frame-freeze]');
-        // eslint-disable-next-line no-console
-        console.log('[camera-wait-fresh-frame] reason=after-impress');
-        const camera = cameraRef.current;
-        // Wait for N consecutive fresh frames so we know the stream has
-        // genuinely advanced past the impress transient — a single fresh
-        // frame can still be the first noisy frame post-rotation.
-        let lastFreshOk = false;
-        for (let i = 0; i < stableFrameCount; i += 1) {
-          const ok = camera ? await camera.waitForFreshFrame(1500) : false;
-          lastFreshOk = ok;
-          if (!ok) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              `[camera-fresh-frame] reason=after-impress index=${i} result=timeout`
-            );
-            break;
-          }
-        }
-        if (lastFreshOk) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[camera-fresh-frame] frames=${stableFrameCount} frameId=${getLastPaintEpoch()} timestamp=${Date.now()}`
-          );
-        }
-        // Industrial-style settle delay: let the post-impress frame fully
-        // stabilize (any final brightness/AGC transient, plus any objective
-        // state-update echo that might trigger an objective-change effect)
-        // before we lock the frame for detection. 40X needs longer.
-        await new Promise((resolve) => window.setTimeout(resolve, settleMs));
-        if (is40X) {
-          // eslint-disable-next-line no-console
-          console.log(`[40x-stabilization-complete] settleMs=${settleMs}`);
-        }
-        // eslint-disable-next-line no-console
-        console.log('[frame-freeze]');
-        // eslint-disable-next-line no-console
-        console.log(`[frame-stabilized] timestamp=${Date.now()}`);
-        // eslint-disable-next-line no-console
-        console.log(`[after-impress-frame-stable] timestamp=${Date.now()}`);
-        // eslint-disable-next-line no-console
-        console.log(`[stable-frame-wait-done] timestamp=${Date.now()}`);
-        // eslint-disable-next-line no-console
-        console.log(`[post-impress-stable-frame-ready] timestamp=${Date.now()}`);
-        // eslint-disable-next-line no-console
-        console.log(`[stable-frame-ready] reason=after-impress timestamp=${Date.now()}`);
-        committedFingerprintsRef.current = [];
-        impressInProgressRef.current = false;
-        if (!measureAfterImpressEnabled) {
-          // eslint-disable-next-line no-console
-          console.log('[impress-camera-refresh-only]');
-          return;
-        }
-        if (autoMeasureInFlightRef.current) {
-          const waitStart = Date.now();
-          // eslint-disable-next-line no-console
-          console.log('[measure-after-impress-wait-in-flight] reason=prior-detection-busy');
-          while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
-            await new Promise((resolve) => window.setTimeout(resolve, 60));
-          }
-          if (autoMeasureInFlightRef.current) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              '[auto-measure-after-impress-failed] reason=in-flight-detection-did-not-clear-within-2s'
-            );
-            return;
-          }
-        }
-        // eslint-disable-next-line no-console
-        console.log('[measure-after-impress-trigger] reason=stable-frame-ready');
-        // eslint-disable-next-line no-console
-        console.log('[after-impress-detection-start]');
-        // eslint-disable-next-line no-console
-        console.log('[auto-detect-after-impress]');
-        try {
-          // Defensive: the objective-change effect arms this ref to suppress
-          // settings-preview repaints across magnification switches. After
-          // impress we always want the detection result to paint.
-          suppressAutoMeasurePreviewRef.current = false;
-          const runner = runAutoMeasureRef.current;
-          if (!runner) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              '[auto-measure-after-impress-failed] reason=runAutoMeasure-ref-missing'
-            );
-            return;
-          }
-          runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure-after-impress-start]');
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure-success] source=measure-after-impress note=runner-dispatched');
-          // Two-stage sentinel:
-          //   T+1.3s — verify detection actually landed AND the render gates
-          //            allowed it to paint. Logs success or failure-mode.
-          //   T+3.0s — verify the overlay is STILL visible. If the first stage
-          //            passed but this one fails, the overlay was nulled by a
-          //            later live-frame / state update — distinct failure mode
-          //            tagged with [overlay-lost-after-live-refresh].
-          window.setTimeout(() => {
-            const committed = committedAutoMeasureOverlayRef.current;
-            const displayed = displayedAutoMeasureGraphicsRef.current;
-            const sessionActive = autoMeasureSessionActiveRef.current;
-            if (displayed) {
-              // eslint-disable-next-line no-console
-              console.log('[auto-measure-after-impress-success]');
-              // eslint-disable-next-line no-console
-              console.log('[overlay-render-success]');
-              // eslint-disable-next-line no-console
-              console.log('[after-impress-four-lines-visible]');
-              window.setTimeout(() => {
-                if (displayedAutoMeasureGraphicsRef.current) {
-                  // eslint-disable-next-line no-console
-                  console.log('[overlay-persisted]');
-                } else {
-                  // eslint-disable-next-line no-console
-                  console.warn('[overlay-lost-after-live-refresh]');
-                }
-              }, 1700);
-              return;
-            }
-            let reason: string;
-            if (!committed) {
-              reason = sessionActive ? 'overlayStateNotSet' : 'overlayCleared';
-            } else if (!sessionActive) {
-              reason = 'overlayCleared';
-            } else {
-              reason = 'renderSkipped';
-            }
-            // eslint-disable-next-line no-console
-            console.warn(`[overlay-missing-after-success] reason=${reason}`);
-          }, 1300);
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[auto-measure-after-impress-failed] reason=runner-threw error=${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })();
+        console.log(
+          `[turret-after-impress-skip-wait] reason=already-on-measure-objective objective=${currentObjective || 'unknown'}`
+        );
+      }
+      void runAutoMeasureAfterImpress();
       return;
     }
 
@@ -4494,7 +4678,12 @@ function App() {
         console.log(`[impress-flag-clear] reason=indentStatus=${next}`);
       }
     }
-  }, [clearAutoMeasureOverlay, liveMachineState?.indentStatus]);
+  }, [
+    clearActiveMeasurement,
+    clearAutoMeasureOverlay,
+    liveMachineState?.indentStatus,
+    runAutoMeasureAfterImpress,
+  ]);
 
   // Resolve the turret-after-impress gate: when the machine confirms the new
   // objective slot (L*OK / objective state-update), the rotation has settled.
@@ -4518,83 +4707,10 @@ function App() {
         confirmedAt - pending.armedAt
       }`
     );
-    void (async () => {
-      // eslint-disable-next-line no-console
-      console.log('[stable-frame-wait-start] reason=after-impress-turret');
-      // eslint-disable-next-line no-console
-      console.log('[post-impress-stable-frame-wait-start] reason=after-impress-turret');
-      // eslint-disable-next-line no-console
-      console.log('[camera-wait-fresh-frame] reason=after-impress-turret');
-      const camera = cameraRef.current;
-      const fresh = camera ? await camera.waitForFreshFrame(2500) : false;
-      if (!fresh) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          '[camera-fresh-frame] reason=after-impress-turret result=timeout — proceeding with current frame'
-        );
-      }
-      // eslint-disable-next-line no-console
-      console.log(`[stable-frame-wait-done] reason=after-impress-turret timestamp=${Date.now()}`);
-      // eslint-disable-next-line no-console
-      console.log(`[post-impress-stable-frame-ready] reason=after-impress-turret timestamp=${Date.now()}`);
-      // eslint-disable-next-line no-console
-      console.log(`[stable-frame-ready] reason=after-impress-turret timestamp=${Date.now()}`);
-      committedFingerprintsRef.current = [];
-      // eslint-disable-next-line no-console
-      console.log(`[measure-after-impress-check] enabled=${pending.measureAfterImpress}`);
-      if (!pending.measureAfterImpress) {
-        // eslint-disable-next-line no-console
-        console.log('[measure-after-impress-skipped] enabled=false');
-        // eslint-disable-next-line no-console
-        console.log('[impress-camera-refresh-only] reason=turret-only');
-        return;
-      }
-      if (autoMeasureInFlightRef.current) {
-        const waitStart = Date.now();
-        // eslint-disable-next-line no-console
-        console.log('[measure-after-impress-wait-in-flight] reason=prior-detection-busy turret-branch');
-        while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
-          await new Promise((resolve) => window.setTimeout(resolve, 60));
-        }
-        if (autoMeasureInFlightRef.current) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            '[auto-measure-after-impress-failed] reason=in-flight-detection-did-not-clear-within-2s turret-branch'
-          );
-          return;
-        }
-      }
-      // eslint-disable-next-line no-console
-      console.log('[measure-after-impress-trigger] reason=turret-settled');
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-click] source=measure-after-impress');
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-start] source=measure-after-impress');
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-after-impress-start]');
-      try {
-        suppressAutoMeasurePreviewRef.current = false;
-        const runner = runAutoMeasureRef.current;
-        if (!runner) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            '[auto-measure-after-impress-failed] reason=runAutoMeasure-ref-missing turret-branch'
-          );
-          return;
-        }
-        runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure-success] source=measure-after-impress note=runner-dispatched');
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure-after-impress-success]');
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[auto-measure-after-impress-failed] error=${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    })();
-  }, [liveMachineState?.lastObjectiveRx]);
+    // eslint-disable-next-line no-console
+    console.log(`[measure-after-impress-check] enabled=${pending.measureAfterImpress}`);
+    void runAutoMeasureAfterImpress();
+  }, [liveMachineState?.lastObjectiveRx, runAutoMeasureAfterImpress]);
 
   // When Manual Measure activates, refresh the live objective so the initial
   // diamond size matches the magnification the user just toggled to.
@@ -5211,6 +5327,22 @@ function App() {
 
             // eslint-disable-next-line no-console
             console.log('[ipc] device:open →');
+            // eslint-disable-next-line no-console
+            console.log('[camera-open][camera-only-start]');
+            // eslint-disable-next-line no-console
+            console.log('[machine-connection][preserved-during-camera-open]');
+            // eslint-disable-next-line no-console
+            console.log('[machine-connection][disconnect-skipped-camera-action] reason=camera-open');
+            // Camera open MUST NOT modify the persisted machine/micrometer
+            // COM ports — it only reads them to pass to device:open.
+            // eslint-disable-next-line no-console
+            console.log(
+              `[camera-open][serial-settings-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'} micrometerComPort=${savedMicrometerPort ?? 'null'}`
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[serial-settings][machine-port-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'}`
+            );
             setCameraStatus('opening');
             const reply = await window.hardnessCamera.openDevice(
               shouldOpenMicrometer && savedMicrometerPort
@@ -5402,6 +5534,12 @@ function App() {
             console.log('[overlay-hidden-camera-closed]');
             // eslint-disable-next-line no-console
             console.log('[ipc] device:close →');
+            // Camera close MUST NOT modify the persisted machine/micrometer
+            // COM ports — the close path only tears down hardware connections.
+            // eslint-disable-next-line no-console
+            console.log(
+              `[camera-close][serial-settings-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'} micrometerComPort=${micrometerConfig?.comPort ?? 'null'}`
+            );
             const reply = await window.hardnessCamera.closeDevice();
             // eslint-disable-next-line no-console
             console.log('[ipc] device:close ←', reply);
@@ -5457,13 +5595,22 @@ function App() {
             setStatusMessage('System Status: Device closed');
             void reply;
 
-            // Best-effort machine disconnect — never block close flow.
-            try {
-              await disconnectMachineFn();
-            } catch (mErr) {
-              // eslint-disable-next-line no-console
-              console.warn('[machine-main] disconnect failed:', mErr);
-            }
+            // Machine + micrometer connections are intentionally preserved
+            // across camera close. They are independent serial devices and
+            // must remain usable until the operator clicks Machine Disconnect
+            // or the app exits. Previously this path tore down the machine
+            // RS-232 link, which forced an unwanted reconnect and lost mid-
+            // session state.
+            // eslint-disable-next-line no-console
+            console.log('[camera-close][camera-only-cleanup]');
+            // eslint-disable-next-line no-console
+            console.log('[machine-connection][preserved-during-camera-close]');
+            // eslint-disable-next-line no-console
+            console.log('[machine-connection][disconnect-skipped-camera-action] reason=camera-close');
+            // eslint-disable-next-line no-console
+            console.log(
+              `[serial-settings][machine-port-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'}`
+            );
           } catch (err) {
             setUnavailableMsg(
               `Close Device failed: ${err instanceof Error ? err.message : String(err)}`
@@ -5487,7 +5634,6 @@ function App() {
       currentMachinePort,
       micrometerConfig,
       connectMachineFn,
-      disconnectMachineFn,
       refetchCameraSetting,
       refetchCalibrationSettings,
     ]

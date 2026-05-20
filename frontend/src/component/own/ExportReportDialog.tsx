@@ -231,7 +231,7 @@ function ExportReportDialogImpl({
               value={chdTargetInput}
               onChange={(e) => setChdTargetInput(e.target.value)}
               disabled={busy}
-              inputProps={{ min: 1, step: 1 }}
+              slotProps={{ htmlInput: { min: 1, step: 1 } }}
               helperText="Reference hardness for the Case Hardness Profile red line"
               sx={{ width: 200 }}
             />
