@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import Box from '@mui/material/Box';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -6,6 +7,8 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
+import Typography from '@mui/material/Typography';
+import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { colors } from '@/theme/theme';
@@ -29,32 +32,60 @@ const COLUMNS = [
 
 const TABLE_WRAP_SX: SxProps<Theme> = {
   flex: 1,
-  minHeight: 160,
-  maxHeight: 220,
+  minHeight: 200,
+  maxHeight: 260,
   borderTop: 1,
   borderBottom: 1,
   borderColor: 'divider',
+  bgcolor: 'background.paper',
 };
+// The global theme sets `.MuiTableHead-root .MuiTableCell-head` to navy on
+// white — to override industrial-light headers here, sx must beat that
+// specificity. `&.MuiTableCell-head` raises this rule to (0,2,1) which
+// outranks the theme's (0,2,0) descendant selector.
 const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
-  fontSize: 11,
-  fontWeight: 600,
-  color: '#FFFFFF',
-  bgcolor: colors.headingPrimary,
-  py: 0.5,
-  px: 1,
-  whiteSpace: 'nowrap',
-  cursor: 'default',
-  borderBottom: `2px solid ${colors.headingPrimary}`,
-  transition:
-    'background-color 150ms ease, color 150ms ease, border-color 150ms ease',
-  '&:hover': {
-    bgcolor: '#475569',
-    color: '#FFFFFF',
-    borderBottomColor: '#FFFFFF',
+  '&.MuiTableCell-head': {
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 0.3,
+    textTransform: 'none',
+    color: colors.headingPrimary,
+    backgroundColor: '#F1F4F9',
+    py: 0.75,
+    px: 1,
+    whiteSpace: 'nowrap',
+    cursor: 'default',
+    borderBottom: `1px solid ${colors.border}`,
+  },
+  '&.MuiTableCell-head:hover': {
+    backgroundColor: '#E8EDF4',
   },
 };
 const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.5, px: 1 };
-const EMPTY_CELL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.disabled', textAlign: 'center', py: 4 };
+const EMPTY_CELL_SX: SxProps<Theme> = { border: 0, py: 6, px: 1 };
+const EMPTY_STATE_SX: SxProps<Theme> = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 1,
+  color: 'text.disabled',
+};
+const EMPTY_ICON_WRAP_SX: SxProps<Theme> = {
+  width: 56,
+  height: 56,
+  borderRadius: 2,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  bgcolor: '#F1F4F9',
+  border: `1px dashed ${colors.borderStrong}`,
+  color: colors.textMuted,
+};
+const EMPTY_TEXT_SX: SxProps<Theme> = {
+  fontSize: 13,
+  color: 'text.secondary',
+};
 const SELECTED_ROW_SX: SxProps<Theme> = {
   cursor: 'pointer',
   '&.Mui-selected': {
@@ -80,9 +111,17 @@ type DepthCellProps = {
   measurement: Measurement;
   micrometerEnabled: boolean;
   onManualDepthChange?: (measurementId: string, depthMm: number | null) => void;
+  registerInputRef?: (measurementId: string, el: HTMLInputElement | null) => void;
+  onFocusSibling?: (currentId: string, direction: 'next' | 'prev') => void;
 };
 
-function DepthCell({ measurement, micrometerEnabled, onManualDepthChange }: DepthCellProps) {
+function DepthCell({
+  measurement,
+  micrometerEnabled,
+  onManualDepthChange,
+  registerInputRef,
+  onFocusSibling,
+}: DepthCellProps) {
   // Device branch: read the frozen device value (falling back to depthMm for
   // rows saved before deviceDepthMm existed). Manual branch: read manualDepthMm
   // (falling back to depthMm). depthMm is always the effective display value
@@ -106,16 +145,28 @@ function DepthCell({ measurement, micrometerEnabled, onManualDepthChange }: Dept
     setDraft(persistedManual === null ? '' : String(persistedManual));
   }, [persistedManual]);
 
-  const commit = useCallback(() => {
+  const inputElRef = useRef<HTMLInputElement | null>(null);
+  const setInputRef = useCallback(
+    (el: HTMLInputElement | null) => {
+      inputElRef.current = el;
+      registerInputRef?.(measurement.id, el);
+    },
+    [measurement.id, registerInputRef]
+  );
+
+  const commit = useCallback((): boolean => {
     const trimmed = draft.trim();
     const next = trimmed === '' ? null : Number(trimmed);
     if (trimmed !== '' && !Number.isFinite(next)) {
       // Reject non-numeric input — restore last persisted value.
       setDraft(persistedManual === null ? '' : String(persistedManual));
-      return;
+      return false;
     }
-    if (next === persistedManual) return;
+    if (next === persistedManual) return true;
+    // eslint-disable-next-line no-console
+    console.log(`[manual-depth-save-start] rowId=${measurement.id} value=${next ?? 'null'}`);
     onManualDepthChange?.(measurement.id, next);
+    return true;
   }, [draft, measurement.id, onManualDepthChange, persistedManual]);
 
   if (micrometerEnabled) {
@@ -125,16 +176,34 @@ function DepthCell({ measurement, micrometerEnabled, onManualDepthChange }: Dept
     <TextField
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
+      onFocus={() => {
+        // eslint-disable-next-line no-console
+        console.log(`[manual-depth-edit-start] rowId=${measurement.id} value=${draft}`);
+      }}
+      onBlur={() => {
+        commit();
+      }}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
-          (event.target as HTMLInputElement).blur();
+          if (commit()) onFocusSibling?.(measurement.id, 'next');
+        } else if (event.key === 'Tab') {
+          // Prevent the browser from tabbing into the next table cell (a
+          // non-input <td>) — we move focus to the next Depth input instead.
+          event.preventDefault();
+          if (commit()) {
+            onFocusSibling?.(measurement.id, event.shiftKey ? 'prev' : 'next');
+          }
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          setDraft(persistedManual === null ? '' : String(persistedManual));
+          inputElRef.current?.blur();
         }
       }}
       onClick={(event) => event.stopPropagation()}
       size="small"
       variant="standard"
+      inputRef={setInputRef}
       slotProps={{
         htmlInput: { inputMode: 'decimal', style: { fontSize: 12, padding: 0 } },
       }}
@@ -188,6 +257,58 @@ function MeasurementsTableImpl({
   targetMinHv,
   targetMaxHv,
 }: Props) {
+  // Stable ref map + latest-measurements ref so the Enter/Tab handler can
+  // resolve the next row even when the user edits during a refetch.
+  const depthInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const measurementsRef = useRef(measurements);
+  useEffect(() => {
+    measurementsRef.current = measurements;
+  }, [measurements]);
+
+  const registerDepthInput = useCallback(
+    (measurementId: string, el: HTMLInputElement | null) => {
+      if (el) depthInputRefs.current[measurementId] = el;
+      else delete depthInputRefs.current[measurementId];
+    },
+    []
+  );
+
+  const focusDepthSibling = useCallback(
+    (currentId: string, direction: 'next' | 'prev') => {
+      const list = measurementsRef.current;
+      const idx = list.findIndex((m) => m.id === currentId);
+      if (idx < 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[manual-depth-focus-failed] nextRowId=null reason=current-row-not-found`
+        );
+        return;
+      }
+      const target = direction === 'next' ? list[idx + 1] : list[idx - 1];
+      if (!target) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[manual-depth-focus-failed] nextRowId=null reason=no-${direction}-row`
+        );
+        return;
+      }
+      const nextId = target.id;
+      requestAnimationFrame(() => {
+        const el = depthInputRefs.current[nextId];
+        if (!el) {
+          // eslint-disable-next-line no-console
+          console.log(`[manual-depth-focus-failed] nextRowId=${nextId} reason=ref-missing`);
+          return;
+        }
+        el.focus();
+        el.select?.();
+        // eslint-disable-next-line no-console
+        console.log(`[manual-depth-focus-next] nextRowId=${nextId}`);
+      });
+    },
+    []
+  );
+
   useEffect(() => {
     const first = measurements[0];
     const firstD1Um = first ? first.d1Um ?? (first.unit === 'um' ? first.d1 : null) : null;
@@ -249,7 +370,7 @@ function MeasurementsTableImpl({
   return (
     <TableContainer sx={TABLE_WRAP_SX}>
       <Table size="small" stickyHeader>
-        <TableHead>
+        <TableHead sx={{ '&.MuiTableHead-root': { backgroundColor: '#F1F4F9' } }}>
           <TableRow>
             {COLUMNS.map((column) => (
               <TableCell key={column} sx={TABLE_HEAD_CELL_SX}>
@@ -268,7 +389,12 @@ function MeasurementsTableImpl({
           ) : measurements.length === 0 ? (
             <TableRow>
               <TableCell colSpan={COLUMNS.length} sx={EMPTY_CELL_SX}>
-                No measurements yet
+                <Box sx={EMPTY_STATE_SX}>
+                  <Box sx={EMPTY_ICON_WRAP_SX}>
+                    <DescriptionOutlinedIcon fontSize="medium" />
+                  </Box>
+                  <Typography sx={EMPTY_TEXT_SX}>No measurements yet</Typography>
+                </Box>
               </TableCell>
             </TableRow>
           ) : (
@@ -343,6 +469,8 @@ function MeasurementsTableImpl({
                       measurement={measurement}
                       micrometerEnabled={micrometerEnabled}
                       onManualDepthChange={onManualDepthChange}
+                      registerInputRef={registerDepthInput}
+                      onFocusSibling={focusDepthSibling}
                     />
                   </TableCell>
                 </TableRow>

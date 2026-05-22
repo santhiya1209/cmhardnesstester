@@ -8,6 +8,7 @@ import { usePatternPrograms } from '@/hooks/queries/usePatternPrograms';
 import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
+import type { ToolId, ToolbarActionId } from '@/types/tool';
 import { colors } from '@/theme/theme';
 
 import MeasurementsWorkspace, { type MeasurementDisplayValues } from './MeasurementsWorkspace';
@@ -43,39 +44,37 @@ const PANEL_SX: SxProps<Theme> = {
 };
 
 const TABS_SX: SxProps<Theme> = {
-  minHeight: 32,
+  minHeight: 38,
   borderBottom: 1,
   borderColor: 'divider',
-  bgcolor: colors.headingPrimary,
+  bgcolor: 'background.paper',
+  px: 0.5,
   '& .MuiTabs-indicator': {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.accentSkyBlue,
     height: 2,
+    borderRadius: '2px 2px 0 0',
   },
   '& .MuiTab-root': {
-    minHeight: 32,
+    minHeight: 38,
     py: 0.5,
-    px: 1.5,
+    px: 1.75,
     fontSize: 12,
+    fontWeight: 500,
     textTransform: 'none',
-    color: 'rgba(255, 255, 255, 0.75)',
-    borderBottom: '2px solid transparent',
-    transition:
-      'background-color 150ms ease, color 150ms ease, border-color 150ms ease',
+    color: 'text.secondary',
+    transition: 'color 160ms ease',
     '&:hover': {
-      backgroundColor: '#475569',
-      color: '#FFFFFF',
-      borderBottomColor: '#FFFFFF',
+      color: colors.accentSkyBlue,
+      backgroundColor: 'transparent',
     },
     '&.Mui-selected': {
-      color: '#FFFFFF',
+      color: colors.accentSkyBlue,
       fontWeight: 600,
     },
   },
   '& .MuiTabs-scrollButtons': {
-    color: '#FFFFFF',
-    '&.Mui-disabled': {
-      opacity: 0.35,
-    },
+    color: 'text.secondary',
+    '&.Mui-disabled': { opacity: 0.35 },
   },
 };
 
@@ -91,6 +90,9 @@ type TabContentProps = {
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   onTurretIntent?: () => void;
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
+  onToolbarAction?: (action: ToolbarActionId) => void;
+  activeTool?: ToolId;
+  cameraReady?: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
 };
@@ -109,6 +111,9 @@ function renderTab(
     onObjectiveChange,
     onTurretIntent,
     onObjectiveChangeIntent,
+    onToolbarAction,
+    activeTool,
+    cameraReady,
     targetMinHv,
     targetMaxHv,
   }: TabContentProps
@@ -123,6 +128,9 @@ function renderTab(
           onObjectiveChange={onObjectiveChange}
           onTurretIntent={onTurretIntent}
           onObjectiveChangeIntent={onObjectiveChangeIntent}
+          onToolbarAction={onToolbarAction}
+          activeTool={activeTool}
+          cameraReady={cameraReady}
         />
       );
     case 1: return <XYZPlatformTab />;
@@ -176,6 +184,9 @@ type Props = {
   onObjectiveChange?: (objective: '10X' | '40X') => void;
   onTurretIntent?: () => void;
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
+  onToolbarAction?: (action: ToolbarActionId) => void;
+  activeTool?: ToolId;
+  cameraReady?: boolean;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
@@ -203,6 +214,9 @@ function RightPanelImpl({
   onObjectiveChange,
   onTurretIntent,
   onObjectiveChangeIntent,
+  onToolbarAction,
+  activeTool,
+  cameraReady,
   trimMeasureOpen,
   onCloseTrimMeasure,
   onTrimAdjust,
@@ -281,6 +295,9 @@ function RightPanelImpl({
             onObjectiveChange,
             onTurretIntent,
             onObjectiveChangeIntent,
+            onToolbarAction,
+            activeTool,
+            cameraReady,
             targetMinHv,
             targetMaxHv,
           })}

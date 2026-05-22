@@ -8,7 +8,7 @@ const {
   parseBinaryMicrometerFrame,
   parseChineseFrames,
   validateBinaryMicrometerFrame,
-} = require('./micrometerDecoder');
+} = require('../micrometerDecoder');
 
 function hexToBuffer(hex) {
   return Buffer.from(hex.replace(/\s+/g, ''), 'hex');

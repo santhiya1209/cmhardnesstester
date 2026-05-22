@@ -5,7 +5,12 @@ import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
+import ClearAllIcon from '@mui/icons-material/ClearAll';
+import BarChartIcon from '@mui/icons-material/BarChart';
+import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
+import { colors } from '@/theme/theme';
 import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
 import { updateMeasurement } from '@/api/updateMeasurement';
 import type { Measurement } from '@/types/measurement';
@@ -33,21 +38,45 @@ const CONVERT_TYPE_OPTIONS = [
   'HR45T',
 ] as const;
 
-const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1, display: 'flex', flexDirection: 'column', gap: 1 };
+const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 0.75, display: 'flex', flexDirection: 'column', gap: 0.75 };
 const SUMMARY_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const MICROMETER_FIELD_SX: SxProps<Theme> = { width: 130 };
 const ACTION_ROW_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'repeat(4, 1fr)',
-  gap: 0.75,
+  gap: 1,
   px: 1.5,
-  py: 1,
+  pt: 1,
+  pb: 1,
 };
-const ACTION_BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5 };
-const STATUS_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, px: 1.5, pb: 1 };
+const ACTION_BTN_SX: SxProps<Theme> = {
+  textTransform: 'none',
+  fontSize: 12,
+  fontWeight: 500,
+  py: 0.75,
+  gap: 0.5,
+  borderRadius: 1.5,
+  color: 'text.primary',
+  borderColor: 'divider',
+  bgcolor: 'background.paper',
+  boxShadow: '0 1px 2px rgba(15, 42, 71, 0.04)',
+  '&:hover': {
+    borderColor: colors.accentSkyBlue,
+    color: colors.accentSkyBlue,
+    bgcolor: colors.accentSkyBlueSoft,
+  },
+};
+const ACTION_BTN_ACTIVE_SX: SxProps<Theme> = {
+  ...ACTION_BTN_SX,
+  borderColor: colors.accentSkyBlue,
+  color: colors.accentSkyBlue,
+  bgcolor: colors.accentSkyBlueSoft,
+  boxShadow: `0 0 0 2px rgba(14, 165, 233, 0.18)`,
+};
+const STATUS_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, px: 1.5, pb: 0.75 };
 const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1 };
+const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 0.75 };
 
 type Props = {
   measurements: Measurement[];
@@ -346,6 +375,12 @@ function MeasurementsWorkspaceImpl({
         // eslint-disable-next-line no-console
         console.log(`[depth-freeze-save] rowId=${measurementId} value=${depthMm ?? 'null'}`);
         await refetch();
+        const idx = measurements.findIndex((m) => m.id === measurementId);
+        const nextRowId = idx >= 0 ? measurements[idx + 1]?.id ?? null : null;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[manual-depth-save-success] rowId=${measurementId} value=${depthMm ?? 'null'} nextRowId=${nextRowId ?? 'null'}`
+        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[manual-depth-save-error]', err);
@@ -453,7 +488,7 @@ function MeasurementsWorkspaceImpl({
         <Button
           variant="outlined"
           size="small"
-          color="error"
+          startIcon={<DeleteOutlineIcon fontSize="small" />}
           sx={ACTION_BTN_SX}
           disabled={busy || !selectedMeasurement}
           onClick={() => {
@@ -465,6 +500,7 @@ function MeasurementsWorkspaceImpl({
         <Button
           variant="outlined"
           size="small"
+          startIcon={<ClearAllIcon fontSize="small" />}
           sx={ACTION_BTN_SX}
           disabled={busy || measurements.length === 0}
           onClick={() => {
@@ -473,12 +509,20 @@ function MeasurementsWorkspaceImpl({
         >
           Clear
         </Button>
-        <Button variant="outlined" size="small" sx={ACTION_BTN_SX} disabled={busy} onClick={onOpenStatisticsTab}>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<BarChartIcon fontSize="small" />}
+          sx={ACTION_BTN_ACTIVE_SX}
+          disabled={busy}
+          onClick={onOpenStatisticsTab}
+        >
           Statistics
         </Button>
         <Button
           variant="outlined"
           size="small"
+          startIcon={<ArticleOutlinedIcon fontSize="small" />}
           sx={ACTION_BTN_SX}
           disabled={busy || measurements.length === 0}
           onClick={() => {

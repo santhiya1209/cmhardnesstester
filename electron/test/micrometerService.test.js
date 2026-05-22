@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { buildScanCandidates, findAsciiReading } = require('./micrometerService');
+const { buildScanCandidates, findAsciiReading } = require('../micrometerService');
 
 const candidates = buildScanCandidates('COM3');
 

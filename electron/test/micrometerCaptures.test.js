@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { fitDecoder, hexToBuffer } = require('./micrometerCaptures');
+const { fitDecoder, hexToBuffer } = require('../micrometerCaptures');
 
 function pair(lcd, hex) {
   return { lcd, hex, buf: hexToBuffer(hex) };

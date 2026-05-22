@@ -1,0 +1,6 @@
+# Drop Do3Think / HikRobot DVP2 camera SDK DLLs here for packaging
+# (DVPCamera64.dll and any dependencies it pulls in).
+# At runtime they end up at:
+#   <app>/resources/camera-sdk/
+# electron/cameraService.js adds this directory to the DLL search list
+# in packaged mode.
