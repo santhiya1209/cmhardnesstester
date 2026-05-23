@@ -3,7 +3,7 @@
  * fetch-vc-redist.js
  *
  * Downloads the Microsoft VC++ 2015-2022 x64 redistributable installer into
- * vendor/redist/vc_redist.x64.exe so the NSIS installer (build/installer.nsh)
+ * drivers/redist/vc_redist.x64.exe so the NSIS installer (build/installer.nsh)
  * can chain it during install. Idempotent: skips the download when the cached
  * copy already exists. Runs as a pre-step before `npm run make`.
  *
@@ -16,8 +16,8 @@ const path = require('node:path');
 const https = require('node:https');
 
 const URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
-const VENDOR_DIR = path.resolve(__dirname, '..', 'vendor', 'redist');
-const OUT_PATH = path.join(VENDOR_DIR, 'vc_redist.x64.exe');
+const REDIST_DIR = path.resolve(__dirname, '..', 'drivers', 'redist');
+const OUT_PATH = path.join(REDIST_DIR, 'vc_redist.x64.exe');
 // Minimum plausible size for the redist (~14 MB). A truncated download will
 // be smaller; we refuse to use it.
 const MIN_BYTES = 10 * 1024 * 1024;
@@ -62,7 +62,7 @@ async function main() {
     fs.unlinkSync(OUT_PATH);
   }
 
-  fs.mkdirSync(VENDOR_DIR, { recursive: true });
+  fs.mkdirSync(REDIST_DIR, { recursive: true });
 
   // eslint-disable-next-line no-console
   console.log(`[fetch-vc-redist] downloading ${URL}`);

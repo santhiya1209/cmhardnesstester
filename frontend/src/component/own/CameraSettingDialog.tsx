@@ -65,6 +65,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   // but always re-send the most recent value once the in-flight call settles.
   const gainInFlightRef = useRef(false);
   const gainPendingRef = useRef<number | null>(null);
+  const gainLastSentValueRef = useRef<number | null>(null);
   const exposureInFlightRef = useRef(false);
   const exposurePendingRef = useRef<number | null>(null);
   // True while the user is actively dragging the exposure slider. We skip
@@ -213,11 +214,22 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const applyGainLive = useCallback(
     (value: number) => {
       if (!liveAvailable) return;
+      // MUI Slider's onChange + onChangeCommitted fire with the same value on
+      // a click without drag. Skip if this exact value has already been sent
+      // (or is currently queued) — one UI change = one IPC.
+      if (
+        gainLastSentValueRef.current === value &&
+        gainPendingRef.current === null
+      ) {
+        return;
+      }
       if (gainInFlightRef.current) {
+        if (gainLastSentValueRef.current === value) return;
         gainPendingRef.current = value;
         return;
       }
       gainInFlightRef.current = true;
+      gainLastSentValueRef.current = value;
       void (async () => {
         let next: number | null = value;
         while (next !== null) {
@@ -227,6 +239,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           if (gainPendingRef.current !== null) {
             next = gainPendingRef.current;
             gainPendingRef.current = null;
+            gainLastSentValueRef.current = next;
           }
         }
         gainInFlightRef.current = false;
@@ -238,6 +251,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const flushExposureLive = useCallback(
     (valueMs: number) => {
       if (exposureInFlightRef.current) {
+        // MUI Slider's onChange + onChangeCommitted fire with the same value
+        // on a click without drag. If the in-flight IPC already carries this
+        // value, don't queue a redundant follow-up send.
+        if (exposureLastSentValueRef.current === valueMs) return;
         exposurePendingRef.current = valueMs;
         return;
       }

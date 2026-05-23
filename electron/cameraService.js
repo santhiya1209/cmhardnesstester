@@ -325,23 +325,28 @@ class CameraService {
     }
 
     const dllSearchDir = app && app.isPackaged
-      ? path.join(process.resourcesPath, 'camera-sdk')
+      ? path.join(process.resourcesPath, 'DVP2 x64')
       : (process.env.DO3THINK_SDK_DIR || 'C:\\Program Files (x86)\\Do3think\\DVP2 x64');
 
+    const driverMissingMessage =
+      'Camera driver/runtime is not installed. Please install the required ' +
+      'camera driver from the installer package or contact support.';
     try {
       const boot = this.addon.camera.bootstrap({ dllSearchDir });
       if (!boot || !boot.ok) {
         this._broadcastStatus({
           event: 'sdk-missing',
           error: boot && boot.error ? boot.error : 'SDK_NOT_FOUND',
-          message: boot && boot.message ? boot.message : 'failed to load DVPCamera64.dll',
+          message: driverMissingMessage,
+          detail: boot && boot.message ? boot.message : 'failed to load DVPCamera64.dll',
         });
       }
     } catch (err) {
       this._broadcastStatus({
         event: 'sdk-missing',
         error: 'BOOTSTRAP_THREW',
-        message: err.message,
+        message: driverMissingMessage,
+        detail: err.message,
       });
     }
 
@@ -384,7 +389,7 @@ class CameraService {
       process.env.OPENCV_BIN_DIR,
       path.join(opencvDir, 'x64', 'vc16', 'bin'),
       isPackaged ? path.join(process.resourcesPath, 'opencv', 'bin') : null,
-      isPackaged ? path.join(process.resourcesPath, 'camera-sdk') : null,
+      isPackaged ? path.join(process.resourcesPath, 'DVP2 x64') : null,
     ].filter(Boolean);
 
     const currentPath = process.env.PATH || '';
@@ -525,6 +530,10 @@ class CameraService {
     // log. Wall-clock age is the authority; this is just a max-tracker.
     this._latestGrabbedFrameId = 0;
     this._lastAckedSeq = 0;
+    // Re-arm post-boundary frame logging so [camera-native-frame-check]
+    // fires once after every settings change, confirming the native restart
+    // actually delivered a fresh frame.
+    this._boundaryLogPending = { reason: reason || dropReason, at: ts };
     return ts;
   }
 
@@ -538,6 +547,15 @@ class CameraService {
 
   _broadcastFrame(meta, data) {
     const capturedAt = Date.now();
+    if (this._boundaryLogPending) {
+      const { reason, at } = this._boundaryLogPending;
+      this._boundaryLogPending = null;
+      const grabTs = Number(meta && meta.grabTs ? meta.grabTs : 0);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-native-frame-check] post-${reason} first-frame-arrived sinceBoundaryMs=${capturedAt - at} grabTs=${grabTs} ${meta && meta.width}x${meta && meta.height}`
+      );
+    }
     if (!this._canSend()) {
       if (capturedAt - this._lastCanSendFalseResetAt >= 1000) {
         this._lastCanSendFalseResetAt = capturedAt;

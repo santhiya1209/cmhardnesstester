@@ -24,16 +24,25 @@ module.exports = {
       //
       // Third-party runtime DLLs the addon depends on. extraResource flattens
       // the source folder into resources/<name>/ at install time:
-      //   vendor/opencv      -> resources/opencv/
-      //   vendor/camera-sdk  -> resources/camera-sdk/
-      // cameraService.js adds these to PATH / passes resources/camera-sdk as
-      // the DVP dllSearchDir at startup.
-      'vendor/opencv',
-      'vendor/camera-sdk',
+      //   drivers/opencv     -> resources/opencv/
+      //   drivers/DVP2 x64   -> resources/DVP2 x64/
+      // cameraService.js adds these to PATH / passes resources/DVP2 x64 as the
+      // DVP dllSearchDir at startup. The other drivers/ subfolders (DVP2,
+      // BasedCam3 x64, GigE Camera, USB Camera, USB3 Vision Camera,
+      // XGigeGrabber) are scaffold for future per-camera installers; add them
+      // here when populated.
+      'drivers/opencv',
+      'drivers/DVP2 x64',
       // vc_redist.x64.exe — chained by build/installer.nsh during install.
       // Fetched on demand by scripts/fetch-vc-redist.js (prepackage hook), not
       // committed to git.
-      'vendor/redist',
+      'drivers/redist',
+      // Per-camera driver installers. Each subfolder may contain a vendor
+      // setup .exe; build/installer.nsh detects what's present at install
+      // time and offers the user a Yes/No prompt per available driver. Empty
+      // subfolders (only .gitkeep) are harmless — the NSIS scan finds nothing
+      // and continues. Lands at resources/installers/<vendor>/.
+      'drivers/installers',
     ],
     ignore: [
       /^\/release($|\/)/,

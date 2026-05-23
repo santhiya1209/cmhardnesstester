@@ -1,6 +1,6 @@
 # VC++ redistributable installer — fetched on demand by
 # scripts/fetch-vc-redist.js, never committed.
-vendor/redist/
+# (drivers/redist/ also listed below near the other drivers/* DLL globs.)
 
 # Logs
 logs
@@ -158,5 +158,6 @@ backend/data/*.sqlite3
 # electron-builder
 release/
 .electron-dist/
-vendor/opencv/bin/*.dll
-vendor/camera-sdk/*.dll
+drivers/opencv/bin/*.dll
+drivers/DVP2 x64/*.dll
+drivers/redist/

@@ -4,13 +4,13 @@ import { ackCameraFrame } from '@/api/camera';
 import { flushCameraStream } from '@/api/camera';
 import type { CameraFrameMeta, CameraPixelFormat } from '@/types/camera';
 
-// Live-preview subsample factor. The worker decodes a (W/SCALE)×(H/SCALE)
-// RGBA ImageData instead of the full sensor resolution. For a 2592×1944 mono8
-// source, scale=2 drops conversion work + transfer from 20MB to 5MB. Auto
-// Measure does NOT use the downscaled output — it reads the full-resolution
-// raw buffer kept in `latestFullFrame` via getLatestFullFrame(). To change the
-// preview resolution, edit this constant — must be an integer ≥1.
-const PREVIEW_SCALE = 2;
+// Live-preview subsample factor. 1 = stream the native sensor resolution
+// (2592×1944) end-to-end: native → IPC → worker decode → canvas bitmap, with
+// the UI scaling visually via CSS objectFit: contain. Auto Measure reads the
+// same full-res raw buffer (latestFullFrame via getLatestFullFrame), so this
+// constant only affects the live-preview decode cost and ImageData transfer
+// size in the 2D-fallback path. Integer ≥1.
+const PREVIEW_SCALE = 1;
 
 // Stale-frame age threshold (grab→renderer-receive). Lenient enough not to
 // drop frames that are naturally old because the camera runs at low FPS
@@ -136,8 +136,16 @@ function getWorker(): Worker {
   return sharedWorker;
 }
 
-function recordCameraFrameDrop(_reason = 'stale', _frameId = 0, _ageMs = 0): void {
+let firstDropLogged = false;
+function recordCameraFrameDrop(reason = 'stale', frameId = 0, ageMs = 0): void {
   latencyDroppedSinceLastSummary += 1;
+  if (!firstDropLogged) {
+    firstDropLogged = true;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-render-blocked-check] first-drop reason=${reason} frameId=${frameId} ageMs=${ageMs}`
+    );
+  }
 }
 
 function installMainThreadPaintHandler() {
@@ -255,6 +263,8 @@ function schedulePaintRaf() {
     }
     if (!firstPaintLoggedThisSession) {
       firstPaintLoggedThisSession = true;
+      // eslint-disable-next-line no-console
+      console.log(`[camera-canvas-paint-check] first-paint frameId=${p.frameId}`);
     }
     if (lastPaintAt - lastLatencyLogAt > 1000) {
       lastLatencyLogAt = lastPaintAt;
@@ -337,6 +347,10 @@ function subscribeIpcOnce() {
     }
     if (!firstFrameLoggedThisSession) {
       firstFrameLoggedThisSession = true;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-ipc-frame-check] first-ipc-frame frameId=${frameId} ${meta.width}x${meta.height} ageMs=${grabTs > 0 ? receivedAt - grabTs : 0}`
+      );
     }
     // Latest-frame-only policy: if the worker is still decoding a previous
     // frame, replace any pending frame with this one and drop the older
@@ -384,10 +398,21 @@ function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
   return u8.slice().buffer as ArrayBuffer;
 }
 
+let resolutionLogged = false;
+
 function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId: number) {
   // (No frameId<latest drop — SDK counter resets on stream restarts.)
   const worker = getWorker();
   const ab = toArrayBuffer(body);
+  if (!resolutionLogged && meta.width > 0 && meta.height > 0) {
+    resolutionLogged = true;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-stream][native-resolution] ${meta.width}x${meta.height} ` +
+        `bytes=${ab.byteLength} pixelFormat=${meta.pixelFormat} bits=${meta.bits} ` +
+        `previewScale=${PREVIEW_SCALE}`
+    );
+  }
   decoderBusy = true;
   // Track capture time end-to-end (main-process capturedAt is the most
   // authoritative reference for totalMs — closer to the native callback
@@ -440,6 +465,14 @@ export function dropPendingCameraFrames(reason = 'stale'): number {
   const ts = Date.now();
   let dropped = 0;
   staleFramesBeforeTs = ts;
+  // Re-arm the per-boundary "first IPC frame" / "first paint" / "first drop"
+  // diagnostic logs so we can see whether frames flow again after this
+  // boundary (settings change, objective change, etc.).
+  firstFrameLoggedThisSession = false;
+  firstPaintLoggedThisSession = false;
+  firstDropLogged = false;
+  // eslint-disable-next-line no-console
+  console.log(`[camera-render-blocked-check] boundary reason=${reason} ts=${ts}`);
   latestFrameRef.current = null;
   if (pendingFrame) {
     recordCameraFrameDrop(reason, pendingFrame.frameId);
@@ -525,11 +558,15 @@ export function useCameraStream() {
     }
 
     const worker = getWorker();
-    // OffscreenCanvas presentation has been flaky in Electron dev (esp. with
-    // DevTools' Responsive Mode), producing a black canvas even though the
-    // worker successfully puts pixels into the offscreen bitmap. The 2D
-    // fallback path is just as fast for this workload (transferable
-    // ImageData postMessage is zero-copy) and renders reliably.
+    // OffscreenCanvas presentation has been flaky in Electron (this version),
+    // producing a black canvas even though the worker successfully puts
+    // pixels into the offscreen bitmap. Re-enabling it (commit b5f7d37) made
+    // the live preview go dark — reverted. The 2D fallback path uses a
+    // transferable ImageData postMessage which is zero-copy on the JS side
+    // (the engine memcpy is small relative to a 5 MP frame's decode cost)
+    // and renders reliably. Do not flip this back to true without first
+    // verifying the offscreen bitmap actually composites to the visible
+    // canvas in a packaged build (not just dev).
     const supportsOffscreen = false;
 
     if (supportsOffscreen) {

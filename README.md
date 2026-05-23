@@ -48,13 +48,16 @@ The packaged app expects these DLLs to ship alongside the binaries:
 
 | What                  | Drop into                | Lands at runtime under                                  |
 | --------------------- | ------------------------ | ------------------------------------------------------- |
-| OpenCV runtime DLLs   | `vendor/opencv/bin/`     | `<app>/resources/native/hardness-addon/opencv/bin/`     |
-| Do3Think DVP2 SDK     | `vendor/camera-sdk/`     | `<app>/resources/camera-sdk/`                           |
+| OpenCV runtime DLLs   | `drivers/opencv/bin/`    | `<app>/resources/opencv/bin/`                           |
+| Do3Think DVP2 SDK     | `drivers/DVP2 x64/`      | `<app>/resources/DVP2 x64/`                             |
 
 `electron/cameraService.js` adds both directories to the DLL search path in
-packaged mode. If `vendor/` folders are empty the installer still builds but
-the camera will fail to initialize on machines that don't already have the
-OpenCV/DVP2 DLLs installed system-wide.
+packaged mode. If the required DLLs are missing, `npm run prepackage` runs
+`scripts/verify-drivers.js` which **hard-fails** the build — so the installer
+will not be produced until the staging is correct.
+
+See `drivers/README.md` for the full layout (including scaffold folders for
+future per-camera installers) and the manual DLL copy commands.
 
 ## Packaging diagnostics
 
@@ -69,5 +72,5 @@ diagnosing missing files in a packaged build:
 [packaging][db-path] ...
 [packaging][native-addon-path] ...
 [packaging][opencv-dll-path] ...
-[packaging][camera-sdk-path] ...
+[packaging][dvp2-x64-path] ...
 ```

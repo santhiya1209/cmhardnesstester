@@ -22,8 +22,8 @@
     "build:prod": "npm run rebuild-native && dotenv -e .env.prod -e backend/.env.prod -e frontend/.env.prod -- npm run build",
     "start:prod": "dotenv -e .env.prod -e backend/.env.prod -e frontend/.env.prod -- electron-forge start",
     "fetch:vc-redist": "node scripts/fetch-vc-redist.js",
-    "verify:vendor-dlls": "node scripts/verify-vendor-dlls.js",
-    "prepackage": "npm run fetch:vc-redist && npm run verify:vendor-dlls",
+    "verify:drivers": "node scripts/verify-drivers.js",
+    "prepackage": "npm run fetch:vc-redist && npm run verify:drivers",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish"

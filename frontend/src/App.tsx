@@ -2774,9 +2774,9 @@ function App() {
         if (callSource === 'after-impress') {
         }
         if (!preview && callSource === 'auto-click') {
-          // nativeCorners → displayCorners scale map. Camera preview canvas
-          // is painted at half native resolution (PREVIEW_SCALE=2 in
-          // useCameraStream); the AutoMeasureOverlay still receives native
+          // nativeCorners → displayCorners scale map. The camera preview
+          // canvas is now painted at full native resolution
+          // (PREVIEW_SCALE=1); the AutoMeasureOverlay receives native
           // corners and maps them via imageToDisplay at render time. This
           // log captures the scaled set used for the yellow overlay.
         }

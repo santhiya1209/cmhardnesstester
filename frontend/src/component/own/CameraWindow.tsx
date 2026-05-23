@@ -303,9 +303,10 @@ function CameraWindowImpl(
 
     // Live-camera detection MUST always use the latest full-resolution
     // native frame (2592x1944 bgr24), regardless of the UI freeze state.
-    // The visible canvas is painted at PREVIEW_SCALE (downscaled rgb32) for
-    // latency; reading its pixels would hand the native detector a wrong-
-    // sized frame and corrupt repeat detections on the same indentation.
+    // The visible canvas is now also at full native resolution
+    // (PREVIEW_SCALE=1) and CSS-scaled to fit the panel, but reading the
+    // canvas pixels would still mix in any overlay strokes — go straight
+    // to the raw IPC buffer kept in latestFullFrame instead.
     if (imageSourceRef.current === 'live-camera') {
       const full = getLatestFullFrame();
       if (full && full.body) {

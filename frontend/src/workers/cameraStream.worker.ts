@@ -411,6 +411,7 @@ function decode(
 }
 
 let paintCount = 0;
+let resolutionLogged = false;
 function paint(frame: FrameMsg) {
   const previewScale = frame.previewScale ?? 1;
   const img = decode(
@@ -421,6 +422,16 @@ function paint(frame: FrameMsg) {
     frame.bits,
     previewScale
   );
+  if (!resolutionLogged) {
+    resolutionLogged = true;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-worker][decoded-resolution] ${img.width}x${img.height} ` +
+        `(from ${frame.width}x${frame.height} previewScale=${previewScale} ` +
+        `pixelFormat=${frame.pixelFormat} bits=${frame.bits} ` +
+        `paintPath=${mainThreadPaint ? '2d-fallback' : 'offscreen'})`
+    );
+  }
   const rawFid = (frame as { frameId?: unknown }).frameId;
   const frameId =
     typeof rawFid === 'number' && rawFid > 0 ? rawFid : 0;
@@ -447,6 +458,8 @@ function paint(frame: FrameMsg) {
   if (canvas.width !== img.width || canvas.height !== img.height) {
     canvas.width = img.width;
     canvas.height = img.height;
+    // eslint-disable-next-line no-console
+    console.log(`[camera-canvas][bitmap-resolution] ${canvas.width}x${canvas.height}`);
   }
   ctx.putImageData(img, 0, 0);
   paintCount++;
