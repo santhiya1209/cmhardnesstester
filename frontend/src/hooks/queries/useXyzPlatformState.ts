@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getXyzPlatformStates } from '@/api/getXyzPlatformStates';
+import { getXyzPlatformStates } from '@/api/xyzPlatform';
 import type { XYZPlatformState } from '@/types/xyzPlatformState';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

@@ -202,10 +202,6 @@ function StatusBarImpl({
   const machineStatus = getMachineStatusLabel(machineState);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-statusbar-render] machine=${machineConnected ? 'Connected' : 'Disconnected'} com=${machinePort} status=${machineStatus}`
-    );
   }, [machineConnected, machinePort, machineStatus]);
 
   return (

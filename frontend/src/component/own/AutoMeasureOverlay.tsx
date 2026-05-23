@@ -69,7 +69,6 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
-type DragHandle = LineKey | 'center';
 
 type DragKind = 'line' | 'corner' | 'center';
 
@@ -160,17 +159,6 @@ function AutoMeasureOverlayImpl({
     if (dragRef.current) return;
     const target = graphics ? cloneCorners(graphics.corners) : null;
     const current = localCornersRef.current;
-    {
-      const fmt = (p: Point | null | undefined) =>
-        p ? `(${p.x.toFixed(2)},${p.y.toFixed(2)})` : 'null';
-      // eslint-disable-next-line no-console
-      console.log(
-        `[overlay-props-received] source=${source} left=${fmt(target?.left)} right=${fmt(target?.right)} top=${fmt(target?.top)} bottom=${fmt(target?.bottom)}`
-      );
-      const changed = cornersKey(target) !== cornersKey(current);
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-target-changed] changed=${changed}`);
-    }
     // Same-values fast path. If the parent re-renders and passes a new
     // `graphics` object reference with identical corner values, do NOT
     // restart the tween — restarting would call writeCorners every rAF tick
@@ -190,55 +178,15 @@ function AutoMeasureOverlayImpl({
       window.cancelAnimationFrame(tweenFrameRef.current);
       tweenFrameRef.current = null;
     }
-    if (source === 'auto' && target) {
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-detected] corners=${cornersKey(target)}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure][detected] points={left:(${target.left.x.toFixed(1)},${target.left.y.toFixed(1)}),right:(${target.right.x.toFixed(1)},${target.right.y.toFixed(1)}),top:(${target.top.x.toFixed(1)},${target.top.y.toFixed(1)}),bottom:(${target.bottom.x.toFixed(1)},${target.bottom.y.toFixed(1)})}`
-      );
-    }
-    if (source === 'preview' && target) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-preview-update] corners=${cornersKey(target)}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-refine] source=preview from=${cornersKey(current)} to=${cornersKey(target)}`);
-    }
-    if (source === 'save' && target) {
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-final-save] corners=${cornersKey(target)}`);
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-save-final] corners=${cornersKey(target)}`);
-    }
     // Snap on appear/disappear — a fade-from-nothing tween isn't meaningful.
     if (!target || !current) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-overlay-update] source=${source} mode=snap corners=${cornersKey(target)}`
-      );
       writeCorners(target);
       return;
     }
     if (source !== 'preview') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-overlay-update] source=${source} mode=snap-frozen corners=${cornersKey(target)}`
-      );
       writeCorners(target);
       return;
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-overlay-update] source=${source} mode=tween from=${cornersKey(current)} to=${cornersKey(target)}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-overlay-animate] source=${source} durationMs=${TWEEN_DURATION_MS}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[overlay-animate-start] source=${source} durationMs=${TWEEN_DURATION_MS}`);
     const from = cloneCorners(current);
     const to = target;
     const startTime = performance.now();
@@ -272,7 +220,7 @@ function AutoMeasureOverlayImpl({
   // and the skip-redraw cache (`lastDrawKeyRef`) can short-circuit the next
   // legitimate draw. Calling clearRect synchronously plus invalidating the
   // skip cache guarantees the canvas is visually blank within the same tick.
-  const forceClearCanvas = useCallback((reason: string) => {
+  const forceClearCanvas = useCallback((_reason: string) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -288,10 +236,6 @@ function AutoMeasureOverlayImpl({
       frameRef.current = null;
     }
     localCornersRef.current = null;
-    // eslint-disable-next-line no-console
-    console.log(`[overlay-canvas-force-clear] reason=${reason}`);
-    // eslint-disable-next-line no-console
-    console.log(`[overlay-force-clear] reason=${reason}`);
   }, []);
 
   useEffect(() => {
@@ -307,8 +251,6 @@ function AutoMeasureOverlayImpl({
   useEffect(() => {
     if (graphics !== null) return;
     forceClearCanvas('graphics-null');
-    // eslint-disable-next-line no-console
-    console.log('[overlay-clear-not-auto-measure-tool]');
   }, [graphics, forceClearCanvas]);
 
   const draw = useCallback(() => {
@@ -326,8 +268,6 @@ function AutoMeasureOverlayImpl({
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
         lastDrawKeyRef.current = '';
-        // eslint-disable-next-line no-console
-        console.log('[overlay-render-guard] cameraOpen=false cleared=true');
         return;
       }
 
@@ -344,18 +284,10 @@ function AutoMeasureOverlayImpl({
       const activeObjectiveKey = (activeObjective ?? '').trim().toUpperCase() || 'unknown';
       const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}|${overlayObjectiveKey}|${activeObjectiveKey}`;
 
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-draw-key] key=${drawKey}`);
       if (!sizeChanged && lastDrawKeyRef.current === drawKey) {
-        // eslint-disable-next-line no-console
-        console.log('[overlay] skipped-redraw-no-change');
-        // eslint-disable-next-line no-console
-        console.log('[overlay-skipped-no-change]');
         return;
       }
       lastDrawKeyRef.current = drawKey;
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-draw-executed] source=${source}`);
 
       // Final render guard at the actual draw point. The parent component
       // (App.tsx) already gates `displayedAutoMeasureGraphics` by objective,
@@ -368,28 +300,11 @@ function AutoMeasureOverlayImpl({
       const liveObjective = normalize(activeObjective);
       const objectiveMismatch =
         overlayObjective && liveObjective && overlayObjective !== liveObjective;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[overlay-draw-source] source=${source} objective=${overlayObjective || 'unknown'} activeObjective=${liveObjective || 'unknown'} frameId=${graphics?.frameId ?? 'n/a'} visible=${objectiveMismatch || !corners ? 'false' : 'true'}`
-      );
       if (objectiveMismatch) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-render-guard] visible=false reason=objective-mismatch overlayObjective=${overlayObjective} activeObjective=${liveObjective}`
-        );
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
         return;
       }
-
-      // eslint-disable-next-line no-console
-      console.log('[overlay] draw-start');
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-redraw] source=${source}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[overlay-set] style=four-guide-lines objective=${overlayObjective || 'unknown'}`
-      );
 
       // Four full-extent yellow guide lines through the 4 detected diamond
       // tips: vertical at left.x / right.x, horizontal at top.y / bottom.y.
@@ -420,54 +335,6 @@ function AutoMeasureOverlayImpl({
         strokeWidth,
         lineLayout: 'four-guides',
       });
-
-      // eslint-disable-next-line no-console
-      console.log(`[overlay] draw-complete source=${source} lines=4 points=4`);
-      if (corners) {
-        const fmt = (p: Point) => `(${p.x.toFixed(2)},${p.y.toFixed(2)})`;
-        const d1 = Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y);
-        const d2 = Math.hypot(corners.bottom.x - corners.top.x, corners.bottom.y - corners.top.y);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][overlay-draw-diamond] layout=diamond edges=4 d1=left↔right d2=top↔bottom color=yellow source=${source}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][overlay-type] type=diamond not=box,manual-guides source=${source} edges=4`
-        );
-        // 4 fitted edges (polygon sides). The C++ pipeline produced these
-        // via Sobel-gradient side ROIs + cv::fitLine; the renderer just
-        // re-emits the geometry it actually painted, so an operator can
-        // confirm a yellow stroke for each edge.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][fit-edge-top-left] from=${fmt(corners.top)} to=${fmt(corners.left)} source=${source}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][fit-edge-top-right] from=${fmt(corners.top)} to=${fmt(corners.right)} source=${source}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][fit-edge-bottom-right] from=${fmt(corners.bottom)} to=${fmt(corners.right)} source=${source}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][fit-edge-bottom-left] from=${fmt(corners.bottom)} to=${fmt(corners.left)} source=${source}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][corner-tip] top=${fmt(corners.top)} right=${fmt(corners.right)} bottom=${fmt(corners.bottom)} left=${fmt(corners.left)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][diamond-overlay] edges=4 corners=4 d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)} source=${source}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][refined-diagonals] d1=left↔right d2=top↔bottom d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
-        );
-      }
     });
   }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen]);
 
@@ -620,14 +487,7 @@ function AutoMeasureOverlayImpl({
       }
       const target = base[line];
       const requested = { x: target.x + dxImg, y: target.y + dyImg };
-      const { point: clamped, clamped: wasClamped } = clampPointToImage(requested, imageSize);
-      if (wasClamped) {
-        const lineLabel = line === 'left' || line === 'right' ? 'D1' : 'D2';
-        // eslint-disable-next-line no-console
-        console.log(
-          `[line-clamp] line=${lineLabel} endpoint=${line} before=(${requested.x.toFixed(2)},${requested.y.toFixed(2)}) after=(${clamped.x.toFixed(2)},${clamped.y.toFixed(2)})`
-        );
-      }
+      const { point: clamped, clamped: _wasClamped } = clampPointToImage(requested, imageSize);
       next[line] = clamped;
       return next;
     },
@@ -677,28 +537,6 @@ function AutoMeasureOverlayImpl({
           next = applyLineDelta(drag.line, dx, dy, drag.startCorners);
         }
         writeCorners(next);
-        const d1 = Math.hypot(next.right.x - next.left.x, next.right.y - next.left.y);
-        const d2 = Math.hypot(next.bottom.x - next.top.x, next.bottom.y - next.top.y);
-        const handleLabel: DragHandle = drag.kind === 'center' ? 'center' : drag.line;
-        if (isTwoDiagonals) {
-          const lineLabel = drag.line === 'left' || drag.line === 'right' ? 'D1' : 'D2';
-          // eslint-disable-next-line no-console
-          console.log(
-            `[line-adjust-update] line=${lineLabel} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
-          );
-        }
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-drag-move] corner=${handleLabel} dx=${dx.toFixed(2)} dy=${dy.toFixed(2)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-recalculate] d1=${d1.toFixed(2)}px d2=${d2.toFixed(2)}px davg=${((d1 + d2) / 2).toFixed(2)}px`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure][drag-update] handle=${handleLabel} d1Px=${d1.toFixed(2)} d2Px=${d2.toFixed(2)}`
-        );
         onAdjusted?.(next);
         return;
       }
@@ -736,23 +574,6 @@ function AutoMeasureOverlayImpl({
       if (!startPointerImage) return;
       event.preventDefault();
       wrapRef.current?.setPointerCapture(event.pointerId);
-      const handleLabel: DragHandle = hit.kind === 'center' ? 'center' : hit.line;
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure] adjust start', {
-        kind: hit.kind,
-        line: handleLabel,
-        corners,
-      });
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-drag-start] corner=${handleLabel} from=${cornersKey(corners)}`);
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure][drag-start] handle=${handleLabel}`);
-      // Mirror for the calibration flow — App.tsx gates calibration-mode
-      // behavior on calibrationManualModeRef, but the start event originates
-      // here; emitting this log unconditionally keeps the overlay component
-      // simple (no calibration-mode prop) and the log is cheap.
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-cross-adjust-start] handle=${handleLabel}`);
       dragRef.current = {
         kind: hit.kind,
         line: hit.line,
@@ -777,37 +598,6 @@ function AutoMeasureOverlayImpl({
       draw();
       const finalCorners = localCorners;
       if (finalCorners) {
-        const before = drag.startCorners;
-        const beforeD1 = Math.hypot(before.right.x - before.left.x, before.right.y - before.left.y);
-        const beforeD2 = Math.hypot(before.bottom.x - before.top.x, before.bottom.y - before.top.y);
-        const afterD1 = Math.hypot(
-          finalCorners.right.x - finalCorners.left.x,
-          finalCorners.right.y - finalCorners.left.y
-        );
-        const afterD2 = Math.hypot(
-          finalCorners.bottom.x - finalCorners.top.x,
-          finalCorners.bottom.y - finalCorners.top.y
-        );
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] adjust end', {
-          line: drag.line,
-          before,
-          after: finalCorners,
-          d1Delta: afterD1 - beforeD1,
-          d2Delta: afterD2 - beforeD2,
-          d1Px: afterD1,
-          d2Px: afterD2,
-        });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-drag-end] corner=${drag.line} d1=${afterD1.toFixed(2)}px d2=${afterD2.toFixed(2)}px`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-recalculate] d1=${afterD1.toFixed(2)}px d2=${afterD2.toFixed(2)}px davg=${((afterD1 + afterD2) / 2).toFixed(2)}px final=true`
-        );
-        // eslint-disable-next-line no-console
-        console.log(`[auto-measure][drag-complete] corrected=true handle=${drag.line}`);
         onAdjusted?.(finalCorners);
       }
     },

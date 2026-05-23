@@ -65,11 +65,6 @@ const HEADERS = [
   'Depth',
 ];
 
-// eslint-disable-next-line no-console
-console.log(
-  '[report-layout-update]\nremoveCp=true\nremoveCpk=true\nremoveMeasureTime=true'
-);
-
 // --- formatters (single source of truth for CSV / XLSX / DOCX) ---
 
 function safeText(value: unknown, fallback = ''): string {
@@ -184,14 +179,6 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
   }
   const convertValue: string =
     convertValueNum !== null ? formatHardness(convertValueNum) : '-';
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-row-map] id=${m.id} convertType=${convertType} convertValue=${convertValue} rawConvertType=${m.convertType ?? 'null'} rawConvertValue=${m.convertValue ?? 'null'}`
-  );
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-render-conversion] type=${convertType} value=${convertValue}`
-  );
 
   // Resolve depth from the saved row only — never from a live micrometer
   // reading. depthMm is the effective value; fall back to the per-source
@@ -202,19 +189,6 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     (isFiniteNum(m.depthMm) ? m.depthMm : null) ??
     (isFiniteNum(m.manualDepthMm) ? m.manualDepthMm : null) ??
     (isFiniteNum(m.deviceDepthMm) ? m.deviceDepthMm : null);
-  const depthSourceLabel =
-    m.depthSource === 'device' || m.depthSource === 'manual'
-      ? m.depthSource
-      : isFiniteNum(m.manualDepthMm) && !isFiniteNum(m.deviceDepthMm)
-        ? 'manual'
-        : isFiniteNum(m.deviceDepthMm)
-          ? 'device'
-          : 'unknown';
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-row-depth] id=${m.id} depth=${resolvedDepthMm ?? 'null'} source=${depthSourceLabel}`
-  );
-
   const row: ReportRow = {
     index: String(idx + 1),
     xMm: formatCoordinate(m.xMm),
@@ -233,16 +207,6 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
     depth: formatDepth(resolvedDepthMm),
   };
 
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-data] row id=${m.id} hardnessType=${row.hardnessType} qualified=${row.qualified} convertType=${row.convertType} convertValue=${row.convertValue || '-'} depth=${row.depth || '-'}`
-  );
-  // eslint-disable-next-line no-console
-  console.log(`[report-depth] row=${row.index} depth=${row.depth || '-'}`);
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-convert] row=${row.index} convertType=${row.convertType} convertValue=${row.convertValue}`
-  );
   return row;
 }
 
@@ -255,10 +219,7 @@ function rowAsArray(row: ReportRow): string[] {
 }
 
 function normalizeAll(measurements: Measurement[]): ReportRow[] {
-  const rows = measurements.map((m, i) => normalizeReportRow(m, i));
-  // eslint-disable-next-line no-console
-  console.log('[report-table] rows normalized count=', rows.length);
-  return rows;
+  return measurements.map((m, i) => normalizeReportRow(m, i));
 }
 
 function csvEscape(v: string): string {
@@ -287,13 +248,9 @@ function downloadBlobBrowser(blob: Blob, filename: string): void {
 // (or the OS default handler). When the IPC bridge isn't present (pure-web
 // dev, tests), fall back to the <a download> path.
 async function saveReportBlob(blob: Blob, filename: string): Promise<void> {
-  // eslint-disable-next-line no-console
-  console.log(`[report-save-start] filename=${filename} size=${blob.size}`);
   const ipc = typeof window !== 'undefined' ? window.api : undefined;
   if (!ipc || typeof ipc.invoke !== 'function') {
     downloadBlobBrowser(blob, filename);
-    // eslint-disable-next-line no-console
-    console.log(`[report-save-success] path=${filename} mode=browser-download`);
     return;
   }
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -305,31 +262,14 @@ async function saveReportBlob(blob: Blob, filename: string): Promise<void> {
     });
     if (!reply.ok) {
       if ('canceled' in reply && reply.canceled) {
-        // eslint-disable-next-line no-console
-        console.log('[report-save-canceled]');
         return;
       }
       const message = 'message' in reply && reply.message ? reply.message : 'unknown';
-      // eslint-disable-next-line no-console
-      console.warn(`[report-save-failed] error=${message}`);
       throw new Error(`Report save failed: ${message}`);
-    }
-    // eslint-disable-next-line no-console
-    console.log(`[report-save-success] path=${reply.filePath}`);
-    if (reply.opened) {
-      // eslint-disable-next-line no-console
-      console.log(`[report-auto-open-success] path=${reply.filePath}`);
-    } else if (reply.openError) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[report-auto-open-failed] path=${reply.filePath} error=${reply.openError}`
-      );
     }
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.warn(
-      `[report-auto-open-failed] reason=ipc-error error=${err instanceof Error ? err.message : String(err)} — falling back to browser download`
-    );
+    console.error(`[report-save-failed] ${err instanceof Error ? err.message : String(err)}`);
     downloadBlobBrowser(blob, filename);
   }
 }
@@ -397,14 +337,7 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
   const pad = DEPTH_PAD;
   const points = buildDepthHvGraphPoints(measurements);
 
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-depth-graph-data] points=${points.length} chdTargetHv=${chdTargetHv ?? 'null'}`
-  );
-
   if (points.length === 0) {
-    // eslint-disable-next-line no-console
-    console.log('[report-depth-graph-render] rendered=false reason=no-valid-rows');
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
   <rect x="0" y="0" width="${w}" height="${h}" fill="${DEPTH_COLORS.paper}"/>
@@ -429,15 +362,6 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
   const chdIntersection = findChdIntersection(points, chdTargetHv);
   const plotBottom = h - pad.bottom;
   const plotRight = w - pad.right;
-
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-depth-graph-render] points=${points.length} xMinUm=${xAxis.min} xMaxUm=${xAxis.max} yMinHv=${yAxis.min} yMaxHv=${yAxis.max}`
-  );
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-depth-graph-chd] targetHv=${chdTargetHv ?? 'null'} intersectionUm=${chdIntersection ? chdIntersection.distanceUm : 'none'} intersectionMm=${chdIntersection ? chdIntersection.depthMm : 'none'}`
-  );
 
   const minorY = minorYTicks
     .map(
@@ -507,8 +431,6 @@ async function exportCsv(rows: ReportRow[]): Promise<void> {
   const csv = buildCsv(rows);
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
   await saveReportBlob(blob, REPORT_FILENAMES.csv);
-  // eslint-disable-next-line no-console
-  console.log('[report-csv] rows=', rows.length, 'path=', REPORT_FILENAMES.csv);
 }
 
 // --- Excel via exceljs (styled headers, borders, autoFilter) ---
@@ -577,8 +499,6 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   await saveReportBlob(blob, REPORT_FILENAMES.xlsx);
-  // eslint-disable-next-line no-console
-  console.log('[report-excel] rows=', rows.length, 'path=', REPORT_FILENAMES.xlsx);
 }
 
 // --- Industrial Word report (matches reference layout) ---
@@ -743,17 +663,6 @@ function computeStatistics(
   const cpk = std > 0 && hasRange
     ? Math.min((usl! - avg) / (3 * std), (avg - lsl!) / (3 * std))
     : null;
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-stats] ave=${avg.toFixed(3)} std=${std.toFixed(3)} lsl=${lsl ?? '-'} usl=${usl ?? '-'} cp=${cp !== null ? cp.toFixed(3) : '-'} cpk=${cpk !== null ? cpk.toFixed(3) : '-'}`
-  );
-  if (!hasRange) {
-    // eslint-disable-next-line no-console
-    console.log('[report-stats] cp-cpk skipped reason=missing-target-range');
-  } else if (std === 0) {
-    // eslint-disable-next-line no-console
-    console.log('[report-stats] cp-cpk skipped reason=std-zero');
-  }
   return { count, max, min, avg, variance, std, cp, cpk };
 }
 
@@ -806,17 +715,11 @@ function buildDetailedDataTable(
   // Widths sum to ~15400 (same target as before); Depth(mm) carved out of the
   // hardness/convert columns so the table still fills the page width.
   const widths = [600, 1500, 1500, 1500, 1500, 1750, 1750, 1750, 1750, 1700];
-  // eslint-disable-next-line no-console
-  console.log('[report-depth-column-render]');
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h, i) => makeCell(h, widths[i], { bold: true, shaded: true })),
   });
   const dataRows = rows.map((r) => {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[report-detail] row=${r.index} convertType=${r.convertType} convertValue=${r.convertValue}`
-    );
     // docx TextRun.color wants a bare hex string with no '#'. Strip it.
     const hardnessColor = getHardnessColor(r.hardnessNumeric, targetMinHv, targetMaxHv).color.replace(
       /^#/,
@@ -892,8 +795,6 @@ async function buildPictureTable(
         ],
       });
       cells.push({ idx: entry.idx, image: cell });
-      // eslint-disable-next-line no-console
-      console.log('[report-image] embedded idx=', entry.idx, 'bytes=', buf.byteLength);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[report-image] picture cell failed idx=', entry.idx, err);
@@ -962,13 +863,7 @@ async function exportWord(
 ): Promise<void> {
   const includeImage = type === 'word-image' || type === 'word-image-depth';
   const includeDepth = type === 'word-depth' || type === 'word-image-depth';
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-mode] mode=${type === 'word-depth' ? 'depth-hardness' : type === 'word-image-depth' ? 'image-depth-hardness' : type}`
-  );
 
-  // eslint-disable-next-line no-console
-  console.log('[report-word] building type=', type, 'rows=', rows.length);
 
   const children: (Paragraph | Table)[] = [];
 
@@ -992,10 +887,6 @@ async function exportWord(
   const stats = computeStatistics(measurements, header.hardnessMin, header.hardnessMax);
   children.push(sectionHeading('Statistical data'));
   children.push(buildStatisticsTable(stats));
-  // eslint-disable-next-line no-console
-  console.log(
-    `[report-word] stats count=${stats.count} max=${fmtStat(stats.max)} min=${fmtStat(stats.min)} avg=${fmtStat(stats.avg)}`
-  );
   children.push(blankParagraph());
 
   // 4. Detailed Data
@@ -1005,18 +896,15 @@ async function exportWord(
 
   // 5. Pictures
   if (includeImage) {
-    const { table, count } = await buildPictureTable(measurements);
+    const { table } = await buildPictureTable(measurements);
     if (table) {
       children.push(sectionHeading('Pictures'));
       children.push(table);
       children.push(blankParagraph());
     }
-    // eslint-disable-next-line no-console
-    console.log('[report-image] images embedded count=', count);
   }
 
   // 6. Deep Hardness chart
-  let depthAdded = false;
   if (includeDepth) {
     try {
       const svg = buildDepthSvg(measurements, chdTargetHv);
@@ -1034,14 +922,11 @@ async function exportWord(
           ],
         })
       );
-      depthAdded = true;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[report-depth-chart] embed failed', err);
     }
   }
-  // eslint-disable-next-line no-console
-  console.log('[report-word] depth image added=', depthAdded);
 
   const doc = new Document({
     styles: {
@@ -1070,8 +955,6 @@ async function exportWord(
   });
   const blob = await Packer.toBlob(doc);
   await saveReportBlob(blob, REPORT_FILENAMES[type]);
-  // eslint-disable-next-line no-console
-  console.log('[report-word] export success path=', REPORT_FILENAMES[type]);
 }
 
 export type ExportReportInput = {
@@ -1099,22 +982,10 @@ export async function exportReport(input: ExportReportInput): Promise<{ filename
     targetMinHv = null,
     targetMaxHv = null,
   } = input;
-  const t0 = performance.now();
-  // eslint-disable-next-line no-console
-  console.log(
-    '[report-export] start type=',
-    type,
-    'measurements=',
-    measurements.length,
-    'header.sample=',
-    header.sampleName || '-'
-  );
   const missing: string[] = [];
   if (!header.sampleName) missing.push('sampleName');
   if (!header.tester) missing.push('tester');
   if (missing.length > 0) {
-    // eslint-disable-next-line no-console
-    console.log('[report-data] missing optional fields=', missing.join(','));
   }
   const rows = normalizeAll(measurements);
 
@@ -1139,7 +1010,5 @@ export async function exportReport(input: ExportReportInput): Promise<{ filename
   }
 
   const filename = REPORT_FILENAMES[type];
-  // eslint-disable-next-line no-console
-  console.log('[report-export] success path=', filename, 'ms=', Math.round(performance.now() - t0));
   return { filename };
 }

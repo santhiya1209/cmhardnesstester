@@ -144,18 +144,10 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-function interpolate(table: Table, hv: number, targetLabel: string): number | null {
+function interpolate(table: Table, hv: number, _targetLabel: string): number | null {
   const first = table[0];
   const last = table[table.length - 1];
-  // eslint-disable-next-line no-console
-  console.log(
-    `[hardness-convert-table] targetType=${targetLabel} points=${table.length} minHv=${first[0]} maxHv=${last[0]}`
-  );
   if (hv < first[0] || hv > last[0]) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[hardness-convert-missing] to=${targetLabel} reason=hv-out-of-range hv=${hv} minHv=${first[0]} maxHv=${last[0]}`
-    );
     return null;
   }
 
@@ -163,16 +155,9 @@ function interpolate(table: Table, hv: number, targetLabel: string): number | nu
     const [x0, y0] = table[i];
     const [x1, y1] = table[i + 1];
     if (hv >= x0 && hv <= x1) {
-      const result = x1 === x0 ? round1(y0) : round1(y0 + ((hv - x0) / (x1 - x0)) * (y1 - y0));
-      // eslint-disable-next-line no-console
-      console.log(
-        `[hardness-convert-table-hit] to=${targetLabel} lower={hv:${x0},value:${y0}} upper={hv:${x1},value:${y1}} result=${result}`
-      );
-      return result;
+      return x1 === x0 ? round1(y0) : round1(y0 + ((hv - x0) / (x1 - x0)) * (y1 - y0));
     }
   }
-  // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-missing] to=${targetLabel} reason=no-bracketing-segment hv=${hv}`);
   return null;
 }
 
@@ -180,43 +165,15 @@ export function convertVickers(
   hv: number | null | undefined,
   target: ConvertTargetType
 ): number | null {
-  // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-request] from=HV value=${hv ?? '-'} to=${target}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-start] hv=${hv ?? '-'} targetType=${target}`);
-
   if (typeof hv !== 'number' || !Number.isFinite(hv) || hv <= 0) {
-    // eslint-disable-next-line no-console
-    console.log(`[hardness-convert-range-check] targetType=${target} inRange=false`);
-    // eslint-disable-next-line no-console
-    console.log(`[hardness-convert-out-of-range] hv=${hv ?? '-'} targetType=${target}`);
     return null;
   }
 
-  const converterFound = target === 'HV' || target in TABLES;
-  // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-path] targetType=${target} converterFound=${converterFound}`);
-
-  let result: number | null;
   if (target === 'HV') {
-    result = round1(hv);
-  } else if (converterFound) {
-    result = interpolate(TABLES[target as Exclude<ConvertTargetType, 'HV'>], hv, target);
-  } else {
-    // eslint-disable-next-line no-console
-    console.log(`[hardness-convert-missing] to=${target} reason=no-table`);
-    result = null;
+    return round1(hv);
   }
-
-  const inRange = result !== null;
-  // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-range-check] targetType=${target} inRange=${inRange}`);
-
-  if (result === null) {
-    // eslint-disable-next-line no-console
-    console.log(`[hardness-convert-out-of-range] hv=${hv} targetType=${target}`);
+  if (target in TABLES) {
+    return interpolate(TABLES[target as Exclude<ConvertTargetType, 'HV'>], hv, target);
   }
-  // eslint-disable-next-line no-console
-  console.log(`[hardness-convert-result] to=${target} value=${result ?? 'N/A'}`);
-  return result;
+  return null;
 }

@@ -57,24 +57,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   on: (channel, listener) => {
     if (!ALLOWED_EVENTS.has(channel)) return () => {};
-    let lastCamLogAt = 0;
     const wrapped = (_event, ...args) => {
-      if (channel === 'micrometer:state') {
-        // eslint-disable-next-line no-console
-        console.log('[micrometer][preload-received] payload=', args[0]);
-      } else if (channel === 'camera:frame') {
-        const now = Date.now();
-        if (now - lastCamLogAt >= 5000) {
-          lastCamLogAt = now;
-          const meta = args[0] || {};
-          const body = args[1];
-          const bytes = body && typeof body.byteLength === 'number' ? body.byteLength : 0;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[camera-preload-recv] frameId=${meta.frameId} bytes=${bytes} w=${meta.width} h=${meta.height}`
-          );
-        }
-      }
       listener(...args);
     };
     ipcRenderer.on(channel, wrapped);
@@ -90,13 +73,9 @@ contextBridge.exposeInMainWorld('hardnessCamera', {
     ipcRenderer.invoke('camera:set-exposure', { valueMs: Number(valueMs) }),
   setLiveExposureForFps: (targetFps) => {
     const fps = Number(targetFps);
-    // eslint-disable-next-line no-console
-    console.log(`[live-fps-preload-call] targetFps=${fps}`);
     return ipcRenderer.invoke('camera:set-live-exposure-fps', { targetFps: fps });
   },
   setLiveMode: (profile) => {
-    // eslint-disable-next-line no-console
-    console.log('[live-mode-preload-call] profile=', profile);
     return ipcRenderer.invoke('camera:set-live-mode', profile || {});
   },
   setGain: (value) =>
@@ -119,7 +98,7 @@ contextBridge.exposeInMainWorld('machineControl', {
       })
       .catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn('[machine-ipc] initial state failed:', err && err.message ? err.message : err);
+        console.error('[machine-ipc] initial state failed:', err && err.message ? err.message : err);
       });
     return () => ipcRenderer.removeListener('machine:state', wrapped);
   },

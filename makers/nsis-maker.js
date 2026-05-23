@@ -19,6 +19,11 @@ class MakerNSIS extends MakerBase {
 
     const cfg = this.config || {};
 
+    // Wire in our customInstall NSH so vc_redist.x64.exe runs during install.
+    // electron-builder copies `nsis.include` into its NSIS scripts at compile
+    // time and emits the !macro customInstall hook automatically.
+    const nsisInclude = path.resolve(__dirname, '..', 'build', 'installer.nsh');
+
     await build({
       prepackaged: dir,
       targets: Platform.WINDOWS.createTarget('nsis', builderArch),
@@ -32,6 +37,7 @@ class MakerNSIS extends MakerBase {
           allowToChangeInstallationDirectory: cfg.allowToChangeInstallationDirectory ?? true,
           perMachine: cfg.perMachine ?? false,
           shortcutName: cfg.shortcutName || appName,
+          include: nsisInclude,
           ...cfg.nsis,
         },
       },

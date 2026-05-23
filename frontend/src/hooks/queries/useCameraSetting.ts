@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getCameraSetting } from '@/api/getCameraSetting';
+import { getCameraSetting } from '@/api/camera';
 import type { CameraSetting } from '@/types/cameraSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createGenericSetting } from '@/api/createGenericSetting';
-import { updateGenericSetting } from '@/api/updateGenericSetting';
+import { createGenericSetting } from '@/api/settings';
+import { updateGenericSetting } from '@/api/settings';
 import type {
   GenericSetting,
   GenericSettingSavePayload,

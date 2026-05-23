@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getOtherSetting } from '@/api/getOtherSetting';
+import { getOtherSetting } from '@/api/settings';
 import type { OtherSetting } from '@/types/otherSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

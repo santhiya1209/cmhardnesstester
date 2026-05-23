@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { createCalibration } from '@/api/createCalibration';
+import { createCalibration } from '@/api/calibration';
 import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

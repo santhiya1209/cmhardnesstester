@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { setMachineControlValue } from '@/api/setMachineControlValue';
+import { setMachineControlValue } from '@/api/machine';
 import type { MachineControlKey } from '@/types/machine';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
@@ -12,8 +12,6 @@ export function useSetMachineControl() {
       setBusy(true);
       setError(null);
       try {
-        // eslint-disable-next-line no-console
-        console.log(`[machine-sync][ui-change] field=${key} value=${value}`);
         const reply = await setMachineControlValue(key, value);
         return reply.state;
       } catch (err) {

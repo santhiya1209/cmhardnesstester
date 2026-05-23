@@ -41,6 +41,22 @@ if (app.isPackaged) {
   if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
 }
 
+// Live camera streaming continuously repaints a full-resolution <canvas> in
+// the renderer. Chromium's disk-resident caches grow on this workload and
+// were eating C: drive space (Cache/, GPUCache/, Code Cache/ under
+// %APPDATA%\Vickers Measurement Software\). This app loads only local files
+// from the packaged bundle, so the HTTP cache provides no benefit — we cap
+// it tight and disable the GPU shader disk cache outright. Shader compiles
+// stay in process memory and are released on quit.
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disk-cache-size', '0');
+app.commandLine.appendSwitch('media-cache-size', '0');
+// V8 Code Cache (bytecode) writes to `Code Cache/` and isn't covered by the
+// flags above. On a long camera session the worker's hot decode paths keep
+// re-warming the cache; cap it to zero like the others.
+app.commandLine.appendSwitch('v8-cache-options', 'none');
+
 const { registerIpc } = require('./ipc');
 const { cameraService } = require('./cameraService');
 const { micrometerService } = require('./micrometerService');
@@ -60,7 +76,6 @@ async function startEmbeddedBackend() {
 
 async function createWindow() {
   const iconPath = resolveAppIcon();
-  console.log(`[electron-icon] loaded=${Boolean(iconPath)} path=${iconPath ?? 'default'}`);
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -76,13 +91,11 @@ async function createWindow() {
   // Some Windows builds ignore the constructor `title` once the renderer
   // sets <title>; force it again so the title bar / taskbar match the brand.
   mainWindow.setTitle(APP_TITLE);
-  console.log(`[electron-title] ${APP_TITLE}`);
 
   // Hide the native Electron menu bar (File / Edit / View / Window / Help).
   // The app's own blue toolbar/menu (rendered in the renderer) stays visible.
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
-  console.log('[electron-menu] native menu bar hidden');
 
   const targetUrl = isDev ? DEV_URL : await startEmbeddedBackend();
   if (!isDev) {
@@ -110,8 +123,6 @@ async function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     cameraService.attach(mainWindow.webContents);
     micrometerService.attach(mainWindow.webContents);
-    // eslint-disable-next-line no-console
-    console.log('[main] webContents reattached after did-finish-load');
   });
 
   const wcRef = mainWindow.webContents;

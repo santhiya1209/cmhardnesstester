@@ -1,15 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { API_BASE_URL } from '@/utils/baseUrl';
-import { getMachineState } from '@/api/getMachineState';
+import { getMachineState } from '@/api/machine';
 import type { MachineState } from '@/types/machine';
 
 function logFrontendMachineState(state: MachineState): void {
   const source = state.lastUpdateSource ?? state.lastUpdatedBy;
   if (source !== 'machine') return;
-  // eslint-disable-next-line no-console
-  console.log(`[frontend-machine-state] force updated from machine value=${state.force}`);
-  // eslint-disable-next-line no-console
-  console.log(`[frontend-machine-state] objective updated from machine value=${state.objective}`);
 }
 
 // Subscribes to GET /api/machine/events (Server-Sent Events) and exposes the
@@ -36,10 +32,6 @@ export function useMachineState() {
     if (window.machineControl) {
       const unsubscribe = window.machineControl.subscribeState((state) => {
         if (cancelled) return;
-        // eslint-disable-next-line no-console
-        console.log('[machine-ipc] state received', state);
-        // eslint-disable-next-line no-console
-        console.log('[machine-ui] state update from machine');
         logFrontendMachineState(state);
         setData(state);
       });
@@ -56,10 +48,6 @@ export function useMachineState() {
     source.onmessage = (event: MessageEvent<string>) => {
       try {
         const parsed = JSON.parse(event.data) as MachineState;
-        // eslint-disable-next-line no-console
-        console.log('[machine-ipc] state received', parsed);
-        // eslint-disable-next-line no-console
-        console.log('[machine-ui] state update from machine');
         logFrontendMachineState(parsed);
         setData(parsed);
       } catch (err) {

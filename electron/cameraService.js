@@ -118,42 +118,10 @@ class CameraService {
     });
   }
   startStream() {
-    // eslint-disable-next-line no-console
-    console.log('[camera-render-latest-only] frameId=mainprocess-drop-enabled');
     this._resetFlowControl();
     this.rendererReady = false;
     this._canSend();
-    const p = this._call('cameraStartStream');
-    p.then((res) => {
-      if (!res || !res.ok) return;
-      // SDK runtime snapshot: emitted once per startStream so the diagnostic
-      // log has a baseline for the rest of the session. Values queried lazily
-      // — anything the addon doesn't expose is reported as 'unknown'.
-      this._logSdkRuntime();
-    }).catch(() => {});
-    return p;
-  }
-  _logSdkRuntime() {
-    if (!this.addon || !this.addon.camera) return;
-    let exposureMs = 'unknown';
-    let triggerMode = 'unknown';
-    try {
-      const er = this.addon.camera.cameraGetExposureRange();
-      if (er && er.ok && typeof er.current === 'number') exposureMs = er.current;
-    } catch { /* ignore */ }
-    // No direct getter for trigger state via the JS layer; SetTriggerMode is
-    // forced to false on cameraOpen so report continuous unless the renderer
-    // toggled it. (The native struct has GetTriggerState but no JS wrapper.)
-    triggerMode = 'continuous';
-    const exposureUs = typeof exposureMs === 'number' ? Math.round(exposureMs * 1000) : 'unknown';
-    // pixelFormat is filled by the first frame; bufferCount / grabMode are
-    // SDK constants we cannot query here.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-sdk-runtime] pixelFormat=tbd-first-frame exposureUs=${exposureUs} fps=tbd-first-second triggerMode=${triggerMode} bufferCount=sdk-default grabMode=continuous`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[camera-exposure] exposureUs=${exposureUs}`);
+    return this._call('cameraStartStream');
   }
   ackFrame(seq) {
     const n = Number(seq);
@@ -178,13 +146,10 @@ class CameraService {
         nativeResult = this.addon.camera.cameraFlushStream({ reason: reason || 'objective-change' });
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn('[camera-sdk-buffer-flush] native flush threw:', err && err.message ? err.message : err);
+        console.error('[camera-sdk-buffer-flush] native flush threw:', err && err.message ? err.message : err);
       }
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-sdk-buffer-flush] reason=${reason || 'objective-change'} drained=${nativeResult && nativeResult.drained != null ? nativeResult.drained : 'n/a'}`
-    );
+    void nativeResult;
     return { ok: true, flushUntilAt: this._lastFlushUntilAt };
   }
   _resetFlowControl() {
@@ -223,33 +188,23 @@ class CameraService {
     }
   }
   setExposure(valueMs) {
-    // eslint-disable-next-line no-console
-    console.log('[cameraService] setExposure ms=', valueMs);
     this._markFrameBoundary('exposure-change');
     return this._call('cameraSetExposure', { valueMs });
   }
   setGain(value) {
-    // eslint-disable-next-line no-console
-    console.log('[cameraService] setGain value=', value);
     this._markFrameBoundary('gain-change');
     return this._call('cameraSetGain', { value });
   }
   getExposureRange() {
-    // eslint-disable-next-line no-console
-    console.log('[cameraService] getExposureRange');
     return this._call('cameraGetExposureRange');
   }
   getGainRange() {
-    // eslint-disable-next-line no-console
-    console.log('[cameraService] getGainRange');
     return this._call('cameraGetGainRange');
   }
   setTriggerMode(value) {
     return this._call('cameraSetTriggerMode', { value: !!value });
   }
   setLiveMode(profile) {
-    // eslint-disable-next-line no-console
-    console.log('[cameraService] setLiveMode profile=', profile);
     // Same frame-boundary handling as setExposure: drop in-flight + pending,
     // reset the JS-side stale tracker so post-restart SDK frame counters
     // don't get falsely flagged.
@@ -308,29 +263,7 @@ class CameraService {
     };
     delete nativeParams.frameBuffer;
 
-    const debugLogs = process.env.AUTO_MEASURE_DEBUG === 'true';
     try {
-      if (debugLogs) {
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] native →', {
-          width: nativeParams.width,
-          height: nativeParams.height,
-          morphologyKernelSize: nativeParams.morphologyKernelSize,
-          manualThreshold: nativeParams.manualThreshold,
-          thresholdMode: nativeParams.thresholdMode,
-          objectiveForMeasure: nativeParams.objectiveForMeasure,
-        });
-      }
-      {
-        const pf = String(nativeParams.pixelFormat || '').toLowerCase();
-        const channels = pf === 'bgr24' || pf === 'rgb24' ? 3 : pf === 'rgb32' || pf === 'bgra' ? 4 : pf === 'mono8' ? 1 : 'n/a';
-        const bytes = frame.data && typeof frame.data.byteLength === 'number' ? frame.data.byteLength : 'n/a';
-        const frameId = parameters && parameters.frameId != null ? parameters.frameId : 'n/a';
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-native-input] width=${nativeParams.width} height=${nativeParams.height} channels=${channels} bytes=${bytes} frameId=${frameId} source=${nativeParams.source}`
-        );
-      }
       const result = fn(
         frame.data,
         nativeParams.width,
@@ -338,14 +271,6 @@ class CameraService {
         nativeParams.pixelFormat,
         nativeParams
       );
-      if (debugLogs) {
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure] native ←', {
-          ok: !!(result && result.ok),
-          reason: result && result.reason,
-          confidence: result && result.confidence,
-        });
-      }
       return result;
     } catch (err) {
       return {
@@ -372,11 +297,11 @@ class CameraService {
   /* ------------------------------------------------------------------ */
 
   _addonPath() {
-    const isPackaged = app && app.isPackaged;
-    if (isPackaged) {
-      // Packaged via forge `extraResource: ['backend/native']` → resourcesPath/native
-      return path.join(process.resourcesPath, 'native', 'hardness-addon', ADDON_RELATIVE);
-    }
+    // The .node binary now lives inside app.asar in the packaged build, with
+    // @electron-forge/plugin-auto-unpack-natives transparently extracting it
+    // to app.asar.unpacked/ at package time. Node's require() resolves the
+    // asar virtual path to the unpacked file automatically, so the same
+    // __dirname-relative path works for both dev and packaged modes.
     return path.join(__dirname, '..', 'backend', 'native', 'hardness-addon', ADDON_RELATIVE);
   }
 
@@ -385,25 +310,8 @@ class CameraService {
     try {
       this._prepareNativeDllSearchPath();
       const resolved = this._addonPath();
-      // Print the EXACT .node file Electron is about to load + its mtime so
-      // stale-binary problems are visible without grepping. Any "addon stamp
-      // doesn't match the source" question is answered by comparing this
-      // path's mtime to the source .cpp mtime.
-      let mtime = 'unknown';
-      let sizeBytes = 'unknown';
-      try {
-        // eslint-disable-next-line global-require
-        const fs = require('fs');
-        const st = fs.statSync(resolved);
-        mtime = st.mtime.toISOString();
-        sizeBytes = String(st.size);
-      } catch (statErr) {
-        mtime = `stat-failed:${statErr.message}`;
-      }
       // eslint-disable-next-line no-console
-      console.log(
-        `[opencv-addon-load] path=${resolved} mtime=${mtime} sizeBytes=${sizeBytes}`
-      );
+      console.log(`[cameraService] loading native addon: ${resolved}`);
       // eslint-disable-next-line import/no-dynamic-require, global-require
       this.addon = require(resolved);
     } catch (err) {
@@ -416,8 +324,9 @@ class CameraService {
       return;
     }
 
-    const dllSearchDir =
-      process.env.DO3THINK_SDK_DIR || 'C:\\Program Files (x86)\\Do3think\\DVP2 x64';
+    const dllSearchDir = app && app.isPackaged
+      ? path.join(process.resourcesPath, 'camera-sdk')
+      : (process.env.DO3THINK_SDK_DIR || 'C:\\Program Files (x86)\\Do3think\\DVP2 x64');
 
     try {
       const boot = this.addon.camera.bootstrap({ dllSearchDir });
@@ -461,18 +370,21 @@ class CameraService {
     } catch (err) {
       // Non-fatal — single-shot getFrame still works without subscribers.
       // eslint-disable-next-line no-console
-      console.warn('[cameraService] setEventCallbacks failed:', err.message);
+      console.error('[cameraService] setEventCallbacks failed:', err.message);
     }
   }
 
   _prepareNativeDllSearchPath() {
     const opencvDir = process.env.OPENCV_DIR || DEFAULT_OPENCV_DIR;
+    const isPackaged = Boolean(app && app.isPackaged);
+    // Order matters: env overrides win, then dev-machine local installs, then
+    // packaged-bundle directories. Existence-check skips entries that don't
+    // resolve so PATH never collects bogus references.
     const candidates = [
       process.env.OPENCV_BIN_DIR,
       path.join(opencvDir, 'x64', 'vc16', 'bin'),
-      app && app.isPackaged
-        ? path.join(process.resourcesPath, 'native', 'hardness-addon', 'opencv', 'bin')
-        : null,
+      isPackaged ? path.join(process.resourcesPath, 'opencv', 'bin') : null,
+      isPackaged ? path.join(process.resourcesPath, 'camera-sdk') : null,
     ].filter(Boolean);
 
     const currentPath = process.env.PATH || '';
@@ -616,29 +528,16 @@ class CameraService {
     return ts;
   }
 
-  _resetMainPending(reason) {
+  _resetMainPending(_reason) {
     const dropped = this._pendingFrame ? 1 : 0;
     if (dropped > 0) this._droppedSinceLastFrame += dropped;
     this._pendingFrame = null;
     this._inFlightSeq = 0;
     this._inFlightSentAt = 0;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-main-pending-reset] reason=${reason || 'unknown'} dropped=${dropped}`);
   }
 
   _broadcastFrame(meta, data) {
     const capturedAt = Date.now();
-    if (capturedAt - this._lastMainRecvLogAt >= 5000) {
-      this._lastMainRecvLogAt = capturedAt;
-      const grabTsLog = Number((meta && meta.grabTs) || 0);
-      const ageMs = grabTsLog > 0 ? Math.max(0, capturedAt - grabTsLog) : 0;
-      const frameIdLog =
-        meta && Number.isFinite(Number(meta.frameId)) ? Number(meta.frameId) : 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-main-recv] frameId=${frameIdLog} ageMs=${ageMs} canSend=${this._canSend()}`
-      );
-    }
     if (!this._canSend()) {
       if (capturedAt - this._lastCanSendFalseResetAt >= 1000) {
         this._lastCanSendFalseResetAt = capturedAt;
@@ -675,8 +574,6 @@ class CameraService {
       const ageMs = Math.max(0, capturedAt - grabTs);
       if (ageMs > STALE_AGE_MS) {
         this._droppedSinceLastFrame += 1;
-        // eslint-disable-next-line no-console
-        console.log(`[camera-stale-drop] frameId=${frameId} ageMs=${ageMs} stage=main-inbound`);
         return;
       }
     }
@@ -694,16 +591,6 @@ class CameraService {
       capturedAt,
     };
 
-    // First-frame pixelFormat snapshot — closes the loop on the
-    // [camera-sdk-runtime] line that started the session with "tbd-first-frame".
-    if (safeMeta.pixelFormat && safeMeta.pixelFormat !== this._lastPixelFormatLogged) {
-      this._lastPixelFormatLogged = safeMeta.pixelFormat;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-sdk-runtime] pixelFormat=${safeMeta.pixelFormat} bits=${safeMeta.bits} width=${safeMeta.width} height=${safeMeta.height}`
-      );
-    }
-
     // Single-slot, latest-only. NEVER queue multiple frames. While a send
     // is in flight (sent to renderer but not yet ack'd), keep at most one
     // pending frame — the newest. A new arrival overwrites any older
@@ -713,24 +600,8 @@ class CameraService {
       this._lastAckedSeq < this._inFlightSeq;
 
     if (inFlight) {
-      const newFrameId = safeMeta.frameId;
       if (this._pendingFrame) {
-        const oldFrameId = this._pendingFrame.meta.frameId;
         this._droppedSinceLastFrame += 1;
-        // The older pending frame is being skipped because a newer one
-        // arrived while the renderer is still busy with the in-flight send.
-        // Always log overwrites — they're the signal of how far the
-        // renderer is falling behind the SDK.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-latest-overwrite] oldFrameId=${oldFrameId} newFrameId=${newFrameId}`
-        );
-      } else if (capturedAt - this._lastBusySkipLogAt >= 1000) {
-        // First overwrite-less pending of this 1Hz window — useful as a
-        // signal that the IPC pipeline is saturating without being noisy.
-        this._lastBusySkipLogAt = capturedAt;
-        // eslint-disable-next-line no-console
-        console.log(`[camera-send-busy-skip] frameId=${newFrameId}`);
       }
       this._pendingFrame = { meta: safeMeta, data: payload };
       return;
@@ -750,10 +621,6 @@ class CameraService {
     // next native frame will take the in-flight slot.
     if (grabTs > 0 && ageMs > STALE_AGE_MS) {
       this._droppedSinceLastFrame += 1;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-stale-drop] frameId=${safeMeta.frameId} ageMs=${ageMs} stage=main-send`
-      );
       return;
     }
     safeMeta.sentAt = sentAt;
@@ -768,14 +635,6 @@ class CameraService {
       this._inFlightSeq = 0;
       this._inFlightSentAt = 0;
       return;
-    }
-    // Successful IPC send. Throttle to 1Hz so the log line is a steady
-    // heartbeat, not per-frame spam. The ageMs is the user-visible
-    // "native grab → handed to renderer IPC" latency.
-    if (sentAt - this._lastSendOkLogAt >= 5000) {
-      this._lastSendOkLogAt = sentAt;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-main-send-ok] frameId=${safeMeta.frameId} ageMs=${ageMs}`);
     }
   }
 
@@ -801,8 +660,6 @@ class CameraService {
       const ageMs = Math.max(0, Date.now() - grabTs);
       if (ageMs > STALE_AGE_MS) {
         this._droppedSinceLastFrame += 1;
-        // eslint-disable-next-line no-console
-        console.log(`[camera-stale-drop] frameId=${meta.frameId} ageMs=${ageMs} stage=main-pending-drain`);
         return;
       }
     }

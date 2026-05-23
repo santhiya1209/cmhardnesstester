@@ -9,7 +9,6 @@ import {
   bumpFrameEpochOnCanvasClear,
   getCurrentFrameEpoch,
   getLastCameraFramePaintAt,
-  getLastPaintedFrameId,
   getLastPaintEpoch,
   getLatestFullFrame,
   useCameraStream,
@@ -299,10 +298,6 @@ function CameraWindowImpl(
       (getLastPaintEpoch() < getCurrentFrameEpoch() ||
         getLastCameraFramePaintAt() <= liveCanvasClearedAtRef.current)
     ) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-guard] reason=awaiting-fresh-frame currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()} lastPaintAt=${getLastCameraFramePaintAt()} clearedAt=${liveCanvasClearedAtRef.current}`
-      );
       return { ok: false, error: 'awaiting-fresh-frame' };
     }
 
@@ -330,11 +325,6 @@ function CameraWindowImpl(
             }
           }
         }
-        const bytes = (full.body as ArrayBuffer).byteLength ?? buffer.byteLength;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[native-frame-freeze] width=${full.width} height=${full.height} pixelFormat=${full.pixelFormat} bytes=${bytes} frameId=${full.frameId ?? 'n/a'} source=native-camera`
-        );
         return {
           ok: true,
           buffer,
@@ -348,8 +338,6 @@ function CameraWindowImpl(
       // No silent fallback to the downscaled rgb32 canvas — reject so the
       // caller can surface the failure and the user can re-click once a
       // fresh native frame arrives.
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-reject] reason=native-full-frame-not-available');
       return { ok: false, error: 'native-full-frame-not-available' };
     }
 
@@ -378,12 +366,8 @@ function CameraWindowImpl(
             setFrozen(true);
           }
         }
-        // eslint-disable-next-line no-console
-        console.log('[opencv-auto] frame captured');
       }
 
-      // eslint-disable-next-line no-console
-      console.log('[frame] captured timestamp=', Date.now(), 'source=', sourceType, 'size=', source.width, 'x', source.height);
 
       return {
         ok: true,
@@ -521,13 +505,6 @@ function CameraWindowImpl(
 
       try {
         const dataUrl = out.toDataURL(mimeType, quality);
-        // eslint-disable-next-line no-console
-        console.log(
-          '[album] snapshot captured width=', w,
-          'height=', h,
-          'overlays=', overlayCount,
-          'bytes=', dataUrl.length
-        );
         return dataUrl;
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -538,7 +515,7 @@ function CameraWindowImpl(
     [frozen, imageSize]
   );
 
-  const clearLiveCanvas = useCallback((reason: string = 'objective-change') => {
+  const clearLiveCanvas = useCallback((_reason: string = 'objective-change') => {
     const live = canvasRef.current;
     if (!live) return;
     const ctx = live.getContext('2d');
@@ -548,11 +525,6 @@ function CameraWindowImpl(
     // Bump epoch so any frame already in the worker queue (decoded but not
     // yet painted on the main thread) is dropped on arrival instead of
     // repainting stale previous-objective pixels onto the cleared canvas.
-    const newEpoch = bumpFrameEpochOnCanvasClear();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-frame-clear] reason=${reason} clearedAt=${liveCanvasClearedAtRef.current} newEpoch=${newEpoch}`
-    );
     // Why: do NOT null imageSize here. The camera resolution is unchanged on
     // objective change — the magnification is optical, not pixel. Nulling
     // imageSize unmounts/blanks the AutoMeasureOverlay and the next overlay
@@ -576,12 +548,6 @@ function CameraWindowImpl(
     const prev = turretMovingPrevRef.current;
     turretMovingPrevRef.current = turretMoving;
     if (turretMoving && !prev) {
-      // eslint-disable-next-line no-console
-      console.log('[camera-image-clear] reason=turret-moving');
-      // eslint-disable-next-line no-console
-      console.log('[camera-render-blocked] reason=turret-moving');
-      // eslint-disable-next-line no-console
-      console.log('[camera-frame-clear] reason=objective-switch');
       const live = canvasRef.current;
       if (live) {
         const ctx = live.getContext('2d');
@@ -606,20 +572,11 @@ function CameraWindowImpl(
       return;
     }
     if (!turretMoving && prev) {
-      // eslint-disable-next-line no-console
-      console.log('[camera-wait-fresh-frame] reason=after-turret');
       let cancelled = false;
       void waitForFreshCameraFrame(2500).then((fresh) => {
         if (cancelled) return;
         if (fresh) {
-          const fid = getLastPaintedFrameId();
-          // eslint-disable-next-line no-console
-          console.log(`[camera-fresh-frame-after-turret] frameId=${fid}`);
-          // eslint-disable-next-line no-console
-          console.log('[camera-render-resume] reason=fresh-frame-after-turret');
         } else {
-          // eslint-disable-next-line no-console
-          console.log('[camera-render-resume] reason=fresh-frame-timeout');
         }
       });
       return () => {
@@ -643,15 +600,7 @@ function CameraWindowImpl(
     const fresh = await waitForFreshCameraFrame(timeoutMs);
     if (fresh) {
       liveCanvasClearedAtRef.current = 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-fresh] paintEpoch=${getLastPaintEpoch()} currentEpoch=${getCurrentFrameEpoch()} paintAt=${getLastCameraFramePaintAt()}`
-      );
     } else {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-watchdog] no-frame timeoutMs=${timeoutMs} currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()}`
-      );
     }
     return fresh;
   }, []);
@@ -665,12 +614,6 @@ function CameraWindowImpl(
     if (lastSeenObjectiveRefreshKeyRef.current === objectiveRefreshKey) return;
     lastSeenObjectiveRefreshKeyRef.current = objectiveRefreshKey;
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-objective-sync] objective=${manualMeasureObjective ?? 'unknown'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log('[camera-refresh] reason=objective-change');
 
     // Drop any frozen snapshot — it was captured under the previous objective.
     if (frozen) {
@@ -684,10 +627,6 @@ function CameraWindowImpl(
     // surface — no stale pixels from the previous magnification.
     clearLiveCanvas();
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[viewport-refresh] completed objective=${manualMeasureObjective ?? 'unknown'}`
-    );
   }, [objectiveRefreshKey, clearLiveCanvas, frozen, manualMeasureObjective]);
 
   useImperativeHandle(
@@ -744,8 +683,6 @@ function CameraWindowImpl(
     // below (lines ~702-735). They are independent DOM elements with their
     // own React subtrees and do not paint on the live camera canvas, so
     // overlay rerenders cannot stall the camera frame loop.
-    // eslint-disable-next-line no-console
-    console.log('[overlay-render] separate-layer=true');
   }, []);
 
   useEffect(() => {
@@ -795,17 +732,9 @@ function CameraWindowImpl(
       setCursorDisplay(displayPoint);
       const imagePoint = displayToImage(displayPoint, placement, imageSize);
       if (magnifierEnabled) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[magnifier-move] screenX=${event.clientX.toFixed(1)} screenY=${event.clientY.toFixed(1)} imageX=${imagePoint.x.toFixed(1)} imageY=${imagePoint.y.toFixed(1)}`
-        );
         // Full coordinate-map trace: client → viewport (canvas CSS) →
         // image (post-letterbox) → source bitmap pixel. devicePixelRatio is
         // included because the lens canvas is allocated at DPR for crispness.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[magnifier-coordinate-map] clientX=${event.clientX.toFixed(2)} clientY=${event.clientY.toFixed(2)} canvasX=${displayPoint.x.toFixed(2)} canvasY=${displayPoint.y.toFixed(2)} imageX=${imagePoint.x.toFixed(2)} imageY=${imagePoint.y.toFixed(2)} scale=${placement.scale.toFixed(4)} offsetX=${placement.offsetX.toFixed(2)} offsetY=${placement.offsetY.toFixed(2)} devicePixelRatio=${window.devicePixelRatio || 1}`
-        );
       }
       setCursorCoordinate({
         x: Math.max(

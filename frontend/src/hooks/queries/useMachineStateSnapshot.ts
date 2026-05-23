@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { getMachineState } from '@/api/getMachineState';
+import { getMachineState } from '@/api/machine';
 import type { MachineState } from '@/types/machine';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

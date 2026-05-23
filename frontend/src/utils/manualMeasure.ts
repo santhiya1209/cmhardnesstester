@@ -349,15 +349,6 @@ export function resolveManualCalibration({
     const computedX = pxX > 0 && realX > 0 ? realX / pxX : null;
     const computedY = pxY > 0 && realY > 0 ? realY / pxY : null;
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-compute] objective=${target} pixelX=${pxX} realX=${realX} umPerPixelX=${computedX ?? 'n/a'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-compute] objective=${target} pixelY=${pxY} realY=${realY} umPerPixelY=${computedY ?? 'n/a'}`
-    );
-
     let micronPerPixel = 0;
     let micronPerPixelX: number | undefined;
     let micronPerPixelY: number | undefined;
@@ -385,20 +376,11 @@ export function resolveManualCalibration({
       micronPerPixelX = pxX > 0 ? pxX : pxY;
       micronPerPixelY = pxY > 0 ? pxY : pxX;
       micronPerPixel = axes.reduce((sum, value) => sum + value, 0) / axes.length;
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[calibration-legacy-fallback] objective=${target} pxX=${pxX} pxY=${pxY} — no knownReferenceUm; treating pixelLength as µm/pixel for back-compat`
-      );
     }
 
     if (!Number.isFinite(micronPerPixel) || micronPerPixel <= 0) {
       return null;
     }
-
-    // eslint-disable-next-line no-console
-    console.log(
-      `[measurement-scale] objective=${target} xUmPerPixel=${micronPerPixelX ?? 'n/a'} yUmPerPixel=${micronPerPixelY ?? 'n/a'} avg=${micronPerPixel}`
-    );
 
     return {
       micronPerPixel,
@@ -527,41 +509,6 @@ export function calculateVickersFromPixels({
   const hasForce = typeof forceKgf === 'number' && Number.isFinite(forceKgf) && forceKgf > 0;
   const hv = hasForce ? VICKERS_CONSTANT * (forceKgf as number) / (avgDMm * avgDMm) : null;
   const effectiveForceKgf = hasForce ? (forceKgf as number) : null;
-  if (!hasForce) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[measurement-hv-skipped] reason=force-missing objective=${normalizedObjective} d1Um=${d1Um} d2Um=${d2Um} davgUm=${avgDUm} — row will save with hv=null`
-    );
-  }
-
-  // eslint-disable-next-line no-console
-  console.log(
-    `[calibration] objective=${normalizedObjective} umPerPixel=${umPerPixel}`
-  );
-  // eslint-disable-next-line no-console
-  console.log(
-    `[measurement-scale] objective=${normalizedObjective} xUmPerPixel=${xUmPerPixel} yUmPerPixel=${yUmPerPixel}`
-  );
-  // eslint-disable-next-line no-console
-  console.log(
-    `[measurement-convert]\nd1Px=${d1Px}\nd2Px=${d2Px}\nxUmPerPixel=${xUmPerPixel}\nyUmPerPixel=${yUmPerPixel}\nd1Um=${d1Um}\nd2Um=${d2Um}\ndavgUm=${avgDUm}\nhv=${hv ?? 'n/a'}`
-  );
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] D1_px=${d1Px} D2_px=${d2Px}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] D1_um=${d1Um} D2_um=${d2Um}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] D1_mm=${d1Mm} D2_mm=${d2Mm}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] averageDiagonal_mm=${avgDMm}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] force_kgf=${effectiveForceKgf ?? 'missing'}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] HV=${hv ?? 'n/a (force missing)'}`);
-  // eslint-disable-next-line no-console
-  console.log(
-    `[measurement-hv] objective=${normalizedObjective} force=${effectiveForceKgf ?? 'missing'} davgUm=${avgDUm} hv=${hv ?? 'n/a'}`
-  );
   const calibrationId = calibration?.id ?? '';
 
   return {
@@ -658,19 +605,6 @@ export function calculateManualCalibratedValuesFromPixels(
     forceKgf && forceKgf > 0 && averageMm > 0
       ? round(VICKERS_CONSTANT * forceKgf / (averageMm * averageMm), 2)
       : null;
-
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] D1_px=${d1Px} D2_px=${d2Px}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] D1_um=${d1Um} D2_um=${d2Um}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] D1_mm=${d1Um / 1000} D2_mm=${d2Um / 1000}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] averageDiagonal_mm=${averageMm}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] force_kgf=${forceKgf ?? 0}`);
-  // eslint-disable-next-line no-console
-  console.log(`[hv-calc] HV=${hv}`);
 
   return {
     d1Px: round(d1Px, 2),

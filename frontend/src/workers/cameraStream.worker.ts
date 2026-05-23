@@ -411,11 +411,8 @@ function decode(
 }
 
 let paintCount = 0;
-let lastConvertLogAt = 0;
-let lastPreviewLogAt = 0;
 function paint(frame: FrameMsg) {
   const previewScale = frame.previewScale ?? 1;
-  const t0 = performance.now();
   const img = decode(
     frame.buffer,
     frame.width,
@@ -424,45 +421,9 @@ function paint(frame: FrameMsg) {
     frame.bits,
     previewScale
   );
-  const convertMs = performance.now() - t0;
-  // Strict positive check. `frame.frameId ?? 0` would still accept the literal
-  // 0 (which means "main forgot to populate the field") — and we'd then log
-  // frameId=0 forever. Treat 0/undefined/non-number as missing.
   const rawFid = (frame as { frameId?: unknown }).frameId;
   const frameId =
     typeof rawFid === 'number' && rawFid > 0 ? rawFid : 0;
-  // Always log slow conversions so post-optimization regressions surface;
-  // throttle fast ones to 1Hz to keep DevTools readable.
-  const nowMs = Date.now();
-  const slow = convertMs > 10;
-  if (slow || nowMs - lastConvertLogAt > 5000) {
-    lastConvertLogAt = nowMs;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-frame-convert] frameId=${frameId} ms=${convertMs.toFixed(2)} scale=${previewScale}${slow ? ' SLOW' : ''}`
-    );
-    // Same data under the canonical name the diagnostic spec asks for.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-convert-ms] frameId=${frameId} ms=${convertMs.toFixed(2)} scale=${previewScale} bytes=${frame.buffer.byteLength}`
-    );
-    // Color-conversion specifically: rgb24/bgr24/mono8/bayer_* → RGBA32 for
-    // the canvas. Worker-side cost; native does no conversion. Same value
-    // as convertMs — emitted under the requested name for traceability.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-color-convert-ms] frameId=${frameId} ms=${convertMs.toFixed(2)} from=${frame.pixelFormat} to=rgba32 scale=${previewScale}`
-    );
-  }
-  if (nowMs - lastPreviewLogAt > 5000) {
-    lastPreviewLogAt = nowMs;
-    const sourceBytes = frame.buffer.byteLength;
-    const previewBytes = img.data.byteLength;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-live-preview] sourceBytes=${sourceBytes} previewWidth=${img.width} previewHeight=${img.height} previewBytes=${previewBytes} scale=${previewScale}`
-    );
-  }
   if (mainThreadPaint) {
     // ImageData was freshly allocated by ensureImageData() above, so we can
     // transfer its backing store directly — zero copies. Previously this
@@ -481,14 +442,6 @@ function paint(frame: FrameMsg) {
     return;
   }
   if (!canvas || !ctx) {
-    if (paintCount === 0) {
-      // eslint-disable-next-line no-console
-      console.warn('[worker] paint called but canvas/ctx is null', {
-        hasCanvas: !!canvas,
-        hasCtx: !!ctx,
-        mainThreadPaint,
-      });
-    }
     return;
   }
   if (canvas.width !== img.width || canvas.height !== img.height) {
@@ -496,14 +449,6 @@ function paint(frame: FrameMsg) {
     canvas.height = img.height;
   }
   ctx.putImageData(img, 0, 0);
-  if (paintCount === 0) {
-    // eslint-disable-next-line no-console
-    console.log('[worker] first paint OK', {
-      bitmapW: canvas.width,
-      bitmapH: canvas.height,
-      pixelFormat: frame.pixelFormat,
-    });
-  }
   paintCount++;
 }
 
@@ -513,8 +458,6 @@ self.onmessage = (e: MessageEvent<IncomingMsg>) => {
     canvas = msg.canvas;
     ctx = canvas.getContext('2d');
     mainThreadPaint = false;
-    // eslint-disable-next-line no-console
-    console.log('[worker] init OK', { hasCanvas: !!canvas, hasCtx: !!ctx });
   } else if (msg.type === 'init-2d') {
     canvas = null;
     ctx = null;
@@ -524,10 +467,6 @@ self.onmessage = (e: MessageEvent<IncomingMsg>) => {
   } else if (msg.type === 'clear-queue') {
     imageData = null;
     imageDataDims = null;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-worker-queue-clear] reason=${msg.reason ?? 'unknown'} epoch=${msg.epoch ?? 0}`
-    );
   } else if (msg.type === 'dispose') {
     canvas = null;
     ctx = null;

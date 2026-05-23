@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { RegexParser } from '@serialport/parser-regex';
 import {
   buildCommandForKey,
   buildStartIndentCommand,
@@ -7,7 +8,7 @@ import {
   getTurretCommandKey,
   getTurretSlotForDirection,
   isCommandVerified,
-  tryParseOneFrame,
+  parseFrame,
   type MachineCommandKey,
   type MachineCommandVerification,
   type MachineControlKey,
@@ -38,6 +39,11 @@ type SerialPortInstance = {
   ) => boolean;
   drain: (cb?: (err: Error | null | undefined) => void) => void;
   on: (event: 'data' | 'error' | 'close', listener: (...args: unknown[]) => void) => void;
+  // SerialPort extends Duplex, so pipe() is inherited from the Node stream
+  // API. We narrow the return to RegexParser since that's the only thing we
+  // pipe into here. The serialport TS types in v13 don't ship a permissive
+  // shape, so we declare what we use.
+  pipe: (destination: RegexParser) => RegexParser;
   isOpen: boolean;
 };
 
@@ -49,7 +55,7 @@ try {
 } catch (err) {
   serialPortLoadError = err instanceof Error ? err.message : String(err);
   // eslint-disable-next-line no-console
-  console.warn('[machine-service] serialport module not available:', serialPortLoadError);
+  console.error('[machine-service] serialport module not available:', serialPortLoadError);
 }
 
 export type IndentStatus = 'idle' | 'started' | 'running' | 'completed' | 'error';
@@ -151,15 +157,14 @@ const INDENT_FINISH_GRACE_MS = 45_000;
 class HardnessMachineSerialService extends EventEmitter {
   private state: MachineState = { ...DEFAULT_STATE };
   private port: SerialPortInstance | null = null;
-  private rxBuffer: Buffer = Buffer.alloc(0);
+  // RegexParser is a Transform stream piped off the port. It assembles
+  // complete frames delimited by \r, \n, or '!' and emits one 'data' event
+  // per frame, so handleFrame() never has to deal with partial chunks.
+  private parser: RegexParser | null = null;
   private pendingAckField: MachineCommandKey | null = null;
-  private pendingAckValue: string | null = null;
-  private pendingAckCommandLabel: string | null = null;
-  private pendingAckCommandId: number | null = null;
   private commandSequence = 0;
   // Set when an impress command is sent with turretAfterImpress=true. The next
-  // machine-confirmed objective RX (L1OK/L2OK) emits a
-  // [turret-after-impress-move-confirmed] log, then clears this flag.
+  // machine-confirmed objective RX (L1OK/L2OK) clears this flag.
   private pendingTurretAfterImpressConfirm = false;
   private txQueue: Promise<void> = Promise.resolve();
   // Persisted-settings record bookkeeping. The latest row is loaded once at
@@ -176,8 +181,6 @@ class HardnessMachineSerialService extends EventEmitter {
       try {
         const all = await machineSettingsService.getAll();
         if (all.length === 0) {
-          // eslint-disable-next-line no-console
-          console.log('[machine-settings] no saved record; using defaults');
           return;
         }
         const latest = [...all].sort(
@@ -193,13 +196,9 @@ class HardnessMachineSerialService extends EventEmitter {
           objective: latest.objective,
           hardnessLevel: latest.hardnessLevel,
         };
-        // eslint-disable-next-line no-console
-        console.log(
-          `[machine-settings] loaded saved lightness=${latest.lightness} loadTime=${latest.loadTime}`
-        );
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn(
+        console.error(
           '[machine-settings] load failed:',
           err instanceof Error ? err.message : String(err)
         );
@@ -238,7 +237,7 @@ class HardnessMachineSerialService extends EventEmitter {
         }
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn(
+        console.error(
           '[machine-settings] persist failed:',
           err instanceof Error ? err.message : String(err)
         );
@@ -262,43 +261,31 @@ class HardnessMachineSerialService extends EventEmitter {
       try {
         await this.loadPersistedSettings();
         if (!this.state.connected) {
-          // eslint-disable-next-line no-console
-          console.log('[machine-startup-sync] skipped because machine not connected');
           return;
         }
-        // eslint-disable-next-line no-console
-        console.log('[machine-startup-sync] waiting for machine tx ready');
         const lightness = this.state.lightness;
         const loadTime = this.state.loadTime;
         try {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-startup-sync] sending saved lightness=${lightness}`);
           await this.setControlValue('lightness', lightness);
-          // eslint-disable-next-line no-console
-          console.log(`[machine-tx] lightness sent value=${lightness}`);
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.warn(
+          console.error(
             '[machine-startup-sync] lightness replay failed:',
             err instanceof Error ? err.message : String(err)
           );
         }
         try {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-startup-sync] sending saved loadTime=${loadTime}`);
           await this.setControlValue('loadTime', loadTime);
-          // eslint-disable-next-line no-console
-          console.log(`[machine-tx] loadTime sent value=${loadTime}`);
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.warn(
+          console.error(
             '[machine-startup-sync] loadTime replay failed:',
             err instanceof Error ? err.message : String(err)
           );
         }
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn(
+        console.error(
           '[machine-startup-sync] failed:',
           err instanceof Error ? err.message : String(err)
         );
@@ -352,21 +339,10 @@ class HardnessMachineSerialService extends EventEmitter {
       updatedAt: new Date().toISOString(),
     };
     if (!prevError && nextError) {
-      const type = /timeout/i.test(nextError) ? 'ack-timeout' : 'error';
       // eslint-disable-next-line no-console
-      console.log(`[machine-error-set] type=${type} message=${JSON.stringify(nextError)}`);
-    } else if (prevError && !nextError) {
-      const reason =
-        origin === 'machine'
-          ? 'rx-recovered'
-          : this.state.syncStatus === 'synced'
-            ? 'sync-success'
-            : 'ack-success';
-      // eslint-disable-next-line no-console
-      console.log(`[machine-error-clear] reason=${reason} prior=${JSON.stringify(prevError)}`);
+      console.error(`[machine-service] error: ${nextError}`);
     }
     this.emit('state', this.state);
-    this.logUiState();
   }
 
   private updateTelemetry(patch: Partial<MachineState>): void {
@@ -378,17 +354,6 @@ class HardnessMachineSerialService extends EventEmitter {
       updatedAt: new Date().toISOString(),
     };
     this.emit('state', this.state);
-  }
-
-  private logUiState(): void {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-sync][ui-state] objective=${this.state.objective} force=${this.state.force} lightness=${this.state.lightness} loadTime=${this.state.loadTime} hardnessLevel=${this.state.hardnessLevel}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-state] force=${this.state.force} objective=${this.state.objective} lightness=${this.state.lightness} loadTime=${this.state.loadTime} turret=${this.state.turretPosition} status=${this.state.machineStatus}`
-    );
   }
 
   private machineFieldName(key: MachineCommandKey): string {
@@ -403,39 +368,6 @@ class HardnessMachineSerialService extends EventEmitter {
       return `${field} slot=${expectedValue ?? 'unknown'}`;
     }
     return `${this.machineFieldName(field)}=${expectedValue ?? 'unknown'}`;
-  }
-
-  private logAckMatched(rxAscii: string): void {
-    const command = this.pendingAckCommandLabel ?? this.pendingAckField ?? 'unknown';
-    const id = this.pendingAckCommandId ?? 'unknown';
-    // eslint-disable-next-line no-console
-    console.log(`[machine-ack] matched command=${command} id=${id} rx=${rxAscii}`);
-  }
-
-  private logAckUnmatched(rxAscii: string): void {
-    if (!this.pendingAckField) return;
-    const command = this.pendingAckCommandLabel ?? this.pendingAckField;
-    const expected = this.pendingAckValue ?? 'any';
-    // eslint-disable-next-line no-console
-    console.log(`[machine-ack] unmatched rx=${rxAscii} command=${command} expected=${expected}`);
-  }
-
-  private logMachineRxField(field: string, value: string | number): void {
-    // eslint-disable-next-line no-console
-    console.log(`[machine-state] field=${field} value=${value} source=machine`);
-    if (field === 'force') {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-rx] load detected value=${value}`);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-sync] mapped machine load -> software force value=${value}`);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-state] force=${value} source=machine`);
-    } else if (field === 'objective') {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-objective-rx] objective=${value}`);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-objective-rx] confirmed value=${value}`);
-    }
   }
 
   private unverifiedMessage(field: MachineCommandKey): string {
@@ -491,8 +423,6 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   async connectMachine(opts: ConnectOptions): Promise<MachineState> {
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] connect requested', opts);
     if (this.state.connected) {
       return this.getState();
     }
@@ -513,8 +443,6 @@ class HardnessMachineSerialService extends EventEmitter {
       autoOpen: false,
     });
 
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] opening port', opts.port, 'baud=', opts.baudRate ?? 9600);
     await new Promise<void>((resolve, reject) => {
       const watchdog = setTimeout(() => {
         reject(new Error(`open() timed out after 5s for ${opts.port}`));
@@ -527,16 +455,32 @@ class HardnessMachineSerialService extends EventEmitter {
           reject(err);
           return;
         }
-        // eslint-disable-next-line no-console
-        console.log('[machine-service] open succeeded');
         resolve();
       });
     });
 
+    // Byte-level visibility — fires once per OS-level read. Chunks may be
+    // partial frames; that's fine, we only use this for raw-wire diagnostics.
     portInstance.on('data', (chunk: unknown) => {
       if (!Buffer.isBuffer(chunk)) return;
-      this.handleIncoming(chunk);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-rx-raw] bytes=${chunk.length} hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
+      );
     });
+    // Frame-level — RegexParser splits on any of our terminators (\r, \n, !)
+    // and delivers one complete frame per 'data' event. No buffering math
+    // lives in the service anymore.
+    const parser = portInstance.pipe(new RegexParser({ regex: /\r\n|\r|\n|!/ }));
+    parser.on('data', (frame: Buffer) => {
+      if (!Buffer.isBuffer(frame)) return;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-rx-frame] ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
+      );
+      this.handleFrame(frame);
+    });
+    this.parser = parser;
     portInstance.on('error', (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
@@ -544,9 +488,11 @@ class HardnessMachineSerialService extends EventEmitter {
       this.setState({ lastError: message }, 'system');
     });
     portInstance.on('close', () => {
-      // eslint-disable-next-line no-console
-      console.log('[machine-service] port closed');
       this.port = null;
+      if (this.parser) {
+        this.parser.removeAllListeners('data');
+        this.parser = null;
+      }
       this.setState(
         { connected: false, port: null, indenting: false, machineStatus: 'disconnected' },
         'system'
@@ -554,8 +500,6 @@ class HardnessMachineSerialService extends EventEmitter {
     });
 
     this.port = portInstance;
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] port open path=', opts.port);
     this.setState(
       {
         connected: true,
@@ -575,13 +519,15 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   async disconnectMachine(): Promise<MachineState> {
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] disconnect requested');
     if (this.port) {
       await new Promise<void>((resolve) => {
         this.port?.close(() => resolve());
       });
       this.port = null;
+    }
+    if (this.parser) {
+      this.parser.removeAllListeners('data');
+      this.parser = null;
     }
     this.setState(
       {
@@ -596,455 +542,200 @@ class HardnessMachineSerialService extends EventEmitter {
     return this.getState();
   }
 
-  private handleIncoming(chunk: Buffer): void {
-    // [RX] hex + ascii — verbatim so the user can match against the manual.
+  private handleFrame(rawFrame: Buffer): void {
+    const rxAt = new Date().toISOString();
+    const rxFrame = this.frameLog(rawFrame);
+    const frame = parseFrame(rawFrame);
+
     // eslint-disable-next-line no-console
     console.log(
-      `[machine-sync][rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[machine-rx] raw hex=${chunk.toString('hex')}`);
-    // eslint-disable-next-line no-console
-    console.log(`[machine-rx] raw ascii=${JSON.stringify(chunk.toString('ascii'))}`);
-    // eslint-disable-next-line no-console
-    console.log(`[machine-rx] byteCount=${chunk.length}`);
-    if (this.pendingAckField) {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-rx] after-tx raw=${JSON.stringify(chunk.toString('ascii'))}`);
-    }
-    if (this.pendingAckField === 'force') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-force-rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
-      );
-    }
-    if (this.pendingAckField === 'loadTime') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-loadtime-rx] hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
-      );
-    }
-    if (this.pendingAckField === 'lightness') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-lightness-rx] raw=${JSON.stringify(chunk.toString('ascii'))} hex=${chunk.toString('hex')}`
-      );
-    }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-rx] chunk hex=${chunk.toString('hex')} ascii=${JSON.stringify(chunk.toString('ascii'))}`
+      `[machine-rx-handle] kind=${frame.kind} pendingField=${this.pendingAckField ?? 'none'} ascii=${JSON.stringify(rxFrame.ascii)}`
     );
 
-    // Record Last RX on every byte arrival, even if the bytes don't yet form a
-    // complete frame. The UI was showing "Never" whenever the parser was still
-    // accumulating partial input.
-    const chunkAt = new Date().toISOString();
-    this.updateTelemetry({
-      lastRxAt: chunkAt,
-      lastRxTime: chunkAt,
-      lastRxFrame: this.frameLog(chunk),
-    });
+    if (frame.kind === 'unknown') {
+      this.updateTelemetry({ lastRxAt: rxAt, lastRxTime: rxAt, lastRxFrame: rxFrame });
+      return;
+    }
 
-    this.rxBuffer = Buffer.concat([this.rxBuffer, chunk]);
-
-    // Drain as many complete frames as the streaming parser can extract from
-    // the rolling buffer. The parser tells us how many bytes it consumed; we
-    // keep the unconsumed tail for the next chunk.
-    let safety = 32;
-    while (safety > 0) {
-      safety -= 1;
-      const { frame, consumed } = tryParseOneFrame(this.rxBuffer);
-      if (consumed === 0) break;
-      const rawFrame = this.rxBuffer.slice(0, consumed);
-      const rxAt = new Date().toISOString();
-      const rxFrame = this.frameLog(rawFrame);
-      this.rxBuffer = this.rxBuffer.slice(consumed);
-
-      // eslint-disable-next-line no-console
-      console.log('[machine-service] [PARSED] kind=', frame.kind);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-rx] frame kind=${frame.kind} hex=${rxFrame.hex} ascii=${JSON.stringify(rxFrame.ascii)}`
-      );
-      if (frame.kind === 'unknown' && frame.raw.length > 0) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[machine-sync][rx-frame] hex=${frame.raw.toString('hex')} ascii=${JSON.stringify(frame.raw.toString('ascii'))}`
+    switch (frame.kind) {
+      case 'state-batch': {
+        const patch = frame.values as Partial<MachineState>;
+        // Accept ANY state echo for the pending field as confirmation. The
+        // machine's reported value is authoritative — if it differs from the
+        // requested value we still record it (the dropdown will reflect the
+        // real machine state) instead of letting ACK time out.
+        const expectedEcho =
+          this.pendingAckField !== null &&
+          frame.values[this.pendingAckField as MachineControlKey] !== undefined;
+        const expectedTurretEcho =
+          this.pendingAckField !== null &&
+          String(this.pendingAckField).startsWith('turret') &&
+          frame.turretSlot !== undefined;
+        const fullPatch: Partial<MachineState> = {
+          ...patch,
+          turretPosition: frame.turretDirection ?? this.state.turretPosition,
+          lastRxAt: rxAt,
+          lastRxTime: rxAt,
+          lastRxFrame: rxFrame,
+          machineStatus: 'rx-state',
+          syncStatus: 'synced',
+          syncMessage: `RX state batch`,
+          lastError: undefined,
+        };
+        if (frame.values.objective !== undefined) {
+          const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
+          // Defensive: assign explicitly even though `...patch` already
+          // carries it. Guards against future changes to frame.values typing
+          // and makes the machine-RX → state.objective contract explicit.
+          fullPatch.objective = String(frame.values.objective);
+          fullPatch.lastObjectiveRx = rxAscii;
+          fullPatch.confirmedObjectiveFromMachine = String(frame.values.objective);
+          fullPatch.lastObjectivePhysicalCheck = 'unknown';
+          if (this.pendingTurretAfterImpressConfirm) {
+            this.pendingTurretAfterImpressConfirm = false;
+          }
+        }
+        this.setState(fullPatch, 'machine');
+        if (expectedEcho || expectedTurretEcho) {
+          this.emit('ack');
+        }
+        break;
+      }
+      case 'turret-update': {
+        // Accept any turret-update for a pending turret command, and any
+        // L<n>OK frame as objective confirmation when an objective change is
+        // pending — value mismatch is still a real machine state and should
+        // not cause an ack timeout.
+        const expectedTurretEcho =
+          this.pendingAckField !== null &&
+          String(this.pendingAckField).startsWith('turret');
+        const expectedObjectiveEcho =
+          this.pendingAckField === 'objective' && frame.objective !== undefined;
+        const patch: Partial<MachineState> = {
+          turretPosition: frame.direction ?? 'unknown',
+          lastRxAt: rxAt,
+          lastRxTime: rxAt,
+          lastRxFrame: rxFrame,
+          machineStatus: 'turret-update',
+          syncStatus: 'synced',
+          syncMessage: `RX turret slot=${frame.slot}`,
+          lastError: undefined,
+        };
+        if (frame.objective !== undefined) {
+          const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
+          patch.objective = frame.objective;
+          patch.lastObjectiveRx = rxAscii;
+          patch.confirmedObjectiveFromMachine = frame.objective;
+          if (this.pendingTurretAfterImpressConfirm) {
+            this.pendingTurretAfterImpressConfirm = false;
+          }
+          patch.lastObjectivePhysicalCheck = 'unknown';
+          patch.syncMessage = `RX objective=${frame.objective} turret slot=${frame.slot}`;
+        }
+        this.setState(patch, 'machine');
+        if (expectedTurretEcho || expectedObjectiveEcho) {
+          this.emit('ack');
+        }
+        break;
+      }
+      case 'state-update': {
+        const rxField = this.machineFieldName(frame.key);
+        // Field-level match is enough — the machine's echoed value is the
+        // truth. If we asked for 1kgf and got C08 back, the dropdown
+        // updates to the real value instead of timing out.
+        const expectedEcho = this.pendingAckField === frame.key;
+        const patch: Partial<MachineState> = {
+          [frame.key]: frame.value,
+          lastRxAt: rxAt,
+          lastRxTime: rxAt,
+          lastRxFrame: rxFrame,
+          machineStatus: `rx-${rxField}`,
+          syncStatus: 'synced',
+          syncMessage: `RX ${rxField}=${frame.value}`,
+          lastError: undefined,
+        } as Partial<MachineState>;
+        if (frame.key === 'objective') {
+          const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
+          patch.lastObjectiveRx = rxAscii;
+          patch.confirmedObjectiveFromMachine = String(frame.value);
+          // Reset physical check on every fresh machine confirmation —
+          // the human has not yet visually verified this new position.
+          patch.lastObjectivePhysicalCheck = 'unknown';
+          if (this.pendingTurretAfterImpressConfirm) {
+            this.pendingTurretAfterImpressConfirm = false;
+          }
+        }
+        this.setState(patch, 'machine');
+        // Persist machine-driven changes too — operator may have edited
+        // values directly on the panel; SQLite must mirror reality.
+        if (
+          frame.key === 'force' ||
+          frame.key === 'lightness' ||
+          frame.key === 'loadTime' ||
+          frame.key === 'objective' ||
+          frame.key === 'hardnessLevel'
+        ) {
+          this.schedulePersist();
+        }
+        if (expectedEcho) {
+          this.emit('ack');
+        }
+        break;
+      }
+      case 'indent-status':
+        this.setState(
+          {
+            indentStatus: frame.status,
+            indenting: frame.status === 'started' || frame.status === 'running',
+            machineStatus: `indent-${frame.status}`,
+            lastError: frame.status === 'error' ? frame.message : undefined,
+            lastRxAt: rxAt,
+            lastRxTime: rxAt,
+            lastRxFrame: rxFrame,
+            syncStatus: frame.status === 'error' ? 'failed' : 'synced',
+            syncMessage: `RX indent=${frame.status}`,
+          },
+          'machine'
         );
-        this.updateTelemetry({ lastRxAt: rxAt, lastRxTime: rxAt, lastRxFrame: rxFrame });
-        this.logAckUnmatched(frame.raw.toString('ascii'));
+        if (this.pendingAckField === 'indent') {
+          if (frame.status === 'completed') {
+            this.emit('ack');
+          } else if (frame.status === 'error') {
+            this.emit('nak', frame.message ?? 'indent error');
+          }
+        }
+        break;
+      case 'ack': {
+        const isIndentAck = this.pendingAckField === 'indent';
+        this.updateTelemetry({
+          lastRxAt: rxAt,
+          lastRxTime: rxAt,
+          lastRxFrame: rxFrame,
+          machineStatus: isIndentAck ? 'indent-ack' : 'ack',
+          syncStatus: 'synced',
+          syncMessage: isIndentAck ? 'ACK indent=start' : 'ACK received',
+          lastError: undefined,
+        });
+        this.emit('ack');
+        break;
       }
-
-      switch (frame.kind) {
-        case 'state-batch': {
-          const patch = frame.values as Partial<MachineState>;
-          // Accept ANY state echo for the pending field as confirmation. The
-          // machine's reported value is authoritative — if it differs from the
-          // requested value we still record it (the dropdown will reflect the
-          // real machine state) instead of letting ACK time out.
-          const expectedEcho =
-            this.pendingAckField !== null &&
-            frame.values[this.pendingAckField as MachineControlKey] !== undefined;
-          const expectedTurretEcho =
-            this.pendingAckField !== null &&
-            String(this.pendingAckField).startsWith('turret') &&
-            frame.turretSlot !== undefined;
-          for (const [field, value] of Object.entries(frame.values)) {
-            // eslint-disable-next-line no-console
-            console.log(`[machine-sync][machine-update] field=${field} value=${value}`);
-            this.logMachineRxField(field, value);
-            if (field === 'force') {
-              // eslint-disable-next-line no-console
-              console.log(`[machine-parse] force detected value=${value}`);
-              // eslint-disable-next-line no-console
-              console.log(`[machine-sync] source=machine force=${value}`);
-              // eslint-disable-next-line no-console
-              console.log(`[machine-force-panel-update] value=${value} source=machine`);
-              // eslint-disable-next-line no-console
-              console.log(`[machine-force-state-confirmed] value=${value} source=machine`);
-            }
-            if (field === 'objective') {
-              // eslint-disable-next-line no-console
-              console.log(`[machine-rx] objective detected value=${value}`);
-              // eslint-disable-next-line no-console
-              console.log(`[machine-sync] source=machine objective=${value}`);
-            }
-          }
-          if (frame.turretSlot) {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-turret-rx] slot=${frame.turretSlot} direction=${frame.turretDirection ?? 'unknown'} objective=${frame.values.objective ?? 'unknown'}`
-            );
-          }
-          const fullPatch: Partial<MachineState> = {
-            ...patch,
-            turretPosition: frame.turretDirection ?? this.state.turretPosition,
+      case 'nak':
+        // eslint-disable-next-line no-console
+        console.error(`[machine-service] NAK: ${frame.message ?? 'machine NAK'}`);
+        this.emit('nak', frame.message ?? 'machine NAK');
+        this.setState(
+          {
+            lastError: frame.message ?? 'machine NAK',
             lastRxAt: rxAt,
             lastRxTime: rxAt,
             lastRxFrame: rxFrame,
-            machineStatus: 'rx-state',
-            syncStatus: 'synced',
-            syncMessage: `RX state batch`,
-            lastError: undefined,
-          };
-          if (frame.values.objective !== undefined) {
-            const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
-            // Defensive: assign explicitly even though `...patch` already
-            // carries it. Guards against future changes to frame.values typing
-            // and makes the machine-RX → state.objective contract explicit.
-            fullPatch.objective = String(frame.values.objective);
-            fullPatch.lastObjectiveRx = rxAscii;
-            fullPatch.confirmedObjectiveFromMachine = String(frame.values.objective);
-            fullPatch.lastObjectivePhysicalCheck = 'unknown';
-            if (this.pendingTurretAfterImpressConfirm) {
-              // eslint-disable-next-line no-console
-              console.log(
-                `[turret-after-impress-move-confirmed] objective=${frame.values.objective}`
-              );
-              this.pendingTurretAfterImpressConfirm = false;
-            }
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.values.objective}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-sync][objective] source=machine confirmedObjective=${frame.values.objective}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[objective-test] rx=${rxAscii} confirmed=${frame.values.objective}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-rx] ack/status objective=${frame.values.objective} raw=${rxAscii}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-sync] confirmed objective=${frame.values.objective} source=machine`
-            );
-          }
-          this.setState(fullPatch, 'machine');
-          if (expectedEcho || expectedTurretEcho) {
-            this.logAckMatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-            this.emit('ack');
-          } else {
-            this.logAckUnmatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-          }
-          break;
-        }
-        case 'turret-update': {
-          // Accept any turret-update for a pending turret command, and any
-          // L<n>OK frame as objective confirmation when an objective change is
-          // pending — value mismatch is still a real machine state and should
-          // not cause an ack timeout.
-          const expectedTurretEcho =
-            this.pendingAckField !== null &&
-            String(this.pendingAckField).startsWith('turret');
-          const expectedObjectiveEcho =
-            this.pendingAckField === 'objective' && frame.objective !== undefined;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[machine-sync][machine-update] field=turretPosition value=${frame.direction ?? 'unknown'} slot=${frame.slot}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[machine-turret-rx] slot=${frame.slot} direction=${frame.direction ?? 'unknown'} objective=${frame.objective ?? 'unknown'}`
-          );
-          const patch: Partial<MachineState> = {
-            turretPosition: frame.direction ?? 'unknown',
-            lastRxAt: rxAt,
-            lastRxTime: rxAt,
-            lastRxFrame: rxFrame,
-            machineStatus: 'turret-update',
-            syncStatus: 'synced',
-            syncMessage: `RX turret slot=${frame.slot}`,
-            lastError: undefined,
-          };
-          if (frame.objective !== undefined) {
-            const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.objective}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-objective-rx] raw=${rxAscii} confirmedObjective=${frame.objective} expected=L${frame.slot}OK`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[machine-sync][objective] source=machine confirmedObjective=${frame.objective}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(`[machine-sync][machine-update] field=objective value=${frame.objective}`);
-            this.logMachineRxField('objective', frame.objective);
-            // eslint-disable-next-line no-console
-            console.log(`[machine-rx] objective detected value=${frame.objective}`);
-            // eslint-disable-next-line no-console
-            console.log(`[machine-sync] source=machine objective=${frame.objective}`);
-            patch.objective = frame.objective;
-            patch.lastObjectiveRx = rxAscii;
-            patch.confirmedObjectiveFromMachine = frame.objective;
-            if (this.pendingTurretAfterImpressConfirm) {
-              // eslint-disable-next-line no-console
-              console.log(
-                `[turret-after-impress-move-confirmed] objective=${frame.objective}`
-              );
-              this.pendingTurretAfterImpressConfirm = false;
-            }
-            patch.lastObjectivePhysicalCheck = 'unknown';
-            patch.syncMessage = `RX objective=${frame.objective} turret slot=${frame.slot}`;
-            // eslint-disable-next-line no-console
-            console.log(`[objective-test] rx=${rxAscii} confirmed=${frame.objective}`);
-            if (expectedObjectiveEcho) {
-              // eslint-disable-next-line no-console
-              console.log(`[machine-rx] ack/status objective=${frame.objective} raw=${rxAscii}`);
-              // eslint-disable-next-line no-console
-              console.log(`[machine-sync] confirmed objective=${frame.objective} source=machine`);
-            }
-          }
-          this.setState(patch, 'machine');
-          if (expectedTurretEcho || expectedObjectiveEcho) {
-            this.logAckMatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-            this.emit('ack');
-          } else {
-            this.logAckUnmatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-          }
-          break;
-        }
-        case 'state-update':
-          // eslint-disable-next-line no-console
-          console.log(`[machine-sync][machine-update] field=${frame.key} value=${frame.value}`);
-          this.logMachineRxField(frame.key, frame.value);
-          if (frame.key === 'force') {
-            // eslint-disable-next-line no-console
-            console.log(`[machine-parse] force detected value=${frame.value}`);
-            // eslint-disable-next-line no-console
-            console.log(`[machine-sync] source=machine force=${frame.value}`);
-            // eslint-disable-next-line no-console
-            console.log(`[machine-force-panel-update] value=${frame.value} source=machine`);
-            // eslint-disable-next-line no-console
-            console.log(`[machine-force-state-confirmed] value=${frame.value} source=machine`);
-          }
-          if (frame.key === 'objective') {
-            // eslint-disable-next-line no-console
-            console.log(`[machine-rx] objective detected value=${frame.value}`);
-            // eslint-disable-next-line no-console
-            console.log(`[machine-sync] source=machine objective=${frame.value}`);
-          }
-          {
-            const rxField = this.machineFieldName(frame.key);
-            // Field-level match is enough — the machine's echoed value is the
-            // truth. If we asked for 1kgf and got C08 back, the dropdown
-            // updates to the real value instead of timing out.
-            const expectedEcho = this.pendingAckField === frame.key;
-            const patch: Partial<MachineState> = {
-              [frame.key]: frame.value,
-              lastRxAt: rxAt,
-              lastRxTime: rxAt,
-              lastRxFrame: rxFrame,
-              machineStatus: `rx-${rxField}`,
-              syncStatus: 'synced',
-              syncMessage: `RX ${rxField}=${frame.value}`,
-              lastError: undefined,
-            } as Partial<MachineState>;
-            if (frame.key === 'objective') {
-              const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
-              patch.lastObjectiveRx = rxAscii;
-              patch.confirmedObjectiveFromMachine = String(frame.value);
-              // Reset physical check on every fresh machine confirmation —
-              // the human has not yet visually verified this new position.
-              patch.lastObjectivePhysicalCheck = 'unknown';
-              if (this.pendingTurretAfterImpressConfirm) {
-                // eslint-disable-next-line no-console
-                console.log(
-                  `[turret-after-impress-move-confirmed] objective=${frame.value}`
-                );
-                this.pendingTurretAfterImpressConfirm = false;
-              }
-              // eslint-disable-next-line no-console
-              console.log(
-                `[machine-objective-rx] raw=${JSON.stringify(rxAscii)} parsedObjective=${frame.value}`
-              );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[machine-sync][objective] source=machine confirmedObjective=${frame.value}`
-              );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[objective-test] rx=${rxAscii} confirmed=${frame.value}`
-              );
-              if (expectedEcho) {
-                // eslint-disable-next-line no-console
-                console.log(`[machine-rx] ack/status objective=${frame.value} raw=${rxAscii}`);
-                // eslint-disable-next-line no-console
-                console.log(`[machine-sync] confirmed objective=${frame.value} source=machine`);
-              }
-            }
-            this.setState(patch, 'machine');
-            if (frame.key === 'lightness' || frame.key === 'loadTime') {
-              // eslint-disable-next-line no-console
-              console.log(`[machine-rx] confirmed ${frame.key}=${frame.value}`);
-            }
-            if (frame.key === 'lightness') {
-              // eslint-disable-next-line no-console
-              console.log(
-                `[machine-lightness-rx] raw=${JSON.stringify(rxFrame.ascii)} parsedValue=${frame.value}`
-              );
-              // eslint-disable-next-line no-console
-              console.log(`[lightness-ack] value=${frame.value}`);
-            }
-            if (frame.key === 'force') {
-              // eslint-disable-next-line no-console
-              console.log(
-                `[machine-force-ack] success=${expectedEcho} parsedForce=${frame.value}`
-              );
-            }
-            if (frame.key === 'loadTime') {
-              // eslint-disable-next-line no-console
-              console.log(
-                `[machine-loadtime-ack] success=${expectedEcho} parsedLoadTime=${frame.value}`
-              );
-            }
-            // Persist machine-driven changes too — operator may have edited
-            // values directly on the panel; SQLite must mirror reality.
-            if (
-              frame.key === 'force' ||
-              frame.key === 'lightness' ||
-              frame.key === 'loadTime' ||
-              frame.key === 'objective' ||
-              frame.key === 'hardnessLevel'
-            ) {
-              this.schedulePersist();
-            }
-            if (expectedEcho) {
-              this.logAckMatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-              this.emit('ack');
-            } else {
-              this.logAckUnmatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-            }
-          }
-          break;
-        case 'indent-status':
-          // eslint-disable-next-line no-console
-          console.log('[machine-service] [SYNC] indent status=', frame.status);
-          this.setState(
-            {
-              indentStatus: frame.status,
-              indenting: frame.status === 'started' || frame.status === 'running',
-              machineStatus: `indent-${frame.status}`,
-              lastError: frame.status === 'error' ? frame.message : undefined,
-              lastRxAt: rxAt,
-              lastRxTime: rxAt,
-              lastRxFrame: rxFrame,
-              syncStatus: frame.status === 'error' ? 'failed' : 'synced',
-              syncMessage: `RX indent=${frame.status}`,
-            },
-            'machine'
-          );
-          if (this.pendingAckField === 'indent') {
-            if (frame.status === 'completed') {
-              this.logAckMatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-              this.emit('ack');
-            } else if (frame.status === 'error') {
-              this.emit('nak', frame.message ?? 'indent error');
-            }
-          }
-          break;
-        case 'ack':
-          if (!this.pendingAckField) {
-            // eslint-disable-next-line no-console
-            console.log('[machine-sync][ack] field=unknown ok=true');
-          }
-          {
-            const isIndentAck = this.pendingAckField === 'indent';
-            if (this.pendingAckField) {
-              this.logAckMatched(rxFrame.ascii.replace(/[\r\n]+$/, ''));
-            }
-            this.updateTelemetry({
-              lastRxAt: rxAt,
-              lastRxTime: rxAt,
-              lastRxFrame: rxFrame,
-              machineStatus: isIndentAck ? 'indent-ack' : 'ack',
-              syncStatus: 'synced',
-              syncMessage: isIndentAck ? 'ACK indent=start' : 'ACK received',
-              lastError: undefined,
-            });
-            this.emit('ack');
-          }
-          break;
-        case 'nak':
-          if (!this.pendingAckField) {
-            // eslint-disable-next-line no-console
-            console.log(`[machine-sync][ack] field=unknown ok=false message=${frame.message ?? 'machine NAK'}`);
-          }
-          this.emit('nak', frame.message ?? 'machine NAK');
-          this.setState(
-            {
-              lastError: frame.message ?? 'machine NAK',
-              lastRxAt: rxAt,
-              lastRxTime: rxAt,
-              lastRxFrame: rxFrame,
-              machineStatus: 'nak',
-              syncStatus: 'failed',
-              syncMessage: frame.message ?? 'machine NAK',
-            },
-            'machine'
-          );
-          break;
-        case 'unknown':
-        default:
-          break;
-      }
-      if (frame.kind === 'unknown') break;
-    }
-
-    // Hard-cap the rx buffer to avoid unbounded growth if the protocol is
-    // misconfigured and nothing is parseable.
-    if (this.rxBuffer.length > 4096) {
-      // eslint-disable-next-line no-console
-      console.warn('[machine-service] rx buffer overflow, discarding', this.rxBuffer.length, 'bytes');
-      this.rxBuffer = Buffer.alloc(0);
+            machineStatus: 'nak',
+            syncStatus: 'failed',
+            syncMessage: frame.message ?? 'machine NAK',
+          },
+          'machine'
+        );
+        break;
     }
   }
 
@@ -1055,7 +746,7 @@ class HardnessMachineSerialService extends EventEmitter {
    */
   private waitForAck(
     field: MachineCommandKey,
-    expectedValue: string | number | undefined,
+    _expectedValue: string | number | undefined,
     timeoutMs: number,
     commandId: number,
     commandLabel: string
@@ -1067,49 +758,23 @@ class HardnessMachineSerialService extends EventEmitter {
         this.off('nak', onNak);
         if (this.pendingAckField === field) {
           this.pendingAckField = null;
-          this.pendingAckValue = null;
-          this.pendingAckCommandLabel = null;
-          this.pendingAckCommandId = null;
         }
       };
       const onAck = () => {
-        // eslint-disable-next-line no-console
-        console.log(`[machine-sync][ack] field=${field} ok=true`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-service] ack field=${field} ok=true`);
-        if (field === 'force') {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-force-ack] command=${commandLabel} id=${commandId} expected=${expectedValue ?? 'any'}`);
-        }
         cleanup();
         resolve();
       };
       const onNak = (message: string) => {
-        // eslint-disable-next-line no-console
-        console.log(`[machine-sync][ack] field=${field} ok=false message=${message}`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-service] ack field=${field} ok=false message=${message}`);
         cleanup();
         reject(new Error(message));
       };
       const timer = setTimeout(() => {
         // eslint-disable-next-line no-console
-        console.log(`[machine-sync][ack] field=${field} ok=false message=ack timeout`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-service] ack field=${field} ok=false message=ack timeout`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-ack] timeout command=${commandLabel} id=${commandId} expected=${expectedValue ?? 'any'}`);
-        if (field === 'force') {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-force-timeout] command=${commandLabel} id=${commandId} expected=${expectedValue ?? 'any'} timeoutMs=${timeoutMs}`);
-        }
+        console.error(`[machine-service] ack timeout command=${commandLabel} id=${commandId}`);
         cleanup();
         reject(new Error('ack timeout'));
       }, timeoutMs);
       this.pendingAckField = field;
-      this.pendingAckValue = expectedValue === undefined ? null : String(expectedValue);
-      this.pendingAckCommandLabel = commandLabel;
-      this.pendingAckCommandId = commandId;
       this.once('ack', onAck);
       this.once('nak', onNak);
     });
@@ -1136,67 +801,11 @@ class HardnessMachineSerialService extends EventEmitter {
     }
     const commandId = ++this.commandSequence;
     const commandLabel = this.describeCommand(field, opts.expectedValue);
-    // eslint-disable-next-line no-console
-    console.log(`[machine-command] queued id=${commandId} command=${commandLabel}`);
-    // [TX] hex + ascii — full frame logged for protocol verification.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-sync][tx] field=${field} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-tx] field=${field} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
-    );
-    if (field === 'force') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-tx] command=load sourceField=force value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-force-tx] value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
-      );
-    } else if (field === 'loadTime') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-loadtime-tx] value=${opts.expectedValue ?? 'unknown'} ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);
-    } else if (field === 'lightness') {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-lightness-tx] value=${opts.expectedValue ?? 'unknown'} ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);
-    } else if (field === 'objective') {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-objective-tx] objective=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')} ascii=${JSON.stringify(frame.toString('ascii'))}`
-      );
-      // Spec-format companion log: explicit value/code/hex split for diffing
-      // 10X (UL1), IND (UL2), 40X (UL3) traces side-by-side.
-      const codeAscii = frame.toString('ascii').replace(/\r$/, '');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-objective-tx] value=${opts.expectedValue ?? 'unknown'} code=${codeAscii} hex=${frame.toString('hex')}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-objective-tx] objective=${opts.expectedValue ?? 'unknown'} command=${codeAscii}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[objective-test] requested=${opts.expectedValue ?? 'unknown'} tx=${codeAscii}`
-      );
+
+    if (field === 'objective') {
       // Stash on telemetry so the UI can correlate TX vs RX for the diagnostic.
+      const codeAscii = frame.toString('ascii').replace(/\r$/, '');
       this.updateTelemetry({ lastObjectiveTx: codeAscii });
-    } else {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-tx] command=${field} value=${opts.expectedValue ?? 'unknown'} hex=${frame.toString('hex')}`);
     }
 
     // Pre-arm ack listener BEFORE the write completes — some machines reply
@@ -1211,22 +820,16 @@ class HardnessMachineSerialService extends EventEmitter {
         )
       : null;
 
-    // eslint-disable-next-line no-console
-    console.log(`[machine-tx] open=${this.port?.isOpen ?? false} port=${this.state.port ?? '?'}`);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error('tx timeout'));
       }, TX_TIMEOUT_MS);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-tx] write start hex=${frame.toString('hex')}`);
-      this.port?.write(frame, (err, bytesWritten) => {
+      this.port?.write(frame, (err) => {
         if (err) {
           clearTimeout(timer);
           reject(err);
           return;
         }
-        // eslint-disable-next-line no-console
-        console.log(`[machine-tx] bytesWritten=${bytesWritten ?? frame.length}`);
         // Force the OS buffer to flush before we start the ack countdown,
         // otherwise on slow USB-serial adapters the bytes can sit in the
         // driver queue past the timeout window.
@@ -1236,10 +839,6 @@ class HardnessMachineSerialService extends EventEmitter {
             reject(drainErr);
             return;
           }
-          // eslint-disable-next-line no-console
-          console.log(`[machine-tx] drain complete bytes=${bytesWritten ?? frame.length}`);
-          // eslint-disable-next-line no-console
-          console.log(`[machine-tx] write complete bytes=${bytesWritten ?? frame.length}`);
           resolve();
         });
       });
@@ -1251,19 +850,6 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   async setControlValue(key: MachineControlKey, value: string | number): Promise<MachineState> {
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] set value requested', key, value);
-    // eslint-disable-next-line no-console
-    console.log(`[machine-sync][ui-change] field=${key} value=${value}`);
-    // eslint-disable-next-line no-console
-    console.log(`[machine-ui] field=${key} value=${value}`);
-    if (key === 'force') {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-service] setForce requested value=${value}`);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-force-tx-request] requested value=${value}`);
-    }
-
     let normalizedValue: string | number;
     try {
       normalizedValue = this.validateControlValue(key, value);
@@ -1283,18 +869,6 @@ class HardnessMachineSerialService extends EventEmitter {
 
     if (!isCommandVerified(key)) {
       const message = this.unverifiedMessage(key);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-sync][tx-blocked] field=${key} verified=false reason=${message}`);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-tx] blocked field=${key} value=${normalizedValue} verified=false reason=${message}`);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-tx] blocked ${key} verified=false`);
-      if (key === 'force') {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[machine-tx] blocked command=load sourceField=force value=${normalizedValue} reason=${message}`
-        );
-      }
       this.setState(
         {
           lastError: message,
@@ -1310,18 +884,6 @@ class HardnessMachineSerialService extends EventEmitter {
     const frame = buildCommandForKey(key, normalizedValue);
     if (!frame) {
       const message = this.unverifiedMessage(key);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-sync][tx-blocked] field=${key} verified=false reason=${message}`);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-tx] blocked field=${key} value=${normalizedValue} reason=${message}`);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-tx] blocked ${key} verified=false`);
-      if (key === 'force') {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[machine-tx] blocked command=load sourceField=force value=${normalizedValue} reason=${message}`
-        );
-      }
       this.setState(
         {
           lastError: message,
@@ -1343,14 +905,6 @@ class HardnessMachineSerialService extends EventEmitter {
         syncMessage: `TX ${machineField}=${normalizedValue}`,
       });
       await this.transmit(key, frame, { awaitAck: true, expectedValue: normalizedValue });
-      if (key === 'force') {
-        // eslint-disable-next-line no-console
-        console.log(`[machine-sync] mapped software force -> machine load value=${normalizedValue}`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-state] force=${normalizedValue} source=pc`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-force-state-confirmed] value=${normalizedValue} source=pc`);
-      }
       const confirmedByMachine =
         this.state.lastUpdatedBy === 'machine' &&
         String(this.state[key]) === String(normalizedValue);
@@ -1369,15 +923,8 @@ class HardnessMachineSerialService extends EventEmitter {
       this.schedulePersist();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (key === 'objective') {
-        // Surface objective-specific failure so a UL2 timeout is greppable
-        // separately from generic TX errors in the captures.
-        const codeAscii = frame.toString('ascii').replace(/\r$/, '');
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[machine-objective-timeout] value=${normalizedValue} code=${codeAscii} reason=${message}`
-        );
-      }
+      // eslint-disable-next-line no-console
+      console.error(`[machine-service] set ${key}=${normalizedValue} failed: ${message}`);
       // UI must NOT show the requested value on failure. Backend state stays
       // at the last machine-confirmed objective, and the renderer reverts its
       // formState from machineState in its own catch handler.
@@ -1393,21 +940,13 @@ class HardnessMachineSerialService extends EventEmitter {
    * diagnostic flag so the UI can hide its "verify physical position" note.
    */
   confirmObjectivePhysical(): MachineState {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[objective-test] physical check=manual confirmed=${this.state.confirmedObjectiveFromMachine ?? 'unknown'}`
-    );
     this.setState({ lastObjectivePhysicalCheck: 'manual' }, 'system');
     return this.getState();
   }
 
   async sendTurret(direction: TurretDirection): Promise<MachineState> {
-    // eslint-disable-next-line no-console
-    console.log(`[machine-service] turret requested direction=${direction}`);
     if (!this.state.connected) {
       const message = 'machine not connected';
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-turret-tx] blocked verified=false`);
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
@@ -1418,8 +957,6 @@ class HardnessMachineSerialService extends EventEmitter {
     const frame = verified ? buildTurretCommand(direction) : null;
 
     if (!verified || !frame) {
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-turret-tx] blocked verified=false`);
       const message = `Turret ${direction} command is not verified; refusing to transmit speculative bytes.`;
       this.setState(
         {
@@ -1432,9 +969,6 @@ class HardnessMachineSerialService extends EventEmitter {
       );
       throw new Error(message);
     }
-
-    // eslint-disable-next-line no-console
-    console.log(`[machine-turret-tx] direction=${direction} slot=${slot} hex=${frame.toString('hex')}`);
 
     try {
       const txAt = new Date().toISOString();
@@ -1457,6 +991,8 @@ class HardnessMachineSerialService extends EventEmitter {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[machine-service] turret ${direction} failed: ${message}`);
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw err;
     }
@@ -1464,67 +1000,40 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   async startIndent(): Promise<MachineState> {
-    // eslint-disable-next-line no-console
-    console.log('[machine-service] indent requested');
     if (!this.state.connected) {
       const message = 'machine not connected';
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
     if (this.state.indentStatus === 'started' || this.state.indentStatus === 'running') {
-      // eslint-disable-next-line no-console
-      console.warn('[machine-service] indent already in progress — ignoring duplicate');
       return this.getState();
     }
     if (!isCommandVerified('indent')) {
       const message = this.unverifiedMessage('indent');
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-sync][tx-blocked] field=indent verified=false reason=${message}`);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-tx] blocked field=indent verified=false reason=${message}`);
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
     let turretAfterImpress = true;
-    let measureObjective: string | null = null;
     try {
       const all = await autoMeasureSettingsService.getAll();
       const settings = all[0] ?? null;
       if (settings) {
         turretAfterImpress = settings.turretAfterImpress !== false;
-        measureObjective =
-          typeof settings.objectiveForMeasure === 'string'
-            ? settings.objectiveForMeasure
-            : null;
       }
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn(
-        `[turret-after-impress-settings-read-failed] error=${err instanceof Error ? err.message : String(err)} — defaulting to enabled`
+      console.error(
+        `[machine-service] indent settings read failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[turret-after-impress] enabled=${turretAfterImpress} action=${turretAfterImpress ? 'move' : 'stay-current'}`
-    );
     if (turretAfterImpress) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[turret-after-impress-move-start] target=${measureObjective ?? 'unknown'}`
-      );
       this.pendingTurretAfterImpressConfirm = true;
     } else {
       this.pendingTurretAfterImpressConfirm = false;
-      // eslint-disable-next-line no-console
-      console.log('[turret-after-impress-skip] reason=setting-disabled');
     }
     const frame = buildStartIndentCommand(this.state.force, this.state.loadTime, turretAfterImpress);
     if (!frame) {
       const message = this.unverifiedMessage('indent');
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-sync][tx-blocked] field=indent verified=false reason=${message}`);
-      // eslint-disable-next-line no-console
-      console.warn(`[machine-tx] blocked field=indent reason=${message}`);
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
@@ -1532,10 +1041,6 @@ class HardnessMachineSerialService extends EventEmitter {
       const numericLoadTime = Number(this.state.loadTime);
       const indentTimeoutMs =
         (Number.isFinite(numericLoadTime) ? numericLoadTime * 1000 : 0) + INDENT_FINISH_GRACE_MS;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-impress-context] force=${this.state.force} loadTime=${this.state.loadTime} objective=${this.state.objective} turretAfterImpress=${turretAfterImpress} ascii=${JSON.stringify(frame.toString('ascii'))} hex="${frame.toString('hex')}" expectedRx=FINISH timeoutMs=${indentTimeoutMs}`
-      );
       // Indent triggers physical motion. The original DLL decodes FINISH as
       // the completion acknowledgement, so keep the UI pending until RX proves it.
       this.updateTelemetry({
@@ -1562,6 +1067,8 @@ class HardnessMachineSerialService extends EventEmitter {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[machine-service] indent failed: ${message}`);
       this.setState(
         {
           indentStatus: 'error',

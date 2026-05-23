@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createCalibrationSettings } from '@/api/createCalibrationSettings';
-import { updateCalibrationSettings } from '@/api/updateCalibrationSettings';
+import { createCalibrationSettings } from '@/api/calibration';
+import { updateCalibrationSettings } from '@/api/calibration';
 import type {
   CalibrationSettings,
   CalibrationSettingsSavePayload,

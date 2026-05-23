@@ -103,8 +103,6 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
     [measurements, xAxisKey, yAxisKey]
   );
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[depth-graph-axis-select] x=${xAxisKey} y=${yAxisKey}`);
     try {
       window.localStorage.setItem(LS_X_KEY, xAxisKey);
       window.localStorage.setItem(LS_Y_KEY, yAxisKey);
@@ -161,14 +159,10 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
   );
 
   const handleRefresh = useCallback(() => {
-    // eslint-disable-next-line no-console
-    console.log('[depth-image] fresh clicked');
     void refetch();
   }, [refetch]);
 
   const handleSaveImage = useCallback(async () => {
-    // eslint-disable-next-line no-console
-    console.log('[depth-image] save image clicked');
     setSaveImageError(null);
 
     const svg = previewRef.current?.querySelector('svg');
@@ -192,13 +186,6 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
       : 'Depth image';
     const title = `Depth Image ${new Date(capturedAt).toLocaleString('en-IN')}`;
 
-    // eslint-disable-next-line no-console
-    console.log('[album][save-image] payload', {
-      title,
-      previewLabel,
-      capturedAt,
-      bytes: imageDataUrl.length,
-    });
 
     try {
       await addAlbumItem({
@@ -208,8 +195,6 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
         capturedAt,
         imageDataUrl,
       });
-      // eslint-disable-next-line no-console
-      console.log('[album][save-image] saved ok');
       await onAlbumChanged();
     } catch (err) {
       // eslint-disable-next-line no-console

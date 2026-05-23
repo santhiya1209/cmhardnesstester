@@ -11,7 +11,7 @@ import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import { updateMeasurement } from '@/api/updateMeasurement';
+import { updateMeasurement } from '@/api/measurement';
 import { useDeleteTestRecord } from '@/hooks/mutations/useDeleteTestRecord';
 import { useSaveTestRecord } from '@/hooks/mutations/useSaveTestRecord';
 import { useTestRecords } from '@/hooks/queries/useTestRecords';
@@ -198,17 +198,11 @@ function TestRecordsDialogImpl({
     // operator actually sees on screen.
     const liveIds = new Set(measurements.map((m) => m.id));
     const requestedIds = payload.measurementIds;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[report-save-measurement-ids] count=${requestedIds.length} ids=${requestedIds.join(',') || '-'}`
-    );
     const validIds: string[] = [];
     const invalidIds: string[] = [];
     for (const id of requestedIds) {
       if (liveIds.has(id)) {
         validIds.push(id);
-        // eslint-disable-next-line no-console
-        console.log(`[report-valid-measurement-id] id=${id}`);
       } else {
         invalidIds.push(id);
         // eslint-disable-next-line no-console
@@ -216,10 +210,6 @@ function TestRecordsDialogImpl({
       }
     }
     if (invalidIds.length > 0) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[report-save-cleaned-ids] dropped=${invalidIds.length} kept=${validIds.length}`
-      );
     }
     if (validIds.length === 0) {
       setShowValidationError(true);
@@ -232,14 +222,6 @@ function TestRecordsDialogImpl({
       id: selectedRecord?.id,
       values: cleanedPayload,
     });
-    // eslint-disable-next-line no-console
-    console.log(
-      `[sample-info-target-range-save] min=${cleanedPayload.targetMinHv ?? 'null'} max=${cleanedPayload.targetMaxHv ?? 'null'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[hv-target-range-save] min=${cleanedPayload.targetMinHv ?? 'null'} max=${cleanedPayload.targetMaxHv ?? 'null'}`
-    );
 
     // Recompute Qualified for each linked measurement against the (possibly
     // changed) target range and persist. Per-measurement persistence keeps
@@ -252,10 +234,6 @@ function TestRecordsDialogImpl({
       const m = measurementById.get(measurementId);
       if (!m) continue;
       const qualified = computeQualified(m.hv, targetMin, targetMax);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[qualified-check] targetMinHv=${targetMin ?? 'null'} targetMaxHv=${targetMax ?? 'null'} measuredHV=${m.hv ?? 'null'} result=${qualified ?? 'null'}`
-      );
       if (qualified === m.qualified) continue;
       try {
         await updateMeasurement(m.id, {

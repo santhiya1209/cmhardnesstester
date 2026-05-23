@@ -29,9 +29,16 @@ export const colors = {
   background: '#F5F7FA',
   panel: '#FFFFFF',
   border: '#D0D7DE',
+  // Slightly darker border for stronger dividers / dashed empty-state outlines.
+  borderStrong: '#B7C2D2',
   textPrimary: '#1F2937',
   textMuted: '#6B7280',
   buttonPrimary: '#1E3A5F',
+  // Sky-blue accent used by the restyled right panel (tabs, action buttons,
+  // measure-mode buttons, focus rings). Soft/hover variants are tinted derivatives.
+  accentSkyBlue: '#0EA5E9',
+  accentSkyBlueSoft: '#E6F4FB',
+  accentSkyBlueHover: '#38BDF8',
   success: '#0F6E56',
   warning: '#F59E0B',
   error: '#D32F2F',

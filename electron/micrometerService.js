@@ -189,13 +189,8 @@ class MicrometerService {
     // until the user adds 2+ (LCD, hex) pairs to micrometer-captures.json.
     try {
       this.captureDecoder = loadCaptures();
-      console.log(
-        `[micrometer] captures loaded path=${this.captureDecoder.filePath} ` +
-          `pairs=${this.captureDecoder.pairs.length} ready=${this.captureDecoder.ready} ` +
-          `reason=${this.captureDecoder.reason}`
-      );
     } catch (err) {
-      console.warn(
+      console.error(
         '[micrometer] captures load failed:',
         err && err.message ? err.message : err
       );
@@ -269,10 +264,6 @@ class MicrometerService {
     }
 
     if (this.portOpen) {
-      console.log(
-        '[micrometer] open requested while already open',
-        this.currentOpenConfig ? describeConfig(this.currentOpenConfig) : this.state.portName
-      );
       return { ok: true, alreadyOpen: true, state: this.getState() };
     }
 
@@ -317,19 +308,13 @@ class MicrometerService {
   _emit() {
     const wc = this.webContents;
     if (!wc || wc.isDestroyed()) {
-      console.warn(
-        `[micrometer] IPC state send SKIPPED — no attached webContents (value=${this.state.value} displayValue=${this.state.displayValue}). Renderer may have been reloaded; reattach required.`
-      );
       return;
     }
 
     try {
       wc.send('micrometer:state', this.getState());
-      console.log(
-        `[micrometer] IPC state emitted value=${this.state.value} displayValue=${this.state.displayValue} status=${this.state.status}`
-      );
     } catch (err) {
-      console.warn('[micrometer] IPC state send failed:', err && err.message ? err.message : err);
+      console.error('[micrometer] IPC state send failed:', err && err.message ? err.message : err);
     }
   }
 
@@ -386,7 +371,6 @@ class MicrometerService {
         return;
       }
 
-      console.warn('[micrometer] latest serial value is stale; clearing capture buffer (UI keeps last value)');
       this.latestReading = null;
     }, STALE_READING_TIMEOUT_MS);
   }
@@ -405,20 +389,6 @@ class MicrometerService {
     this._resetRollingState();
     this.currentOpenConfig = config;
 
-    console.log(
-      '[micrometer] trying candidate',
-      `${this.scanCandidateIndex + 1}/${this.scanCandidates.length}`,
-      describeConfig(config)
-    );
-    console.log('[micrometer] serial open config', {
-      path: config.path,
-      baudRate: config.baudRate,
-      dataBits: config.dataBits,
-      parity: config.parity,
-      stopBits: config.stopBits,
-      pulseMode: config.pulseMode,
-    });
-
     let nextPort;
     try {
       nextPort = new SerialPort({
@@ -431,7 +401,7 @@ class MicrometerService {
       });
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
-      console.warn('[micrometer] serial create failed:', message);
+      console.error('[micrometer] serial create failed:', message);
       return this._tryNextCandidate(message);
     }
 
@@ -450,14 +420,14 @@ class MicrometerService {
       });
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
-      console.warn('[micrometer] serial open failed:', message);
+      console.error('[micrometer] serial open failed:', message);
       this.port = null;
       this.currentOpenConfig = null;
       return this._tryNextCandidate(message);
     }
 
     this.portOpen = true;
-    console.log('[micrometer] serial port opened', describeConfig(config));
+    console.log(`[micrometer] open complete ${describeConfig(config)}`);
 
     this._primeControlLines(config.pulseMode);
     this._scheduleRequestPulse(config.pulseMode);
@@ -482,7 +452,7 @@ class MicrometerService {
 
     port.on('error', (error) => {
       const message = error && error.message ? error.message : String(error);
-      console.warn('[micrometer] serial error:', message);
+      console.error('[micrometer] serial error:', message);
       if (!this.lockedBaudRate) {
         this._tryNextCandidate(message);
         return;
@@ -499,7 +469,7 @@ class MicrometerService {
     });
 
     port.on('close', () => {
-      console.log('[micrometer] serial port closed', describeConfig(config));
+      console.log(`[micrometer] serial port closed ${describeConfig(config)}`);
       if (this.closingPort) {
         return;
       }
@@ -536,7 +506,6 @@ class MicrometerService {
     this._stopRequestPulse();
 
     if (!ENABLE_AUTOMATIC_REQUEST_PULSE) {
-      console.log('[micrometer] automatic REQUEST pulse disabled - waiting for manual DATA/SEND');
       if (SEND_OPEN_REQUEST_PULSE) {
         this.pulseStartTimer = setTimeout(() => {
           this.pulseStartTimer = null;
@@ -547,7 +516,6 @@ class MicrometerService {
     }
 
     if (mode === 'none') {
-      console.log(`[micrometer] ${pulseModeDescription(mode)}`);
       return;
     }
 
@@ -558,11 +526,9 @@ class MicrometerService {
       }
 
       if (this.totalBytesReceived > 0) {
-        console.log('[micrometer] DATA received before pulse grace elapsed - skipping automatic REQUEST pulse');
         return;
       }
 
-      console.log(`[micrometer] starting REQUEST pulse mode: ${pulseModeDescription(mode)}`);
       this.requestPulseTimer = setInterval(() => {
         if (!this.portOpen || !this.port || !this.port.isOpen) {
           return;
@@ -580,13 +546,12 @@ class MicrometerService {
     }, PULSE_GRACE_MS);
   }
 
-  _sendSingleRequestPulse(mode, reason) {
+  _sendSingleRequestPulse(mode, _reason) {
     if (mode === 'none' || !this.portOpen || !this.port || !this.port.isOpen) {
       return;
     }
 
     const { firstState, secondState, label } = this._pulseStates(mode);
-    console.log(`[micrometer] sending one REQUEST pulse (${reason}) mode=${pulseModeDescription(mode)}`);
     this._setControlLines(firstState, `${label} one-shot`);
     setTimeout(() => {
       if (!this.portOpen || !this.port || !this.port.isOpen) {
@@ -627,7 +592,7 @@ class MicrometerService {
 
     this.port.set(state, (err) => {
       if (err) {
-        console.warn(`[micrometer] ${label} control-line failed:`, err.message);
+        console.error(`[micrometer] ${label} control-line failed:`, err.message);
       }
     });
   }
@@ -653,7 +618,6 @@ class MicrometerService {
       }
 
       if (this.scanCandidateIndex + 1 >= this.scanCandidates.length) {
-        console.warn('[micrometer] no value yet; keeping COM3 open and waiting for DATA');
         return;
       }
 
@@ -689,7 +653,7 @@ class MicrometerService {
         }
       } catch (err) {
         this.closingPort = false;
-        console.warn('[micrometer] serial close warning:', err && err.message ? err.message : err);
+        console.error('[micrometer] serial close failed:', err && err.message ? err.message : err);
       }
     }
 
@@ -717,7 +681,7 @@ class MicrometerService {
     }
 
     if (this.scanCandidateIndex + 1 >= this.scanCandidates.length) {
-      console.warn('[micrometer] scan exhausted:', reason);
+      console.error('[micrometer] scan exhausted:', reason);
       this._setState({
         connected: false,
         value: null,
@@ -729,13 +693,7 @@ class MicrometerService {
       return false;
     }
 
-    const previous = this.scanCandidates[this.scanCandidateIndex];
     this.scanCandidateIndex += 1;
-    const next = this.scanCandidates[this.scanCandidateIndex];
-    console.warn(
-      `[micrometer] invalid/no frame on ${describeConfig(previous)}; ` +
-        `discarding rolling buffer and trying ${describeConfig(next)}. reason=${reason || 'unknown'}`
-    );
 
     setTimeout(() => {
       if (this.lockedBaudRate) {
@@ -752,7 +710,6 @@ class MicrometerService {
       return;
     }
 
-    console.log(`[micrometer] raw chunk HEX ${bufferToHex(chunk)}`);
     this.totalBytesReceived += chunk.length;
     this.rxBuffer = Buffer.from(Buffer.concat([this.rxBuffer, chunk]).subarray(-MAX_BUFFER_BYTES));
     this.asciiBuffer = Buffer.from(
@@ -778,13 +735,8 @@ class MicrometerService {
 
     for (const frame of frames) {
       const rawHex = bufferToHex(frame);
-      // Single-line capture-helper log: copy this hex into
-      // micrometer-captures.json next to the LCD reading you saw on screen.
       if (rawHex !== this.lastCaptureCandidateHex) {
         this.lastCaptureCandidateHex = rawHex;
-        console.log(
-          `[micrometer][capture-candidate] hex="${rawHex}" — add to micrometer-captures.json with the LCD reading you see right now`
-        );
       }
 
       // Prefer captures-learned decoder when ready; otherwise fall back to
@@ -797,16 +749,12 @@ class MicrometerService {
         source = 'alt-preamble';
       }
       if (!decoded) {
-        console.log(
-          `[micrometer] alt-preamble frame seen but no decoder produced a value. hex=${rawHex}`
-        );
         continue;
       }
 
       if (!this.lockedBaudRate && this.currentOpenConfig) {
         this.lockedBaudRate = this.currentOpenConfig.baudRate;
         this._clearNoValidFrameTimeout();
-        console.log(`[micrometer] baud locked ${this.lockedBaudRate} via ${source} decoder`);
         this._setState({ lockedBaudRate: this.lockedBaudRate }, false);
       }
 
@@ -818,9 +766,6 @@ class MicrometerService {
         unit: 'mm',
         source,
       };
-      console.log(
-        `[micrometer] decoded ${source} value ${reading.displayValue} hex=${rawHex}`
-      );
       // Publish immediately — alt-preamble protocol cycles through scan
       // frames whose decoded values legitimately differ frame-to-frame, so
       // the strict 2-of-2 stable-value filter would never publish.
@@ -846,12 +791,6 @@ class MicrometerService {
         const terminatorIndex = terminatorIndexes.length > 0 ? Math.min(...terminatorIndexes) : -1;
 
         if (terminatorIndex >= 0) {
-          const discarded = this.asciiBuffer.subarray(0, terminatorIndex);
-          if (discarded.length > 0) {
-            console.log(
-              `[micrometer] ASCII candidate discarded reason=${inspected.reason} hex=${bufferToHex(discarded)}`
-            );
-          }
           this.asciiBuffer = trimAsciiBuffer(this.asciiBuffer, terminatorIndex + 1);
           continue;
         }
@@ -874,7 +813,6 @@ class MicrometerService {
     if (!this.lockedBaudRate && this.currentOpenConfig) {
       this.lockedBaudRate = this.currentOpenConfig.baudRate;
       this._clearNoValidFrameTimeout();
-      console.log(`[micrometer] baud locked ${this.lockedBaudRate} using ASCII DATA line`);
       this._setState({ lockedBaudRate: this.lockedBaudRate }, false);
     }
 
@@ -887,7 +825,6 @@ class MicrometerService {
       source: 'ascii',
     };
 
-    console.log(`[micrometer] decoded ASCII value ${decoded.displayValue} raw="${parsed.ascii}" hex=${rawHex}`);
     this.lastCandidateValue = decoded.value.toFixed(3);
     this.stableCount = STABLE_SAMPLE_COUNT;
     this._publishReading(decoded);
@@ -898,17 +835,11 @@ class MicrometerService {
       const syncOffset = this.rxBuffer.indexOf(Buffer.from([0x00, 0x00, 0x20]));
 
       if (syncOffset < 0) {
-        const discarded = this.rxBuffer.subarray(0, this.rxBuffer.length - 2);
-        if (discarded.length > 0) {
-          console.log(`[micrometer] invalid frame discarded reason=no-sync hex=${bufferToHex(discarded)}`);
-        }
         this.rxBuffer = Buffer.from(this.rxBuffer.subarray(Math.max(0, this.rxBuffer.length - 2)));
         return;
       }
 
       if (syncOffset > 0) {
-        const discarded = this.rxBuffer.subarray(0, syncOffset);
-        console.log(`[micrometer] invalid frame discarded reason=leading-noise hex=${bufferToHex(discarded)}`);
         this.rxBuffer = Buffer.from(this.rxBuffer.subarray(syncOffset));
       }
 
@@ -922,9 +853,6 @@ class MicrometerService {
       if (!validation.ok) {
         if (validation.rawHex !== this.lastInvalidFrameHex) {
           this.lastInvalidFrameHex = validation.rawHex;
-          console.log(
-            `[micrometer] invalid frame discarded reason=${validation.reason} hex=${validation.rawHex}`
-          );
         }
         this.rxBuffer = Buffer.from(this.rxBuffer.subarray(1));
         continue;
@@ -936,23 +864,17 @@ class MicrometerService {
   }
 
   _handleValidFrame(frame) {
-    const rawHex = bufferToHex(frame);
-    console.log(`[micrometer] valid frame HEX ${rawHex}`);
-
     const decoded = parseBinaryMicrometerFrame(frame);
     if (!decoded) {
-      console.log(`[micrometer] invalid frame discarded reason=decoder-null hex=${rawHex}`);
       return;
     }
 
     if (!this.lockedBaudRate && this.currentOpenConfig) {
       this.lockedBaudRate = this.currentOpenConfig.baudRate;
       this._clearNoValidFrameTimeout();
-      console.log(`[micrometer] baud locked ${this.lockedBaudRate}`);
       this._setState({ lockedBaudRate: this.lockedBaudRate }, false);
     }
 
-    console.log(`[micrometer] decoded value ${decoded.displayValue} raw=${rawHex}`);
     this._acceptStableValue(decoded);
   }
 
@@ -962,9 +884,6 @@ class MicrometerService {
     if (this.lastCandidateValue === null) {
       this.lastCandidateValue = valueKey;
       this.stableCount = 1;
-      console.log(
-        `[micrometer] stable filter waiting value=${valueKey} count=${this.stableCount}/${STABLE_SAMPLE_COUNT}`
-      );
       return;
     }
 
@@ -976,9 +895,6 @@ class MicrometerService {
     }
 
     if (this.stableCount < STABLE_SAMPLE_COUNT) {
-      console.log(
-        `[micrometer] stable filter waiting value=${valueKey} count=${this.stableCount}/${STABLE_SAMPLE_COUNT}`
-      );
       return;
     }
 
@@ -994,7 +910,6 @@ class MicrometerService {
       timestamp,
     };
 
-    console.log(`[micrometer] publish UI value ${decoded.displayValue}`);
     this._setState({
       connected: true,
       portName: this.currentOpenConfig ? this.currentOpenConfig.path : this.state.portName,

@@ -22,9 +22,9 @@ import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot
 import { useMachineState } from '@/hooks/queries/useMachineState';
 import { useConnectMachine } from '@/hooks/mutations/useConnectMachine';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
-import { getLatestMicrometerReading } from '@/api/getLatestMicrometerReading';
-import { measureVickersAuto, measureVickersAutoPreview } from '@/api/measureVickersAuto';
-import { getCameraSetting } from '@/api/getCameraSetting';
+import { getLatestMicrometerReading } from '@/api/micrometer';
+import { measureVickersAuto, measureVickersAutoPreview } from '@/api/system';
+import { getCameraSetting } from '@/api/camera';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
@@ -48,8 +48,6 @@ import { useMeasurements } from '@/hooks/queries/useMeasurements';
 import { useToolbarState } from '@/hooks/queries/useToolbarState';
 import { useActiveTool } from '@/hooks/useActiveTool';
 import {
-  getCurrentFrameEpoch,
-  getLastCameraFramePaintAt,
   getLastPaintEpoch,
   getLastPaintedFrameId,
   dropPendingCameraFrames,
@@ -57,10 +55,10 @@ import {
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
-import { listSerialPorts } from '@/api/listSerialPorts';
-import { openImageDialog } from '@/api/openImageDialog';
-import { saveImageDialog } from '@/api/saveImageDialog';
-import { exitApp } from '@/api/exitApp';
+import { listSerialPorts } from '@/api/serialPort';
+import { openImageDialog } from '@/api/system';
+import { saveImageDialog } from '@/api/system';
+import { exitApp } from '@/api/system';
 import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDispatcher';
 import { dispatchMenuAction } from '@/utils/menuDispatcher';
 import { TOOL_ACTION_TO_TOOL, type ToolbarActionId } from '@/types/tool';
@@ -116,10 +114,6 @@ async function readLatestMicrometerDepthMm(): Promise<number | null> {
     const value = reply.reading?.value ?? null;
     const resolved =
       typeof value === 'number' && Number.isFinite(value) ? value : null;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[micrometer-depth-before-row] value=${resolved ?? 'null'} stale=${(reply.reading as { stale?: boolean } | null)?.stale ?? false}`
-    );
     return resolved;
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -148,10 +142,6 @@ async function buildNewRowDepthPayload(
 ): Promise<DepthSavePayload> {
   if (micrometerEnabled) {
     const deviceValue = await readLatestMicrometerDepthMm();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[depth-source] source=device value=${deviceValue ?? 'null'}`
-    );
     return {
       depthMm: deviceValue,
       depthSource: 'device',
@@ -159,8 +149,6 @@ async function buildNewRowDepthPayload(
       manualDepthMm: null,
     };
   }
-  // eslint-disable-next-line no-console
-  console.log('[depth-source] source=manual value=null');
   return {
     depthMm: null,
     depthSource: 'manual',
@@ -209,10 +197,6 @@ const QUALIFIED_TARGET_MAX_HV = 800;
 
 function deriveQualifiedForRow(hv: number | null | undefined): 'YES' | 'NO' | null {
   const result = computeQualified(hv, QUALIFIED_TARGET_MIN_HV, QUALIFIED_TARGET_MAX_HV);
-  // eslint-disable-next-line no-console
-  console.log(
-    `[measurement-qualified-check]\nhv=${typeof hv === 'number' && Number.isFinite(hv) ? hv : 'null'}\ntargetMin=${QUALIFIED_TARGET_MIN_HV}\ntargetMax=${QUALIFIED_TARGET_MAX_HV}\nqualified=${result ?? 'null'}`
-  );
   return result;
 }
 
@@ -277,17 +261,7 @@ function logUnexpectedAutoMeasureCall(source: string) {
   );
 }
 
-function formatAfterImpressPoint(point: { x: number; y: number }): string {
-  return `(${point.x.toFixed(2)},${point.y.toFixed(2)})`;
-}
-
 function logAfterImpressDetectionFailed(reason: string) {
-  // eslint-disable-next-line no-console
-  console.log(`[after-impress-auto-measure-result] success=false reason=${reason}`);
-  // eslint-disable-next-line no-console
-  console.log(`[measure-after-impress][auto-detect-failed] reason=${reason}`);
-  // eslint-disable-next-line no-console
-  console.log(`[measure-after-impress][row-skip-no-detection] reason=${reason}`);
   // eslint-disable-next-line no-console
   console.warn(`[after-impress-detection-failed] reason=${reason}`);
 }
@@ -331,10 +305,6 @@ function roundAutoMeasurePixel(value: number): number {
 
 function finiteOrNull(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function formatNullableNumber(value: number | null, digits = 3): string {
-  return value === null ? 'n/a' : value.toFixed(digits);
 }
 
 function getAutoMeasureMaxCornerDelta(
@@ -440,43 +410,6 @@ function formatAutoMeasureNumber(value: number | null | undefined, digits = 2): 
     : 'n/a';
 }
 
-function formatAutoMeasureCenter(center: { x: number; y: number } | null | undefined): string {
-  return center && Number.isFinite(center.x) && Number.isFinite(center.y)
-    ? `(${center.x.toFixed(2)},${center.y.toFixed(2)})`
-    : 'n/a';
-}
-
-function logAutoMeasurePhase(phase: string, context: AutoMeasureLogContext): void {
-  const d1 = context.d1Px ?? null;
-  const d2 = context.d2Px ?? null;
-  const ratio =
-    typeof d1 === 'number' && Number.isFinite(d1) &&
-    typeof d2 === 'number' && Number.isFinite(d2) && d2 > 0
-      ? d1 / d2
-      : null;
-  // eslint-disable-next-line no-console
-  console.log(
-    `[${phase}] objective=${context.objective ?? 'unknown'} smoothing=${context.smoothing} threshold=${context.threshold} d1=${formatAutoMeasureNumber(d1)} d2=${formatAutoMeasureNumber(d2)} ratio=${formatAutoMeasureNumber(ratio, 3)} center=${formatAutoMeasureCenter(context.center)} reason=${context.reason ?? 'n/a'} method=${context.method ?? 'refined'}${context.extra ? ` ${context.extra}` : ''}`
-  );
-}
-
-function smoothingToPreviewKernel(smoothing: number): number {
-  if (smoothing <= 0) return 1;
-  const bucket = Math.min(5, Math.max(1, Math.ceil(smoothing / 4)));
-  return bucket * 2 + 1;
-}
-
-function readPreviewKernel(result: VickersAutoMeasureSuccess, smoothing: number): number {
-  const debug = result.debug;
-  const settings = debug.settings;
-  if (settings && typeof settings === 'object' && 'gaussianKernel' in settings) {
-    const value = Number((settings as { gaussianKernel?: unknown }).gaussianKernel);
-    if (Number.isFinite(value)) return value;
-  }
-  const value = Number((debug as { gaussianKernel?: unknown }).gaussianKernel);
-  return Number.isFinite(value) ? value : smoothingToPreviewKernel(smoothing);
-}
-
 function cloneCapturedFrame(frame: CapturedAutoMeasureFrame): CapturedAutoMeasureFrame {
   return {
     ...frame,
@@ -486,6 +419,10 @@ function cloneCapturedFrame(frame: CapturedAutoMeasureFrame): CapturedAutoMeasur
 
 function finitePoint(point: { x: number; y: number }): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
+}
+
+function logAutoMeasurePhase(_phase: string, _context: AutoMeasureLogContext): void {
+  // no-op (logging stripped)
 }
 
 function hasValidAutoMeasureCorners(result: VickersAutoMeasureSuccess): boolean {
@@ -813,8 +750,6 @@ function graphicsFromAutoMeasureResult(
   const norm = (objective ?? '').trim().toUpperCase();
   const lineLayout: 'four-guides' | 'two-diagonals' = 'four-guides';
   if (norm === '10X') {
-    // eslint-disable-next-line no-console
-    console.log(`[overlay-set] objective=10X mode=four-edge`);
   }
   const tagObjective = norm || null;
   if (result.lines.length === 4) {
@@ -911,16 +846,9 @@ function App() {
   useEffect(() => {
     micrometerEnabledRef.current = micrometerEnabled;
     if (lastLoggedMicrometerEnabledRef.current !== micrometerEnabled) {
-      const previous = lastLoggedMicrometerEnabledRef.current;
       lastLoggedMicrometerEnabledRef.current = micrometerEnabled;
       // First emission after the persisted row resolves is a load; subsequent
       // transitions are saves driven by the settings dialog.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[${previous === null ? 'micrometer-config-load' : 'micrometer-config-save'}] enabled=${micrometerEnabled}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[micrometer-config] enabled=${micrometerEnabled}`);
     }
   }, [micrometerEnabled]);
   const { refetch: refetchCameraSetting } = useCameraSetting();
@@ -934,11 +862,7 @@ function App() {
   const applyMachinePort = useCallback(
     async (nextPort: string | null) => {
       const trimmed = typeof nextPort === 'string' && nextPort.trim() ? nextPort.trim() : null;
-      // eslint-disable-next-line no-console
-      console.log(`[machine-port-selected-current] port=${trimmed ?? '-'}`);
       if (currentMachinePort && currentMachinePort !== trimmed) {
-        // eslint-disable-next-line no-console
-        console.log(`[machine-disconnect-old-port] port=${currentMachinePort}`);
         try {
           await disconnectMachineFn();
         } catch (err) {
@@ -948,16 +872,10 @@ function App() {
       }
       setCurrentMachinePort(trimmed);
       if (!trimmed) {
-        // eslint-disable-next-line no-console
-        console.log('[machine-connect-skip] reason=no-current-selection');
         return;
       }
-      // eslint-disable-next-line no-console
-      console.log(`[machine-connect-request] port=${trimmed}`);
       try {
         await connectMachineFn({ port: trimmed });
-        // eslint-disable-next-line no-console
-        console.log(`[machine-connect-success] port=${trimmed}`);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn(`[machine-connect-error] port=${trimmed}`, err);
@@ -978,14 +896,6 @@ function App() {
     if (!serialPortSetting) return;
     machineAutoConnectAttemptedRef.current = true;
     const savedMachine = serialPortSetting.machineComPort ?? null;
-    const savedMicrometer =
-      typeof micrometerConfig?.comPort === 'string' && micrometerConfig.comPort.trim()
-        ? micrometerConfig.comPort.trim()
-        : null;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[serial-settings-load] machine=${savedMachine ?? 'null'} micrometer=${savedMicrometer ?? 'null'} xy=${serialPortSetting.xyPortName ?? 'null'} z=${serialPortSetting.zPortName ?? 'null'}`
-    );
     if (!savedMachine) return;
     void (async () => {
       const listing = await listSerialPorts().catch(() => ({
@@ -1006,8 +916,6 @@ function App() {
         );
         return;
       }
-      // eslint-disable-next-line no-console
-      console.log(`[machine-connect-saved-com] port=${savedMachine}`);
       try {
         await applyMachinePort(savedMachine);
       } catch {
@@ -1151,25 +1059,17 @@ function App() {
   const getActiveMeasurementId = useCallback((): string | undefined => {
     const id = activeMeasurementIdRef.current ?? undefined;
     if (id) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-active-row] hit id=${id} frameId=${activeMeasurementFrameIdRef.current ?? 'n/a'}`
-      );
     }
     return id;
   }, []);
   const setActiveMeasurement = useCallback(
-    (id: string, frameId: number | null, reason: string) => {
+    (id: string, frameId: number | null, _reason: string) => {
       activeMeasurementIdRef.current = id;
       activeMeasurementFrameIdRef.current = frameId;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-active-row-set] id=${id} frameId=${frameId ?? 'n/a'} reason=${reason}`
-      );
     },
     []
   );
-  const clearActiveMeasurement = useCallback((reason: string) => {
+  const clearActiveMeasurement = useCallback((_reason: string) => {
     if (
       activeMeasurementIdRef.current === null &&
       activeMeasurementFrameIdRef.current === null &&
@@ -1177,10 +1077,6 @@ function App() {
     ) {
       return;
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[measurement-active-row] cleared reason=${reason} prevId=${activeMeasurementIdRef.current ?? 'none'} prevFrameId=${activeMeasurementFrameIdRef.current ?? 'none'} prevMethod=${activeMeasurementMethodRef.current ?? 'none'}`
-    );
     activeMeasurementIdRef.current = null;
     activeMeasurementFrameIdRef.current = null;
     activeMeasurementMethodRef.current = null;
@@ -1197,8 +1093,6 @@ function App() {
     );
     if (next.length === committedFingerprintsRef.current.length) return;
     committedFingerprintsRef.current = next;
-    // eslint-disable-next-line no-console
-    console.log(`[measurement-fingerprint-prune] total=${next.length}`);
   }, [measurements]);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
   // - Set by the user's lens button click (authoritative, instant).
@@ -1233,10 +1127,6 @@ function App() {
   const setCameraStatus = useCallback((next: CameraStatusState) => {
     setCameraStatusState((prev) => {
       if (prev === next) return prev;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-state-change] from=${prev} to=${next}`);
-      // eslint-disable-next-line no-console
-      console.log(`[statusbar-camera] state=${next}`);
       return next;
     });
   }, []);
@@ -1245,8 +1135,6 @@ function App() {
   const setAutoMeasureStatus = useCallback((next: AutoMeasureStatusState) => {
     setAutoMeasureStatusState((prev) => {
       if (prev === next) return prev;
-      // eslint-disable-next-line no-console
-      console.log(`[statusbar-auto-measure] state=${next}`);
       return next;
     });
   }, []);
@@ -1259,8 +1147,6 @@ function App() {
   // into the next session.
   const [autoMeasureClearNonce, setAutoMeasureClearNonce] = useState(0);
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[auto-measure-session] id=${autoMeasureSessionId}`);
   }, [autoMeasureSessionId]);
   const [autoMeasureSessionActive, setAutoMeasureSessionActive] = useState(false);
   const [autoMeasureCapturedFrameId, setAutoMeasureCapturedFrameId] = useState<number | null>(null);
@@ -1274,19 +1160,13 @@ function App() {
   const displayedAutoMeasureGraphics = (() => {
     if (!cameraOpen) return null;
     if (turretMoving) {
-      // eslint-disable-next-line no-console
-      console.log('[overlay-render-guard] visible=false reason=turret-moving');
       return null;
     }
     if (objectiveChangeInProgress) {
-      // eslint-disable-next-line no-console
-      console.log('[overlay-render-guard] visible=false reason=objective-change-in-progress');
       return null;
     }
     if (!turretMovingGuardedGraphics) return null;
     if (!autoMeasureSessionActive) {
-      // eslint-disable-next-line no-console
-      console.log('[overlay-render-guard] visible=false reason=no-active-auto-session');
       return null;
     }
     const overlayObjective = (turretMovingGuardedGraphics.objective ?? '').trim().toUpperCase();
@@ -1296,14 +1176,6 @@ function App() {
     const liveObjective = (activeObjective ?? '').trim().toUpperCase();
     const referenceObjective = confirmedFromMachine || liveObjective;
     if (overlayObjective && referenceObjective && overlayObjective !== referenceObjective) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[overlay-render-guard] visible=false reason=objective-mismatch overlay=${overlayObjective} live=${referenceObjective}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-overlay-skip] reason=objective-mismatch overlayObjective=${overlayObjective} activeObjective=${referenceObjective}`
-      );
       return null;
     }
     const overlayFrameId = turretMovingGuardedGraphics.frameId ?? null;
@@ -1312,19 +1184,11 @@ function App() {
       autoMeasureCapturedFrameId !== null &&
       overlayFrameId !== autoMeasureCapturedFrameId
     ) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[overlay-render-guard] visible=false reason=frame-mismatch overlay=${overlayFrameId} captured=${autoMeasureCapturedFrameId}`
-      );
       return null;
     }
     const renderKey = `${overlayObjective || 'unknown'}|${overlayFrameId ?? 'n/a'}`;
     if (lastOverlayRenderLogRef.current !== renderKey) {
       lastOverlayRenderLogRef.current = renderKey;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-overlay-render] objective=${overlayObjective || 'unknown'} frameId=${overlayFrameId ?? 'n/a'}`
-      );
     }
     return turretMovingGuardedGraphics;
   })();
@@ -1336,21 +1200,8 @@ function App() {
   const previousActiveObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
     const defaults = autoMeasureDefaultsForObjective(activeObjective);
-    const oldObjective = previousActiveObjectiveRef.current;
     previousActiveObjectiveRef.current = activeObjective;
     if (!defaults) return;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-defaults] objective=${activeObjective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-settings-sync] objective=${activeObjective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-defaults-apply] objective=${activeObjective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
     setAutoMeasurePreviewSettings((prev) => {
       if (prev.smoothing === defaults.smoothing && prev.threshold === defaults.threshold) {
         return prev;
@@ -1358,10 +1209,6 @@ function App() {
       return { ...prev, smoothing: defaults.smoothing, threshold: defaults.threshold };
     });
     if (shouldPreserveAfterImpressOverlay()) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-state-preserve] reason=after-impress-objective-sync objective=${activeObjective ?? 'null'}`
-      );
       return;
     }
     // Objective changed — drop any visible Auto Measure lines, end the
@@ -1386,18 +1233,6 @@ function App() {
     // Force AutoMeasureOverlay to imperatively clear its canvas — React state
     // nulling alone was leaving yellow lines on screen across objective swaps.
     setAutoMeasureClearNonce((n) => n + 1);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[overlay-clear] reason=objective-change oldObjective=${oldObjective ?? 'null'} newObjective=${activeObjective ?? 'null'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log('[auto-measure-state-clear] reason=objective-change');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-overlay-clear] reason=objective-change from=${oldObjective ?? 'null'} to=${activeObjective ?? 'null'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log('[overlay-visible] false reason=objective-change');
   }, [activeObjective, shouldPreserveAfterImpressOverlay]);
   // Last manual-measure pixel diagonals (d1Px = horizontal, d2Px = vertical).
   // Captured in handleManualMeasurementUpdated and passed to CalibrationDialog
@@ -1430,19 +1265,15 @@ function App() {
   >('none');
   const calibrationMeasureModeRef = useRef<'none' | 'auto' | 'manual'>('none');
   const setCalibrationMeasureMode = useCallback(
-    (next: 'none' | 'auto' | 'manual', reason: string) => {
+    (next: 'none' | 'auto' | 'manual', _reason: string) => {
       const prev = calibrationMeasureModeRef.current;
       if (prev === next) return;
       calibrationMeasureModeRef.current = next;
       setCalibrationMeasureModeState(next);
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-mode-change] from=${prev} to=${next} reason=${reason}`);
     },
     []
   );
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[calibration-overlay-render] mode=${calibrationMeasureMode}`);
   }, [calibrationMeasureMode]);
   const lastObjectiveClickAtRef = useRef<number>(0);
   // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
@@ -1458,11 +1289,9 @@ function App() {
   const suppressAutoMeasurePreviewRef = useRef(false);
   // Clears Auto Measure overlay/session state without touching committed row
   // fingerprints. Duplicate suppression must survive overlay clears.
-  const clearAutoMeasureOverlay = useCallback((reason: string) => {
+  const clearAutoMeasureOverlay = useCallback((_reason: string) => {
     setCommittedAutoMeasureOverlay((prev) => {
       if (!prev) {
-        // eslint-disable-next-line no-console
-        console.log(`[overlay-skip] reason=no-active-measurement-overlay trigger=${reason}`);
       }
       return null;
     });
@@ -1485,28 +1314,16 @@ function App() {
       autoMeasureSessionIdRef.current = next;
       return next;
     });
-    // eslint-disable-next-line no-console
-    console.log(`[auto-measure-clear] ${reason}`);
-    // eslint-disable-next-line no-console
-    console.log(`[overlay-clear] reason=${reason}`);
   }, []);
 
   const handleObjectiveChangeFromUI = useCallback((objective: '10X' | '40X') => {
     lastObjectiveClickAtRef.current = Date.now();
     const isActualSwitch = (activeObjective ?? '').trim().toUpperCase() !== objective;
     setActiveObjective(objective);
-    // eslint-disable-next-line no-console
-    console.log(`[objective-change-request] source=ui objective=${objective}`);
-    // eslint-disable-next-line no-console
-    console.log('[objective] changed →', objective);
     // Snap Auto Measure smoothing/threshold to the objective-tuned defaults
     // so the Settings dialog and any next preview run use the right values.
     const defaults = autoMeasureDefaultsForObjective(objective);
     if (defaults) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-defaults] objective=${objective} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-      );
       setAutoMeasurePreviewSettings((prev) => ({
         ...prev,
         smoothing: defaults.smoothing,
@@ -1534,25 +1351,17 @@ function App() {
       // Mutually-exclusive calibration overlay: clear any manual state
       // before kicking off auto detection so the two never coexist.
       if (calibrationMeasureModeRef.current === 'manual') {
-        // eslint-disable-next-line no-console
-        console.log('[calibration-overlay-clear] target=manual reason=switch-to-auto');
       }
       calibrationManualModeRef.current = false;
       setManualMeasureResetKey((current) => current + 1);
       setActiveTool('pointer');
       setCalibrationMeasureMode('auto', 'auto-measure-click');
-      // eslint-disable-next-line no-console
-      console.log('[calibration-auto-detect-start]');
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-auto-measure-start] objective=${objective}`);
       const camera = cameraRef.current;
       if (!camera) {
         setStatusMessage('System Status: Calibration Auto Measure: camera unavailable');
         return null;
       }
       let frame = camera.captureDisplayedFrame({ freeze: true });
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-snapshot] frameId=${getLastPaintedFrameId()}`);
       if (frame && !frame.ok && frame.error === 'awaiting-fresh-frame') {
         const fresh = await camera.waitForFreshFrame(2000);
         if (fresh) frame = camera.captureDisplayedFrame({ freeze: true });
@@ -1582,14 +1391,6 @@ function App() {
       // to be picked in calibration while live picked the real diamond.
       const calibSmoothing = settings.smoothing;
       const calibThreshold = settings.threshold;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-run] objective=${liveObjectiveForNative} smoothing=${calibSmoothing} threshold=${calibThreshold} source=calibration`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-native-input] objective=${liveObjectiveForNative} smoothing=${calibSmoothing} threshold=${calibThreshold} imageType=${settings.imageType} minConfidence=${minConfidence} width=${frame.width} height=${frame.height} pixelFormat=${frame.pixelFormat} source=${frame.source}`
-      );
       // Persist the frozen calibration frame so the Auto Measure Settings
       // preview effect (which re-runs detection through runAutoMeasureRef
       // with callSource='settings-preview') can use the SAME native 2592x1944
@@ -1625,39 +1426,9 @@ function App() {
       // gate allows the verification overlay to paint.
       setAutoMeasureSessionActive(true);
       setCommittedAutoMeasureOverlay(graphicsFromAutoMeasureResult(result, objective));
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-measure-success] pixelX=${result.d1Pixels} pixelY=${result.d2Pixels}`
-      );
       {
-        const dbg = (result.debug ?? {}) as Record<string, unknown>;
-        const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
-        const area = num(dbg.selectedContourArea);
-        const rectShort = num(dbg.rectShort);
-        const rectLong = num(dbg.rectLong);
-        const sideRatio = num(dbg.sideRatio ?? (rectLong && rectShort ? rectLong / rectShort : NaN));
-        const diagonalRatio = num(
-          dbg.diagonalRatio ?? (result.d1Pixels && result.d2Pixels
-            ? Math.max(result.d1Pixels, result.d2Pixels) / Math.max(1, Math.min(result.d1Pixels, result.d2Pixels))
-            : NaN)
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[detect-selected-final] mode=calibration area=${area} sideRatio=${Number.isFinite(sideRatio) ? sideRatio.toFixed(4) : 'n/a'} diagonalRatio=${Number.isFinite(diagonalRatio) ? diagonalRatio.toFixed(4) : 'n/a'} d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)} confidence=${result.confidence.toFixed(4)}`
-        );
       }
       if (liveObjectiveForNative === '10X' && hasValidAutoMeasureCorners(result)) {
-        const c = result.corners;
-        const centerX = (c.left.x + c.right.x) / 2;
-        const centerY = (c.top.y + c.bottom.y) / 2;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-auto-measure-10x] center=(${centerX.toFixed(2)},${centerY.toFixed(2)}) d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-10x-lines] d1Start=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) d1End=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) d2Start=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) d2End=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
-        );
       }
       return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
     },
@@ -1675,16 +1446,10 @@ function App() {
     // Mutually-exclusive calibration overlay: clear any auto state before
     // entering manual mode so the yellow auto guides disappear immediately.
     if (calibrationMeasureModeRef.current === 'auto') {
-      // eslint-disable-next-line no-console
-      console.log('[calibration-overlay-clear] target=auto reason=switch-to-manual');
     }
     setAutoMeasureSessionActive(false);
     clearAutoMeasureOverlay('switch-to-manual');
     setCalibrationMeasureMode('manual', 'manual-measure-click');
-    // eslint-disable-next-line no-console
-    console.log('[calibration-manual-start]');
-    // eslint-disable-next-line no-console
-    console.log('[calibration-manual-measure-start]');
     calibrationManualModeRef.current = true;
     setActiveTool('manualMeasure');
     setStatusMessage(
@@ -1708,10 +1473,6 @@ function App() {
       const targetObjective = payload.zoomTime;
       const forceKgf = parseForceKgf(payload.force);
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-row-create-start] objective=${targetObjective} force=${payload.force} forceKgf=${forceKgf ?? 'null'} d1Px=${d1Px} d2Px=${d2Px}`
-      );
 
       // Derive PER-AXIS coefficients per spec:
       //   xUmPerPixel = knownReferenceUm / pixelLengthX
@@ -1782,10 +1543,6 @@ function App() {
           ? (1.8544 * forceKgf) / (davgMmExact * davgMmExact)
           : null;
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-convert]\nd1Px=${d1Px}\nd2Px=${d2Px}\nxUmPerPixel=${xUmPerPixel}\nyUmPerPixel=${yUmPerPixel}\nd1Um=${d1UmExact}\nd2Um=${d2UmExact}\ndavgUm=${davgUmExact}\nhv=${hvExact ?? 'n/a'}`
-      );
 
       const round = (value: number, digits: number): number =>
         Number(value.toFixed(digits));
@@ -1817,10 +1574,6 @@ function App() {
 
       const normalizedObjective = normalizeObjectiveName(targetObjective);
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-row-create] objective=${normalizedObjective} xUmPerPixel=${xUmPerPixel} yUmPerPixel=${yUmPerPixel} d1Um=${d1Um} d2Um=${d2Um} davgUm=${averageUm} hv=${hv ?? 'n/a'}`
-      );
 
       let depthMm: number | null = null;
       try {
@@ -1862,53 +1615,18 @@ function App() {
         imageDataUrl,
       };
 
-      // eslint-disable-next-line no-console
-      console.log('[calibration-auto-row-payload]', rowPayload);
-      // eslint-disable-next-line no-console
-      console.log('[hv-type-set] source=manual value=HV');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-create] hv=${hv ?? 'n/a'} hardnessType=HV hvType=HV`
-      );
 
       try {
         const calibrationFrameId = getLastPaintedFrameId();
         const reuseId = getActiveMeasurementId();
         if (reuseId) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-new-row-blocked] reason=camera-session-already-has-active-row flow=calibration reuseId=${reuseId} frameId=${calibrationFrameId ?? 'n/a'}`
-          );
         }
-        const previousMethod = activeMeasurementMethodRef.current;
         const saved = await saveManualMeasurement({ id: reuseId, values: rowPayload });
         setActiveMeasurement(saved.id, calibrationFrameId, 'calibration-save');
         manualMeasurementIdRef.current = saved.id;
         autoMeasurementIdRef.current = saved.id;
         const savedMethod = saved.method ?? resolvedMethod;
         activeMeasurementMethodRef.current = savedMethod;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-row-update] id=${saved.id} reused=${reuseId ? 'yes' : 'no'} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} method=${savedMethod}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-mode-update] id=${saved.id} old=${previousMethod ?? 'none'} new=${savedMethod} reason=calibration-${calibrationMode === 'auto' ? 'auto' : 'manual'}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          reuseId
-            ? `[measurement-row-update] id=${saved.id} method=${savedMethod} reason=same-camera-session flow=calibration`
-            : `[measurement-row-create] id=${saved.id} method=${savedMethod} reason=first-measurement-in-camera-session flow=calibration`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-auto-row-saved] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} objective=${saved.objective}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-row-create] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv ?? 'n/a'} objective=${saved.objective}`
-        );
         await refetchMeasurements();
         // Clear yellow Auto/Manual Measure overlays now that the calibration
         // row has been committed. Guarded behind the successful saveManual...
@@ -1916,8 +1634,6 @@ function App() {
         setCommittedAutoMeasureOverlay(null);
         setPreviewAutoMeasureOverlay(null);
         setManualMeasureResetKey((current) => current + 1);
-        // eslint-disable-next-line no-console
-        console.log('[overlay-clear] reason=calibration-complete');
         setStatusMessage(
           `System Status: Calibration saved. Measurement row added: HV ${hv ?? 'n/a (force missing)'}`
         );
@@ -1949,8 +1665,6 @@ function App() {
     for (const item of calibrationSettingsList) {
       map[String(item.objective).trim().toUpperCase()] = item.pixelToMicron;
     }
-    // eslint-disable-next-line no-console
-    console.log('[calibration] loaded map', map);
   }, [calibrationSettingsList]);
 
   // um-per-pixel calibration for the currently-active objective. Resolves
@@ -1983,22 +1697,14 @@ function App() {
   const openCalibrationPanel = useCallback(
     (source: 'menu' | 'toolbar' | 'snackbar' = 'menu') => {
       if (source === 'toolbar') {
-        // eslint-disable-next-line no-console
-        console.log('[toolbar-calibration-click]');
       }
 
-      // eslint-disable-next-line no-console
-      console.log('[tool-mode-clear] reason=calibration-open');
 
       if (activeTool === 'measureLength') {
-        // eslint-disable-next-line no-console
-        console.log('[measure-length-reset] reason=calibration-open');
         overlay.clearByKind('length');
       }
 
       if (magnifierEnabled) {
-        // eslint-disable-next-line no-console
-        console.log('[magnifier-close] reason=calibration-open');
         setMagnifierEnabled(false);
       }
 
@@ -2027,16 +1733,8 @@ function App() {
       // Spec-format drag trace: fires every time the manual overlay emits a
       // new diagonal — i.e. on every handle drag commit. Coordinates are in
       // image-space (the manual overlay already maps client→image).
-      // eslint-disable-next-line no-console
-      console.log(
-        `[manual-handle-drag] points=${result.points.length} imageX=${result.points[0].x.toFixed(2)} imageY=${result.points[0].y.toFixed(2)} d1Px=${result.d1Px.toFixed(3)} d2Px=${result.d2Px.toFixed(3)}`
-      );
       void (async () => {
         try {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-create-start] method=Manual d1Px=${result.d1Px} d2Px=${result.d2Px}`
-          );
           const machineState = await getMachineStateSnapshot();
           const timestamp = new Date().toISOString();
           // "New" means there's no row to update — neither the manual id
@@ -2054,7 +1752,6 @@ function App() {
           const manualExistingRow = manualExistingRowId
             ? measurements.find((m) => m.id === manualExistingRowId) ?? null
             : null;
-          const manualExistingDepth = manualExistingRow?.depthMm ?? null;
           // For an updated row (line drag, re-measure) we must echo back the
           // saved depth + conversion fields. The backend's buildUpdateSchema
           // injects null defaults for fields missing from the PUT body, so
@@ -2081,31 +1778,7 @@ function App() {
                       : null,
                 }
               : {};
-          // eslint-disable-next-line no-console
-          console.log(
-            `[line-adjust-update] flow=manual targetId=${manualExistingRowId ?? 'none'} isNew=${isNewManualMeasurement}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[line-drag-update-start] flow=manual rowId=${manualExistingRowId ?? 'new'} isNew=${isNewManualMeasurement}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[line-drag-update-payload] hasDepth=false rowId=${manualExistingRowId ?? 'new'} preserveDepth=${manualExistingRow ? 'true' : 'false'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[depth-preserve-before] flow=manual id=${manualExistingRowId ?? 'none'} depth=${manualExistingDepth ?? 'null'} willOverwrite=${isNewManualMeasurement ? 'yes' : 'no'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-save] depth=${manualDepthCapture?.depthMm ?? '-'} source=${manualDepthCapture?.depthSource ?? 'preserved'} new=${isNewManualMeasurement}`
-          );
           if (isNewManualMeasurement && manualDepthCapture) {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measurement-row-depth-snapshot] rowId=pending depth=${manualDepthCapture.depthMm ?? 'null'} source=${manualDepthCapture.depthSource}`
-            );
           }
           const pixelValues = calculateManualDiagonalsFromPixels(
             result.d1Px,
@@ -2127,10 +1800,6 @@ function App() {
           // to retype what they just measured on the live image.
           if (Number.isFinite(result.d1Px) && Number.isFinite(result.d2Px) && result.d1Px > 0 && result.d2Px > 0) {
             setLatestManualPixels({ d1Px: result.d1Px, d2Px: result.d2Px });
-            // eslint-disable-next-line no-console
-            console.log(
-              `[calibration-drag-update] pixelX=${result.d1Px} pixelY=${result.d2Px}`
-            );
           }
 
           // Calibration mode: the manual diamond is being used to PICK pixel
@@ -2144,8 +1813,6 @@ function App() {
             );
             return;
           }
-          // eslint-disable-next-line no-console
-          console.log('[measurement-commit-start] method=Manual');
 
           // SINGLE SOURCE OF TRUTH (priority order, mirrors Auto Measure):
           //   1) confirmedObjectiveFromMachine (real L<n>OK echo from hardware)
@@ -2160,10 +1827,6 @@ function App() {
           const optimisticActive = (activeObjective && activeObjective.trim()) || null;
           const lastEchoed = machineState?.objective?.trim() || null;
           const targetObjective = confirmedFromMachine || optimisticActive || lastEchoed;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[frontend-objective-sync] method=Manual confirmedObjectiveFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'} machineObjective=${lastEchoed ?? 'null'}`
-          );
           if (!targetObjective) {
             // eslint-disable-next-line no-console
             console.warn(
@@ -2174,18 +1837,10 @@ function App() {
             );
             return;
           }
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-create-input] method=Manual d1Px=${result.d1Px} d2Px=${result.d2Px} objective=${targetObjective} force=${machineState?.force ?? 'null'} forceKgf=${parseForceKgf(machineState?.force) ?? 'null'}`
-          );
           const machineStateForManual = machineState
             ? { ...machineState, objective: targetObjective }
             : null;
           const forceKgf = parseForceKgf(machineState?.force);
-          // eslint-disable-next-line no-console
-          console.log('[manual-measure] objective=', targetObjective);
-          // eslint-disable-next-line no-console
-          console.log('[calibration] using objective=', targetObjective);
           const conversion = calculateVickersFromPixels({
             calibrationSettings,
             calibrations,
@@ -2198,14 +1853,6 @@ function App() {
             calibrationSettingsList,
           });
 
-          // eslint-disable-next-line no-console
-          console.log('[manual-measure][calibration] activeCalibrationLoaded', {
-            objective: targetObjective,
-            normalizedObjective: normalizeObjectiveName(targetObjective),
-            found: conversion.ok,
-            umPerPixel: conversion.ok ? conversion.value.umPerPixel : null,
-            reason: conversion.ok ? null : conversion.reason,
-          });
 
           if (!conversion.ok) {
             // eslint-disable-next-line no-console
@@ -2219,36 +1866,10 @@ function App() {
 
           const values = conversion.value;
 
-          // eslint-disable-next-line no-console
-          console.log('[manual-measure][converted]', {
-            objective: values.objective,
-            normalizedObjective: values.normalizedObjective,
-            umPerPixel: values.umPerPixel,
-            d1Px: values.d1Px,
-            d2Px: values.d2Px,
-            d1Um: values.d1Um,
-            d2Um: values.d2Um,
-            averageUm: values.avgDUm,
-            averageMm: values.avgDMm,
-            forceKgf: values.forceKgf,
-            hv: values.hv,
-          });
 
-          // eslint-disable-next-line no-console
-          console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Manual');
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-row-create] method=Manual d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
-          );
-          // eslint-disable-next-line no-console
-          console.log('[album] snapshot capture start measurementId=', manualMeasurementIdRef.current ?? 'new');
           await waitForOverlayPaint();
-          // eslint-disable-next-line no-console
-          console.log('[album] manual measure overlay ready, capturing thumbnail');
           const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
           if (imageDataUrl) {
-            // eslint-disable-next-line no-console
-            console.log('[album] thumbnail captured with overlay=true points=4');
           } else {
             // eslint-disable-next-line no-console
             console.warn('[album] missing image for measurementId=', manualMeasurementIdRef.current ?? 'new');
@@ -2275,77 +1896,25 @@ function App() {
             timestamp,
             imageDataUrl,
           };
-          // eslint-disable-next-line no-console
-          console.log('[measurement-row-object] method=Manual', rowPayload);
-          // eslint-disable-next-line no-console
-          console.log('[hv-type-set] source=manual value=HV');
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-save-payload] depthMm=${'depthMm' in rowPayload ? (rowPayload as { depthMm?: number | null }).depthMm ?? 'null' : 'preserved'}`
-          );
           const manualFrameId = getLastPaintedFrameId();
           const manualReuseId =
             manualMeasurementIdRef.current ?? getActiveMeasurementId();
           if (manualReuseId && manualMeasurementIdRef.current === null) {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measurement-new-row-blocked] reason=camera-session-already-has-active-row flow=manual reuseId=${manualReuseId} frameId=${manualFrameId ?? 'n/a'}`
-            );
           }
           const saved = await saveManualMeasurement({
             id: manualReuseId ?? undefined,
             values: rowPayload,
           });
-          const previousManualMethod = activeMeasurementMethodRef.current;
           const savedManualMethod = saved.method ?? 'Manual';
-          // eslint-disable-next-line no-console
-          console.log(
-            manualReuseId
-              ? `[measurement-row-update] id=${saved.id} method=${savedManualMethod} reason=same-camera-session flow=manual preserveDepth=${isNewManualMeasurement ? 'false' : 'true'}`
-              : `[measurement-row-create] id=${saved.id} method=${savedManualMethod} reason=first-measurement-in-camera-session flow=manual`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[depth-preserve-after] flow=manual id=${saved.id} depth=${saved.depthMm ?? 'null'}`
-          );
           if (isNewManualMeasurement && manualDepthCapture) {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[depth-freeze-save] rowId=${saved.id} value=${manualDepthCapture.depthMm ?? 'null'}`
-            );
           } else if (!isNewManualMeasurement) {
-            // eslint-disable-next-line no-console
-            console.log(`[depth-preserve] rowId=${saved.id} preserved=true`);
           }
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-mode-update] id=${saved.id} old=${previousManualMethod ?? 'none'} new=${savedManualMethod} reason=manual-save`
-          );
           setActiveMeasurement(saved.id, manualFrameId, 'manual-save');
           activeMeasurementMethodRef.current = savedManualMethod;
           autoMeasurementIdRef.current = saved.id;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-row-save-success] method=Manual id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv} objective=${saved.objective}`
-          );
-          // eslint-disable-next-line no-console
-          console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
           manualMeasurementIdRef.current = saved.id;
           await refetchMeasurements();
-          // eslint-disable-next-line no-console
-          console.log('[manual-measure] table row updated', {
-            id: saved.id,
-            method: saved.method,
-          });
           setStatusMessage(
             `System Status: Manual measurement updated: HV ${values.hv ?? 'n/a (force missing)'}`
           );
@@ -2423,7 +1992,7 @@ function App() {
         method,
         reason: validationReason,
       });
-      const { d1Px, d2Px, ratio, center } = validation;
+      const { d1Px, d2Px, center } = validation;
       if (!validation.ok) {
         logAutoMeasurePhase('auto-measure-reject', {
           objective: objectiveForCalibration,
@@ -2439,18 +2008,6 @@ function App() {
         setStatusMessage(`System Status: Auto Measure rejected: ${validation.reason}`);
         return false;
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure][success-refined-diamond-only] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} midX=${center.x.toFixed(2)} midY=${center.y.toFixed(2)} method=${method}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-corners] left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-success] objective=${objectiveForCalibration ?? 'unknown'} method=${method} left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)}) d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)} smoothing=${snapshot.settings.smoothing} threshold=${snapshot.settings.threshold} ratio=${ratio.toFixed(3)} center=(${center.x.toFixed(2)},${center.y.toFixed(2)}) reason=${validation.reason}`
-      );
 
       // Duplicate-measurement guard. Repeat clicks on the same indentation
       // compare stable rounded geometry against the row fingerprint before
@@ -2480,32 +2037,6 @@ function App() {
         d1Px: fingerprint.d1Px,
         d2Px: fingerprint.d2Px,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-start] frameId=${frameEpoch}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-snapshot] source=${source} frameId=${frameEpoch} objective=${fingerprintObjective} frozen=true`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-geometry] frameId=${frameEpoch} objective=${fingerprintObjective} center=(${center.x.toFixed(3)},${center.y.toFixed(3)}) d1Px=${d1Px.toFixed(3)} d2Px=${d2Px.toFixed(3)} top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)}) left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)})`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-d1d2-rounded] rawD1Px=${d1Px.toFixed(4)} rawD2Px=${d2Px.toFixed(4)} roundedD1Px=${stableD1Px.toFixed(2)} roundedD2Px=${stableD2Px.toFixed(2)} precision=${AUTO_MEASURE_STABLE_PIXEL_DIGITS}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-fingerprint]\ncenterX=${fingerprint.centerX.toFixed(2)}\ncenterY=${fingerprint.centerY.toFixed(2)}\nd1Px=${fingerprint.d1Px.toFixed(2)}\nd2Px=${fingerprint.d2Px.toFixed(2)}\nframeId=${frameEpoch}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-fingerprint] objective=${fingerprintObjective} centerX=${Math.round(fingerprint.centerX)} centerY=${Math.round(fingerprint.centerY)} d1=${Math.round(fingerprint.d1Px)} d2=${Math.round(fingerprint.d2Px)} key=${fingerprintKey}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-fingerprint-current] objective=${fingerprintObjective} centerX=${fingerprint.centerX.toFixed(2)} centerY=${fingerprint.centerY.toFixed(2)} d1Px=${fingerprint.d1Px.toFixed(2)} d2Px=${fingerprint.d2Px.toFixed(2)} key=${fingerprintKey}`
-      );
 
       const conversion = calculateVickersFromPixels({
         calibrationSettings,
@@ -2520,10 +2051,6 @@ function App() {
       });
       const candidateHv = conversion.ok ? finiteOrNull(conversion.value.hv) : fingerprint.hv;
       if (conversion.ok) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-hv-calc] formula=1.8544*force/davgMm^2 objective=${conversion.value.normalizedObjective} forceKgf=${forceKgf ?? 'null'} d1Px=${stableD1Px.toFixed(2)} d2Px=${stableD2Px.toFixed(2)} d1Um=${conversion.value.d1Um.toFixed(3)} d2Um=${conversion.value.d2Um.toFixed(3)} davgMm=${conversion.value.avgDMm.toFixed(6)} hv=${conversion.value.hv ?? 'n/a'}`
-        );
       }
 
       const shouldCheckDuplicate = source === 'auto-click' || source === 'after-impress';
@@ -2531,17 +2058,13 @@ function App() {
         const existing = committedFingerprintsRef.current;
         let matchedEntry: typeof existing[number] | null = null;
         if (existing.length === 0) {
-          // eslint-disable-next-line no-console
-          console.log(`[measurement-duplicate-check] candidates=0 key=${fingerprintKey} found=false`);
         }
         for (const entry of existing) {
           const sameObjective = entry.objective === fingerprintObjective;
-          const sameFrame = entry.frameId !== null && entry.frameId === frameEpoch;
           const d1Delta = Math.abs(entry.d1Px - fingerprint.d1Px);
           const d2Delta = Math.abs(entry.d2Px - fingerprint.d2Px);
           const cxDelta = Math.abs(entry.centerX - fingerprint.centerX);
           const cyDelta = Math.abs(entry.centerY - fingerprint.centerY);
-          const centerDelta = Math.hypot(cxDelta, cyDelta);
           const cornerDelta = getAutoMeasureMaxCornerDelta(entry.corners, c);
           const hvDelta =
             entry.hv !== null && candidateHv !== null ? Math.abs(entry.hv - candidateHv) : null;
@@ -2554,33 +2077,11 @@ function App() {
             cyDelta <= AUTO_MEASURE_CENTER_TOLERANCE_PX &&
             cornerDelta <= AUTO_MEASURE_CORNER_TOLERANCE_PX &&
             hvMatches;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-duplicate-check] rowId=${entry.rowId ?? 'unknown'} sameFrame=${sameFrame} sameObjective=${sameObjective} d1Delta=${d1Delta.toFixed(3)} d2Delta=${d2Delta.toFixed(3)} cxDelta=${cxDelta.toFixed(3)} cyDelta=${cyDelta.toFixed(3)} centerDelta=${centerDelta.toFixed(3)} cornerDelta=${cornerDelta.toFixed(3)} hvDelta=${formatNullableNumber(hvDelta)} matches=${matches}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-fingerprint-compare-row] rowId=${entry.rowId ?? 'unknown'} sameObjective=${sameObjective} d1Delta=${d1Delta.toFixed(2)} d2Delta=${d2Delta.toFixed(2)} cxDelta=${cxDelta.toFixed(2)} cyDelta=${cyDelta.toFixed(2)} matches=${matches}`
-          );
           if (matches && !matchedEntry) {
             matchedEntry = entry;
           }
         }
         if (matchedEntry) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-duplicate-found] rowId=${matchedEntry.rowId ?? 'unknown'} key=${matchedEntry.fingerprintKey} existingHv=${matchedEntry.hv ?? 'n/a'} candidateHv=${candidateHv ?? 'n/a'} d1Px=${matchedEntry.d1Px.toFixed(2)} d2Px=${matchedEntry.d2Px.toFixed(2)}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-row-skip-duplicate] rowId=${matchedEntry.rowId ?? 'unknown'} reason=same-indentation keepHv=${matchedEntry.hv ?? 'n/a'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-duplicate-skip-existing-row] rowId=${matchedEntry.rowId ?? 'unknown'} key=${matchedEntry.fingerprintKey} hv=${matchedEntry.hv ?? 'n/a'} d1Px=${matchedEntry.d1Px.toFixed(2)} d2Px=${matchedEntry.d2Px.toFixed(2)}`
-          );
-          // eslint-disable-next-line no-console
-          console.log('[measurement-duplicate-skip]');
           const restoredGraphics = {
             ...cloneAutoMeasureGraphics(matchedEntry.graphics),
             frameId: graphics.frameId,
@@ -2594,28 +2095,11 @@ function App() {
             d2Pixels: matchedEntry.d2Px,
             confidence: result.confidence,
           };
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-duplicate] keepOverlay=true matchedRowId=${matchedEntry.rowId ?? 'unknown'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log('[overlay-set-from-auto-result] reason=duplicate-restore');
           if (source === 'after-impress') {
-            const restoredCorners = restoredGraphics.corners;
             setPreviewAutoMeasureOverlay(null);
             autoMeasurePreviewSnapshotRef.current = null;
             preserveAfterImpressOverlay(5000);
-            // eslint-disable-next-line no-console
-            console.log(
-              `[after-impress-overlay-set] left=${formatAfterImpressPoint(restoredCorners.left)} right=${formatAfterImpressPoint(restoredCorners.right)} top=${formatAfterImpressPoint(restoredCorners.top)} bottom=${formatAfterImpressPoint(restoredCorners.bottom)}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measure-after-impress][overlay-set] left=${formatAfterImpressPoint(restoredCorners.left)} right=${formatAfterImpressPoint(restoredCorners.right)} top=${formatAfterImpressPoint(restoredCorners.top)} bottom=${formatAfterImpressPoint(restoredCorners.bottom)}`
-            );
             await waitForOverlayPaint();
-            // eslint-disable-next-line no-console
-            console.log('[after-impress-camera-redraw]');
             if (!displayedAutoMeasureGraphicsRef.current) {
               logAfterImpressDetectionFailed('overlay-not-ready');
               setAutoMeasureStatus('failed');
@@ -2656,47 +2140,13 @@ function App() {
       const forceOverlayRefresh = source === 'auto-click' || source === 'after-impress';
       setCommittedAutoMeasureOverlay((prev) => {
         if (!forceOverlayRefresh && prev && graphicsAlmostEqual(prev, graphics)) {
-          // eslint-disable-next-line no-console
-          console.log('[auto-overlay-skip] reason=same-lines-no-state-update');
           return prev;
         }
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-overlay-set] source=${source} lines=${graphics.lines.length} corners=4 force=${forceOverlayRefresh}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-set-from-auto-result] source=${source} corners=4 d1Px=${stableD1Px.toFixed(2)} d2Px=${stableD2Px.toFixed(2)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[overlay-draw] source=auto-measure d1=${stableD1Px.toFixed(2)}px d2=${stableD2Px.toFixed(2)}px objective=${objectiveForCalibration ?? 'unknown'}`
-        );
         if (source === 'auto-click' || source === 'after-impress') {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[overlay-show] reason=auto-measure-success objective=${objectiveForCalibration ?? 'unknown'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[overlay-set] source=auto objective=${objectiveForCalibration ?? 'unknown'} sessionId=${graphics.sessionId ?? 'n/a'} lines=${graphics.lines.length} frameId=${graphics.frameId ?? 'n/a'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure][overlay-freeze] objective=${objectiveForCalibration ?? 'unknown'} sessionId=${graphics.sessionId ?? 'n/a'} frameId=${graphics.frameId ?? 'n/a'} corners=4 color=yellow`
-          );
         }
         return { ...graphics, corners: { ...graphics.corners } };
       });
       if (source === 'after-impress') {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[after-impress-overlay-set] left=${formatAfterImpressPoint(c.left)} right=${formatAfterImpressPoint(c.right)} top=${formatAfterImpressPoint(c.top)} bottom=${formatAfterImpressPoint(c.bottom)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measure-after-impress][overlay-set] left=${formatAfterImpressPoint(c.left)} right=${formatAfterImpressPoint(c.right)} top=${formatAfterImpressPoint(c.top)} bottom=${formatAfterImpressPoint(c.bottom)}`
-        );
       }
       setPreviewAutoMeasureOverlay(null);
       autoMeasurePreviewSnapshotRef.current = null;
@@ -2712,10 +2162,6 @@ function App() {
       if (saveRowId === undefined) {
         saveRowId = getActiveMeasurementId();
         if (saveRowId) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measurement-new-row-blocked] reason=camera-session-already-has-active-row flow=auto reuseId=${saveRowId} frameId=${fingerprint.frameId ?? 'n/a'}`
-          );
         }
       }
       // Depth is captured ONLY when creating a new auto-measure row. On
@@ -2726,21 +2172,9 @@ function App() {
       const depthCapture: DepthSavePayload | null = isNewAutoMeasurement
         ? await buildNewRowDepthPayload(micrometerEnabledRef.current)
         : null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-save] depth=${depthCapture?.depthMm ?? '-'} source=${depthCapture?.depthSource ?? 'preserved'} new=${isNewAutoMeasurement}`
-      );
       if (isNewAutoMeasurement && depthCapture) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-row-depth-snapshot] rowId=pending depth=${depthCapture.depthMm ?? 'null'} source=${depthCapture.depthSource}`
-        );
       }
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-commit-start] method=Auto objective=${objectiveForCalibration} d1Px=${stableD1Px} d2Px=${stableD2Px}`
-      );
 
       const values = conversion.value;
 
@@ -2754,46 +2188,11 @@ function App() {
         return false;
       }
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-hv-calc] objective=${values.normalizedObjective} forceKgf=${forceKgf} d1Um=${values.d1Um.toFixed(3)} d2Um=${values.d2Um.toFixed(3)} davgUm=${values.avgDUm.toFixed(3)} hv=${values.hv ?? 'n/a'}`
-      );
 
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure] commit', {
-        objective: values.normalizedObjective,
-        d1Um: values.d1Um,
-        d2Um: values.d2Um,
-        hv: values.hv,
-      });
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure][detected] d1Px=${values.d1Px.toFixed(3)} d2Px=${values.d2Px.toFixed(3)}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure][compute] d1Um=${values.d1Um.toFixed(3)} d2Um=${values.d2Um.toFixed(3)} davgUm=${values.avgDUm.toFixed(3)} hv=${values.hv ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-create] method=Auto d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-hv] hv=${values.hv ?? 'n/a'} hardnessType=${machineStateForAuto?.hardnessLevel ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-create] frameId=${graphics.frameId ?? frameEpoch} hv=${values.hv ?? 'n/a'} hardnessType=${machineStateForAuto?.hardnessLevel ?? 'n/a'}`
-      );
 
-      // eslint-disable-next-line no-console
-      console.log('[album] snapshot capture start measurementId=', saveRowId ?? 'new');
       await waitForOverlayPaint();
       if (source === 'after-impress') {
         preserveAfterImpressOverlay(5000);
-        // eslint-disable-next-line no-console
-        console.log('[after-impress-camera-redraw]');
         if (!displayedAutoMeasureGraphicsRef.current) {
           logAfterImpressDetectionFailed('overlay-not-ready');
           setAutoMeasureStatus('failed');
@@ -2801,12 +2200,8 @@ function App() {
           return false;
         }
       }
-      // eslint-disable-next-line no-console
-      console.log('[album] auto measure overlay ready, capturing thumbnail');
       const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
       if (imageDataUrl) {
-        // eslint-disable-next-line no-console
-        console.log('[album] thumbnail captured with overlay=true points=4');
       } else {
         // eslint-disable-next-line no-console
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
@@ -2840,35 +2235,7 @@ function App() {
         timestamp,
         imageDataUrl,
       };
-      // eslint-disable-next-line no-console
-      console.log('[measurement-row-object] method=Auto', autoRowPayload);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-row-build] hardness=${values.hv ?? 'n/a'} hardnessType=${autoRowPayload.hardnessType} hvType=${autoRowPayload.hardnessType}`
-      );
-      // eslint-disable-next-line no-console
-      console.log('[hv-type-set] source=auto value=HV');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-row-insert] method=Auto hardnessType=HV hardness=${values.hv ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-save-payload] depthMm=${'depthMm' in autoRowPayload ? (autoRowPayload as { depthMm?: number | null }).depthMm ?? 'null' : 'preserved'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-add] reason=${isNewAutoMeasurement ? 'new-indentation' : 'settings-save-update'} hv=${values.hv ?? 'n/a'} d1Px=${values.d1Px.toFixed(2)} d2Px=${values.d2Px.toFixed(2)} existingRowId=${saveRowId ?? 'none'}`
-      );
       if (isNewAutoMeasurement) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-new-row] reason=new-indentation hv=${values.hv ?? 'n/a'} fingerprintKey=${fingerprintKey}`
-        );
       }
       let saved;
       try {
@@ -2877,23 +2244,9 @@ function App() {
           values: autoRowPayload,
         });
         if (source === 'after-impress') {
-          // eslint-disable-next-line no-console
-          console.log(`[after-impress-measurement-add] rowId=${saved.id}`);
-          // eslint-disable-next-line no-console
-          console.log(`[measure-after-impress][row-add] rowId=${saved.id}`);
         }
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-save-result] rowId=${saved.id} depthMm=${saved.depthMm ?? 'null'}`
-        );
         if (isNewAutoMeasurement && depthCapture) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[depth-freeze-save] rowId=${saved.id} value=${depthCapture.depthMm ?? 'null'}`
-          );
         } else if (!isNewAutoMeasurement) {
-          // eslint-disable-next-line no-console
-          console.log(`[depth-preserve] rowId=${saved.id} preserved=true`);
         }
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -2907,33 +2260,12 @@ function App() {
         }
         throw err;
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-save-success] method=Auto id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} averageUm=${saved.averageUm} hv=${saved.hv} objective=${saved.objective}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure][table-save] id=${saved.id} d1Um=${saved.d1Um} d2Um=${saved.d2Um} davgUm=${saved.averageUm} hv=${saved.hv} hardnessType=${autoRowPayload.hardnessType} objective=${saved.objective} method=Auto depthMm=${depthCapture?.depthMm ?? 'preserved'} timestamp=${timestamp}`
-      );
-      // eslint-disable-next-line no-console
-      console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
 
-      const previousAutoMethod = activeMeasurementMethodRef.current;
       const savedAutoMethod = saved.method ?? autoRowPayload.method;
       autoMeasurementIdRef.current = saved.id;
       manualMeasurementIdRef.current = saved.id;
       setActiveMeasurement(saved.id, fingerprint.frameId, 'auto-save');
       activeMeasurementMethodRef.current = savedAutoMethod;
-      // eslint-disable-next-line no-console
-      console.log(
-        isNewAutoMeasurement
-          ? `[measurement-row-create] id=${saved.id} method=${savedAutoMethod} reason=first-measurement-in-camera-session flow=auto frameId=${fingerprint.frameId ?? 'n/a'}`
-          : `[measurement-row-update] id=${saved.id} method=${savedAutoMethod} reason=same-camera-session flow=auto frameId=${fingerprint.frameId ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-mode-update] id=${saved.id} old=${previousAutoMethod ?? 'none'} new=${savedAutoMethod} reason=auto-save`
-      );
       const committedGraphics = cloneAutoMeasureGraphics(graphics);
       committedFingerprintsRef.current = upsertCommittedAutoMeasureFingerprint(
         committedFingerprintsRef.current,
@@ -2964,35 +2296,13 @@ function App() {
           graphics: committedGraphics,
         }
       );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-fingerprint-store] rowId=${saved.id} key=${fingerprintKey} total=${committedFingerprintsRef.current.length}`
-      );
       if (source === 'auto-click' || source === 'after-impress') {
         setAutoMeasureStatus('success');
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-row-create]\nframeId=${frameEpoch}\nd1Um=${saved.d1Um}\nd2Um=${saved.d2Um}\nhv=${saved.hv ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure][table-auto-update] rowId=${saved.id} source=detected`
-      );
       await refetchMeasurements();
-      // eslint-disable-next-line no-console
-      console.log('[measurement-table][refresh] rows=auto');
 
       if (source === 'settings-save') {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-settings-save] committed=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} HV=${values.hv === null ? 'n/a' : values.hv.toFixed(3)}`
-        );
       } else {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure:commit] overlayFrozen=true measurementAdded=true D1_px=${values.d1Px.toFixed(3)} D2_px=${values.d2Px.toFixed(3)} D1_um=${values.d1Um.toFixed(3)} D2_um=${values.d2Um.toFixed(3)} HV=${values.hv === null ? 'n/a' : values.hv.toFixed(3)}`
-        );
       }
 
       setStatusMessage(
@@ -3018,13 +2328,8 @@ function App() {
   const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource): Promise<boolean> => {
     const callSource = source ?? (preview ? 'settings-preview' : 'auto-click');
     logUnexpectedAutoMeasureCall(callSource);
-    const requestedAt = performance.now();
 
     if (impressInProgressRef.current) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-blocked-during-impress] source=${callSource} preview=${preview}`
-      );
       return Promise.resolve(false);
     }
 
@@ -3034,15 +2339,7 @@ function App() {
       // Non-preview (explicit Auto Measure click) is still ignored while busy.
       if (preview) {
         autoMeasurePendingPreviewRef.current = settingsInput;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-preview-coalesced] smoothing=${settingsInput.smoothing} threshold=${settingsInput.threshold}`
-        );
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-table][skip-duplicate] reason=same-auto-measure-session preview=${preview}`
-      );
       return Promise.resolve(false);
     }
 
@@ -3056,18 +2353,12 @@ function App() {
         // against every current row, even while the overlay is being refreshed.
         setCommittedAutoMeasureOverlay((prev) => {
           if (!prev) {
-            // eslint-disable-next-line no-console
-            console.log('[overlay-skip] reason=no-active-measurement-overlay trigger=auto-measure-start');
           }
           return null;
         });
         setPreviewAutoMeasureOverlay(null);
         autoMeasurePreviewSnapshotRef.current = null;
         autoMeasurementIdRef.current = null;
-        // eslint-disable-next-line no-console
-        console.log('[overlay-clear] reason=auto-measure-start');
-        // eslint-disable-next-line no-console
-        console.log('[overlay-clear-before-auto]');
       }
 
       autoMeasureInFlightRef.current = true;
@@ -3078,8 +2369,6 @@ function App() {
       const sessionIdForRun = autoMeasureSessionIdRef.current + 1;
       autoMeasureSessionIdRef.current = sessionIdForRun;
       setAutoMeasureSessionId(sessionIdForRun);
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-run-start] runId=${sessionIdForRun} source=${callSource}`);
       // Both auto-click and settings-preview activate the session — preview
       // overlays during slider drags also need the gate to allow paint.
       // The session ends on the next clearAutoMeasureOverlay invalidator
@@ -3096,10 +2385,6 @@ function App() {
         setCameraStatus('frozen');
       }
       if (callSource === 'settings-preview') {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-preview-refresh] objective=${activeObjective ?? 'unknown'} smoothing=${settingsInput.smoothing} threshold=${settingsInput.threshold}`
-        );
       }
       if (!preview) {
         setStatusMessage('System Status: Auto Measure running');
@@ -3118,10 +2403,6 @@ function App() {
         const optimisticActive = (activeObjective && activeObjective.trim()) || null;
         const lastEchoed = machineState?.objective?.trim() || null;
         const objectiveForCalibration = confirmedFromMachine || optimisticActive || lastEchoed;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[frontend-objective-sync] confirmedObjectiveFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'} machineObjective=${lastEchoed ?? 'null'}`
-        );
         if (!objectiveForCalibration) {
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed('no-active-objective');
@@ -3146,8 +2427,6 @@ function App() {
         }
         if (machineState?.objective?.trim() && machineState.objective !== activeObjective) {
           setActiveObjective(machineState.objective);
-          // eslint-disable-next-line no-console
-          console.log('[objective] changed →', machineState.objective);
         }
         const machineStateForAuto = machineState
           ? { ...machineState, objective: objectiveForCalibration }
@@ -3161,45 +2440,20 @@ function App() {
         });
         const forceKgf = parseForceKgf(machineState?.force);
         if (!preview) {
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure] calibration lookup', {
-            resolvedObjective: objectiveForCalibration,
-            micronPerPixel: calibration?.micronPerPixel ?? null,
-            calibrationName: calibration?.calibrationName ?? null,
-            forceKgf,
-          });
         }
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         let displayedFrame;
         if (isFreshCapture) {
           if (callSource === 'after-impress') {
-            // eslint-disable-next-line no-console
-            console.log('[after-impress-freeze-frame-start]');
-            // eslint-disable-next-line no-console
-            console.log('[measure-after-impress][capture-frame]');
           }
           displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-capture-displayed-frame] source=${callSource} ok=${displayedFrame?.ok ?? 'null'}`
-          );
           if (callSource === 'after-impress') {
-            // eslint-disable-next-line no-console
-            console.log('[frame-frozen]');
           }
         } else {
           displayedFrame = committedAutoMeasureFrameRef.current;
           if (displayedFrame) {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-frozen-frame-reuse] sessionId=${sessionIdForRun} size=${displayedFrame.width}x${displayedFrame.height}`
-            );
           } else {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-live-frame-blocked] reason=no-frozen-frame source=${callSource}`
-            );
           }
         }
         let capturedFrameIdForRun: number | null = autoMeasureCapturedFrameId;
@@ -3212,20 +2466,6 @@ function App() {
           // paint even if the camera's first-fresh-frame observer hasn't
           // fired yet.
           setObjectiveChangeInProgress(false);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-freeze-frame] sessionId=${sessionIdForRun} frameId=${capturedFrameId}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(`[auto-measure-snapshot] frameId=${capturedFrameId}`);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure][frame-freeze] sessionId=${sessionIdForRun} frameId=${capturedFrameId} objective=${objectiveForCalibration ?? 'unknown'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-capture-fresh-frame] objective=${objectiveForCalibration} frameId=${capturedFrameId}`
-          );
         }
 
         // After an objective change the live canvas is cleared and the next
@@ -3241,11 +2481,7 @@ function App() {
           if (!preview) {
             setStatusMessage('System Status: Waiting for camera frame after objective change');
           }
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure] waiting-for-fresh-frame after objective change');
           const fresh = await (cameraRef.current?.waitForFreshFrame(2000) ?? Promise.resolve(false));
-          // eslint-disable-next-line no-console
-          console.log(`[auto-measure] frame-ready=${fresh}`);
           if (fresh) {
             displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
           }
@@ -3254,15 +2490,9 @@ function App() {
         if (!displayedFrame?.ok) {
           if (preview) {
             // Keep last valid overlay; surface only via status (no log spam).
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-settings-preview-reject] reason=${displayedFrame?.error ?? 'no committed frame'} keepLastValid=true`
-            );
             return false;
           }
           if (callSource === 'auto-click') {
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure-click] detection-complete ok=false confidence=0 D1_px=0 D2_px=0');
           }
           {
             const stale = displayedFrame?.error ?? 'no-displayed-image (stale-frame)';
@@ -3275,10 +2505,6 @@ function App() {
             // liveObjectiveForNative is declared further down — this branch
             // fires before it's computed (no displayed image), so log it as
             // 'unknown'.
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-result] success=false reason=${stale} objective=unknown nativeObjective=n/a`
-            );
             if (callSource === 'after-impress') {
               logAfterImpressDetectionFailed(stale);
             }
@@ -3296,10 +2522,6 @@ function App() {
             displayedFrame.height !== 1944 ||
             displayedFrame.pixelFormat !== 'bgr24')
         ) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-reject] reason=invalid-detection-frame width=${displayedFrame.width} height=${displayedFrame.height} pixelFormat=${displayedFrame.pixelFormat}`
-          );
           if (!preview) {
             setStatusMessage('System Status: Auto Measure rejected: invalid-detection-frame');
             setUnavailableMsg('Auto Measure rejected: invalid-detection-frame. Please retry.');
@@ -3315,10 +2537,6 @@ function App() {
         }
 
         if (callSource === 'after-impress') {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[after-impress-frame-ready] width=${displayedFrame.width} height=${displayedFrame.height} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${objectiveForCalibration}`
-          );
         }
 
         if (isFreshCapture) {
@@ -3347,61 +2565,19 @@ function App() {
             : settings.objectiveForMeasure;
         if (!preview) {
           if (callSource === 'after-impress') {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[after-impress-auto-measure-start] attempt=${afterImpressAutoMeasureAttemptRef.current || 1}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measure-after-impress][auto-detect-start] attempt=${afterImpressAutoMeasureAttemptRef.current || 1}`
-            );
           }
           if (callSource === 'auto-click') {
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure] detection-start');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-click] detection-start frameId=${displayedFrame.source}-${displayedFrame.width}x${displayedFrame.height}-${Date.now()}`
-            );
           }
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure:start] frameSize=${displayedFrame.width}x${displayedFrame.height} smoothing=${settings.smoothing} threshold=${settings.threshold}`
-          );
         }
         // Prove the frame about to be detected matches the confirmed
         // objective AND was painted after the most recent canvas clear.
         // Both fields must be aligned for detection to be trustworthy.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-fresh-check] objective=${liveObjectiveForNative} confirmedFromMachine=${confirmedFromMachine ?? 'null'} currentEpoch=${getCurrentFrameEpoch()} lastPaintEpoch=${getLastPaintEpoch()} lastPaintAt=${getLastCameraFramePaintAt()} now=${Date.now()} frameSource=${displayedFrame.source} frameSize=${displayedFrame.width}x${displayedFrame.height}`
-        );
         // Spec-format start log — also stamps a frameId we can grep for in
         // the native [auto-measure-start ...] line in the terminal.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-start] sessionId=${sessionIdForRun} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${liveObjectiveForNative}`
-        );
         // Parity log: must match [calibration-auto-native-input] for the
         // same indent so the two paths can be diffed in the console.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[live-auto-native-input] objective=${liveObjectiveForNative} smoothing=${settings.smoothing} threshold=${settings.threshold} imageType=${settings.imageType} minConfidence=${minConfidence} width=${displayedFrame.width} height=${displayedFrame.height} pixelFormat=${displayedFrame.pixelFormat} source=${displayedFrame.source}`
-        );
         const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
         if (preview) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-preview-start] sessionId=${sessionIdForRun} smoothing=${settings.smoothing} threshold=${settings.threshold}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-preview-handler-enter] smoothing=${settings.smoothing} threshold=${settings.threshold}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-preview-frame-source] source=frozenFrame frameId=${capturedFrameIdForRun ?? 'n/a'} size=${displayedFrame.width}x${displayedFrame.height}`
-          );
         }
         // Slider values are the source of truth at detection time. Objective
         // defaults seed the dialog when the objective changes (UI level) — at
@@ -3409,15 +2585,7 @@ function App() {
         // otherwise dragging Smoothing/Threshold sliders produces no visible
         // change in the yellow lines because every detection runs on the
         // same hardcoded numbers.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-run] objective=${liveObjectiveForNative} smoothing=${runSmoothing} threshold=${runThreshold}`
-        );
         if (preview) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-preview-native-call] smoothing=${runSmoothing} threshold=${runThreshold} objective=${liveObjectiveForNative}`
-          );
         }
         logAutoMeasurePhase('auto-measure-preprocess', {
           objective: liveObjectiveForNative,
@@ -3445,13 +2613,7 @@ function App() {
         });
 
         if (!preview) {
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure] result', nativeResult);
           if (callSource === 'auto-click') {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-click] detection-complete ok=${nativeResult.ok} confidence=${nativeResult.ok ? nativeResult.confidence.toFixed(3) : 0} D1_px=${nativeResult.ok ? nativeResult.d1Pixels.toFixed(3) : 0} D2_px=${nativeResult.ok ? nativeResult.d2Pixels.toFixed(3) : 0}`
-            );
           }
         }
 
@@ -3526,20 +2688,8 @@ function App() {
               method: resolvedDetection.method,
               reason,
             });
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-settings-preview] smoothing=${settings.smoothing} kernel=${smoothingToPreviewKernel(settings.smoothing)} threshold=${settings.threshold} accepted=false D1_px=0 D2_px=0`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-settings-preview-reject] reason=${reason} keepLastValid=true`
-            );
             return false;
           }
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-result] success=false reason=${reason} objective=${liveObjectiveForNative} nativeObjective=${nativeObjective || 'missing'}`
-          );
           logAutoMeasurePhase('auto-measure-reject', {
             objective: liveObjectiveForNative,
             smoothing: runSmoothing,
@@ -3554,10 +2704,6 @@ function App() {
           if (callSource !== 'after-impress') {
             clearAutoMeasureOverlay('auto-measure-failed');
           }
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure:validate] ok=false reason=${reason} D1_px=0 D2_px=0`
-          );
           // eslint-disable-next-line no-console
           console.warn(
             `[measurement-commit-blocked] method=Auto reason=detection-rejected detail="${reason}"`
@@ -3583,55 +2729,6 @@ function App() {
           });
         }
 
-        if (!preview) {
-          const debug = result.debug ?? {};
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure:candidate]', {
-            area: debug.selectedContourArea,
-            center: debug.minAreaRect && typeof debug.minAreaRect === 'object'
-              ? (debug.minAreaRect as { center?: unknown }).center
-              : undefined,
-            score: debug.confidence ?? result.confidence,
-          });
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure:tips-after]', result.corners);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure:validate] ok=true reason=accepted D1_px=${result.d1Pixels.toFixed(3)} D2_px=${result.d2Pixels.toFixed(3)}`
-          );
-          const debugObjOk = (result.debug ?? {}) as { objectiveForMeasure?: unknown };
-          const nativeObjectiveOk =
-            typeof debugObjOk.objectiveForMeasure === 'string' ? debugObjOk.objectiveForMeasure : '';
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-result-objective] objective=${liveObjectiveForNative} nativeObjective=${nativeObjectiveOk || 'missing'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-result] success=true reason=accepted objective=${liveObjectiveForNative} nativeObjective=${nativeObjectiveOk || 'missing'} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-result] sessionId=${sessionIdForRun} frameId=${capturedFrameIdForRun ?? 'n/a'} objective=${liveObjectiveForNative}`
-          );
-          {
-            const dbg = (result.debug ?? {}) as Record<string, unknown>;
-            const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
-            const area = num(dbg.selectedContourArea);
-            const rectShort = num(dbg.rectShort);
-            const rectLong = num(dbg.rectLong);
-            const sideRatio = num(dbg.sideRatio ?? (rectLong && rectShort ? rectLong / rectShort : NaN));
-            const diagonalRatio = num(
-              dbg.diagonalRatio ?? (result.d1Pixels && result.d2Pixels
-                ? Math.max(result.d1Pixels, result.d2Pixels) / Math.max(1, Math.min(result.d1Pixels, result.d2Pixels))
-                : NaN)
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[detect-selected-final] mode=live area=${area} sideRatio=${Number.isFinite(sideRatio) ? sideRatio.toFixed(4) : 'n/a'} diagonalRatio=${Number.isFinite(diagonalRatio) ? diagonalRatio.toFixed(4) : 'n/a'} d1Px=${result.d1Pixels.toFixed(2)} d2Px=${result.d2Pixels.toFixed(2)} confidence=${result.confidence.toFixed(4)}`
-            );
-          }
-        }
 
         // Stamp the run's session id + the captured frame id on the graphics
         // so the render gate can reject a result that returns after a later
@@ -3646,31 +2743,8 @@ function App() {
           frameId: capturedFrameIdForRun,
         };
         if (callSource === 'after-impress' && result.ok) {
-          const c = result.corners;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[indent-corners-detected] left=(${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}) right=(${c.right.x.toFixed(2)},${c.right.y.toFixed(2)}) top=(${c.top.x.toFixed(2)},${c.top.y.toFixed(2)}) bottom=(${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)})`
-          );
         }
         if (sessionIdForRun !== autoMeasureSessionIdRef.current) {
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure-result-discard] reason=session-mismatch');
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-stale-callback] reason=session-superseded run=${sessionIdForRun} current=${autoMeasureSessionIdRef.current}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-run-ignore-stale] resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[overlay-skip-stale-result] reason=runId-mismatch resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[overlay-ignore-stale] resultRunId=${sessionIdForRun} currentRunId=${autoMeasureSessionIdRef.current}`
-          );
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed('session-mismatch');
           }
@@ -3691,8 +2765,6 @@ function App() {
             String(liveConfirmed).toUpperCase() !==
               String(objectiveForCalibration).toUpperCase()
           ) {
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure-result-discard] reason=objective-mismatch');
             if (callSource === 'after-impress') {
               logAfterImpressDetectionFailed('objective-mismatch');
             }
@@ -3700,51 +2772,13 @@ function App() {
           }
         }
         if (callSource === 'after-impress') {
-          // eslint-disable-next-line no-console
-          console.log('[after-impress-auto-measure-result] success=true reason=accepted');
         }
         if (!preview && callSource === 'auto-click') {
-          const c = result.corners;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure] corners-detected top=${c.top.x.toFixed(2)},${c.top.y.toFixed(2)} right=${c.right.x.toFixed(2)},${c.right.y.toFixed(2)} bottom=${c.bottom.x.toFixed(2)},${c.bottom.y.toFixed(2)} left=${c.left.x.toFixed(2)},${c.left.y.toFixed(2)}`
-          );
           // nativeCorners → displayCorners scale map. Camera preview canvas
           // is painted at half native resolution (PREVIEW_SCALE=2 in
           // useCameraStream); the AutoMeasureOverlay still receives native
           // corners and maps them via imageToDisplay at render time. This
           // log captures the scaled set used for the yellow overlay.
-          const nativeWidth = displayedFrame.width;
-          const nativeHeight = displayedFrame.height;
-          const PREVIEW_SCALE = 2;
-          const displayWidth = Math.round(nativeWidth / PREVIEW_SCALE);
-          const displayHeight = Math.round(nativeHeight / PREVIEW_SCALE);
-          const scaleX = displayWidth / nativeWidth;
-          const scaleY = displayHeight / nativeHeight;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-scale-map] nativeWidth=${nativeWidth} nativeHeight=${nativeHeight} displayWidth=${displayWidth} displayHeight=${displayHeight} scaleX=${scaleX.toFixed(4)} scaleY=${scaleY.toFixed(4)}`
-          );
-          const scalePoint = (p: { x: number; y: number }) => ({
-            x: +(p.x * scaleX).toFixed(2),
-            y: +(p.y * scaleY).toFixed(2),
-          });
-          const nativeCorners = {
-            top: { x: +c.top.x.toFixed(2), y: +c.top.y.toFixed(2) },
-            right: { x: +c.right.x.toFixed(2), y: +c.right.y.toFixed(2) },
-            bottom: { x: +c.bottom.x.toFixed(2), y: +c.bottom.y.toFixed(2) },
-            left: { x: +c.left.x.toFixed(2), y: +c.left.y.toFixed(2) },
-          };
-          const displayCorners = {
-            top: scalePoint(c.top),
-            right: scalePoint(c.right),
-            bottom: scalePoint(c.bottom),
-            left: scalePoint(c.left),
-          };
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-result] nativeCorners=${JSON.stringify(nativeCorners)} displayCorners=${JSON.stringify(displayCorners)} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} hv=${typeof result.hv === 'number' ? result.hv.toFixed(2) : 'n/a'} frameId=${capturedFrameIdForRun ?? 'n/a'}`
-          );
         }
         const snapshot: AutoMeasureDetectionSnapshot = {
           settings,
@@ -3758,62 +2792,28 @@ function App() {
         };
 
         if (preview) {
-          const detectMs = performance.now() - requestedAt;
           {
             const c = result.ok ? result.corners : null;
-            const fmt = (p: { x: number; y: number } | null | undefined) =>
-              p ? `(${p.x.toFixed(2)},${p.y.toFixed(2)})` : 'null';
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-preview-result] ok=${result.ok} left=${fmt(c?.left)} right=${fmt(c?.right)} top=${fmt(c?.top)} bottom=${fmt(c?.bottom)} d1=${result.ok ? result.d1Pixels.toFixed(3) : 'n/a'} d2=${result.ok ? result.d2Pixels.toFixed(3) : 'n/a'}`
-            );
             const prev = displayedAutoMeasureGraphicsRef.current;
             if (c && prev) {
               const d = (a: { x: number; y: number }, b: { x: number; y: number }) =>
                 Math.hypot(a.x - b.x, a.y - b.y).toFixed(2);
-              // eslint-disable-next-line no-console
-              console.log(
-                `[auto-preview-geometry-delta] dLeft=${d(c.left, prev.corners.left)} dRight=${d(c.right, prev.corners.right)} dTop=${d(c.top, prev.corners.top)} dBottom=${d(c.bottom, prev.corners.bottom)}`
-              );
               const same =
                 d(c.left, prev.corners.left) === '0.00' &&
                 d(c.right, prev.corners.right) === '0.00' &&
                 d(c.top, prev.corners.top) === '0.00' &&
                 d(c.bottom, prev.corners.bottom) === '0.00';
               if (same) {
-                // eslint-disable-next-line no-console
-                console.log(
-                  `[auto-preview-no-geometry-change] smoothing=${settings.smoothing} threshold=${settings.threshold}`
-                );
               }
             }
           }
           if (!autoMeasureSettingsEqual(settings, latestAutoMeasurePreviewSettingsRef.current)) {
-            const latest = latestAutoMeasurePreviewSettingsRef.current;
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-settings-preview] smoothing=${settings.smoothing} kernel=${readPreviewKernel(result, settings.smoothing)} threshold=${settings.threshold} accepted=false D1_px=0 D2_px=0 detectMs=${detectMs.toFixed(1)}`
-            );
-            // eslint-disable-next-line no-console
-            console.log('[auto-settings-preview-reject] reason=stale-preview keepLastValid=true');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-settings][preview-skip-stale] reqSmoothing=${settings.smoothing} reqThreshold=${settings.threshold} latestSmoothing=${latest?.smoothing ?? 'n/a'} latestThreshold=${latest?.threshold ?? 'n/a'} detectMs=${detectMs.toFixed(1)}`
-            );
             return false;
           }
-          const before = displayedAutoMeasureGraphicsRef.current;
-          const kernel = readPreviewKernel(result, settings.smoothing);
           setPreviewAutoMeasureOverlay((prev) => {
             if (prev && graphicsAlmostEqual(prev, graphics)) {
-              // eslint-disable-next-line no-console
-              console.log('[auto-overlay-skip] reason=same-lines-no-state-update');
               return prev;
             }
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-overlay-set] source=settings-preview lines=${graphics.lines.length} corners=4`
-            );
             return graphics;
           });
           autoMeasurePreviewSnapshotRef.current = snapshot;
@@ -3822,24 +2822,6 @@ function App() {
             d2Pixels: result.d2Pixels,
             confidence: result.confidence,
           };
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-settings-preview] smoothing=${settings.smoothing} threshold=${settings.threshold} D1_px=${result.d1Pixels.toFixed(3)} D2_px=${result.d2Pixels.toFixed(3)} kernel=${kernel} accepted=true detectMs=${detectMs.toFixed(1)}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-settings][preview-apply] smoothing=${settings.smoothing} threshold=${settings.threshold} d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} detectMs=${detectMs.toFixed(1)}`
-          );
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-measure-preview-finish] smoothing=${settings.smoothing} threshold=${settings.threshold} detectMs=${detectMs.toFixed(1)}`
-          );
-          const fmtPt = (p: { x: number; y: number } | null | undefined) =>
-            p ? `${p.x.toFixed(2)},${p.y.toFixed(2)}` : 'null';
-          // eslint-disable-next-line no-console
-          console.log(
-            `[auto-settings-tip-move] topBefore=${fmtPt(before?.corners.top)} topAfter=${fmtPt(result.corners.top)} rightBefore=${fmtPt(before?.corners.right)} rightAfter=${fmtPt(result.corners.right)} bottomBefore=${fmtPt(before?.corners.bottom)} bottomAfter=${fmtPt(result.corners.bottom)} leftBefore=${fmtPt(before?.corners.left)} leftAfter=${fmtPt(result.corners.left)}`
-          );
           // Calibration-aware: when the preview is being driven for the
           // Calibration auto path, push the new pixels into the same state
           // the Calibration dialog reads (autoFillPixelLength*), so the
@@ -3847,28 +2829,6 @@ function App() {
           // Smoothing / Threshold sliders. The committed auto overlay was
           // already updated above so the yellow guide lines move.
           if (calibrationMeasureModeRef.current === 'auto') {
-            const prevPixels = latestManualPixelsRef.current;
-            const d1Delta = prevPixels ? Math.abs(result.d1Pixels - prevPixels.d1Px) : NaN;
-            const d2Delta = prevPixels ? Math.abs(result.d2Pixels - prevPixels.d2Px) : NaN;
-            const moved =
-              !prevPixels ||
-              (Number.isFinite(d1Delta) && d1Delta > 0.5) ||
-              (Number.isFinite(d2Delta) && d2Delta > 0.5);
-            // eslint-disable-next-line no-console
-            console.log(
-              `[calibration-auto-preview-result] d1Px=${result.d1Pixels.toFixed(3)} d2Px=${result.d2Pixels.toFixed(3)} corners=${JSON.stringify({
-                top: { x: +result.corners.top.x.toFixed(2), y: +result.corners.top.y.toFixed(2) },
-                right: { x: +result.corners.right.x.toFixed(2), y: +result.corners.right.y.toFixed(2) },
-                bottom: { x: +result.corners.bottom.x.toFixed(2), y: +result.corners.bottom.y.toFixed(2) },
-                left: { x: +result.corners.left.x.toFixed(2), y: +result.corners.left.y.toFixed(2) },
-              })} confidence=${result.confidence.toFixed(4)}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[calibration-auto-preview-geometry-delta] d1Delta=${Number.isFinite(d1Delta) ? d1Delta.toFixed(3) : 'n/a'} d2Delta=${Number.isFinite(d2Delta) ? d2Delta.toFixed(3) : 'n/a'} moved=${moved}`
-            );
-            // eslint-disable-next-line no-console
-            console.log('[calibration-auto-overlay-update] reason=settings-preview');
             // The yellow guides should also paint as the committed (not just
             // preview) overlay so closing the settings dialog doesn't snap
             // back to the pre-preview detection in calibration mode.
@@ -3876,10 +2836,6 @@ function App() {
             const nextPixels = { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
             latestManualPixelsRef.current = nextPixels;
             setLatestManualPixels(nextPixels);
-            // eslint-disable-next-line no-console
-            console.log(
-              `[calibration-auto-pixel-update] pixelX=${result.d1Pixels.toFixed(3)} pixelY=${result.d2Pixels.toFixed(3)}`
-            );
           }
           return true;
         }
@@ -3893,17 +2849,7 @@ function App() {
               : 'auto-click'
         );
         if (callSource === 'after-impress') {
-          // eslint-disable-next-line no-console
-          console.log('[after-impress-detection-success]');
-          // eslint-disable-next-line no-console
-          console.log('[after-impress-overlay-state-set]');
-          // eslint-disable-next-line no-console
-          console.log('[after-impress-overlay-redraw]');
-          // eslint-disable-next-line no-console
-          console.log('[full-guide-overlay-render] lines=4 layout=four-guides');
           if (committed) {
-            // eslint-disable-next-line no-console
-            console.log('[after-impress-row-update]');
           }
         }
         return committed;
@@ -3912,8 +2858,6 @@ function App() {
         // eslint-disable-next-line no-console
         console.warn('[auto-measure] failed:', err);
         if (!preview && callSource === 'auto-click') {
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure-click] detection-complete ok=false confidence=0 D1_px=0 D2_px=0');
         }
         if (preview) {
           // Preview-time exception: keep overlay, just log + status.
@@ -3934,10 +2878,6 @@ function App() {
       } finally {
         autoMeasureInFlightRef.current = false;
         setAutoMeasuring(false);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-run-finish] runId=${sessionIdForRun} source=${callSource}`
-        );
         // Drain coalesced preview: if a slider tick arrived while we were
         // running, fire one more pass with the latest settings so the user's
         // final position always wins.
@@ -3979,8 +2919,6 @@ function App() {
       setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
     };
 
-    // eslint-disable-next-line no-console
-    console.log('[after-impress-trigger-called]');
     impressInProgressRef.current = false;
     const settings = latestAutoMeasurePreviewSettingsRef.current;
     const measureAfterImpressEnabled = settings.measureAfterImpress === true;
@@ -3988,24 +2926,10 @@ function App() {
     // and the latest React state value so a drift between the two is obvious
     // in the log trail if the operator saved settings and clicked Impress in
     // the same tick.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[measure-after-impress][setting-ref] measureAfterImpress=${settings.measureAfterImpress} turretAfterImpress=${settings.turretAfterImpress}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[measure-after-impress][setting-state] measureAfterImpress=${autoMeasurePreviewSettingsRef.current.measureAfterImpress} turretAfterImpress=${autoMeasurePreviewSettingsRef.current.turretAfterImpress}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[measure-after-impress-enabled] ${measureAfterImpressEnabled}`);
-    // eslint-disable-next-line no-console
-    console.log(`[measure-after-impress][enabled] ${measureAfterImpressEnabled}`);
     if (!measureAfterImpressEnabled) {
       return false;
     }
     if (afterImpressAutoMeasureInFlightRef.current) {
-      // eslint-disable-next-line no-console
-      console.log('[after-impress-trigger-skip] reason=in-flight');
       return false;
     }
 
@@ -4026,8 +2950,6 @@ function App() {
         .trim()
         .toUpperCase();
       const settleMs = objective === '40X' ? 600 : 350;
-      // eslint-disable-next-line no-console
-      console.log(`[after-impress-wait-camera-settle] ms=${settleMs}`);
       await delay(settleMs);
 
       const camera = cameraRef.current;
@@ -4048,8 +2970,6 @@ function App() {
           return false;
         }
         if (attempt > 1) {
-          // eslint-disable-next-line no-console
-          console.log(`[measure-after-impress][capture-retry] attempt=${attempt} delayMs=300`);
           await delay(300);
           const fresh = await camera.waitForFreshFrame(1200);
           if (!fresh) {
@@ -4061,8 +2981,6 @@ function App() {
         }
         if (autoMeasureInFlightRef.current) {
           const waitStart = Date.now();
-          // eslint-disable-next-line no-console
-          console.log('[measure-after-impress-wait-in-flight] reason=prior-detection-busy');
           while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
             await delay(60);
           }
@@ -4081,24 +2999,16 @@ function App() {
         afterImpressAutoMeasureAttemptRef.current = attempt;
         preserveAfterImpressOverlay(12000);
         suppressAutoMeasurePreviewRef.current = false;
-        // eslint-disable-next-line no-console
-        console.log(`[measure-after-impress][forced-trigger] attempt=${attempt} source=after-impress`);
         const finished = await runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
         await waitForOverlayPaint();
         const overlayReady = displayedAutoMeasureGraphicsRef.current !== null;
         if (finished && overlayReady) {
           preserveAfterImpressOverlay(5000);
-          // eslint-disable-next-line no-console
-          console.log(`[measure-after-impress][auto-detect-success] attempt=${attempt}`);
-          // eslint-disable-next-line no-console
-          console.log('[measure-after-impress][final-overlay-visible]');
           return true;
         }
 
         const reason = finished ? 'overlay-not-ready' : 'detection-failed';
         if (attempt < 3) {
-          // eslint-disable-next-line no-console
-          console.log(`[after-impress-retry] attempt=${attempt + 1} reason=${reason}`);
           continue;
         }
         markAfterImpressFailed(reason);
@@ -4132,10 +3042,6 @@ function App() {
       });
     }
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-preview-request] smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
-    );
     // Calibration-aware preview: when the Calibration panel is open, the
     // slider re-run must respect the calibration overlay mode. Manual mode
     // → ignore (no preview detection); Auto mode → emit the calibration log
@@ -4148,37 +3054,17 @@ function App() {
     const calibrationMode = calibrationMeasureModeRef.current;
     if (calibrationMode !== 'none') {
       if (calibrationMode !== 'auto') {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-auto-preview-ignore] reason=not-auto-mode mode=${calibrationMode}`
-        );
         return;
       }
       const calibFrame = committedAutoMeasureFrameRef.current;
       if (!calibFrame) {
-        // eslint-disable-next-line no-console
-        console.log('[calibration-auto-preview-ignore] reason=no-frozen-frame');
         return;
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-settings-change] smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-preview-request] frameId=${calibFrame.source}-${calibFrame.width}x${calibFrame.height} smoothing=${autoMeasurePreviewSettings.smoothing} threshold=${autoMeasurePreviewSettings.threshold}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-auto-preview-native-call] width=${calibFrame.width} height=${calibFrame.height} pixelFormat=${calibFrame.pixelFormat} bytes=${calibFrame.buffer.byteLength} frameId=${calibFrame.source}-${calibFrame.width}x${calibFrame.height}`
-      );
     }
 
     const timer = window.setTimeout(() => {
       if (suppressAutoMeasurePreviewRef.current) {
         suppressAutoMeasurePreviewRef.current = false;
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure-preview-skip] reason=objective-change');
         return;
       }
       // Invoke through the ref so this effect does NOT depend on
@@ -4204,10 +3090,6 @@ function App() {
       const normalized = normalizeAutoMeasureSettings(settings);
       latestAutoMeasurePreviewSettingsRef.current = normalized;
       setAutoMeasurePreviewSettings(normalized);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-settings-save] measureAfterImpress=${normalized.measureAfterImpress} turretAfterImpress=${normalized.turretAfterImpress} objectiveForMeasure=${normalized.objectiveForMeasure}`
-      );
       void refetchAutoMeasureSettings();
 
       const commitPreviewOrDetect = () => {
@@ -4241,8 +3123,6 @@ function App() {
     const next = String(value);
     if (lastLoggedLightnessRef.current === next) return;
     lastLoggedLightnessRef.current = next;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-lightness-refresh] value=${next} frameId=${getLastPaintEpoch()}`);
   }, [liveMachineState?.lightness]);
 
   // Mirror SSE machine state's objective into App-level state — but never
@@ -4254,11 +3134,7 @@ function App() {
     if (!next) return;
     if (Date.now() - lastObjectiveClickAtRef.current < 5000) return;
     if (next !== activeObjective) {
-      // eslint-disable-next-line no-console
-      console.log(`[objective-change-request] source=machine objective=${next}`);
       setActiveObjective(next);
-      // eslint-disable-next-line no-console
-      console.log('[objective] changed current=', next, 'source=sse');
     }
   }, [liveMachineState?.objective, activeObjective]);
 
@@ -4275,42 +3151,13 @@ function App() {
     // 1) Force activeObjective to the machine-confirmed value. Overrides the
     //    optimistic value the click handler may have set.
     setActiveObjective(confirmed);
-    // eslint-disable-next-line no-console
-    console.log(`[statusbar-objective] objective=${confirmed}`);
     setObjectiveChangeInProgress(true);
 
-    // eslint-disable-next-line no-console
-    console.log(`[objective-change-start] objective=${confirmed}`);
-    // eslint-disable-next-line no-console
-    console.log(`[objective-confirmed] objective=${confirmed}`);
     // L1 / L2 are the slot positions; the machine echoes L<n>OK on
-    // mechanical landing. Surface the ack token explicitly so the operator
-    // (and the bug-repro logs) can correlate the UI commit with the wire.
-    const ackToken =
-      confirmed === '10X' ? 'L1OK' : confirmed === '40X' ? 'L2OK' : 'unknown';
-    // eslint-disable-next-line no-console
-    console.log(
-      `[objective-switch-confirmed] objective=${confirmed} ack=${ackToken}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[camera-objective-change] objective=${confirmed}`);
-    // eslint-disable-next-line no-console
-    console.log(`[camera-objective-sync] objective=${confirmed}`);
-    // eslint-disable-next-line no-console
-    console.log(`[camera-refresh] reason=objective-change`);
+    // mechanical landing.
 
     // 2) Reload calibration profile for the now-confirmed objective.
     void refetchCalibrationSettings();
-    const cal = findCalibrationForObjective(calibrationSettingsList, confirmed);
-    const umPerPixel = cal ? (cal.umPerPixel ?? cal.pixelToMicron) : null;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-calibration] loaded objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'}`);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-load] objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'} xUmPerPixel=${umPerPixel ?? 'unknown'} yUmPerPixel=${umPerPixel ?? 'unknown'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[measurement-scale] objective=${confirmed} umPerPixel=${umPerPixel ?? 'unknown'}`);
 
     // 3) Bump the viewport refresh key so CameraWindow can clear any cached
     //    transforms and force a fresh draw at the new magnification.
@@ -4319,29 +3166,15 @@ function App() {
     // 4) Invalidate the live canvas so the next worker frame draws onto a
     //    cleared surface (no stale frame from the previous objective).
     cameraRef.current?.clearLiveCanvas();
-    // eslint-disable-next-line no-console
-    console.log('[camera-canvas-clear] reason=objective-change');
 
     // 5) Clear any stale Auto Measure state from the previous magnification —
     //    snapshot frame, frozen overlay, preview overlay, and preview snapshot.
     //    Without this, a 40X frame/overlay can survive into a 10X session.
     if (shouldPreserveAfterImpressOverlay()) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-clear-skip] reason=after-impress-objective-confirmed objective=${confirmed}`
-      );
     } else {
       clearAutoMeasureOverlay('objective-change-confirmed');
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-clear-on-objective-change] objective=${confirmed}`);
-      // eslint-disable-next-line no-console
-      console.log('[measurement-session-reset] reason=objective-change');
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-reset] reason=objective-change objective=${confirmed}`);
     }
 
-    // eslint-disable-next-line no-console
-    console.log(`[viewport-refresh] completed objective=${confirmed}`);
 
     // Objective change does NOT auto-run detection. Yellow overlay appears
     // only after an explicit Auto Measure click. We just cleared the live
@@ -4362,15 +3195,6 @@ function App() {
         return;
       }
       setObjectiveChangeInProgress(false);
-      const fid = getLastPaintedFrameId();
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame-after-objective-change] objective=${confirmed} frameId=${getLastPaintEpoch()}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-first-fresh-frame-after-objective] objective=${confirmed} frameId=${fid}`
-      );
     })();
   }, [
     liveMachineState?.confirmedObjectiveFromMachine,
@@ -4392,22 +3216,9 @@ function App() {
       reason: 'turret-click' | 'objective-change-click',
       target?: string | null
     ) => {
-      const logTag =
-        reason === 'objective-change-click'
-          ? '[overlay-clear-before-objective-change]'
-          : '[overlay-clear-before-turret]';
-      // eslint-disable-next-line no-console
-      console.log(`${logTag} reason=${reason}`);
       if (reason === 'objective-change-click') {
-        const from = (activeObjectiveRef.current ?? 'unknown') || 'unknown';
         const to = (target ?? 'unknown') || 'unknown';
         setTurretMovingTarget(to === 'unknown' ? null : to);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[objective-switch-start] from=${from} to=${to} clearFrame=true`
-        );
-        // eslint-disable-next-line no-console
-        console.log('[overlay-force-clear] reason=objective-switch');
       }
       // Force-clear overlay state. clearAutoMeasureOverlay nulls
       // committedAutoMeasureOverlay → AutoMeasureOverlay re-renders empty.
@@ -4418,18 +3229,12 @@ function App() {
       setPreviewAutoMeasureOverlay(null);
       setAutoMeasureSessionActive(false);
       setManualMeasureResetKey((current) => current + 1);
-      // eslint-disable-next-line no-console
-      console.log('[overlay-force-clear] target=auto+manual+calibration');
       clearTurretMovingTimer();
       setTurretMoving(true);
-      // eslint-disable-next-line no-console
-      console.log(`[overlay-render-blocked] reason=${reason}`);
       turretMovingTimerRef.current = window.setTimeout(() => {
         turretMovingTimerRef.current = null;
         setTurretMoving(false);
         setTurretMovingTarget(null);
-        // eslint-disable-next-line no-console
-        console.log('[overlay-render-resume] reason=watchdog-timeout');
       }, 4000);
     },
     [clearAutoMeasureOverlay, clearTurretMovingTimer]
@@ -4459,15 +3264,8 @@ function App() {
       return;
     }
     if (lastSeenTurretPositionRef.current === pos) return;
-    const prevPos = lastSeenTurretPositionRef.current;
     lastSeenTurretPositionRef.current = pos;
     const frameId = getLastPaintedFrameId();
-    // eslint-disable-next-line no-console
-    console.log(`[turret-change-start] position=${pos}`);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-turret-rx] data=${pos} from=${prevPos}`
-    );
     // RX confirms the motion completed — release the overlay-render gate
     // immediately, regardless of whether the gate was set by a click in
     // this session (a hardware-driven turret move with no click also lands
@@ -4475,17 +3273,7 @@ function App() {
     clearTurretMovingTimer();
     setTurretMoving(false);
     setTurretMovingTarget(null);
-    // eslint-disable-next-line no-console
-    console.log('[overlay-render-resume] reason=turret-ack');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-live-before-turret] streaming=${cameraStatus === 'streaming'} frameId=${frameId}`
-    );
-    // eslint-disable-next-line no-console
-    console.log('[camera-stream-preserve] reason=turret-command');
     if (shouldPreserveAfterImpressOverlay()) {
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-clear-skip] reason=after-impress-turret-change');
     } else {
       clearAutoMeasureOverlay('turret-change');
     }
@@ -4499,19 +3287,9 @@ function App() {
       if (cancelled) return;
       const cur = getLastPaintedFrameId();
       if (cur > startId) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-live-after-turret] streaming=${cameraStatus === 'streaming'} frameId=${cur}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(`[camera-resume-after-turret] frameId=${cur}`);
         return;
       }
       if (Date.now() - tickStart > 2000) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-live-after-turret] streaming=${cameraStatus === 'streaming'} frameId=${cur} note=no-new-frame-within-2s`
-        );
         return;
       }
       requestAnimationFrame(tick);
@@ -4549,12 +3327,6 @@ function App() {
       clearAutoMeasureOverlay('impress-start');
       setManualMeasureResetKey((current) => current + 1);
       setAutoMeasureClearNonce((n) => n + 1);
-      // eslint-disable-next-line no-console
-      console.log('[impress-start-clear-overlay]');
-      // eslint-disable-next-line no-console
-      console.log('[measure-after-impress][impress-start]');
-      // eslint-disable-next-line no-console
-      console.log(`[impress-started] timestamp=${Date.now()} indentStatus=${next}`);
       return;
     }
 
@@ -4567,16 +3339,6 @@ function App() {
       const completedAt = Date.now();
       autoMeasurementIdRef.current = null;
       clearActiveMeasurement('impress-done');
-      // eslint-disable-next-line no-console
-      console.log(`[impress-complete] timestamp=${completedAt} prev=${prev}`);
-      // eslint-disable-next-line no-console
-      console.log('[impress-done-received]');
-      // eslint-disable-next-line no-console
-      console.log(`[impress-done] timestamp=${completedAt}`);
-      // eslint-disable-next-line no-console
-      console.log(`[impress-done-ack-received] timestamp=${completedAt}`);
-      // eslint-disable-next-line no-console
-      console.log('[measure-after-impress][impress-done-ack]');
       // Read from the synchronously-updated ref (latestAutoMeasurePreviewSettingsRef)
       // — autoMeasurePreviewSettingsRef lags by one render because it's
       // synced via useEffect. If the operator saves Auto Measure Settings
@@ -4598,32 +3360,8 @@ function App() {
         turretAfterImpressEnabled &&
         measureAfterImpressEnabled &&
         (!currentObjective || currentObjective !== targetObjective);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measure-after-impress-read] value=${measureAfterImpressEnabled} enabled=${measureAfterImpressEnabled} source=latest-ref`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[turret-after-impress-read] value=${turretAfterImpressEnabled} enabled=${turretAfterImpressEnabled} source=latest-ref`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[turret-after-impress-wait-check] current=${currentObjective || 'unknown'} target=${targetObjective || 'unknown'} wait=${shouldWaitForTurretAfterImpress}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[measure-after-impress-check] enabled=${measureAfterImpressEnabled}`);
-      // eslint-disable-next-line no-console
-      console.log(`[measure-after-impress-enabled] ${measureAfterImpressEnabled}`);
       if (!measureAfterImpressEnabled) {
-        // eslint-disable-next-line no-console
-        console.log('[measure-after-impress-skipped] enabled=false');
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measure-after-impress] enabled=${measureAfterImpressEnabled} action=${
-          measureAfterImpressEnabled ? 'auto-detect' : 'skip'
-        }`
-      );
       // When the machine is about to rotate the turret after impress, defer
       // detection until the L*OK confirmation arrives. The other effect that
       // watches confirmedObjectiveFromMachine + lastObjectiveRx clears
@@ -4631,8 +3369,6 @@ function App() {
       // detection. Without this gate, auto-measure would fire on the next
       // available camera frame mid-rotation and detect on a moving image.
       if (shouldWaitForTurretAfterImpress) {
-        // eslint-disable-next-line no-console
-        console.log('[turret-after-impress-start] waiting=l-ok-confirm');
         pendingTurretAfterImpressRef.current = {
           armedAt: completedAt,
           measureAfterImpress: measureAfterImpressEnabled,
@@ -4662,10 +3398,6 @@ function App() {
         return;
       }
       if (turretAfterImpressEnabled && measureAfterImpressEnabled) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[turret-after-impress-skip-wait] reason=already-on-measure-objective objective=${currentObjective || 'unknown'}`
-        );
       }
       void runAutoMeasureAfterImpress();
       return;
@@ -4674,8 +3406,6 @@ function App() {
     if (next === 'error' || next === 'idle') {
       if (impressInProgressRef.current) {
         impressInProgressRef.current = false;
-        // eslint-disable-next-line no-console
-        console.log(`[impress-flag-clear] reason=indentStatus=${next}`);
       }
     }
   }, [
@@ -4700,15 +3430,6 @@ function App() {
       window.clearTimeout(turretAfterImpressWatchdogRef.current);
       turretAfterImpressWatchdogRef.current = null;
     }
-    const confirmedAt = Date.now();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[turret-after-impress-done] rx=${currentRx} timestamp=${confirmedAt} elapsedMs=${
-        confirmedAt - pending.armedAt
-      }`
-    );
-    // eslint-disable-next-line no-console
-    console.log(`[measure-after-impress-check] enabled=${pending.measureAfterImpress}`);
     void runAutoMeasureAfterImpress();
   }, [liveMachineState?.lastObjectiveRx, runAutoMeasureAfterImpress]);
 
@@ -4723,8 +3444,6 @@ function App() {
         if (cancelled) return;
         if (snapshot?.objective?.trim()) {
           setActiveObjective(snapshot.objective);
-          // eslint-disable-next-line no-console
-          console.log('[objective] current=', snapshot.objective);
         }
       } catch {
         /* non-fatal — fall back to whatever objective we already have */
@@ -4736,15 +3455,7 @@ function App() {
   }, [activeTool, getMachineStateSnapshot, manualMeasureResetKey]);
 
   const handleAutoMeasure = useCallback(() => {
-    // eslint-disable-next-line no-console
-    console.log('[measure-mode-change] mode=auto');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-click] sessionId=${autoMeasureSessionIdRef.current + 1} objective=${activeObjective ?? 'unknown'}`
-    );
     if (activeTool === 'manualMeasure') {
-      // eslint-disable-next-line no-console
-      console.log('[measure-mode-clear] reason=switch-mode prev=manual');
       setActiveTool('pointer');
       resetManualMeasure();
     }
@@ -4785,17 +3496,7 @@ function App() {
           newCorners.bottom.x - newCorners.top.x,
           newCorners.bottom.y - newCorners.top.y
         );
-        const centerX = (newCorners.left.x + newCorners.right.x) / 2;
-        const centerY = (newCorners.top.y + newCorners.bottom.y) / 2;
         setLatestManualPixels({ d1Px, d2Px });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-cross-adjust-update] center=(${centerX.toFixed(2)},${centerY.toFixed(2)}) d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-pixel-update] pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`
-        );
         if (adjustSaveTimerRef.current !== null) {
           window.clearTimeout(adjustSaveTimerRef.current);
           adjustSaveTimerRef.current = null;
@@ -4835,10 +3536,6 @@ function App() {
               corners.bottom.x - corners.top.x,
               corners.bottom.y - corners.top.y
             );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-adjust] d1Px=${d1Px.toFixed(2)} d2Px=${d2Px.toFixed(2)}`
-            );
 
             // Line drag must NEVER create a new row — that's how depth was
             // silently being lost. Fall back to the active row id so an
@@ -4850,14 +3547,6 @@ function App() {
             const targetExisting = targetId
               ? measurements.find((m) => m.id === targetId)
               : null;
-            // eslint-disable-next-line no-console
-            console.log(
-              `[line-adjust-update] flow=auto targetId=${targetId ?? 'none'} willCreateRow=${targetId ? 'no' : 'yes'}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[depth-preserve-before] flow=auto-adjust id=${targetId ?? 'none'} depth=${targetExisting?.depthMm ?? 'null'}`
-            );
 
             const conversion = calculateVickersFromPixels({
               calibrationSettings,
@@ -4877,59 +3566,14 @@ function App() {
             }
             const values = conversion.value;
 
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure] adjusted recompute', {
-              machineObjective: machineState?.objective ?? null,
-              resolvedObjective: objectiveForCalibration,
-              micronPerPixel: values.umPerPixel,
-              d1Px: values.d1Px,
-              d2Px: values.d2Px,
-              d1Um: values.d1Um,
-              d2Um: values.d2Um,
-              averageUm: values.avgDUm,
-              averageMm: values.avgDMm,
-              forceKgf: values.forceKgf,
-              hv: values.hv,
-              corners,
-            });
 
-            // eslint-disable-next-line no-console
-            console.log('[measurement-table] insert objective=', values.normalizedObjective, 'method=Auto (Adjusted)');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure][save] source=auto-corrected d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv ?? 'n/a'}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure-adjust-update] d1Px=${values.d1Px.toFixed(2)} d2Px=${values.d2Px.toFixed(2)} hv=${values.hv ?? 'n/a'}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measurement-row-create] method=Auto-Adjusted d1Px=${values.d1Px} d2Px=${values.d2Px} d1Um=${values.d1Um} d2Um=${values.d2Um} davgUm=${values.avgDUm} hv=${values.hv} objective=${values.normalizedObjective} umPerPixel=${values.umPerPixel}`
-            );
-            // eslint-disable-next-line no-console
-            console.log('[hv-type-set] source=auto value=HV');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[measurement-row-create] hv=${values.hv ?? 'n/a'} hardnessType=HV hvType=HV`
-            );
-            // eslint-disable-next-line no-console
-            console.log('[album] snapshot capture start measurementId=', targetId ?? 'new');
             await waitForOverlayPaint();
-            // eslint-disable-next-line no-console
-            console.log('[album] auto measure overlay ready, capturing thumbnail');
             const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
             if (imageDataUrl) {
-              // eslint-disable-next-line no-console
-              console.log('[album] thumbnail captured with overlay=true points=4');
             } else {
               // eslint-disable-next-line no-console
               console.warn('[album] missing image for measurementId=', targetId ?? 'new');
             }
-            // eslint-disable-next-line no-console
-            console.log(
-              `[line-drag-update-start] flow=auto-adjust rowId=${targetId ?? 'new'} hv=${values.hv ?? 'null'}`
-            );
             // Depth + conversion fields must survive a line drag. The backend's
             // buildUpdateSchema injects `null` defaults for fields missing from
             // the PUT body, so an "omit depth" payload would wipe depthMm /
@@ -4950,10 +3594,6 @@ function App() {
                   convertValue: preservedConvertValue,
                 }
               : {};
-            // eslint-disable-next-line no-console
-            console.log(
-              `[line-drag-update-payload] hasDepth=false rowId=${targetId ?? 'new'} preserveDepth=${targetExisting ? 'true' : 'false'}`
-            );
             const saved = await saveManualMeasurement({
               id: targetId,
               values: {
@@ -4979,28 +3619,13 @@ function App() {
                 imageDataUrl,
               },
             });
-            // eslint-disable-next-line no-console
-            console.log('[album] measurement updated thumbnail=', !!imageDataUrl, 'id=', saved.id);
             autoMeasurementIdRef.current = saved.id;
             manualMeasurementIdRef.current = saved.id;
             {
               const adjFrameId = getLastPaintedFrameId();
-              const previousAdjMethod = activeMeasurementMethodRef.current;
               const savedAdjMethod = saved.method ?? 'Auto (Adjusted)';
               setActiveMeasurement(saved.id, adjFrameId, 'auto-adjust-save');
               activeMeasurementMethodRef.current = savedAdjMethod;
-              // eslint-disable-next-line no-console
-              console.log(
-                `[measurement-row-update] id=${saved.id} method=${savedAdjMethod} reason=line-adjustment frameId=${adjFrameId ?? 'n/a'} preserveDepth=true`
-              );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[measurement-mode-update] id=${saved.id} old=${previousAdjMethod ?? 'none'} new=${savedAdjMethod} reason=line-adjustment`
-              );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[depth-preserve-after] flow=auto-adjust id=${saved.id} depth=${saved.depthMm ?? 'null'}`
-              );
             }
             const centerX = (corners.left.x + corners.right.x) / 2;
             const centerY = (corners.top.y + corners.bottom.y) / 2;
@@ -5043,18 +3668,8 @@ function App() {
                   graphics: committedGraphics,
                 }
               );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[measurement-fingerprint-store] rowId=${saved.id} key=${fingerprintKey} total=${committedFingerprintsRef.current.length}`
-              );
             }
-            // eslint-disable-next-line no-console
-            console.log(
-              `[auto-measure][drag-table-update] rowId=${saved.id} source=corrected`
-            );
             await refetchMeasurements();
-            // eslint-disable-next-line no-console
-            console.log('[measurement-table][refresh] rows=auto-corrected');
             setStatusMessage(
               saved.hv
                 ? `System Status: Auto (Adjusted) updated: HV ${saved.hv}`
@@ -5096,24 +3711,11 @@ function App() {
     (corner: 'top' | 'right' | 'bottom' | 'left', dx: number, dy: number) => {
       setCommittedAutoMeasureOverlay((prev) => {
         if (!prev) {
-          // eslint-disable-next-line no-console
-          console.log('[trim-measure-overlay] no auto-measure corners to move — skipped');
           return prev;
         }
         const current = prev.corners[corner];
         const next = { x: current.x + dx, y: current.y + dy };
         const nextCorners = { ...prev.corners, [corner]: next };
-        const lineKey: 'topY' | 'bottomY' | 'leftX' | 'rightX' =
-          corner === 'top'
-            ? 'topY'
-            : corner === 'bottom'
-              ? 'bottomY'
-              : corner === 'left'
-                ? 'leftX'
-                : 'rightX';
-        const lineValue = corner === 'left' || corner === 'right' ? next.x : next.y;
-        // eslint-disable-next-line no-console
-        console.log(`[trim-measure-overlay] move existingLine=${lineKey} value=${lineValue}`);
         return { ...prev, corners: nextCorners };
       });
     },
@@ -5121,8 +3723,6 @@ function App() {
   );
 
   const openCameraSettingsPanel = useCallback(() => {
-    // eslint-disable-next-line no-console
-    console.log('[camera-settings-panel-open]');
     setActiveDialog('camera');
   }, []);
 
@@ -5134,12 +3734,6 @@ function App() {
         setUnavailableMsg(`${label} is not available yet.`),
       clearGraphics: () => {
         overlay.clearAll();
-        // eslint-disable-next-line no-console
-        console.log('[auto-overlay-clear] reason=clear-graphics');
-        // eslint-disable-next-line no-console
-        console.log('[overlay] cleared reason=clear-graphics');
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure][cancel] reason=clear-graphics');
         setCommittedAutoMeasureOverlay(null);
         setPreviewAutoMeasureOverlay(null);
         autoMeasurePreviewSnapshotRef.current = null;
@@ -5157,13 +3751,8 @@ function App() {
       toggleMagnifier: () => {
         setMagnifierEnabled((prev) => {
           const next = !prev;
-          // eslint-disable-next-line no-console
           if (next) {
-            // eslint-disable-next-line no-console
-            console.log(`[magnifier-open] mode=${activeTool}`);
           } else {
-            // eslint-disable-next-line no-console
-            console.log('[magnifier-close] reason=toggle-off');
           }
           return next;
         });
@@ -5188,11 +3777,7 @@ function App() {
       openImage: () => {
         void (async () => {
           try {
-            // eslint-disable-next-line no-console
-            console.log('[ipc] dialog:openImage →');
             const reply = await openImageDialog();
-            // eslint-disable-next-line no-console
-            console.log('[ipc] dialog:openImage ←', { ok: reply.ok });
             if (!reply.ok) {
               if (!reply.canceled) {
                 setUnavailableMsg(
@@ -5204,8 +3789,6 @@ function App() {
             const loaded = await cameraRef.current?.loadImageFromBuffer(reply.buffer);
             if (loaded?.ok) {
               resetManualMeasure();
-              // eslint-disable-next-line no-console
-              console.log('[overlay] cleared reason=new-image');
               setCommittedAutoMeasureOverlay(null);
               setPreviewAutoMeasureOverlay(null);
               autoMeasurePreviewSnapshotRef.current = null;
@@ -5216,8 +3799,6 @@ function App() {
               // Note: active measurement row is NOT cleared on new-image
               // load. Per spec only camera close/open starts a new row.
               committedFingerprintsRef.current = [];
-              // eslint-disable-next-line no-console
-              console.log('[measurement-session-reset] reason=new-image');
               setStatusMessage(`System Status: Loaded ${reply.fileName}`);
             } else {
               setUnavailableMsg(
@@ -5234,13 +3815,9 @@ function App() {
       saveImage: () => {
         void (async () => {
           try {
-            // eslint-disable-next-line no-console
-            console.log('[ipc] dialog:saveImage →');
             const reply = await saveImageDialog({
               defaultName: `hardness-${Date.now()}.png`,
             });
-            // eslint-disable-next-line no-console
-            console.log('[ipc] dialog:saveImage ←', { ok: reply.ok });
             if (!reply.ok) return;
             const blob = await cameraRef.current?.exportImageBlob('image/png');
             if (!blob) {
@@ -5262,10 +3839,10 @@ function App() {
         })();
       },
       openCameraDevice: () => {
+        // eslint-disable-next-line no-console
+        console.log('[camera-ui][open]');
         void (async () => {
           try {
-            // eslint-disable-next-line no-console
-            console.log('[camera-open] requested');
             // Reset per-session log flags so the next first-frame / first-paint
             // events log again after a close→open cycle.
             resetCameraSession();
@@ -5273,8 +3850,6 @@ function App() {
             // objective) calibration is picked up after a camera close/open —
             // without this, calibrationSettingsList stays at whatever was
             // fetched on app mount and Auto Measure can't find the calibration.
-            // eslint-disable-next-line no-console
-            console.log('[camera-open] reloadCalibration=true');
             try {
               await refetchCalibrationSettings();
             } catch {
@@ -5291,10 +3866,6 @@ function App() {
             const availablePortPaths = Array.isArray(portList?.ports)
               ? portList.ports.map((p) => p.path).filter(Boolean)
               : [];
-            // eslint-disable-next-line no-console
-            console.log(
-              `[serial-ports-list] count=${availablePortPaths.length} paths=${availablePortPaths.join(',') || '-'}`
-            );
 
             const savedMicrometerPort =
               typeof micrometerConfig?.comPort === 'string' && micrometerConfig.comPort.trim()
@@ -5310,10 +3881,6 @@ function App() {
                 : !savedMicrometerPort
                   ? 'disabled-or-no-port'
                   : 'port-missing';
-              // eslint-disable-next-line no-console
-              console.log(
-                `[micrometer-connect-skip] reason=${reason} saved=${savedMicrometerPort ?? '-'} enabled=${!!micrometerConfig?.enabled}`
-              );
               if (savedMicrometerPort && reason === 'port-missing') {
                 // eslint-disable-next-line no-console
                 console.warn(
@@ -5321,40 +3888,16 @@ function App() {
                 );
               }
             } else if (savedMicrometerPort) {
-              // eslint-disable-next-line no-console
-              console.log(`[micrometer-connect-saved-com] port=${savedMicrometerPort}`);
             }
 
-            // eslint-disable-next-line no-console
-            console.log('[ipc] device:open →');
-            // eslint-disable-next-line no-console
-            console.log('[camera-open][camera-only-start]');
-            // eslint-disable-next-line no-console
-            console.log('[machine-connection][preserved-during-camera-open]');
-            // eslint-disable-next-line no-console
-            console.log('[machine-connection][disconnect-skipped-camera-action] reason=camera-open');
             // Camera open MUST NOT modify the persisted machine/micrometer
             // COM ports — it only reads them to pass to device:open.
-            // eslint-disable-next-line no-console
-            console.log(
-              `[camera-open][serial-settings-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'} micrometerComPort=${savedMicrometerPort ?? 'null'}`
-            );
-            // eslint-disable-next-line no-console
-            console.log(
-              `[serial-settings][machine-port-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'}`
-            );
             setCameraStatus('opening');
             const reply = await window.hardnessCamera.openDevice(
               shouldOpenMicrometer && savedMicrometerPort
                 ? { index: 0, micrometerPort: savedMicrometerPort }
                 : { index: 0 }
             );
-            // eslint-disable-next-line no-console
-            console.log('[ipc] device:open ←', reply);
-            // eslint-disable-next-line no-console
-            console.log(`[camera-open] connected ok=${!!reply.camera.connected}`);
-            // eslint-disable-next-line no-console
-            console.log(`[camera-open] stream-started ok=${!!reply.camera.streaming}`);
             await cameraRef.current?.refetchStatus();
             if (!reply.camera.connected) {
               setCameraStatus('error');
@@ -5380,12 +3923,6 @@ function App() {
             setCameraOpen(true);
             cameraMeasurementSessionIdRef.current += 1;
             clearActiveMeasurement('camera-session-start');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[camera-session-start] sessionId=${cameraMeasurementSessionIdRef.current}`
-            );
-            // eslint-disable-next-line no-console
-            console.log('[camera-open] noAutoMeasure=true');
 
             // Apply previously-saved camera settings (exposure / analog gain)
             // to the SDK now that the handle is valid. Without this, every app
@@ -5400,36 +3937,20 @@ function App() {
                       (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
                     )[0]
                   : null;
-              // eslint-disable-next-line no-console
-              console.log('[camera-settings] loaded saved settings', saved);
               if (saved) {
-                // eslint-disable-next-line no-console
-                console.log('[camera-settings] applying saved settings on camera open', {
-                  analogGain: saved.analogGain,
-                  exposureTimeMs: saved.exposureTimeMs,
-                  updatedAt: saved.updatedAt,
-                });
                 try {
                   dropPendingCameraFrames('gain-change');
-                  const gainReply = await window.hardnessCamera.setGain(saved.analogGain);
-                  // eslint-disable-next-line no-console
-                  console.log('[camera-settings] apply analogGain ok=', !!gainReply?.ok, gainReply);
                 } catch (gainErr) {
                   // eslint-disable-next-line no-console
                   console.error('[camera-settings] apply analogGain threw', gainErr);
                 }
                 try {
                   dropPendingCameraFrames('exposure-change');
-                  const expReply = await window.hardnessCamera.setExposure(saved.exposureTimeMs);
-                  // eslint-disable-next-line no-console
-                  console.log('[camera-settings] apply exposure ok=', !!expReply?.ok, expReply);
                 } catch (expErr) {
                   // eslint-disable-next-line no-console
                   console.error('[camera-settings] apply exposure threw', expErr);
                 }
               } else {
-                // eslint-disable-next-line no-console
-                console.log('[camera-settings] no saved settings found — SDK defaults retained');
               }
             } catch (loadErr) {
               // eslint-disable-next-line no-console
@@ -5463,8 +3984,6 @@ function App() {
             // auto-connected at app startup. Camera open doesn't reselect it;
             // it just notes the current selection state for diagnostics.
             if (!currentMachinePort) {
-              // eslint-disable-next-line no-console
-              console.log('[machine-connect-skip] reason=no-current-selection');
             }
           } catch (err) {
             setUnavailableMsg(
@@ -5474,14 +3993,10 @@ function App() {
         })();
       },
       closeCameraDevice: () => {
+        // eslint-disable-next-line no-console
+        console.log('[camera-ui][close]');
         void (async () => {
           try {
-            // eslint-disable-next-line no-console
-            console.log('[camera-close] requested');
-            // eslint-disable-next-line no-console
-            console.log('[camera-close]');
-            // eslint-disable-next-line no-console
-            console.log('[camera-close-ui-clear]');
             // Force AutoMeasureOverlay to imperatively clearRect its canvas
             // synchronously, before the IPC round-trip. Without this, a rAF
             // queued by the live draw loop can repaint the 4 yellow lines
@@ -5506,10 +4021,6 @@ function App() {
             previewMeasurementRef.current = null;
             autoMeasurementIdRef.current = null;
             manualMeasurementIdRef.current = null;
-            // eslint-disable-next-line no-console
-            console.log(
-              `[camera-session-end] sessionId=${cameraMeasurementSessionIdRef.current}`
-            );
             clearActiveMeasurement('camera-close-pre');
             committedFingerprintsRef.current = [];
             // Cancel any pending coalesced trailing detection. The in-flight
@@ -5526,25 +4037,9 @@ function App() {
               autoMeasureSessionIdRef.current = next;
               return next;
             });
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure-timer-cancelled]');
-            // eslint-disable-next-line no-console
-            console.log('[auto-measure-clear-on-camera-close]');
-            // eslint-disable-next-line no-console
-            console.log('[overlay-hidden-camera-closed]');
-            // eslint-disable-next-line no-console
-            console.log('[ipc] device:close →');
             // Camera close MUST NOT modify the persisted machine/micrometer
             // COM ports — the close path only tears down hardware connections.
-            // eslint-disable-next-line no-console
-            console.log(
-              `[camera-close][serial-settings-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'} micrometerComPort=${micrometerConfig?.comPort ?? 'null'}`
-            );
             const reply = await window.hardnessCamera.closeDevice();
-            // eslint-disable-next-line no-console
-            console.log('[ipc] device:close ←', reply);
-            // eslint-disable-next-line no-console
-            console.log(`[camera-close] stream-stopped ok=${!!(reply && (reply as { ok?: boolean }).ok !== false)}`);
             // Always sync status + clear live canvas, freeze canvas and any
             // overlay that belongs to the live camera frame so the viewport
             // actually appears empty after close.
@@ -5563,12 +4058,6 @@ function App() {
             manualMeasurementIdRef.current = null;
             clearActiveMeasurement('camera-close');
             committedFingerprintsRef.current = [];
-            // eslint-disable-next-line no-console
-            console.log('[overlay-clear] reason=camera-close');
-            // eslint-disable-next-line no-console
-            console.log('[overlay-clear] reason=device-closed');
-            // eslint-disable-next-line no-console
-            console.log('[measurement-session-reset] reason=camera-reopen');
             resetManualMeasure();
             // Drop the active measure mode so the manual-measure overlay
             // hook stops re-creating default yellow guides on the cleared
@@ -5576,12 +4065,6 @@ function App() {
             // the next effect re-initializes guides because active stays true
             // and imageSize is still cached.
             setActiveTool('pointer');
-            // eslint-disable-next-line no-console
-            console.log('[measure-mode-clear] reason=camera-close');
-            // eslint-disable-next-line no-console
-            console.log('[overlay-visibility] visible=false reason=idle');
-            // eslint-disable-next-line no-console
-            console.log('[overlay-visible] false reason=idle');
             // Reset per-session log flags so the next open re-fires
             // [camera-frame] first-frame-after-open and the paint log.
             resetCameraSession();
@@ -5590,8 +4073,6 @@ function App() {
             // (otherwise the equality guard early-returns and Auto Measure
             // sees a stale calibration view).
             lastSyncedObjectiveRef.current = null;
-            // eslint-disable-next-line no-console
-            console.log('[camera-close] canvas-cleared=true frameCleared=true overlayCleared=true');
             setStatusMessage('System Status: Device closed');
             void reply;
 
@@ -5601,16 +4082,6 @@ function App() {
             // or the app exits. Previously this path tore down the machine
             // RS-232 link, which forced an unwanted reconnect and lost mid-
             // session state.
-            // eslint-disable-next-line no-console
-            console.log('[camera-close][camera-only-cleanup]');
-            // eslint-disable-next-line no-console
-            console.log('[machine-connection][preserved-during-camera-close]');
-            // eslint-disable-next-line no-console
-            console.log('[machine-connection][disconnect-skipped-camera-action] reason=camera-close');
-            // eslint-disable-next-line no-console
-            console.log(
-              `[serial-settings][machine-port-preserved] machineComPort=${serialPortSetting?.machineComPort ?? 'null'}`
-            );
           } catch (err) {
             setUnavailableMsg(
               `Close Device failed: ${err instanceof Error ? err.message : String(err)}`
@@ -5650,17 +4121,11 @@ function App() {
   const closeDialog = useCallback(() => {
     setActiveDialog((prev) => {
       if (prev === 'autoMeasure') {
-        // eslint-disable-next-line no-console
-        console.log('[modal-close-handler] modal=auto-measure-settings open=false');
       } else if (prev === 'camera') {
-        // eslint-disable-next-line no-console
-        console.log('[modal-close-handler] modal=camera-settings open=false');
       }
       return null;
     });
     setInitialTestRecordMeasurementIds([]);
-    // eslint-disable-next-line no-console
-    console.log('[modal-open-state] autoMeasureSettings=false cameraSettings=false');
   }, []);
 
   const openConfigDialog = useCallback((id: ConfigDialogId) => {
@@ -5710,29 +4175,15 @@ function App() {
       // the two modes are mutually exclusive (only one set of yellow lines /
       // crosshair on screen at a time).
       if (action === 'tools:manualMeasure') {
-        // eslint-disable-next-line no-console
-        console.log('[measure-mode-change] mode=manual');
         if (committedAutoMeasureOverlay || previewAutoMeasureOverlay) {
-          // eslint-disable-next-line no-console
-          console.log('[measure-mode-clear] reason=switch-mode prev=auto');
           clearAutoMeasureOverlay('manual-mode-switch');
         }
-        // eslint-disable-next-line no-console
-        console.log('[manual-measure-start]');
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[toolbar] selected tool=${mappedTool ?? action} magnifier=${enteringMagnifier}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[toolbar-tool-change] from=${activeTool} to=${mappedTool ?? action}`);
 
       // Measure Length keeps its one-shot behavior on tool switch. Measure
       // Angle is intentionally persistent and multi-measurement: Clear
       // Graphics is the explicit removal path for those overlays.
       if (activeTool === 'measureLength' && mappedTool !== 'measureLength' && !openingConfigPanel) {
-        // eslint-disable-next-line no-console
-        console.log('[measure-length-reset] reason=tool-switch');
         overlay.clearByKind('length');
       }
 
@@ -5741,8 +4192,6 @@ function App() {
       // Manual Measure, force the magnifier off so it does not bleed into
       // Pointer/Auto Measure/calibration.
       if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure' && !openingConfigPanel) {
-        // eslint-disable-next-line no-console
-        console.log('[magnifier-close] reason=tool-switch');
         setMagnifierEnabled(false);
       }
 
@@ -5808,8 +4257,6 @@ function App() {
     autoMeasurementIdRef.current = null;
     manualMeasurementIdRef.current = null;
     clearActiveMeasurement('clear-table');
-    // eslint-disable-next-line no-console
-    console.log('[measurement-session-reset] reason=clear-table');
   }, [clearActiveMeasurement]);
 
   return (
@@ -5866,14 +4313,8 @@ function App() {
               onClose={() => {
                 if (calibrationManualModeRef.current) {
                   calibrationManualModeRef.current = false;
-                  // eslint-disable-next-line no-console
-                  console.log('[calibration-manual-mode-cleared] reason=panel-closed-by-user');
                 }
                 if (calibrationMeasureModeRef.current !== 'none') {
-                  // eslint-disable-next-line no-console
-                  console.log('[calibration-overlay-clear] target=manual reason=panel-closed');
-                  // eslint-disable-next-line no-console
-                  console.log('[calibration-overlay-clear] target=auto reason=panel-closed');
                 }
                 setManualMeasureResetKey((current) => current + 1);
                 setAutoMeasureSessionActive(false);
@@ -5980,8 +4421,6 @@ function App() {
             color="error"
             variant="contained"
             onClick={() => {
-              // eslint-disable-next-line no-console
-              console.log('[ipc] app:exit →');
               void exitApp().catch((err) => {
                 setExitConfirmOpen(false);
                 setUnavailableMsg(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getPatternPrograms } from '@/api/getPatternPrograms';
+import { getPatternPrograms } from '@/api/patternProgram';
 import type { PatternProgram } from '@/types/patternProgram';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

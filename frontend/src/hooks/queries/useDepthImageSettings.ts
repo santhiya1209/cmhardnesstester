@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getDepthImageSettings } from '@/api/getDepthImageSettings';
+import { getDepthImageSettings } from '@/api/settings';
 import type { DepthImageSetting } from '@/types/depthImageSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

@@ -48,14 +48,6 @@ const ANGLE_HANDLE_RADIUS = 3;
 // camera image. Kept thin so the metrology-software look stays sharp.
 const LABEL_HALO_COLOR = 'rgba(0, 0, 0, 0.75)';
 const LABEL_HALO_WIDTH = 3;
-// eslint-disable-next-line no-console
-console.log(
-  `[measure-overlay-style]\ntool=length\nfontSize=15\nlineWidth=${LENGTH_LINE_WIDTH}`
-);
-// eslint-disable-next-line no-console
-console.log(
-  `[measure-overlay-style]\ntool=angle\nfontSize=15\nlineWidth=${ANGLE_LINE_WIDTH}`
-);
 const ANGLE_ARC_MIN_RADIUS = 18;
 const ANGLE_ARC_MAX_RADIUS = 44;
 const ANGLE_LOG_INTERVAL_MS = 100;
@@ -217,8 +209,6 @@ function logAngleRender(
   ].join('|');
   if (angleRenderLogKeys.get(id) === key) return;
   angleRenderLogKeys.set(id, key);
-  // eslint-disable-next-line no-console
-  console.log(`[measure-angle-render] id=${id} source=${source} value=${valueText}`);
 }
 
 function logAngleValue(id: string, value: number, source: string) {
@@ -226,8 +216,6 @@ function logAngleValue(id: string, value: number, source: string) {
   const key = `${source}|${valueText}`;
   if (angleValueLogKeys.get(id) === key) return;
   angleValueLogKeys.set(id, key);
-  // eslint-disable-next-line no-console
-  console.log(`[measure-angle-value] id=${id} source=${source} value=${valueText}°`);
 }
 
 function anglePointToDisplay(
@@ -284,18 +272,8 @@ function drawLengthShape(
   const logKey = `${source}|${imagePx.toFixed(2)}|${opts.umPerPixel ?? 'null'}|${label}`;
   if (lengthDisplayLogKeys.get(source) !== logKey) {
     lengthDisplayLogKeys.set(source, logKey);
-    // eslint-disable-next-line no-console
-    console.log(`[measure-length-px] source=${source} value=${imagePx.toFixed(2)}`);
-    // eslint-disable-next-line no-console
-    console.log(`[measure-length-calibration] source=${source} umPerPixel=${opts.umPerPixel ?? 'missing'}`);
     if (um !== null) {
-      // eslint-disable-next-line no-console
-      console.log(`[measure-length-um] source=${source} value=${um.toFixed(2)}`);
-      // eslint-disable-next-line no-console
-      console.log(`[measure-length-display] source=${source} value=${label}`);
     } else {
-      // eslint-disable-next-line no-console
-      console.log(`[measure-length-display] source=${source} value=calibration-missing`);
     }
   }
   const midX = (a.x + b.x) / 2;
@@ -475,14 +453,6 @@ function drawCross(ctx: CanvasRenderingContext2D, rect: ImageRect) {
   const key = `${rect.x.toFixed(1)},${rect.y.toFixed(1)},${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`;
   if (key !== lastCrossLogKey) {
     lastCrossLogKey = key;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[center-cross][image-rect] x=${rect.x.toFixed(2)} y=${rect.y.toFixed(2)} w=${rect.width.toFixed(2)} h=${rect.height.toFixed(2)}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[center-cross][draw] centerX=${centerX.toFixed(2)} centerY=${centerY.toFixed(2)}`
-    );
   }
 }
 
@@ -669,8 +639,6 @@ function ImageOverlayImpl({
         const a = lengthDrag.endpoint === 'a' ? lengthDrag.live : lengthDrag.other;
         const b = lengthDrag.endpoint === 'b' ? lengthDrag.live : lengthDrag.other;
         drawLengthShape(ctx, a, b, drawOpts, `drag:${shape.id}`);
-        // eslint-disable-next-line no-console
-        console.log(`[measure-length-render] id=${shape.id} dragging=true`);
         continue;
       }
       if (shape.kind === 'angle' && angleDrag && angleDrag.id === shape.id) {
@@ -718,17 +686,11 @@ function ImageOverlayImpl({
 
   useEffect(() => {
     if (activeTool === 'measureLength') {
-      // eslint-disable-next-line no-console
-      console.log('[measure-length-open]');
     }
     if (activeTool === 'measureAngle') {
-      // eslint-disable-next-line no-console
-      console.log('[measure-angle-tool-enable]');
     }
     if (draftRef.current) {
       if (draftRef.current.kind === 'length') {
-        // eslint-disable-next-line no-console
-        console.log('[measure-length-reset] reason=tool-switch');
       }
       draftRef.current = null;
       hoverDisplayRef.current = null;
@@ -755,10 +717,6 @@ function ImageOverlayImpl({
         const now = Date.now();
         if (now - lastDragLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
           lastDragLogAtRef.current = now;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measure-angle-drag] id=${angleDrag.id} point=${angleDrag.point} value=${value.toFixed(1)}°`
-          );
           logAngleValue(angleDrag.id, value, 'drag');
         }
         return;
@@ -771,13 +729,6 @@ function ImageOverlayImpl({
         const now = Date.now();
         if (now - lastDragLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
           lastDragLogAtRef.current = now;
-          const lengthPx = dist(lengthDrag.other, display);
-          const placement = getCurrentPlacement();
-          const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measure-length-drag] id=${lengthDrag.id} endpoint=${lengthDrag.endpoint} lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
-          );
         }
         return;
       }
@@ -796,8 +747,6 @@ function ImageOverlayImpl({
           const now = Date.now();
           if (now - lastAnglePreviewLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
             lastAnglePreviewLogAtRef.current = now;
-            // eslint-disable-next-line no-console
-            console.log(`[measure-angle-preview] value=${value.toFixed(1)}°`);
             logAngleValue('_draft', value, 'preview');
           }
         }
@@ -809,13 +758,6 @@ function ImageOverlayImpl({
         const now = Date.now();
         if (now - lastLengthLogAtRef.current >= ANGLE_LOG_INTERVAL_MS) {
           lastLengthLogAtRef.current = now;
-          const lengthPx = dist(draft.a, display);
-          const placement = getCurrentPlacement();
-          const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measure-length-update] lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
-          );
         }
       }
     },
@@ -846,10 +788,6 @@ function ImageOverlayImpl({
           b: copyPoint(angleDrag.b),
           coordinateSpace: angleDrag.coordinateSpace,
         });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measure-angle-drag] id=${angleDrag.id} point=${angleDrag.point} action=end value=${value.toFixed(1)}°`
-        );
         logAngleValue(angleDrag.id, value, 'drag');
         angleDragRef.current = null;
         requestPaint();
@@ -866,13 +804,6 @@ function ImageOverlayImpl({
       const a = lengthDrag.endpoint === 'a' ? lengthDrag.live : lengthDrag.other;
       const b = lengthDrag.endpoint === 'b' ? lengthDrag.live : lengthDrag.other;
       onUpdateShape?.(lengthDrag.id, { kind: 'length', a, b });
-      const lengthPx = dist(a, b);
-      const placement = getCurrentPlacement();
-      const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measure-length-drag] id=${lengthDrag.id} endpoint=${lengthDrag.endpoint} action=end lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
-      );
       lengthDragRef.current = null;
       requestPaint();
     },
@@ -910,15 +841,6 @@ function ImageOverlayImpl({
               if (next) {
                 angleDragRef.current[point] = next;
               }
-              const dragValue = angleDeg(
-                angleDragRef.current.vertex,
-                angleDragRef.current.a,
-                angleDragRef.current.b
-              );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[measure-angle-drag] id=${shape.id} point=${point} action=start value=${dragValue.toFixed(1)}°`
-              );
               requestPaint();
               e.preventDefault();
               return;
@@ -943,10 +865,6 @@ function ImageOverlayImpl({
                 live: display,
               };
               requestPaint();
-              // eslint-disable-next-line no-console
-              console.log(
-                `[measure-length-drag] id=${shape.id} endpoint=${nearer} action=start`
-              );
               e.preventDefault();
               return;
             }
@@ -961,22 +879,11 @@ function ImageOverlayImpl({
           draftRef.current = { kind: 'length', a: display };
           hoverDisplayRef.current = display;
           requestPaint();
-          // eslint-disable-next-line no-console
-          console.log('[measure-length-start]');
         } else if (draft.kind === 'length') {
           onAddShape({ kind: 'length', a: draft.a, b: display });
           draftRef.current = null;
           hoverDisplayRef.current = null;
           requestPaint();
-          const lengthPx = dist(draft.a, display);
-          const placement = getCurrentPlacement();
-          const info = getLengthDisplayInfo(lengthPx, placement?.scale ?? null, umPerPixel);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measure-length-complete] lengthPx=${lengthPx.toFixed(2)} lengthUm=${info.um !== null ? info.um.toFixed(2) : 'calibration-missing'} display=${info.label ?? 'calibration-missing'}`
-          );
-          // eslint-disable-next-line no-console
-          console.log('[measure-length-reset] reason=complete');
         }
         return;
       }
@@ -990,10 +897,6 @@ function ImageOverlayImpl({
           hoverImageRef.current = hit.image;
           hoverDisplayRef.current = hit.display;
           requestPaint();
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measure-angle-start] vertex=${hit.image.x.toFixed(2)},${hit.image.y.toFixed(2)}`
-          );
           e.preventDefault();
           return;
         }
@@ -1008,10 +911,6 @@ function ImageOverlayImpl({
           hoverImageRef.current = hit.image;
           hoverDisplayRef.current = hit.display;
           requestPaint();
-          // eslint-disable-next-line no-console
-          console.log(
-            `[measure-angle-first-arm] endpoint=${hit.image.x.toFixed(2)},${hit.image.y.toFixed(2)}`
-          );
           e.preventDefault();
           return;
         }
@@ -1029,8 +928,6 @@ function ImageOverlayImpl({
           hoverImageRef.current = null;
           hoverDisplayRef.current = null;
           requestPaint();
-          // eslint-disable-next-line no-console
-          console.log(`[measure-angle-finalize] value=${value.toFixed(1)}°`);
           logAngleValue('_finalize', value, 'finalize');
           e.preventDefault();
         }
@@ -1055,8 +952,6 @@ function ImageOverlayImpl({
       if (!draftRef.current) return;
       e.preventDefault();
       if (draftRef.current.kind === 'length') {
-        // eslint-disable-next-line no-console
-        console.log('[measure-length-reset] reason=escape');
       }
       draftRef.current = null;
       hoverDisplayRef.current = null;
@@ -1070,8 +965,6 @@ function ImageOverlayImpl({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (draftRef.current?.kind === 'length') {
-        // eslint-disable-next-line no-console
-        console.log('[measure-length-reset] reason=escape');
       }
       draftRef.current = null;
       hoverDisplayRef.current = null;

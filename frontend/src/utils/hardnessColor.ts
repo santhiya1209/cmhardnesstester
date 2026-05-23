@@ -32,19 +32,10 @@ export function getHardnessColor(
   const hasMin = isFiniteNumber(minHv) && minHv > 0;
   const hasMax = isFiniteNumber(maxHv) && maxHv > 0;
   if (!hasMin || !hasMax) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[hv-color-rule] hv=${hv} min=${minHv ?? 'null'} max=${maxHv ?? 'null'} color=dark-blue reason=range-incomplete`
-    );
     return { color: HARDNESS_COLOR_OUT_OF_RANGE, mode: 'default' };
   }
   const inRange = hv >= (minHv as number) && hv <= (maxHv as number);
-  const result: HardnessColorResult = inRange
+  return inRange
     ? { color: HARDNESS_COLOR_IN_RANGE, mode: 'in-range' }
     : { color: HARDNESS_COLOR_OUT_OF_RANGE, mode: 'out-of-range' };
-  // eslint-disable-next-line no-console
-  console.log(
-    `[hv-color-rule] hv=${hv} min=${minHv} max=${maxHv} color=${inRange ? 'red' : 'dark-blue'}`
-  );
-  return result;
 }

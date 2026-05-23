@@ -33,8 +33,6 @@ export function useImageOverlay(): ImageOverlayApi {
     setShapes([]);
     setCrossLineVisible((wasVisible) => {
       if (wasVisible) {
-        // eslint-disable-next-line no-console
-        console.log('[center-cross-clear] reason=clear-graphics');
       }
       return false;
     });
@@ -51,8 +49,6 @@ export function useImageOverlay(): ImageOverlayApi {
   const toggleCrossLine = useCallback(() => {
     setCrossLineVisible((v) => {
       const next = !v;
-      // eslint-disable-next-line no-console
-      console.log(`[center-cross][toggle] enabled=${next}`);
       return next;
     });
   }, []);

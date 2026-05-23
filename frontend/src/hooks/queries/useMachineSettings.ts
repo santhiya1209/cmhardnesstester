@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getMachineSettings } from '@/api/getMachineSettings';
+import { getMachineSettings } from '@/api/machine';
 import type { MachineSettings } from '@/types/machineSettings';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

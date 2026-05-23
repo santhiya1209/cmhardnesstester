@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createLineColorSetting } from '@/api/createLineColorSetting';
-import { updateLineColorSetting } from '@/api/updateLineColorSetting';
+import { createLineColorSetting } from '@/api/settings';
+import { updateLineColorSetting } from '@/api/settings';
 import type {
   LineColorSetting,
   LineColorSettingPayload,

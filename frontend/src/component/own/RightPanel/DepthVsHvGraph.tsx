@@ -155,27 +155,12 @@ function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
     () => (!isDepthVsHv ? findGenericYCrossing(points, chdTargetHv) : null),
     [chdTargetHv, isDepthVsHv, points]
   );
-  // eslint-disable-next-line no-console
-  console.log(`[depth-graph-chd-visible] visible=${isDepthVsHv} xKey=${xKey} yKey=${yKey}`);
   void genericYCrossing;
 
   useEffect(() => {
-    console.log(`[case-hardness-profile-render] points=${points.length} xKey=${xKey} yKey=${yKey}`);
-    if (plot) {
-      console.log(
-        `[case-hardness-profile-axis] xMin=${plot.xAxis.min} xMax=${plot.xAxis.max} yMin=${plot.yAxis.min} yMax=${plot.yAxis.max}`
-      );
-    }
-    if (isDepthVsHv && chdIntersection) {
-      console.log(
-        `[chd-intersection] targetHv=${chdIntersection.hv} depthMm=${chdIntersection.depthMm} distanceUm=${chdIntersection.distanceUm}`
-      );
-    }
   }, [chdIntersection, isDepthVsHv, plot, points, xKey, yKey]);
 
   if (!plot) {
-    // eslint-disable-next-line no-console
-    console.log('[depth-graph-render] points=0 rendered=false reason=no-valid-rows');
     return (
       <Box sx={EMPTY_SX}>
         <Typography variant="h3">Case Hardness Profile</Typography>
@@ -183,8 +168,6 @@ function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
       </Box>
     );
   }
-  // eslint-disable-next-line no-console
-  console.log(`[depth-graph-render] points=${points.length} rendered=true`);
 
   const hovered = hoverIndex === null ? null : legacyPoints[hoverIndex] ?? null;
   const plotBottom = SIZE.h - PAD.bottom;

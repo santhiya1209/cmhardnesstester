@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { connectMachine } from '@/api/connectMachine';
-import { disconnectMachine } from '@/api/disconnectMachine';
+import { connectMachine } from '@/api/machine';
+import { disconnectMachine } from '@/api/machine';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 import type { ConnectMachineRequest } from '@/types/machine';
 

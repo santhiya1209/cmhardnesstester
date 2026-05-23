@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getGenericSetting } from '@/api/getGenericSetting';
+import { getGenericSetting } from '@/api/settings';
 import type { GenericSetting } from '@/types/genericSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

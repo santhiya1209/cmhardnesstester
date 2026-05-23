@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAutoMeasureSettings } from '@/api/getAutoMeasureSettings';
+import { getAutoMeasureSettings } from '@/api/settings';
 import type { AutoMeasureSettings } from '@/types/autoMeasureSettings';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

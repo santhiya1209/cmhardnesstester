@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { deleteTestRecord } from '@/api/deleteTestRecord';
+import { deleteTestRecord } from '@/api/testRecord';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useDeleteTestRecord() {

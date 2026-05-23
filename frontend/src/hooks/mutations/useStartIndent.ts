@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { startIndent } from '@/api/startIndent';
+import { startIndent } from '@/api/machine';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useStartIndent() {
@@ -10,8 +10,6 @@ export function useStartIndent() {
     setBusy(true);
     setError(null);
       try {
-        // eslint-disable-next-line no-console
-        console.log('[machine-sync][ui-change] field=indent value=start');
         const reply = await startIndent();
       return reply.state;
     } catch (err) {

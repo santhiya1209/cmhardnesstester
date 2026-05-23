@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { deleteMeasurement } from '@/api/deleteMeasurement';
+import { deleteMeasurement } from '@/api/measurement';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useDeleteMeasurement() {

@@ -51,9 +51,6 @@ function isToolbarAction(action: string): action is ToolbarActionId {
 }
 
 export function dispatchMenuAction(action: MenuActionId, ctx: MenuDispatchContext): void {
-  // eslint-disable-next-line no-console
-  console.log('[menu] click', action);
-
   if (action === 'data:sampleInfo') {
     ctx.openSampleInfo();
     ctx.setStatus('Test Records opened');

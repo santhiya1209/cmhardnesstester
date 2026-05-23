@@ -105,19 +105,13 @@ function TrimMeasurePanelImpl({ open, onClose, onAdjust }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    // eslint-disable-next-line no-console
-    console.log('[trim-measure-ui] open location=right-panel');
     return () => {
-      // eslint-disable-next-line no-console
-      console.log('[trim-measure-ui] close');
     };
   }, [open]);
 
   const handleSpeedToggle = useCallback(() => {
     setSpeed((prev) => {
       const next: TrimSpeed = prev === 'slow' ? 'fast' : 'slow';
-      // eslint-disable-next-line no-console
-      console.log(`[trim-measure-ui] speed=${next}`);
       return next;
     });
   }, []);
@@ -127,17 +121,6 @@ function TrimMeasurePanelImpl({ open, onClose, onAdjust }: Props) {
       const resolved = resolveAdjust(group, direction, speed);
       if (!resolved) return;
       const { corner, dx, dy } = resolved;
-      const delta = dx !== 0 ? dx : dy;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[trim-measure-ui] direction=${direction} group=${group} speed=${speed} delta=${delta}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[trim-measure-ipc] command=trim-move direction=${direction} group=${group} speed=${speed}`
-      );
-      // eslint-disable-next-line no-console
-      console.log('[trim-measure-machine] protocol=unknown no-tx');
       onAdjust(corner, dx, dy);
     },
     [speed, onAdjust]

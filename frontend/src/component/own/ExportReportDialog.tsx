@@ -62,16 +62,12 @@ function ExportReportDialogImpl({
       setSelected('word-data');
       setError(null);
       setSuccess(null);
-      // eslint-disable-next-line no-console
-      console.log('[report-export] dialog opened');
     }
   }, [open]);
 
   const handleSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const next = event.target.value as ReportType;
     setSelected(next);
-    // eslint-disable-next-line no-console
-    console.log('[report-export] selected type=', next);
   }, []);
 
   const handleExport = useCallback(async () => {
@@ -83,8 +79,7 @@ function ExportReportDialogImpl({
       try {
         await persist();
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('[report-export] persist header failed (continuing)', err);
+        console.error('[report-export] persist header failed:', (err as Error)?.message ?? err);
       }
       const loadTimeSeconds = (() => {
         const lt = machineState?.loadTime;
@@ -103,13 +98,10 @@ function ExportReportDialogImpl({
         targetMinHv,
         targetMaxHv,
       });
-      // eslint-disable-next-line no-console
-      console.log('[report-export] success path=', filename);
       setSuccess(`Saved as ${filename}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.error('[report-error] export failed reason=', message);
+      console.error(`[report-export] failed: ${message}`);
       setError(message);
     } finally {
       setBusy(false);

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createXyzPlatformState } from '@/api/createXyzPlatformState';
-import { updateXyzPlatformState } from '@/api/updateXyzPlatformState';
+import { createXyzPlatformState } from '@/api/xyzPlatform';
+import { updateXyzPlatformState } from '@/api/xyzPlatform';
 import type {
   XYZPlatformState,
   XYZPlatformStatePayload,

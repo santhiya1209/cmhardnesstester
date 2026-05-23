@@ -36,12 +36,6 @@ export function useLineThickness(): UseLineThicknessApi {
       } catch {
         // Storage write blocked — UI still updates in-memory.
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[line-thickness-change] option=${next} strokeWidth=${LINE_THICKNESS_PX[next]}`
-      );
-      // eslint-disable-next-line no-console
-      console.log('[overlay-redraw] reason=line-thickness-change');
       return next;
     });
   }, []);

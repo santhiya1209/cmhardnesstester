@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createOtherSetting } from '@/api/createOtherSetting';
-import { updateOtherSetting } from '@/api/updateOtherSetting';
+import { createOtherSetting } from '@/api/settings';
+import { updateOtherSetting } from '@/api/settings';
 import type { OtherSetting, OtherSettingSavePayload } from '@/types/otherSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

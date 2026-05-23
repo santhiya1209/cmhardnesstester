@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { deleteAlbumItem } from '@/api/deleteAlbumItem';
+import { deleteAlbumItem } from '@/api/albumItem';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useDeleteAlbumItem() {

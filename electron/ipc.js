@@ -15,7 +15,7 @@ function loadSerialPortClass() {
     return mod && mod.SerialPort ? mod.SerialPort : null;
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.warn('[serial-ports-list] serialport require failed:', err && err.message);
+    console.error('[serial-ports-list] serialport require failed:', err && err.message);
     return null;
   }
 }
@@ -203,7 +203,7 @@ function startMachineEventBridge() {
           throw new Error(`machine event stream failed: ${response.status}`);
         }
         // eslint-disable-next-line no-console
-        console.log('[machine-ipc] event bridge connected');
+        console.log('[machine-ipc] event bridge started');
         const reader = response.body.getReader();
         let buffer = '';
         for (;;) {
@@ -227,7 +227,7 @@ function startMachineEventBridge() {
       } catch (err) {
         const message = err && err.message ? err.message : String(err);
         // eslint-disable-next-line no-console
-        console.warn('[machine-ipc] event bridge retry:', message);
+        console.error('[machine-ipc] event bridge error:', message);
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
@@ -261,10 +261,20 @@ function registerIpc() {
   /* ------------------ camera channels ------------------ */
   ipcMain.handle('camera:open', (_e, payload) => {
     const index = payload && Number.isFinite(Number(payload.index)) ? Number(payload.index) : 0;
+    // eslint-disable-next-line no-console
+    console.log('[camera-ipc][open] index=' + index);
     return cameraService.open({ index });
   });
-  ipcMain.handle('camera:close', () => cameraService.close());
-  ipcMain.handle('camera:start-stream', () => cameraService.startStream());
+  ipcMain.handle('camera:close', () => {
+    // eslint-disable-next-line no-console
+    console.log('[camera-ipc][close]');
+    return cameraService.close();
+  });
+  ipcMain.handle('camera:start-stream', () => {
+    // eslint-disable-next-line no-console
+    console.log('[camera-ipc][start-stream]');
+    return cameraService.startStream();
+  });
   ipcMain.handle('camera:stop-stream', () => cameraService.stopStream());
   ipcMain.handle('camera:get-frame', (_e, payload) =>
     cameraService.getFrame(num(payload && payload.timeoutMs, 4000))
@@ -279,7 +289,7 @@ function registerIpc() {
       ms = Number(payload.valueUs) / 1000;
     }
     // eslint-disable-next-line no-console
-    console.log('[ipc] camera:set-exposure payload=', payload, '→ ms=', ms);
+    console.log('[camera-ipc][settings] exposure ms=' + ms);
     return cameraService.setExposure(ms);
   });
 
@@ -287,40 +297,27 @@ function registerIpc() {
   // dialog's slider throttle/dedupe (which silently skipped earlier
   // clicks) and logs at every layer so the wiring is traceable end-to-end.
   ipcMain.handle('camera:set-live-mode', async (_e, payload) => {
-    // eslint-disable-next-line no-console
-    console.log('[ipc] camera:set-live-mode payload=', payload);
     return cameraService.setLiveMode(payload || {});
   });
 
   ipcMain.handle('camera:set-live-exposure-fps', async (_e, payload) => {
     const targetFps = Number(payload && payload.targetFps);
-    // eslint-disable-next-line no-console
-    console.log(`[live-fps-ipc-main] targetFps=${targetFps}`);
     if (!Number.isFinite(targetFps) || targetFps <= 0) {
       return { ok: false, error: 'BAD_ARGS', message: `targetFps must be > 0 (got ${targetFps})` };
     }
     const exposureMs = 1000 / targetFps;
-    // eslint-disable-next-line no-console
-    console.log(`[live-fps-service-call] valueMs=${exposureMs.toFixed(3)}`);
-    const reply = await cameraService.setExposure(exposureMs);
-    // eslint-disable-next-line no-console
-    console.log('[live-fps-service-reply]', reply);
-    return reply;
+    return cameraService.setExposure(exposureMs);
   });
   ipcMain.handle('camera:set-gain', (_e, payload) => {
     const v = num(payload && payload.value, 0);
     // eslint-disable-next-line no-console
-    console.log('[ipc] camera:set-gain payload=', payload, '→ value=', v);
+    console.log('[camera-ipc][settings] gain=' + v);
     return cameraService.setGain(v);
   });
   ipcMain.handle('camera:get-exposure-range', () => {
-    // eslint-disable-next-line no-console
-    console.log('[ipc] camera:get-exposure-range');
     return cameraService.getExposureRange();
   });
   ipcMain.handle('camera:get-gain-range', () => {
-    // eslint-disable-next-line no-console
-    console.log('[ipc] camera:get-gain-range');
     return cameraService.getGainRange();
   });
   ipcMain.handle('camera:set-trigger-mode', (_e, payload) =>
@@ -335,23 +332,6 @@ function registerIpc() {
   });
   ipcMain.handle('camera:measure-vickers-auto', (_e, payload) => {
     const safePayload = validateAutoMeasurePayload(payload);
-    if (process.env.AUTO_MEASURE_DEBUG === 'true') {
-      // eslint-disable-next-line no-console
-      console.log('[ipc] camera:measure-vickers-auto payload=', safePayload);
-    }
-    {
-      const w = safePayload && safePayload.width;
-      const h = safePayload && safePayload.height;
-      const pf = safePayload && safePayload.pixelFormat;
-      const buf = safePayload && safePayload.frameBuffer;
-      const bytes = buf && typeof buf.byteLength === 'number' ? buf.byteLength : 'n/a';
-      const frameId = safePayload && safePayload.frameId != null ? safePayload.frameId : 'n/a';
-      const src = (safePayload && safePayload.source) || 'live-camera';
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-main-recv] width=${w} height=${h} pixelFormat=${pf} bytes=${bytes} frameId=${frameId} source=${src}`
-      );
-    }
     return cameraService.measureVickersAuto(safePayload);
   });
 
@@ -362,8 +342,6 @@ function registerIpc() {
   ipcMain.handle('serial:list-ports', async () => {
     const SerialPort = loadSerialPortClass();
     if (!SerialPort || typeof SerialPort.list !== 'function') {
-      // eslint-disable-next-line no-console
-      console.warn('[serial-ports-list] unavailable reason=serialport-not-loaded');
       return { ok: false, ports: [], error: 'serialport-unavailable' };
     }
     try {
@@ -384,15 +362,11 @@ function registerIpc() {
             productId: typeof entry.productId === 'string' ? entry.productId : null,
           }))
         : [];
-      // eslint-disable-next-line no-console
-      console.log(
-        `[serial-ports-list] count=${ports.length} paths=${ports.map((p) => p.path).join(',') || '-'}`
-      );
       return { ok: true, ports };
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
       // eslint-disable-next-line no-console
-      console.warn(`[serial-ports-list] error=${message}`);
+      console.error(`[serial-ports-list] error: ${message}`);
       return { ok: false, ports: [], error: message };
     }
   });
@@ -404,21 +378,15 @@ function registerIpc() {
         ? payload.port.trim()
         : null;
     if (!portName) {
-      // eslint-disable-next-line no-console
-      console.log('[micrometer-connect-skip] reason=disabled-or-no-port');
       return {
         ok: false,
         error: 'NO_PORT_SELECTED',
         message: 'Select micrometer COM port first',
       };
     }
-    // eslint-disable-next-line no-console
-    console.log('[ipc] micrometer:open port=', portName);
     return micrometerService.open(portName);
   });
   ipcMain.handle('micrometer:close', async () => {
-    // eslint-disable-next-line no-console
-    console.log('[ipc] micrometer:close');
     return micrometerService.close();
   });
   ipcMain.handle('micrometer:get-state', () => ({
@@ -433,16 +401,12 @@ function registerIpc() {
   /* ------------------ machine RS232 channels ------------------ */
   ipcMain.handle('machine:get-state', async () => {
     startMachineEventBridge();
-    // eslint-disable-next-line no-console
-    console.log('[machine-ipc] get-state');
     return machineBackendRequest('/api/machine/state');
   });
 
   const setMachineValue = (key) => async (_e, payload) => {
     startMachineEventBridge();
     const value = validateMachineValuePayload(payload);
-    // eslint-disable-next-line no-console
-    console.log('[machine-ipc] set', { key, value });
     return machineBackendRequest('/api/machine/set', {
       method: 'POST',
       body: { key, value },
@@ -457,16 +421,12 @@ function registerIpc() {
 
   ipcMain.handle('machine:start-indent', async () => {
     startMachineEventBridge();
-    // eslint-disable-next-line no-console
-    console.log('[machine-ipc] start-indent');
     return machineBackendRequest('/api/machine/indent', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('machine:move-turret', async (_e, payload) => {
     startMachineEventBridge();
     const direction = validateTurretPayload(payload);
-    // eslint-disable-next-line no-console
-    console.log('[machine-ipc] move-turret', { direction });
     return machineBackendRequest('/api/machine/turret', {
       method: 'POST',
       body: { direction },
@@ -483,8 +443,6 @@ function registerIpc() {
     console.log('[ipc] device:open index=', index);
 
     const camOpen = await cameraService.open({ index });
-    // eslint-disable-next-line no-console
-    console.log('[ipc] device:open camera→open ok=', camOpen.ok);
     if (!camOpen.ok) {
       return {
         ok: true,
@@ -492,8 +450,6 @@ function registerIpc() {
       };
     }
     const camStream = await cameraService.startStream();
-    // eslint-disable-next-line no-console
-    console.log('[ipc] device:open camera→start-stream ok=', camStream.ok);
 
     // Best-effort: open the micrometer ONLY if the renderer explicitly passed
     // a port. No hardcoded fallback — if the operator hasn't selected one,
@@ -504,14 +460,10 @@ function registerIpc() {
         : null;
     let micrometer;
     if (!micPortName) {
-      // eslint-disable-next-line no-console
-      console.log('[micrometer-connect-skip] reason=disabled-or-no-port');
       micrometer = undefined;
     } else {
       try {
         const micResult = await micrometerService.open(micPortName);
-        // eslint-disable-next-line no-console
-        console.log('[ipc] device:open micrometer→open ok=', !!micResult.ok, 'port=', micPortName);
         micrometer = {
           connected: !!micResult.ok,
           port: micPortName,
@@ -521,7 +473,7 @@ function registerIpc() {
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         // eslint-disable-next-line no-console
-        console.warn('[ipc] device:open micrometer threw:', msg);
+        console.error('[device:open] micrometer threw:', msg);
         micrometer = { connected: false, port: micPortName, error: 'OPEN_THREW', message: msg };
       }
     }
@@ -545,8 +497,6 @@ function registerIpc() {
     // serial devices and must remain connected across a camera close — they
     // are only torn down via their own explicit disconnect channels or at
     // app shutdown.
-    // eslint-disable-next-line no-console
-    console.log('[camera-close][camera-only-cleanup] scope=ipc');
     await cameraService.stopStream().catch(() => {});
     const cam = await cameraService.close();
     return { ok: true, camera: cam };
@@ -636,7 +586,7 @@ function registerIpc() {
     const bytes = payload && payload.bytes;
     if (!(bytes instanceof Uint8Array) && !Buffer.isBuffer(bytes) && !(bytes instanceof ArrayBuffer)) {
       // eslint-disable-next-line no-console
-      console.warn('[report-save] invalid payload: missing bytes');
+      console.error('[report-save] invalid payload: missing bytes');
       return { ok: false, canceled: false, error: 'invalid-payload' };
     }
     const buffer = Buffer.isBuffer(bytes)
@@ -647,23 +597,17 @@ function registerIpc() {
     const autoOpen = payload && payload.autoOpen !== false;
     const filters = reportFiltersFor(defaultName);
     const opts = { title: 'Save Report', defaultPath: defaultName, filters };
-    // eslint-disable-next-line no-console
-    console.log(`[report-save-start] defaultName=${defaultName} bytes=${buffer.length}`);
 
     const result = win
       ? await dialog.showSaveDialog(win, opts)
       : await dialog.showSaveDialog(opts);
 
     if (result.canceled || !result.filePath) {
-      // eslint-disable-next-line no-console
-      console.log('[report-save-canceled]');
       return { ok: false, canceled: true };
     }
 
     try {
       await fs.writeFile(result.filePath, buffer);
-      // eslint-disable-next-line no-console
-      console.log(`[report-save-success] path=${result.filePath}`);
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
       // eslint-disable-next-line no-console
@@ -680,8 +624,6 @@ function registerIpc() {
     let opened = false;
     let openError = null;
     if (autoOpen) {
-      // eslint-disable-next-line no-console
-      console.log(`[report-auto-open] path=${result.filePath}`);
       try {
         // openPath returns '' on success or an error string. Falls back to the
         // OS default handler for the extension, so .docx hits Word (or
@@ -690,16 +632,14 @@ function registerIpc() {
         if (openMessage) {
           openError = openMessage;
           // eslint-disable-next-line no-console
-          console.warn(`[report-auto-open-failed] path=${result.filePath} error=${openMessage}`);
+          console.error(`[report-auto-open-failed] path=${result.filePath} error=${openMessage}`);
         } else {
           opened = true;
-          // eslint-disable-next-line no-console
-          console.log(`[report-auto-open-success] path=${result.filePath}`);
         }
       } catch (err) {
         openError = err && err.message ? err.message : String(err);
         // eslint-disable-next-line no-console
-        console.warn(`[report-auto-open-failed] path=${result.filePath} error=${openError}`);
+        console.error(`[report-auto-open-failed] path=${result.filePath} error=${openError}`);
       }
     }
 

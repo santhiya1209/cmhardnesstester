@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getLineColorSetting } from '@/api/getLineColorSetting';
+import { getLineColorSetting } from '@/api/settings';
 import type { LineColorSetting } from '@/types/lineColorSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

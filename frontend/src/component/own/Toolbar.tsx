@@ -128,26 +128,18 @@ const ToolbarButton = memo(function ToolbarButton({
 
   useEffect(() => {
     if (!isCameraSettings) return;
-    // eslint-disable-next-line no-console
-    console.log('[camera-settings-toolbar-render]');
   }, [isCameraSettings]);
 
   const handleClick = useCallback(() => {
     if (isCameraToggle) {
-      // eslint-disable-next-line no-console
-      console.log('[toolbar-camera-toggle-click]');
     }
     if (isCameraSettings) {
-      // eslint-disable-next-line no-console
-      console.log('[toolbar-camera-settings-click]');
     }
     onSelect(item.action);
   }, [isCameraSettings, isCameraToggle, item.action, onSelect]);
 
   const handleTooltipOpen = useCallback(() => {
     if (!cameraState) return;
-    // eslint-disable-next-line no-console
-    console.log(`[toolbar-camera-tooltip] state=${cameraState}`);
   }, [cameraState]);
 
   return (
@@ -183,8 +175,6 @@ const LineThicknessMenuButton = memo(function LineThicknessMenuButton({
 
   const handleOpen = useCallback((event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget);
-    // eslint-disable-next-line no-console
-    console.log('[line-thickness-dropdown-open]');
   }, []);
 
   const handleClose = useCallback(() => {

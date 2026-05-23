@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createTestRecord } from '@/api/createTestRecord';
-import { updateTestRecord } from '@/api/updateTestRecord';
+import { createTestRecord } from '@/api/testRecord';
+import { updateTestRecord } from '@/api/testRecord';
 import type { TestRecord, TestRecordSavePayload } from '@/types/testRecord';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

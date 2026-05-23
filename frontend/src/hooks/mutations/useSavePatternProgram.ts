@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createPatternProgram } from '@/api/createPatternProgram';
-import { updatePatternProgram } from '@/api/updatePatternProgram';
+import { createPatternProgram } from '@/api/patternProgram';
+import { updatePatternProgram } from '@/api/patternProgram';
 import type { PatternProgram, PatternProgramPayload } from '@/types/patternProgram';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

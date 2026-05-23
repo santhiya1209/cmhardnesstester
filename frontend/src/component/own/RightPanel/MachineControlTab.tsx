@@ -653,127 +653,22 @@ function MachineControlTabImpl({
     setLightnessInput(incoming);
   }, [machineState?.lightness]);
 
-  // One-shot startup log: surface the values that came back from SQLite via
-  // the backend SSE snapshot so operators can verify what was restored.
-  const restoredLoggedRef = useRef(false);
-  useEffect(() => {
-    if (restoredLoggedRef.current) return;
-    if (!machineState) return;
-    restoredLoggedRef.current = true;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-control-ui] restored lightness=${machineState.lightness} loadTime=${machineState.loadTime}`
-    );
-  }, [machineState]);
-
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[MachineControl] render force=${formState.force} objective=${formState.objective} lightness=${formState.lightness} loadTime=${formState.loadTime}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-sync][ui-state] objective=${formState.objective} force=${formState.force} lightness=${formState.lightness} loadTime=${formState.loadTime} hardnessLevel=${formState.hardnessLevel}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[machine-ui] state objective=${formState.objective} force=${formState.force} lightness=${formState.lightness} loadTime=${formState.loadTime} hardnessLevel=${formState.hardnessLevel}`
-    );
-  }, [
-    formState.force,
-    formState.hardnessLevel,
-    formState.lightness,
-    formState.loadTime,
-    formState.objective,
-  ]);
-
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[machine-control-bottom-hv-compact-render] value=${bottomHvDisplay}`);
-  }, [bottomHvDisplay]);
-
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[machine-control-bottom-hvtype-compact-render] value=${bottomHvTypeDisplay}`);
-  }, [bottomHvTypeDisplay]);
-
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[machine-control-bottom-hardness-compact-render] value=${bottomHardnessDisplay}`);
-  }, [bottomHardnessDisplay]);
-
-  // Mirror confirmedObjectiveFromMachine into a ref so impress logs can read
-  // the freshest value without re-binding the click handler on every SSE tick.
+  // Mirror confirmedObjectiveFromMachine into a ref so the click handler can
+  // read the freshest value without re-binding on every SSE tick.
   const lastConfirmedObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
     const confirmed = machineState?.confirmedObjectiveFromMachine ?? null;
     if (confirmed === lastConfirmedObjectiveRef.current) return;
     lastConfirmedObjectiveRef.current = confirmed;
-    if (confirmed) {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-objective-rx] confirmedObjective=${confirmed}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[machine-objective-sync] uiObjective=${formState.objective} confirmedObjective=${confirmed}`
-      );
-    }
-  }, [machineState?.confirmedObjectiveFromMachine, formState.objective]);
-
-  useEffect(() => {
-    if (!machineState) return;
-    const source = machineState.lastUpdateSource ?? machineState.lastUpdatedBy;
-    if (source !== 'machine') return;
-    // eslint-disable-next-line no-console
-    console.log(`[MachineControl] machine update source=machine force=${machineState.force}`);
-    // eslint-disable-next-line no-console
-    console.log(`[MachineControl] force updated from machine value=${machineState.force}`);
-    // eslint-disable-next-line no-console
-    console.log(`[frontend-machine-state] force updated from machine value=${machineState.force}`);
-    // eslint-disable-next-line no-console
-    console.log(`[machine-force-panel-update] value=${machineState.force} source=machine`);
-    // eslint-disable-next-line no-console
-    console.log(`[MachineControl] machine update source=machine objective=${machineState.objective}`);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[frontend-machine-state] objective updated from machine value=${machineState.objective}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[frontend-machine-state] objective confirmed value=${machineState.objective}`
-    );
-  }, [
-    machineState?.force,
-    machineState?.lastUpdateSource,
-    machineState?.lastUpdatedBy,
-    machineState?.objective,
-  ]);
+  }, [machineState?.confirmedObjectiveFromMachine]);
 
   const pushChange = useCallback(
     async (key: MachineControlKey, value: string) => {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-ui] change field=${key} value=${value}`);
-      if (key === 'force') {
-        // eslint-disable-next-line no-console
-        console.log(`[MachineControl] force change requested value=${value}`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-force-ui-change] value=${value}`);
-      }
-      if (key === 'objective') {
-        // eslint-disable-next-line no-console
-        console.log(`[frontend-tx] objective requested value=${value}`);
-        // eslint-disable-next-line no-console
-        console.log(`[objective][ipc] set-active-objective ${value}`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-objective-tx] objective=${value}`);
-      }
       try {
         const nextState = await setControl(key, value);
-        if (key === 'objective') {
-          // eslint-disable-next-line no-console
-          console.log(`[objective][backend] saved activeObjective=${value}`);
-        }
         return nextState;
-      } catch {
+      } catch (err) {
+        console.error(`[machine-ui] setControl failed field=${key}:`, (err as Error)?.message ?? err);
         return null;
       }
     },
@@ -788,19 +683,9 @@ function MachineControlTabImpl({
         (field === 'objective' && !OBJECTIVE_OPTIONS.includes(value)) ||
         (field === 'hardnessLevel' && !HARDNESS_LEVEL_OPTIONS.includes(value))
       ) {
-        // eslint-disable-next-line no-console
-        console.warn(`[machine-ui] rejected invalid ${field}=${value}`);
         return;
       }
       if (field === 'objective') {
-        // eslint-disable-next-line no-console
-        console.log(`[objective][ui] changed ${formState.objective} -> ${value}`);
-        // eslint-disable-next-line no-console
-        console.log(`[objective-ui] click value=${value}`);
-        // eslint-disable-next-line no-console
-        console.log(`[objective-ui-click] objective=${value}`);
-        // eslint-disable-next-line no-console
-        console.log(`[machine-objective-ui] selected=${value}`);
         // Fire overlay-clear intent immediately so stale yellow lines are
         // gone before the optical zoom actually changes.
         if (value === '10X' || value === '40X') {
@@ -827,9 +712,6 @@ function MachineControlTabImpl({
       const value = event.target.value;
       if (value.trim() !== '' && isValidNumberField('loadTime', value)) {
         void pushChange('loadTime', value);
-      } else if (value.trim() !== '') {
-        // eslint-disable-next-line no-console
-        console.warn(`[machine-ui] rejected invalid loadTime=${value}`);
       }
     },
     [pushChange]
@@ -850,17 +732,9 @@ function MachineControlTabImpl({
 
   const sendLightness = useCallback(
     (value: string) => {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-lightness-send] value=${value}`);
-      void pushChange('lightness', value)
-        .then((state) => {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-lightness-ack] ok=${state ? 'true' : 'false'}`);
-        })
-        .catch(() => {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-lightness-ack] ok=false`);
-        });
+      void pushChange('lightness', value).catch((err) => {
+        console.error('[machine-lightness] send failed:', (err as Error)?.message ?? err);
+      });
     },
     [pushChange]
   );
@@ -894,8 +768,6 @@ function MachineControlTabImpl({
       const value = String(clamped);
       lightnessDirtyRef.current = true;
       setLightnessInput(value);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-lightness-ui] value=${value}`);
       scheduleLightnessSend(value, false);
     },
     [scheduleLightnessSend]
@@ -916,8 +788,6 @@ function MachineControlTabImpl({
     (event: SelectChangeEvent) => {
       const value = event.target.value;
       if (!HARDNESS_LEVEL_OPTIONS.includes(value)) {
-        // eslint-disable-next-line no-console
-        console.warn(`[machine-ui] rejected invalid hardnessLevel=${value}`);
         return;
       }
       void pushChange('hardnessLevel', value);
@@ -957,35 +827,14 @@ function MachineControlTabImpl({
     // activeObjective only when no confirmation has arrived yet. Mirrors the
     // backend command path so the operator can verify which objective the
     // impress is actually firing under.
-    const confirmedObjective =
-      machineState?.confirmedObjectiveFromMachine ?? lastConfirmedObjectiveRef.current ?? null;
-    const activeObjective = machineState?.objective ?? null;
-    const objectiveForCommand = confirmedObjective ?? activeObjective ?? formState.objective;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[impress-click] confirmedObjective=${confirmedObjective ?? 'null'} activeObjective=${activeObjective ?? 'null'}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[impress-command-context] objective=${objectiveForCommand} force=${formState.force} loadTime=${formState.loadTime}`
-    );
     if (impressAutoCloseTimerRef.current !== null) {
       clearTimeout(impressAutoCloseTimerRef.current);
       impressAutoCloseTimerRef.current = null;
     }
     setImpressPopup({ open: true, status: 'running', message: 'Impress process is running...' });
-    // eslint-disable-next-line no-console
-    console.log('[impress-popup] open');
-    // eslint-disable-next-line no-console
-    console.log('[impress-popup] status=running');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[impress-command-sent] objective=${objectiveForCommand} force=${formState.force} loadTime=${formState.loadTime}`
-    );
     void startIndent().catch((err) => {
       const reason = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.log(`[impress-popup] status=error reason=${reason}`);
+      console.error(`[impress] failed: ${reason}`);
       setImpressPopup({
         open: true,
         status: 'error',
@@ -994,8 +843,6 @@ function MachineControlTabImpl({
       impressAutoCloseTimerRef.current = setTimeout(() => {
         impressAutoCloseTimerRef.current = null;
         setImpressPopup((current) => ({ ...current, open: false }));
-        // eslint-disable-next-line no-console
-        console.log('[impress-popup] auto-close');
       }, 4000);
     });
   }, [
@@ -1018,8 +865,6 @@ function MachineControlTabImpl({
     if (impressPopup.status !== 'running') return;
 
     if (next === 'completed') {
-      // eslint-disable-next-line no-console
-      console.log('[impress-popup] status=done');
       setImpressPopup({ open: true, status: 'done', message: 'Impress is done' });
       if (impressAutoCloseTimerRef.current !== null) {
         clearTimeout(impressAutoCloseTimerRef.current);
@@ -1027,15 +872,12 @@ function MachineControlTabImpl({
       impressAutoCloseTimerRef.current = setTimeout(() => {
         impressAutoCloseTimerRef.current = null;
         setImpressPopup((current) => ({ ...current, open: false }));
-        // eslint-disable-next-line no-console
-        console.log('[impress-popup] auto-close');
       }, 1500);
       return;
     }
     if (next === 'error') {
       const reason = machineState?.lastError ?? 'machine reported error';
-      // eslint-disable-next-line no-console
-      console.log(`[impress-popup] status=error reason=${reason}`);
+      console.error(`[impress] error: ${reason}`);
       setImpressPopup({
         open: true,
         status: 'error',
@@ -1047,32 +889,19 @@ function MachineControlTabImpl({
       impressAutoCloseTimerRef.current = setTimeout(() => {
         impressAutoCloseTimerRef.current = null;
         setImpressPopup((current) => ({ ...current, open: false }));
-        // eslint-disable-next-line no-console
-        console.log('[impress-popup] auto-close');
       }, 4000);
     }
   }, [impressPopup.open, impressPopup.status, machineState?.indentStatus, machineState?.lastError]);
 
   const handleTurretClick = useCallback(
     (direction: TurretDirection) => () => {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-ui] turret click direction=${direction}`);
-      // eslint-disable-next-line no-console
-      console.log(`[machine-turret-click] direction=${direction}`);
       // Fire overlay-clear intent BEFORE the IPC so stale yellow lines are
       // gone from the moment the operator presses the button.
       onTurretIntent?.();
-      // eslint-disable-next-line no-console
-      console.log(`[machine-turret-tx] command=move-turret direction=${direction}`);
-      void moveTurret(direction)
-        .then(() => {
-          // eslint-disable-next-line no-console
-          console.log(`[machine-turret-ack] status=ok direction=${direction}`);
-        })
-        .catch(() => {
-          // Errors surface via turretError -> errorMessage. UI must NOT
-          // optimistically reflect motion; real state comes from machine RX.
-        });
+      void moveTurret(direction).catch(() => {
+        // Errors surface via turretError -> errorMessage. UI must NOT
+        // optimistically reflect motion; real state comes from machine RX.
+      });
     },
     [moveTurret, onTurretIntent]
   );

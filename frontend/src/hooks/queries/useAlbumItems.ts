@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAlbumItems } from '@/api/getAlbumItems';
+import { getAlbumItems } from '@/api/albumItem';
 import type { AlbumItem } from '@/types/albumItem';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

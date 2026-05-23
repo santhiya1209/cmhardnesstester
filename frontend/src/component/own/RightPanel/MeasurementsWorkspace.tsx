@@ -12,7 +12,7 @@ import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { colors } from '@/theme/theme';
 import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
-import { updateMeasurement } from '@/api/updateMeasurement';
+import { updateMeasurement } from '@/api/measurement';
 import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
@@ -126,8 +126,6 @@ function MeasurementsWorkspaceImpl({
   const [convertSyncError, setConvertSyncError] = useState<string | null>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[measurement-ui-style-update] section=hv-display');
   }, []);
 
   // Tracks the most recent measurement we've seen so we can emit the
@@ -139,10 +137,6 @@ function MeasurementsWorkspaceImpl({
     if (lastSeenMeasurementIdRef.current === latest.id) return;
     lastSeenMeasurementIdRef.current = latest.id;
     if (typeof latest.hv === 'number' && Number.isFinite(latest.hv)) {
-      // eslint-disable-next-line no-console
-      console.log(`[hardness-original-set] hv=${latest.hv}`);
-      // eslint-disable-next-line no-console
-      console.log(`[hv-value-set] hv=${latest.hv}`);
     }
   }, [measurements]);
 
@@ -181,14 +175,6 @@ function MeasurementsWorkspaceImpl({
     }
 
     const display = rawValue === null ? 'N/A' : formatNumber(rawValue);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[hardness-convert-render] selectedType=${activeType} rawValue=${rawValue ?? 'null'} displayValue=${display}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[hardness-convert-ui-update] convertType=${activeType} convertValue=${display}`
-    );
     return display;
   }, [displayedMeasurement, convertType]);
 
@@ -212,33 +198,21 @@ function MeasurementsWorkspaceImpl({
       // (Auto Measure, Manual Measure, calibration auto-row) because none of
       // those write convertType, so this branch is the auto-default.
       if (displayedMeasurement) {
-        // eslint-disable-next-line no-console
-        console.log('[hv-type-auto-set] value=HV reason=measurement-success');
       }
     }
   }, [displayedMeasurement?.id, displayedMeasurement?.convertType, displayedMeasurement]);
 
   const handleConvertTypeChange = useCallback(
     async (next: (typeof CONVERT_TYPE_OPTIONS)[number]) => {
-      // eslint-disable-next-line no-console
-      console.log(`[convert-type-ui] selected=${next}`);
       setConvertType(next);
-      // eslint-disable-next-line no-console
-      console.log(`[convert-type-state] value=${next}`);
       const target = displayedMeasurement;
       if (!target) {
-        // eslint-disable-next-line no-console
-        console.log('[measurement-convert] no target row — dropdown only');
         return;
       }
       // Original HV is the row's existing hv — it is NEVER overwritten by
       // the conversion path below. The convertValue is a derived/companion
       // field stored alongside.
       const originalHv = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
-      // eslint-disable-next-line no-console
-      console.log(`[hardness-original] hv=${originalHv ?? '-'}`);
-      // eslint-disable-next-line no-console
-      console.log(`[hardness-convert-start] originalHv=${originalHv ?? '-'} targetType=${next}`);
       // Analytical Vickers→target conversion (see utils/hardnessConvert.ts).
       // These are widely-used approximations for hardened/soft steel, NOT
       // ISO 18265 / E140 table-grade values. Returns `null` when the input
@@ -246,14 +220,6 @@ function MeasurementsWorkspaceImpl({
       // renders a dash, which is the correct industrial behaviour (don't
       // fabricate a number you can't justify).
       const convertValue = convertVickers(originalHv, next as ConvertTargetType);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[hardness-convert-result] originalHv=${originalHv ?? '-'} convertType=${next} convertValue=${convertValue ?? '-'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[hardness-convert] originalHv=${originalHv ?? '-'} convertType=${next} convertValue=${convertValue ?? '-'}`
-      );
       try {
         // IMPORTANT: We must explicitly forward every nullable-with-default
         // field from the existing row. Reason: the backend's
@@ -286,18 +252,6 @@ function MeasurementsWorkspaceImpl({
           convertType: next,
           convertValue,
         });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-row-update-conversion] rowId=${target.id} hardness=${originalHv ?? '-'} convertType=${next} convertValue=${convertValue ?? '-'}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-row-update] hardness=${originalHv ?? '-'} hardnessType=HV convertType=${next} convertValue=${convertValue ?? '-'}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-save] rowId=${target.id} convertType=${next} convertValue=${convertValue ?? '-'}`
-        );
         setConvertSyncError(null);
         await refetch();
       } catch (err) {
@@ -324,12 +278,6 @@ function MeasurementsWorkspaceImpl({
     async (measurementId: string, depthMm: number | null) => {
       const target = measurements.find((m) => m.id === measurementId);
       if (!target) return;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[manual-depth-update] rowId=${measurementId} value=${depthMm ?? 'null'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[depth-source] source=manual value=${depthMm ?? 'null'}`);
       // The backend's buildUpdateSchema injects `null` defaults for fields
       // missing from the PUT body (same trap documented on the convertType
       // handler above). A naive `{depthMm, depthSource, manualDepthMm}` PUT
@@ -337,10 +285,6 @@ function MeasurementsWorkspaceImpl({
       // preservable field through so the partial update is non-destructive.
       const convertValue =
         typeof target.convertValue === 'number' ? target.convertValue : null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[convert-preserve-before] rowId=${measurementId} convertType=${target.convertType ?? 'null'} convertValue=${convertValue ?? 'null'} hv=${target.hv ?? 'null'}`
-      );
       try {
         await updateMeasurement(measurementId, {
           d1: target.d1,
@@ -364,23 +308,7 @@ function MeasurementsWorkspaceImpl({
           deviceDepthMm: target.deviceDepthMm ?? null,
           manualDepthMm: depthMm,
         });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[measurement-row-update] reason=manual-depth rowId=${measurementId} preserveConvert=true`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[convert-preserve-after] rowId=${measurementId} convertType=${target.convertType ?? 'null'} convertValue=${convertValue ?? 'null'} hv=${target.hv ?? 'null'}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(`[depth-freeze-save] rowId=${measurementId} value=${depthMm ?? 'null'}`);
         await refetch();
-        const idx = measurements.findIndex((m) => m.id === measurementId);
-        const nextRowId = idx >= 0 ? measurements[idx + 1]?.id ?? null : null;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[manual-depth-save-success] rowId=${measurementId} value=${depthMm ?? 'null'} nextRowId=${nextRowId ?? 'null'}`
-        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[manual-depth-save-error]', err);
@@ -451,15 +379,6 @@ function MeasurementsWorkspaceImpl({
             // dropdown state somehow isn't one of the known options (race
             // during refetch, legacy row, etc.), force 'HV' so the box is
             // never visually blank next to a populated HV value.
-            const hvShown =
-              typeof displayedMeasurement?.hv === 'number' &&
-              Number.isFinite(displayedMeasurement.hv);
-            const displayedConvertType: (typeof CONVERT_TYPE_OPTIONS)[number] =
-              CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV';
-            // eslint-disable-next-line no-console
-            console.log(
-              `[hv-type-render] selectedHardnessType=${convertType || 'null'} displayed=${hvShown ? displayedConvertType : displayedConvertType}`
-            );
             return null;
           })()}
           <Typography sx={LABEL_SX}>Micrometer</Typography>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getSerialPortSetting } from '@/api/getSerialPortSetting';
+import { getSerialPortSetting } from '@/api/serialPort';
 import type { SerialPortSetting } from '@/types/serialPortSetting';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

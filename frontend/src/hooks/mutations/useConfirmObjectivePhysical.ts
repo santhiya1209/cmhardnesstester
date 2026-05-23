@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { confirmObjectivePhysical } from '@/api/confirmObjectivePhysical';
+import { confirmObjectivePhysical } from '@/api/machine';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useConfirmObjectivePhysical() {
@@ -10,8 +10,6 @@ export function useConfirmObjectivePhysical() {
     setBusy(true);
     setError(null);
     try {
-      // eslint-disable-next-line no-console
-      console.log('[objective-test] ui-confirm-physical');
       const reply = await confirmObjectivePhysical();
       return reply.state;
     } catch (err) {

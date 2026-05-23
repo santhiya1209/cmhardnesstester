@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createSerialPortSetting } from '@/api/createSerialPortSetting';
-import { updateSerialPortSetting } from '@/api/updateSerialPortSetting';
+import { createSerialPortSetting } from '@/api/serialPort';
+import { updateSerialPortSetting } from '@/api/serialPort';
 import type {
   SerialPortSetting,
   SerialPortSettingSavePayload,

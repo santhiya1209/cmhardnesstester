@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getToolbarStates } from '@/api/getToolbarStates';
+import { getToolbarStates } from '@/api/toolbar';
 import type { ToolbarState } from '@/types/toolbarState';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

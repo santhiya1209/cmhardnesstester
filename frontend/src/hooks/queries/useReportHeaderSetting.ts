@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createReportHeaderSetting } from '@/api/createReportHeaderSetting';
-import { getReportHeaderSettings } from '@/api/getReportHeaderSettings';
-import { updateReportHeaderSetting } from '@/api/updateReportHeaderSetting';
+import { createReportHeaderSetting } from '@/api/settings';
+import { getReportHeaderSettings } from '@/api/settings';
+import { updateReportHeaderSetting } from '@/api/settings';
 import {
   DEFAULT_REPORT_HEADER_SETTING,
   type ReportHeaderSetting,

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { clearCalibrations } from '@/api/clearCalibrations';
+import { clearCalibrations } from '@/api/calibration';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useClearCalibrations() {

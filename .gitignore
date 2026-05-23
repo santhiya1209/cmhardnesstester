@@ -1,3 +1,7 @@
+# VC++ redistributable installer — fetched on demand by
+# scripts/fetch-vc-redist.js, never committed.
+vendor/redist/
+
 # Logs
 logs
 *.log

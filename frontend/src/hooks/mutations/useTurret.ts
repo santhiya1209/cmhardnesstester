@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { sendTurret } from '@/api/sendTurret';
+import { sendTurret } from '@/api/machine';
 import type { TurretDirection } from '@/types/machine';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
@@ -11,8 +11,6 @@ export function useTurret() {
     setBusy(true);
     setError(null);
     try {
-      // eslint-disable-next-line no-console
-      console.log(`[machine-sync][ui-change] field=turret value=${direction}`);
       const reply = await sendTurret(direction);
       return reply.state;
     } catch (err) {

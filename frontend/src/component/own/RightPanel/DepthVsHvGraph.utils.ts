@@ -162,25 +162,16 @@ export function buildAxisGraphPoints(
   xKey: XAxisKey,
   yKey: YAxisKey
 ): AxisGraphPoint[] {
-  // eslint-disable-next-line no-console
-  console.log(`[depth-graph-source] count=${measurements.length} xKey=${xKey} yKey=${yKey}`);
   const points = measurements.flatMap((measurement, sourceIndex) => {
     const row = measurement as MeasurementGraphRow;
     const x = readAxisValue(row, xKey, sourceIndex);
     const y = readAxisValue(row, yKey, sourceIndex);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[depth-graph-row-map] rowId=${measurement.id} x=${x ?? 'null'} y=${y ?? 'null'}`
-    );
     const xValid = x !== null && Number.isFinite(x);
     const yValid = y !== null && Number.isFinite(y);
     // X may legitimately be zero (depth=0 surface). Y must additionally be
     // positive for the HV axis to make physical sense; for non-HV Y values
     // (depth, diagonals) zero is also valid, so use the same finite check.
     if (!xValid || !yValid) {
-      const reason = !xValid && !yValid ? 'x-invalid,y-invalid' : !xValid ? 'x-invalid' : 'y-invalid';
-      // eslint-disable-next-line no-console
-      console.log(`[depth-graph-invalid-row] rowId=${measurement.id} reason=${reason}`);
       return [];
     }
     return [
@@ -196,48 +187,27 @@ export function buildAxisGraphPoints(
   const sorted = points
     .sort((left, right) => left.x - right.x || left.sourceIndex - right.sourceIndex)
     .map((point, index) => ({ ...point, index: index + 1 }));
-  // eslint-disable-next-line no-console
-  console.log(`[depth-graph-points] count=${sorted.length}`);
   return sorted;
 }
 
 export function buildDepthHvGraphPoints(measurements: Measurement[]): DepthHvGraphPoint[] {
-  // eslint-disable-next-line no-console
-  console.log(`[depth-graph-source] count=${measurements.length}`);
   const points = measurements.flatMap((measurement, sourceIndex) => {
     const row = measurement as MeasurementGraphRow;
     const distanceUm = readDistanceUm(row);
     const hv = readFiniteNumber(row.hv, row.hardness, row.hardnessValue);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[depth-graph-row] id=${measurement.id} hv=${row.hv ?? 'null'} depthMm=${row.depthMm ?? 'null'} distanceUm=${distanceUm ?? 'null'} resolvedHv=${hv ?? 'null'}`
-    );
     const hvValid = hv !== null && Number.isFinite(hv) && hv > 0;
     const depthValid = distanceUm !== null && Number.isFinite(distanceUm) && distanceUm >= 0;
     const usable = hvValid && depthValid;
 
     if (usable) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[depth-graph-valid-row] id=${measurement.id} distanceUm=${distanceUm} hv=${hv}`
-      );
       return [{ id: measurement.id, sourceIndex, index: 0, distanceUm: distanceUm as number, hv: hv as number }];
     }
-    const reason = !hvValid && !depthValid
-      ? 'hv-invalid,depth-invalid'
-      : !hvValid
-        ? 'hv-invalid'
-        : 'depth-invalid';
-    // eslint-disable-next-line no-console
-    console.log(`[depth-graph-invalid-row] id=${measurement.id} reason=${reason}`);
     return [];
   });
 
   const sorted = points
     .sort((left, right) => left.distanceUm - right.distanceUm || left.sourceIndex - right.sourceIndex)
     .map((point, index) => ({ ...point, index: index + 1 }));
-  // eslint-disable-next-line no-console
-  console.log(`[depth-graph-points] count=${sorted.length}`);
   return sorted;
 }
 

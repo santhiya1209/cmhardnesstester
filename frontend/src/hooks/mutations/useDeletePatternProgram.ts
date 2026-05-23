@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { deletePatternProgram } from '@/api/deletePatternProgram';
+import { deletePatternProgram } from '@/api/patternProgram';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useDeletePatternProgram() {

@@ -222,17 +222,6 @@ void ConfigureLowLatencyBufferLocked(const char* reason) {
     }
   }
 
-  fprintf(
-      stderr,
-      "[camera-buffer-config] reason=%s bufferCount=%s grabMode=%s actualQueueSize=%d queueStatus=%d configStatus=%d actualMode=%s\n",
-      reason ? reason : "unknown",
-      s.dll.SetBufferQueueSize ? "1" : "unsupported",
-      s.dll.SetBufferConfig ? "newest" : "drain-to-newest",
-      actualQueueSize,
-      getQueueRs == DVP_STATUS_OK ? setQueueRs : getQueueRs,
-      setConfigRs,
-      getConfigRs == DVP_STATUS_OK ? BufferModeName(cfg.mode) : "unknown");
-  fflush(stderr);
 }
 
 int DrainSdkFrames(dvpUint32 timeoutMs, int maxFrames) {
@@ -253,11 +242,6 @@ int DrainSdkFrames(dvpUint32 timeoutMs, int maxFrames) {
 }
 
 void LogSdkBufferFlush(const char* reason, int drained) {
-  fprintf(stderr,
-          "[camera-sdk-buffer-flush] reason=%s drained=%d\n",
-          reason ? reason : "unknown",
-          drained);
-  fflush(stderr);
 }
 
 void ResetNativeLatestSlot(const char* reason, bool clearDispatchPending) {
@@ -274,11 +258,6 @@ void ResetNativeLatestSlot(const char* reason, bool clearDispatchPending) {
   }
   s.latestGrabbedFrameId.store(0, std::memory_order_release);
   s.lastSlotWriteMs.store(0, std::memory_order_release);
-  fprintf(stderr,
-          "[camera-native-slot-reset] reason=%s hadFrame=%d\n",
-          reason ? reason : "unknown",
-          hadFrame ? 1 : 0);
-  fflush(stderr);
 }
 
 /* ------------------------------------------------------------------ */
@@ -403,8 +382,7 @@ Napi::Value CameraOpen(const Napi::CallbackInfo& info) {
   // a few frames later, and the user sees the slider have no effect.
   s.dll.SetAeOperation(h, AE_OP_OFF);
   if (s.dll.SetRoiState) {
-    dvpStatus roiRs = s.dll.SetRoiState(h, false);
-    fprintf(stderr, "[camera-full-res-mode] SetRoiState=0 status=%d\n", roiRs);
+    s.dll.SetRoiState(h, false);
   }
   ConfigureLowLatencyBufferLocked("open");
   LogSdkBufferFlush("open", DrainSdkFrames(0, 16));
@@ -548,12 +526,6 @@ void StreamLoop() {
       const uint64_t last = s.lastGrabLogMs.load(std::memory_order_relaxed);
       if (grabTs - last >= 5000) {
         s.lastGrabLogMs.store(grabTs, std::memory_order_relaxed);
-        fprintf(stderr,
-                "[camera-sdk-grab] frameId=%llu ts=%llu drainedExtra=%d\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                static_cast<unsigned long long>(grabTs),
-                extraFramesDrained);
-        fflush(stderr);
       }
     }
 
@@ -578,14 +550,6 @@ void StreamLoop() {
       if (s.latestSlot.hasFrame) {
         const uint64_t prevAgeMs =
             grabTs > s.latestSlot.grabTs ? grabTs - s.latestSlot.grabTs : 0;
-        if (prevAgeMs > kNativeStaleAgeMs) {
-          fprintf(stderr,
-                  "[camera-latest-replace-after-stale] oldFrameId=%llu newFrameId=%llu ageMs=%llu\n",
-                  static_cast<unsigned long long>(s.latestSlot.seq),
-                  static_cast<unsigned long long>(frame.uFrameID),
-                  static_cast<unsigned long long>(prevAgeMs));
-          fflush(stderr);
-        }
         s.droppedFrames.fetch_add(1, std::memory_order_relaxed);
       }
       std::swap(s.latestSlot.bytes, streamStaging);
@@ -626,20 +590,6 @@ void StreamLoop() {
         }
         const double fpsLimit =
             exposureMs > 0.0 ? 1000.0 / exposureMs : -1.0;
-        fprintf(stderr,
-                "[camera-native-send-loop] frameId=%llu intervalMs=%llu fps=%.1f exposureMs=%.2f fpsLimit=%.1f drainedExtra=%d\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                static_cast<unsigned long long>(intervalMs),
-                fps,
-                exposureMs,
-                fpsLimit,
-                extraFramesDrained);
-        fprintf(stderr,
-                "[camera-frame-interval] frameId=%llu intervalMs=%llu\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                static_cast<unsigned long long>(intervalMs));
-        fprintf(stderr,
-                "[camera-fps-current] fps=%.1f\n", fps);
         // Per-frame work breakdown. Together with intervalMs these tell
         // you exactly where the cycle time lives:
         //   getFrameMs ≈ intervalMs → SDK/USB/sensor is the floor (blocking
@@ -650,36 +600,10 @@ void StreamLoop() {
         //     not expose SetImageFormat to switch.
         //   getFrameMs small + intervalMs large → something else is pacing
         //     the loop (rare; would be unexpected).
-        fprintf(stderr,
-                "[camera-sdk-getframe-ms] frameId=%llu ms=%.2f drainedExtra=%d\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                getFrameMs,
-                extraFramesDrained);
-        fprintf(stderr,
-                "[camera-copy-ms] frameId=%llu ms=%.2f bytes=%u pixelFormat=%s\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                copyMs,
-                static_cast<unsigned>(frame.uBytes),
-                FormatToString(frame.format));
         // Frame-shape facts. These are constant unless the SDK's ROI /
         // pixel format change (which our current bindings cannot trigger
         // — verified against include/dvp.h, no SetRoi/SetImageFormat).
         // Printed at the same 5s heartbeat for easy correlation.
-        fprintf(stderr,
-                "[camera-frame-bytes] frameId=%llu bytes=%u\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                static_cast<unsigned>(frame.uBytes));
-        fprintf(stderr,
-                "[camera-pixel-format] frameId=%llu pixelFormat=%s bits=%d\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                FormatToString(frame.format),
-                frame.bits == BITS_16 ? 16 : 8);
-        fprintf(stderr,
-                "[camera-resolution] frameId=%llu width=%d height=%d\n",
-                static_cast<unsigned long long>(frame.uFrameID),
-                frame.iWidth,
-                frame.iHeight);
-        fflush(stderr);
       }
     }
 
@@ -748,10 +672,6 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
 
   // Flush guard — discard frames captured before the most recent generation.
   if (generation < st.streamGeneration.load(std::memory_order_acquire)) {
-    fprintf(stderr,
-            "[camera-frame-drop] frameId=%llu reason=stale-pre-objective-change\n",
-            static_cast<unsigned long long>(seq));
-    fflush(stderr);
     st.droppedFrames.fetch_add(1, std::memory_order_relaxed);
     return;
   }
@@ -768,11 +688,6 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
     const uint64_t lastSlot = st.lastSlotAgeLogMs.load(std::memory_order_relaxed);
     if (stale || sendTs - lastSlot >= 5000) {
       st.lastSlotAgeLogMs.store(sendTs, std::memory_order_relaxed);
-      fprintf(stderr, "[camera-native-slot-age] frameId=%llu ageMs=%llu%s\n",
-              static_cast<unsigned long long>(seq),
-              static_cast<unsigned long long>(ageMs),
-              stale ? " stale=true" : "");
-      fflush(stderr);
     }
   }
   // NOTE: We do NOT drop here on age. The slot IS the newest available
@@ -790,13 +705,6 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
     const uint64_t lastAge = st.lastAgeLogMs.load(std::memory_order_relaxed);
     if (sendTs - lastAge >= 5000) {
       st.lastAgeLogMs.store(sendTs, std::memory_order_relaxed);
-      fprintf(stderr, "[camera-sdk-age] frameId=%llu ageMs=%llu\n",
-              static_cast<unsigned long long>(seq),
-              static_cast<unsigned long long>(ageMs));
-      fprintf(stderr, "[camera-js-dispatch-ms] frameId=%llu ms=%llu\n",
-              static_cast<unsigned long long>(seq),
-              static_cast<unsigned long long>(ageMs));
-      fflush(stderr);
     }
   }
 
@@ -819,11 +727,6 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
     const uint64_t lastSend = st.lastSendLogMs.load(std::memory_order_relaxed);
     if (sendTs - lastSend >= 5000) {
       st.lastSendLogMs.store(sendTs, std::memory_order_relaxed);
-      fprintf(stderr,
-              "[camera-frame-send] frameId=%llu ageMs=%llu stage=native-to-js\n",
-              static_cast<unsigned long long>(seq),
-              static_cast<unsigned long long>(ageMs));
-      fflush(stderr);
     }
   }
 
@@ -840,6 +743,10 @@ void StopStreamLocked() {
   s.stopRequested.store(false);
   ResetNativeLatestSlot("stop-stream", true);
   s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
+  fprintf(stderr,
+          "[camera-stream-stop] droppedFrames=%llu\n",
+          static_cast<unsigned long long>(s.droppedFrames.load()));
+  fflush(stderr);
 }
 
 Napi::Value CameraStartStream(const Napi::CallbackInfo& info) {
@@ -866,24 +773,26 @@ Napi::Value CameraStartStream(const Napi::CallbackInfo& info) {
   ResetNativeLatestSlot("stream-start", true);
   s.droppedFrames.store(0, std::memory_order_release);
 
-  // Log the exposure → FPS-cap relationship at stream start. This is the
-  // single most important line for diagnosing "live view is slow": if
-  // exposureUs is large, no software change can deliver higher FPS.
-  // SDK GetExposure returns microseconds. Convert to ms for the log so
-  // exposureMs matches what the renderer + slider use.
-  if (s.dll.GetExposure) {
-    double curUs = 0.0;
-    if (s.dll.GetExposure(s.handle, &curUs) == DVP_STATUS_OK) {
-      const double curMs = curUs / 1000.0;
-      const double fpsLimit = curMs > 0.0 ? 1000.0 / curMs : -1.0;
-      fprintf(stderr,
-              "[camera-exposure-current] exposureUs=%.0f exposureMs=%.2f fpsLimit=%.1f\n",
-              curUs, curMs, fpsLimit);
-      fflush(stderr);
-    }
-  }
   s.streamGeneration.fetch_add(1, std::memory_order_acq_rel);
   s.streamThread = std::thread(StreamLoop);
+
+  // One-shot stream-start summary. Replaces the per-frame and per-stage
+  // spam stripped from this file; logged once per stream activation.
+  {
+    double exposureMs = -1.0;
+    if (s.dll.GetExposure && s.handle) {
+      double curUs = 0.0;
+      if (s.dll.GetExposure(s.handle, &curUs) == DVP_STATUS_OK) {
+        exposureMs = curUs / 1000.0;
+      }
+    }
+    const double fpsLimit = exposureMs > 0.0 ? 1000.0 / exposureMs : -1.0;
+    fprintf(stderr,
+            "[camera-stream-start] width=%d height=%d exposureMs=%.2f fpsLimit=%.1f\n",
+            s.lastWidth, s.lastHeight, exposureMs, fpsLimit);
+    fflush(stderr);
+  }
+
   EmitStatus("event", "streaming");
   return MakeReply(env, true);
 }
@@ -1036,8 +945,6 @@ Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
   // (33 FPS theoretical, USB-bound to 8). All SDK calls below pass µs;
   // we convert at this single boundary.
   double sdkUs = uiMs * 1000.0;
-  fprintf(stderr, "[exposure-input] uiMs=%.3f\n", uiMs);
-  fflush(stderr);
 
   std::lock_guard<std::mutex> lk(s.mu);
   if (!s.isOpen.load()) return MakeError(env, "NOT_OPEN", "camera is not open");
@@ -1047,29 +954,17 @@ Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
     dvpDoubleDescr d{};
     if (s.dll.GetExposureDescr(s.handle, &d) == DVP_STATUS_OK) {
       const double snapped = SnapDoubleToStep(sdkUs, d.fMin, d.fMax, d.fStep);
-      fprintf(stderr,
-              "[exposure-native-convert] uiMs=%.3f sdkUs=%.3f snappedUs=%.3f descrMinUs=%.3f descrMaxUs=%.3f stepUs=%.3f\n",
-              uiMs, sdkUs, snapped, d.fMin, d.fMax, d.fStep);
-      fflush(stderr);
       sdkUs = snapped;
     } else {
-      fprintf(stderr,
-              "[exposure-native-convert] uiMs=%.3f sdkUs=%.3f (no descriptor)\n",
-              uiMs, sdkUs);
-      fflush(stderr);
     }
   }
 
-  fprintf(stderr, "[native] set exposure value (us): %.3f\n", sdkUs);
-  fflush(stderr);
 
   const bool restartStreaming = s.isStreaming.load();
   if (restartStreaming) StopStreamLocked();
 
   dvpStatus aeRs = s.dll.SetAeOperation(s.handle, AE_OP_OFF);
   dvpStatus rs = s.dll.SetExposure(s.handle, sdkUs);
-  fprintf(stderr, "[native] set exposure result: %d (ae=%d)\n", rs, aeRs);
-  fflush(stderr);
 
   dvpStatus restartRs = DVP_STATUS_OK;
   if (restartStreaming && s.isOpen.load()) {
@@ -1098,22 +993,12 @@ Napi::Value CameraSetExposure(const Napi::CallbackInfo& info) {
   // Read back in SDK units (µs) then convert to ms for the JS reply.
   double readbackUs = sdkUs;
   s.dll.GetExposure(s.handle, &readbackUs);
-  fprintf(stderr, "[exposure-sdk-readback-raw] value=%.3f\n", readbackUs);
   const double readbackMs = readbackUs / 1000.0;
-  fprintf(stderr, "[exposure-readback-ms] exposureMs=%.3f\n", readbackMs);
-  fflush(stderr);
 
   // The DVP SDK in this build exposes no SetFrameRate. Max attainable FPS
   // = 1000 / exposureMs (sensor readout / USB bandwidth is a separate cap).
   const double fpsTarget = uiMs > 0.0 ? 1000.0 / uiMs : -1.0;
   const double fpsConfirmed = readbackMs > 0.0 ? 1000.0 / readbackMs : -1.0;
-  fprintf(stderr,
-          "[camera-sdk-fps-set] requestedExposureMs=%.2f targetFps=%.1f\n",
-          uiMs, fpsTarget);
-  fprintf(stderr,
-          "[camera-sdk-fps-confirmed] actualExposureMs=%.2f fpsCeiling=%.1f\n",
-          readbackMs, fpsConfirmed);
-  fflush(stderr);
 
   auto r = MakeReply(env, true);
   r.Set("exposureMs", Napi::Number::New(env, readbackMs));
@@ -1130,9 +1015,6 @@ Napi::Value CameraGetExposureRange(const Napi::CallbackInfo& info) {
   }
   dvpDoubleDescr d{};
   dvpStatus rs = s.dll.GetExposureDescr(s.handle, &d);
-  fprintf(stderr, "[native] GetExposureDescr result: %d min=%.3f max=%.3f step=%.3f def=%.3f\n",
-          rs, d.fMin, d.fMax, d.fStep, d.fDefault);
-  fflush(stderr);
   if (rs != DVP_STATUS_OK) {
     return MakeError(env, "GET_EXP_RANGE_FAILED",
                      "dvpGetExposureDescr status=" + std::to_string(rs));
@@ -1170,16 +1052,12 @@ Napi::Value CameraSetGain(const Napi::CallbackInfo& info) {
       gain = SnapFloatToStep(gain, d.fMin, d.fMax, d.fStep);
     }
   }
-  fprintf(stderr, "[native] set gain value: %.3f\n", gain);
-  fflush(stderr);
 
   const bool restartStreaming = s.isStreaming.load();
   if (restartStreaming) StopStreamLocked();
 
   dvpStatus aeRs = s.dll.SetAeOperation(s.handle, AE_OP_OFF);
   dvpStatus rs = s.dll.SetAnalogGain(s.handle, gain);
-  fprintf(stderr, "[native] set gain result: %d (ae=%d)\n", rs, aeRs);
-  fflush(stderr);
 
   dvpStatus restartRs = DVP_STATUS_OK;
   if (restartStreaming && s.isOpen.load()) {
@@ -1220,9 +1098,6 @@ Napi::Value CameraGetGainRange(const Napi::CallbackInfo& info) {
   }
   dvpFloatDescr d{};
   dvpStatus rs = s.dll.GetAnalogGainDescr(s.handle, &d);
-  fprintf(stderr, "[native] GetAnalogGainDescr result: %d min=%.3f max=%.3f step=%.3f def=%.3f\n",
-          rs, d.fMin, d.fMax, d.fStep, d.fDefault);
-  fflush(stderr);
   if (rs != DVP_STATUS_OK) {
     return MakeError(env, "GET_GAIN_RANGE_FAILED",
                      "dvpGetAnalogGainDescr status=" + std::to_string(rs));
@@ -1363,10 +1238,6 @@ Napi::Value CameraSetRoi(const Napi::CallbackInfo& info) {
   dvpRegion roi{};
   roi.X = x; roi.Y = y; roi.W = w; roi.H = h;
   dvpStatus rs = s.dll.SetRoi(s.handle, roi);
-  fprintf(stderr,
-          "[camera-set-roi] x=%d y=%d w=%d h=%d status=%d descr=%s\n",
-          x, y, w, h, rs, haveDescr ? "ok" : "n/a");
-  fflush(stderr);
 
   if (restartStreaming) RestartStreamLocked(s, "roi-change");
 
@@ -1407,10 +1278,6 @@ Napi::Value CameraSetTargetFormat(const Napi::CallbackInfo& info) {
   if (restartStreaming) StopStreamLocked();
 
   dvpStatus rs = s.dll.SetTargetFormat(s.handle, static_cast<dvpStreamFormat>(code));
-  fprintf(stderr,
-          "[camera-set-target-format] format=%s code=%d status=%d\n",
-          name.c_str(), code, rs);
-  fflush(stderr);
 
   if (restartStreaming) RestartStreamLocked(s, "target-format-change");
 
@@ -1448,9 +1315,6 @@ Napi::Value CameraSetResolutionMode(const Napi::CallbackInfo& info) {
   if (restartStreaming) StopStreamLocked();
 
   dvpStatus rs = s.dll.SetResolutionModeSel(s.handle, idx);
-  fprintf(stderr,
-          "[camera-set-resolution-mode] index=%u status=%d\n", idx, rs);
-  fflush(stderr);
 
   if (restartStreaming) RestartStreamLocked(s, "resolution-mode-change");
 
@@ -1519,25 +1383,15 @@ Napi::Value CameraSetLiveMode(const Napi::CallbackInfo& info) {
   const bool restartStreaming = s.isStreaming.load();
   if (restartStreaming) StopStreamLocked();
 
-  fprintf(stderr,
-          "[camera-set-live-mode] roi=%s format=%s mode=%s exposure=%s mono=%s\n",
-          wantRoi ? "yes" : "skip",
-          wantFormat ? formatName.c_str() : "skip",
-          wantMode ? "yes" : "skip",
-          wantExposure ? "yes" : "skip",
-          wantMono ? (monoState ? "on" : "off") : "skip");
-  fflush(stderr);
 
   // Order: format first, then ROI / resolution mode (so the new format's
   // descriptor is in effect), then exposure (its descriptor may depend
   // on the new ROI), then mono toggle.
   if (wantFormat && s.dll.SetTargetFormat) {
     dvpStatus rs = s.dll.SetTargetFormat(s.handle, static_cast<dvpStreamFormat>(formatCode));
-    fprintf(stderr, "[camera-set-live-mode] SetTargetFormat status=%d\n", rs); fflush(stderr);
   }
   if (wantMode && s.dll.SetResolutionModeSel) {
     dvpStatus rs = s.dll.SetResolutionModeSel(s.handle, modeIdx);
-    fprintf(stderr, "[camera-set-live-mode] SetResolutionModeSel status=%d\n", rs); fflush(stderr);
   }
   if (wantRoi && s.dll.SetRoi) {
     if (s.dll.SetRoiState) s.dll.SetRoiState(s.handle, true);
@@ -1553,19 +1407,13 @@ Napi::Value CameraSetLiveMode(const Napi::CallbackInfo& info) {
     dvpRegion roi{};
     roi.X = roiX; roi.Y = roiY; roi.W = roiW; roi.H = roiH;
     dvpStatus rs = s.dll.SetRoi(s.handle, roi);
-    fprintf(stderr, "[camera-set-live-mode] SetRoi x=%d y=%d w=%d h=%d status=%d\n",
-            roiX, roiY, roiW, roiH, rs); fflush(stderr);
   }
   if (wantMono && s.dll.SetMonoState) {
     dvpStatus rs = s.dll.SetMonoState(s.handle, monoState);
-    fprintf(stderr, "[camera-set-live-mode] SetMonoState=%d status=%d\n",
-            monoState ? 1 : 0, rs); fflush(stderr);
   }
   if (wantExposure && s.dll.SetExposure) {
     s.dll.SetAeOperation(s.handle, AE_OP_OFF);
     dvpStatus rs = s.dll.SetExposure(s.handle, exposureUs);
-    fprintf(stderr, "[camera-set-live-mode] SetExposure us=%.1f status=%d\n",
-            exposureUs, rs); fflush(stderr);
   }
 
   if (restartStreaming) RestartStreamLocked(s, "live-mode-change");

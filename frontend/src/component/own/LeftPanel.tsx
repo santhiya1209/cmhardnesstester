@@ -6,8 +6,6 @@ import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasur
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
 
-// eslint-disable-next-line no-console
-console.log('[camera-ui] fps-overlay-hidden=true');
 
 const PANEL_SX: SxProps<Theme> = {
   flex: 2.0,

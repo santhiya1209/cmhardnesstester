@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getCalibrationSettings } from '@/api/getCalibrationSettings';
+import { getCalibrationSettings } from '@/api/calibration';
 import type { CalibrationSettings } from '@/types/calibrationSettings';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
@@ -29,8 +29,6 @@ export function useCalibrationSettings() {
     setLoading(true);
     setError(null);
 
-    // eslint-disable-next-line no-console
-    console.log('[calibration-load-start]');
 
     try {
       const fetched = await getCalibrationSettings();
@@ -39,16 +37,11 @@ export function useCalibrationSettings() {
         return;
       }
 
-      for (const row of fetched) {
+      for (const _row of fetched) {
         // SQLite stores a single per-axis ratio. Surface it as
         // xUmPerPixel/yUmPerPixel so the operator can verify that the
         // 40X (or any) calibration actually came back from disk and matches
         // what was saved last session.
-        const um = row.umPerPixel ?? row.pixelToMicron;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-load] objective=${row.objective} xUmPerPixel=${um} yUmPerPixel=${um} id=${row.id} updatedAt=${row.updatedAt}`
-        );
       }
 
       setItems(fetched);

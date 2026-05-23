@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createAutoMeasureSettings } from '@/api/createAutoMeasureSettings';
-import { updateAutoMeasureSettings } from '@/api/updateAutoMeasureSettings';
+import { createAutoMeasureSettings } from '@/api/settings';
+import { updateAutoMeasureSettings } from '@/api/settings';
 import type {
   AutoMeasureSettings,
   AutoMeasureSettingsPayload,

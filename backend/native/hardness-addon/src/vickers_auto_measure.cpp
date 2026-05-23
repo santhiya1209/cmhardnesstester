@@ -321,12 +321,8 @@ double ObjectiveMaxAreaRatio(const std::string& objective);
 double PeakedAreaScore(double contourArea, double expectedArea);
 
 void DebugLog(const char* format, ...) {
-  if (!AutoMeasureDebugEnabled()) return;
-  va_list args;
-  va_start(args, format);
-  std::vfprintf(stderr, format, args);
-  va_end(args);
-  std::fflush(stderr);
+  // Body stubbed: production builds emit no auto-measure diagnostics.
+  (void)format;
 }
 
 bool ReadFrameBuffer(const Napi::Value& value, FrameView& out, std::string& reason) {
@@ -638,15 +634,6 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   }
   cv::Scalar normMean, normStd;
   cv::meanStdDev(normalized, normMean, normStd);
-  std::fprintf(stderr,
-    "[auto-measure][illumination-normalize] rawMin=%.1f rawMax=%.1f normMean=%.2f normStd=%.2f rescaled=%s\n",
-    rawMin, rawMax, normMean[0], normStd[0],
-    (rawMax - rawMin > 8.0) ? "true" : "false");
-  std::fprintf(stderr,
-    "[auto-measure][normalize] rawMin=%.1f rawMax=%.1f mean=%.2f std=%.2f method=minMax+CLAHE rescaled=%s\n",
-    rawMin, rawMax, normMean[0], normStd[0],
-    (rawMax - rawMin > 8.0) ? "true" : "false");
-  std::fflush(stderr);
 
   // CLAHE clip limit eases off when the post-normalize contrast is already
   // strong (avoids over-amplifying noise on a bright/high-gain frame) and
@@ -662,14 +649,6 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   } else {
     out.blurred = out.clahe.clone();
   }
-  std::fprintf(stderr,
-    "[detect-smoothing-applied] value=%d kernel=%d\n",
-    params.smoothing, blurKernel);
-  std::fflush(stderr);
-  std::fprintf(stderr,
-    "[detect-preprocess] smoothing=%d kernel=%d claheClip=%.2f thresholdParam=%d\n",
-    params.smoothing, blurKernel, claheClip, params.threshold);
-  std::fflush(stderr);
 
   cv::Mat otsu;
   cv::threshold(out.blurred, otsu, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
@@ -696,9 +675,6 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
     255,
     cv::THRESH_BINARY_INV
   );
-  std::fprintf(stderr,
-    "[detect-threshold-applied] value=%d\n", params.threshold);
-  std::fflush(stderr);
 
   // Mask emission order = priority for SelectBestContour. The user-picked
   // mode goes first (so the slider still drives the primary mask), but we
@@ -719,10 +695,6 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
     out.masks.push_back({"adaptive", ApplyMorphology(adaptive, params)});
     out.masks.push_back({"manual", ApplyMorphology(manual, params)});
   }
-  std::fprintf(stderr,
-    "[auto-measure][adaptive-threshold] mode=%s block=%d C=%.2f fallbacks=otsu,adaptive,manual claheClip=%.2f\n",
-    params.thresholdMode.c_str(), block, adaptiveC, claheClip);
-  std::fflush(stderr);
 
   // Slider-dominant mode: when the user is driving threshold/smoothing from
   // the UI (mode resolves to "manual" or "otsu"), the chosen mask must be the
@@ -833,13 +805,6 @@ Preprocessed Preprocess(const cv::Mat& gray, const Params& params) {
   // and Hough fallbacks key off. Logging them lets the operator correlate a
   // weak detection with an actually-flat frame (low gradStd) vs. a bright
   // halo competing with the dark edge.
-  std::fprintf(stderr,
-    "[auto-measure][gradient-strength] gradMean=%.2f gradStd=%.2f gaussianKernel=%d masks=%zu\n",
-    out.gradMean, out.gradStd, out.gaussianKernel, out.masks.size());
-  std::fprintf(stderr,
-    "[auto-measure][gradient] op=sobel kernel=3 magnitude=L2 gradMean=%.2f gradStd=%.2f\n",
-    out.gradMean, out.gradStd);
-  std::fflush(stderr);
   return out;
 }
 
@@ -980,17 +945,9 @@ double MinIndentationAreaPixels(const Params& params) {
   // rejects obvious noise; the shape / diagonal / angle gates downstream
   // still filter non-diamond candidates.
   if (IsObjective10X(params.objectiveForMeasure)) {
-    std::fprintf(stderr,
-      "[auto-measure-min-area] objective=\"%s\" resolved=10X minArea=200.0 reason=low-mag-floor\n",
-      params.objectiveForMeasure.c_str());
-    std::fflush(stderr);
     return 200.0;
   }
   const double v = std::max(120.0, imageArea * params.minAreaRatio);
-  std::fprintf(stderr,
-    "[auto-measure-min-area] objective=\"%s\" resolved=other minArea=%.2f reason=ratio*imageArea minAreaRatio=%.6f imageArea=%.0f\n",
-    params.objectiveForMeasure.c_str(), v, params.minAreaRatio, imageArea);
-  std::fflush(stderr);
   return v;
 }
 
@@ -1047,11 +1004,6 @@ std::optional<Candidate> SelectBestContour(
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   debug.contourCount = std::max(debug.contourCount, static_cast<int>(contours.size()));
-  std::fprintf(stderr,
-    "[detect-contour-count] count=%zu mode=%s\n",
-    contours.size(),
-    thresholdMode.empty() ? "unknown" : thresholdMode.c_str());
-  std::fflush(stderr);
 
   const double imageArea = static_cast<double>(params.width) * params.height;
   const double minArea = MinIndentationAreaPixels(params);
@@ -1076,12 +1028,6 @@ std::optional<Candidate> SelectBestContour(
   // objective + frame dims are active without needing AUTO_MEASURE_DEBUG.
   // Emitted once per call (per mask pass actually, but the start log
   // upstream in MeasureVickersAuto already runs once per detection).
-  std::fprintf(stderr,
-    "[auto-measure-selectbest] mode=%s minArea=%.1f maxArea=%.1f maxAreaRatio=%.4f expectedAreaPx=%.1f maxCenterDistance=%.1f\n",
-    thresholdMode.c_str(), minArea, maxArea, effectiveMaxAreaRatio,
-    expectedAreaPx,
-    std::min(params.width, params.height) * params.maxCenterDistanceRatio);
-  std::fflush(stderr);
 
   const cv::Point2f imageCenter(params.width * 0.5f, params.height * 0.5f);
   const double maxCenterDistance = std::min(params.width, params.height) * params.maxCenterDistanceRatio;
@@ -1111,31 +1057,14 @@ std::optional<Candidate> SelectBestContour(
   double curDiamondScore = -1.0; // composite candidate score
   auto reject10x = [&](const char* reason, double metric, double threshold) {
     if (tenXMode) {
-      std::fprintf(stderr,
-        "[auto-measure-reject] contour=%d reason=%s metric=%.4f threshold=%.4f "
-        "area=%.2f centerDist=%.2f solidity=%.4f ratio=%.4f darkness=%.4f diamondScore=%.4f\n",
-        contourIndex, reason, metric, threshold,
-        curArea, curCenterDist, curSolidity, curRatio, curDarkness, curDiamondScore);
       // Spec-format per-candidate trace — emitted for every rejected
       // candidate so the operator can see WHICH gate fired and what the
       // raw metrics looked like. `aspect` is rectLong/rectShort (preserved
       // even after corner estimation overwrites curRatio with the diamond
       // diagonal ratio). Fields not yet computed at the point of rejection
       // are -1 ("not-yet-evaluated").
-      std::fprintf(stderr,
-        "[opencv-auto] candidate index=%d area=%.2f centerDist=%.2f solidity=%.4f "
-        "aspect=%.4f diagRatio=%.4f darkness=%.4f score=%.4f rejectReason=%s\n",
-        contourIndex, curArea, curCenterDist, curSolidity,
-        curAspect, curRatio, curDarkness, curDiamondScore, reason);
-      std::fflush(stderr);
     }
   };
-  if (tenXMode) {
-    std::fprintf(stderr,
-      "[auto-measure-10x-contours] mode=%s totalContours=%d\n",
-      thresholdMode.c_str(), static_cast<int>(contours.size()));
-    std::fflush(stderr);
-  }
   for (const auto& contour : contours) {
     ++contourIndex;
     curArea = -1.0; curCenterDist = -1.0; curSolidity = -1.0;
@@ -1237,10 +1166,6 @@ std::optional<Candidate> SelectBestContour(
       if (bbox.x <= 1 || bbox.y <= 1 ||
           bbox.x + bbox.width >= params.width - 1 ||
           bbox.y + bbox.height >= params.height - 1) {
-        std::fprintf(stderr,
-          "[auto-measure-reject] reason=candidate-touches-border contour=%d bboxX=%d bboxY=%d bboxW=%d bboxH=%d\n",
-          contourIndex, bbox.x, bbox.y, bbox.width, bbox.height);
-        std::fflush(stderr);
         continue;
       }
     }
@@ -1295,12 +1220,6 @@ std::optional<Candidate> SelectBestContour(
       );
       reject10x("side-ratio-non-finite", 0.0, 0.0);
       continue;
-    }
-    if (metrics.sideRatio > params.maxSideLengthRatio * 1.25) {
-      std::fprintf(stderr,
-        "[auto-measure-warning] reason=side-ratio-high stage=pre-refine sideRatio=%.4f softMax=%.4f decision=continue\n",
-        metrics.sideRatio, params.maxSideLengthRatio * 1.25);
-      std::fflush(stderr);
     }
     if (!std::isfinite(metrics.diagonalRatio)) {
       if (debugLog) DebugLog(
@@ -1376,35 +1295,16 @@ std::optional<Candidate> SelectBestContour(
     candidate.boundingTopLeft = cv::boundingRect(contour).tl();
     // Per-accepted-candidate trace in spec format so operators can grep
     // candidate disposition across a single detection.
-    std::fprintf(stderr,
-      "[detect-candidate] idx=%d score=%.4f area=%.2f centerDist=%.2f ratio=%.4f mode=%s\n",
-      contourIndex, score, validationArea, centerDistance,
-      metrics.diagonalRatio,
-      thresholdMode.empty() ? "unknown" : thresholdMode.c_str());
-    std::fflush(stderr);
 
     // Unconditional per-accepted-candidate trace (spec format). Helps the
     // operator see WHY a wrong-large contour was preferred — e.g. seeing
     // multiple candidates with similar score lets us tune weights.
-    std::fprintf(stderr,
-      "[auto-measure-candidate] index=%d area=%.2f centerX=%.2f centerY=%.2f rectShort=%.2f rectLong=%.2f darkness=%.4f diamondScore=%.4f score=%.4f areaScore=%.4f\n",
-      contourIndex, validationArea, center.x, center.y, rectShort, rectLong,
-      solidity, shapeScore, score, areaScore);
     if (tenXMode) {
-      std::fprintf(stderr,
-        "[auto-measure-10x-candidate] centerX=%.2f centerY=%.2f area=%.2f centerScore=%.4f totalScore=%.4f\n",
-        center.x, center.y, validationArea, centerScore, score);
       // Spec-format per-candidate trace — accepted side. Paired with the
       // rejection variant emitted by reject10x; same field order so the
       // operator can grep `[opencv-auto] candidate` and see EVERY contour's
       // disposition + raw metrics in one pass.
-      std::fprintf(stderr,
-        "[opencv-auto] candidate index=%d area=%.2f centerDist=%.2f solidity=%.4f "
-        "aspect=%.4f diagRatio=%.4f darkness=%.4f score=%.4f rejectReason=accepted\n",
-        contourIndex, validationArea, centerDistance, solidity,
-        curAspect, metrics.diagonalRatio, curDarkness, score);
     }
-    std::fflush(stderr);
 
     curDiamondScore = score;
     ++usableCount;
@@ -1413,36 +1313,15 @@ std::optional<Candidate> SelectBestContour(
     }
   }
 
-  if (tenXMode) {
-    std::fprintf(stderr,
-      "[opencv-auto] contours total=%d usable=%d mode=%s objective=10X\n",
-      static_cast<int>(contours.size()), usableCount, thresholdMode.c_str());
-    std::fflush(stderr);
-  }
-
   if (best) {
-    std::fprintf(stderr,
-      "[auto-measure-selected] index=%d area=%.2f centerX=%.2f centerY=%.2f reason=best-dark-diamond score=%.4f\n",
-      best->approxPointCount, best->contourArea, best->center.x, best->center.y, best->score);
     if (tenXMode) {
       const double d1Px = Distance(best->corners.left, best->corners.right);
       const double d2Px = Distance(best->corners.top, best->corners.bottom);
-      std::fprintf(stderr,
-        "[auto-measure-10x-selected] centerX=%.2f centerY=%.2f d1Px=%.2f d2Px=%.2f\n",
-        best->center.x, best->center.y, d1Px, d2Px);
       // Spec-format selected trace — matches `[opencv-auto] candidate ...`
       // family so the operator can see which candidate index won. Corners
       // are in native image coordinates (the same coords the frontend
       // overlay maps via getImagePlacement).
-      std::fprintf(stderr,
-        "[opencv-auto] selected area=%.2f score=%.4f corners=(top=%.2f,%.2f|right=%.2f,%.2f|bottom=%.2f,%.2f|left=%.2f,%.2f)\n",
-        best->contourArea, best->score,
-        best->corners.top.x, best->corners.top.y,
-        best->corners.right.x, best->corners.right.y,
-        best->corners.bottom.x, best->corners.bottom.y,
-        best->corners.left.x, best->corners.left.y);
     }
-    std::fflush(stderr);
   }
 
   if (debugLog) {
@@ -1733,10 +1612,6 @@ bool ValidateContourTips(
     float dist = 0.0f;
     cv::Point2f clamped = ClampPointToImageBounds(*tips[i], params, dist);
     if (dist > tol) {
-      std::fprintf(stderr,
-        "[auto-measure-reject] reason=corner-outside-image corner=%s x=%.2f y=%.2f frameWidth=%d frameHeight=%d distPx=%.2f tolPx=%.2f\n",
-        names[i], tips[i]->x, tips[i]->y, params.width, params.height, dist, tol);
-      std::fflush(stderr);
       reason = "corner is outside image";
       return false;
     }
@@ -1764,14 +1639,7 @@ bool ValidateContourTips(
   // few percent uneven on a real centered indentation because the dark
   // edges meet imperfectly under the bright halo at low magnification.
   if (!std::isfinite(metrics.sideRatio)) {
-    std::fprintf(stderr,
-      "[auto-measure-warning] reason=side-ratio-non-finite stage=post-refine decision=accept\n");
-    std::fflush(stderr);
   } else if (metrics.sideRatio > params.maxSideLengthRatio * 1.15) {
-    std::fprintf(stderr,
-      "[auto-measure-warning] reason=side-ratio-high stage=post-refine sideRatio=%.4f softMax=%.4f decision=accept\n",
-      metrics.sideRatio, params.maxSideLengthRatio * 1.15);
-    std::fflush(stderr);
   }
   if (!std::isfinite(metrics.diagonalRatio) ||
       metrics.diagonalRatio > params.maxDiagonalRatio ||
@@ -2850,19 +2718,7 @@ void RefineTipsForTwoLineMode(
   // so we can compare against contour-extreme and final tip positions.
   const cv::Point2f rawTopIn = corners.top;
   const cv::Point2f rawBottomIn = corners.bottom;
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] rawTop=(%.2f,%.2f)\n",
-    rawTopIn.x, rawTopIn.y);
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] rawBottom=(%.2f,%.2f)\n",
-    rawBottomIn.x, rawBottomIn.y);
-  std::fflush(stderr);
 
-  std::fprintf(stderr,
-    "[auto-measure-refine] initialRect=center(%.2f,%.2f) size(%.2fx%.2f) angle=%.2f\n",
-    initialRect.center.x, initialRect.center.y,
-    initialRect.size.width, initialRect.size.height, initialRect.angle);
-  std::fflush(stderr);
 
   const cv::Point2f center = initialRect.center;
   const float rectW = std::max(initialRect.size.width, initialRect.size.height);
@@ -2895,14 +2751,6 @@ void RefineTipsForTwoLineMode(
     }
   }
 
-  std::fprintf(stderr,
-    "[auto-measure-refine] contourExtremes=top(%.2f,%.2f) bottom(%.2f,%.2f) left(%.2f,%.2f) right(%.2f,%.2f)\n",
-    topPt.x, topPt.y, botPt.x, botPt.y, leftPt.x, leftPt.y, rightPt.x, rightPt.y);
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] contourTop=(%.2f,%.2f)\n", topPt.x, topPt.y);
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] contourBottom=(%.2f,%.2f)\n", botPt.x, botPt.y);
-  std::fflush(stderr);
 
   // ---------- Edge-fit refinement (real geometric corners) ----------
   // Split the contour into the 4 diamond sides by angle around the center,
@@ -2912,10 +2760,6 @@ void RefineTipsForTwoLineMode(
   // skewed D2. If the fit fails or drifts unreasonably, we keep topPt/botPt/
   // leftPt/rightPt as the extreme contour points (fallback path below uses
   // the Sobel + top-edge snap).
-  std::fprintf(stderr,
-    "[auto-measure-10x-refine-start] contourIndex=0 area=%.2f points=%d\n",
-    cv::contourArea(contour), static_cast<int>(contour.size()));
-  std::fflush(stderr);
 
   bool usedEdgeFit = false;
   {
@@ -2958,18 +2802,11 @@ void RefineTipsForTwoLineMode(
     for (int i = 0; i < 4; ++i) {
       const int n = static_cast<int>(sides[i].size());
       if (n < MIN_PER_SIDE) {
-        std::fprintf(stderr,
-          "[auto-measure-10x-edge-fit] side=%s points=%d ok=false\n",
-          kSideName[i], n);
         fitOk = false;
         continue;
       }
       cv::fitLine(sides[i], fitted[i], cv::DIST_L2, 0, 0.01, 0.01);
-      std::fprintf(stderr,
-        "[auto-measure-10x-edge-fit] side=%s points=%d ok=true\n",
-        kSideName[i], n);
     }
-    std::fflush(stderr);
 
     auto intersectLines = [](const cv::Vec4f& L1, const cv::Vec4f& L2,
                              cv::Point2f& out) -> bool {
@@ -3028,31 +2865,14 @@ void RefineTipsForTwoLineMode(
         driftOk(refBottom, botPt) && driftOk(refLeft, leftPt);
 
       if (!orderOk) {
-        std::fprintf(stderr, "[auto-measure-10x-fallback] reason=corner-order\n");
       } else if (!sizeOk) {
-        std::fprintf(stderr,
-          "[auto-measure-10x-fallback] reason=size-or-ratio d1=%.2f d2=%.2f ratio=%.2f\n",
-          d1, d2, ratio);
       } else if (!neighborhoodOk) {
-        std::fprintf(stderr,
-          "[auto-measure-10x-fallback] reason=drift-exceeds-cap cap=%.2f\n",
-          driftCap);
       } else {
         topPt = refTop; rightPt = refRight; botPt = refBottom; leftPt = refLeft;
         usedEdgeFit = true;
       }
 
-      std::fprintf(stderr,
-        "[auto-measure-10x-intersections] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) used=%s\n",
-        refTop.x, refTop.y, refRight.x, refRight.y,
-        refBottom.x, refBottom.y, refLeft.x, refLeft.y,
-        usedEdgeFit ? "true" : "false");
-      std::fflush(stderr);
     } else {
-      std::fprintf(stderr,
-        "[auto-measure-10x-fallback] reason=%s\n",
-        fitOk ? "intersection-failed" : "side-fit-insufficient-points");
-      std::fflush(stderr);
     }
   }
 
@@ -3145,13 +2965,6 @@ void RefineTipsForTwoLineMode(
     edgeCandidate.y = static_cast<float>(bestY);
   }
 
-  std::fprintf(stderr,
-    "[auto-measure-top-refine] rawTop=(%.2f,%.2f)\n",
-    rawTopForLog.x, rawTopForLog.y);
-  std::fprintf(stderr,
-    "[auto-measure-top-refine] edgeCandidate=(%.2f,%.2f)\n",
-    edgeCandidate.x, edgeCandidate.y);
-  std::fflush(stderr);
 
   // Geometric-consistency check: the top tip should sit roughly opposite the
   // bottom tip across the diamond center. If the edge candidate deviates by
@@ -3178,20 +2991,9 @@ void RefineTipsForTwoLineMode(
 
   const float topCorrectionPx = topPt.y - rawTopForLog.y;
 
-  std::fprintf(stderr,
-    "[auto-measure-top-refine] finalTop=(%.2f,%.2f)\n",
-    topPt.x, topPt.y);
-  std::fprintf(stderr,
-    "[auto-measure-top-refine] correctionPx=%.2f\n",
-    topCorrectionPx);
-  std::fflush(stderr);
 
   } // end if (!usedEdgeFit) — top-only refinement block
 
-  std::fprintf(stderr,
-    "[auto-measure-refine] edgeRefinedTips=top(%.2f,%.2f) bottom(%.2f,%.2f) left(%.2f,%.2f) right(%.2f,%.2f)\n",
-    topPt.x, topPt.y, botPt.x, botPt.y, leftPt.x, leftPt.y, rightPt.x, rightPt.y);
-  std::fflush(stderr);
 
   cv::Point2f beforeTop;
   cv::Point2f beforeBottom;
@@ -3209,20 +3011,12 @@ void RefineTipsForTwoLineMode(
     corners.left = leftPt;
     const float centerX = (leftPt.x + rightPt.x) * 0.5f;
     const float centerY = (leftPt.y + rightPt.y) * 0.5f;
-    std::fprintf(stderr,
-      "[auto-measure-10x-center] centerX=%.2f centerY=%.2f source=edge-fit\n",
-      centerX, centerY);
-    std::fflush(stderr);
   } else {
     // Fallback path: tips came from extreme + Sobel + top-edge. These are
     // noisier in X, so collapse D1/D2 onto the D1-derived center to keep
     // them crossing at a single point.
     const float centerX = (leftPt.x + rightPt.x) * 0.5f;
     const float centerY = (leftPt.y + rightPt.y) * 0.5f;
-    std::fprintf(stderr,
-      "[auto-measure-10x-center] centerX=%.2f centerY=%.2f source=fallback-d1\n",
-      centerX, centerY);
-    std::fflush(stderr);
     beforeTop = topPt;
     beforeBottom = botPt;
     corners.left = {leftPt.x, centerY};
@@ -3231,11 +3025,6 @@ void RefineTipsForTwoLineMode(
     corners.bottom = {centerX, botPt.y};
   }
 
-  std::fprintf(stderr,
-    "[auto-measure-d2-align] beforeTop=(%.2f,%.2f) beforeBottom=(%.2f,%.2f) afterTop=(%.2f,%.2f) afterBottom=(%.2f,%.2f)\n",
-    beforeTop.x, beforeTop.y, beforeBottom.x, beforeBottom.y,
-    corners.top.x, corners.top.y, corners.bottom.x, corners.bottom.y);
-  std::fflush(stderr);
 
   // -------- Contour-snap for left / right / bottom --------
   // Edge-fit intersections can land a couple of px outside the actual
@@ -3278,15 +3067,6 @@ void RefineTipsForTwoLineMode(
       const bool accept = correction <= MAX_SNAP_PX;
       const char* reason = accept ? "within-threshold" : "exceeds-threshold-keep-edge-fit";
       const cv::Point2f chosen = accept ? candidate : raw;
-      std::fprintf(stderr,
-        "[auto-measure-tip-refine] tip=%s raw=(%.2f,%.2f) refined=(%.2f,%.2f) correctionPx=%.2f\n",
-        name, raw.x, raw.y, chosen.x, chosen.y, correction);
-      std::fprintf(stderr,
-        "[auto-measure-tip-refine-confidence] tip=%s correctionPx=%.2f accepted=%s reason=%s\n",
-        name, correction, accept ? "true" : "false", reason);
-      std::fprintf(stderr,
-        "[auto-measure-final-source-tip] tip=%s source=%s\n",
-        name, accept ? "contour-snap" : "edge-fit");
       return chosen;
     };
 
@@ -3297,7 +3077,6 @@ void RefineTipsForTwoLineMode(
     corners.left = refineTip("left", rawLeft);
     corners.right = refineTip("right", rawRight);
     corners.bottom = refineTip("bottom", rawBottom);
-    std::fflush(stderr);
   }
 
   // ---------- 10X final geometry source selection ----------
@@ -3308,17 +3087,7 @@ void RefineTipsForTwoLineMode(
   // So: keep edge-fit corners when they're valid; only fall back to the
   // axis-aligned bounds snap if edge-fit was rejected earlier.
   if (usedEdgeFit) {
-    std::fprintf(stderr,
-      "[auto-measure-10x-final-source] source=edge-fit reason=edge-fit-valid\n");
-    std::fprintf(stderr,
-      "[auto-measure-10x-axis-final] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-      corners.top.x, corners.top.y, corners.right.x, corners.right.y,
-      corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
-    std::fflush(stderr);
   } else {
-    std::fprintf(stderr,
-      "[auto-measure-10x-final-source] source=axis-bounds-fallback reason=edge-fit-rejected\n");
-    std::fflush(stderr);
   // ---------- 10X axis-aligned final geometry (fallback only) ----------
   // Used when edge-fit was rejected: D1 horizontal through a single shared
   // center, D2 vertical through that same center, dots sitting on actual
@@ -3339,16 +3108,9 @@ void RefineTipsForTwoLineMode(
       if (y < minY) { minY = y; topMost = {x, y}; }
       if (y > maxY) { maxY = y; bottomMost = {x, y}; }
     }
-    std::fprintf(stderr,
-      "[auto-measure-10x-bounds] leftMost=(%.2f,%.2f) rightMost=(%.2f,%.2f) topMost=(%.2f,%.2f) bottomMost=(%.2f,%.2f)\n",
-      leftMost.x, leftMost.y, rightMost.x, rightMost.y,
-      topMost.x, topMost.y, bottomMost.x, bottomMost.y);
 
     const float axisCenterX = (leftMost.x + rightMost.x) * 0.5f;
     const float axisCenterY = (topMost.y + bottomMost.y) * 0.5f;
-    std::fprintf(stderr,
-      "[auto-measure-10x-center] centerX=%.2f centerY=%.2f source=axis-bounds\n",
-      axisCenterX, axisCenterY);
 
     // Narrow centerline bands: snap each tip to the contour extreme at the
     // shared axis. Wide enough to tolerate a few px of noise, narrow enough
@@ -3380,11 +3142,6 @@ void RefineTipsForTwoLineMode(
     corners.top = {axisCenterX, bestTopY};
     corners.bottom = {axisCenterX, bestBottomY};
 
-    std::fprintf(stderr,
-      "[auto-measure-10x-axis-final] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-      corners.top.x, corners.top.y, corners.right.x, corners.right.y,
-      corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
-    std::fflush(stderr);
   }
   } // end else (axis-bounds fallback)
 
@@ -3418,10 +3175,6 @@ void RefineTipsForTwoLineMode(
                  bbox.width + 2 * margin, bbox.height + 2 * margin);
     roi &= cv::Rect(0, 0, blurred.cols, blurred.rows);
 
-    std::fprintf(stderr,
-      "[auto-measure-10x-roi-refine] roi=(%d,%d %dx%d)\n",
-      roi.x, roi.y, roi.width, roi.height);
-    std::fflush(stderr);
 
     if (roi.width >= 8 && roi.height >= 8) {
       const cv::Mat roiImg = blurred(roi);
@@ -3474,9 +3227,6 @@ void RefineTipsForTwoLineMode(
         const auto& blob = blobContours[bestIdx];
         const cv::Point2f imgCenter(
           bestCenter.x + roi.x, bestCenter.y + roi.y);
-        std::fprintf(stderr,
-          "[auto-measure-10x-dark-blob] area=%.2f center=(%.2f,%.2f)\n",
-          bestArea, imgCenter.x, imgCenter.y);
 
         cv::Point2f cleanTop, cleanRight, cleanBottom, cleanLeft;
         int bestTopY = INT_MAX, bestBottomY = INT_MIN;
@@ -3493,11 +3243,6 @@ void RefineTipsForTwoLineMode(
         cleanBottom.x += roi.x; cleanBottom.y += roi.y;
         cleanLeft.x   += roi.x; cleanLeft.y   += roi.y;
 
-        std::fprintf(stderr,
-          "[auto-measure-10x-clean-corners] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-          cleanTop.x, cleanTop.y, cleanRight.x, cleanRight.y,
-          cleanBottom.x, cleanBottom.y, cleanLeft.x, cleanLeft.y);
-        std::fflush(stderr);
 
         // Validate the clean blob produced sane geometry AND lies inside
         // the selected diamond's neighborhood. The killer case from logs:
@@ -3538,11 +3283,6 @@ void RefineTipsForTwoLineMode(
           insideBbox(cleanTop) && insideBbox(cleanRight) &&
           insideBbox(cleanBottom) && insideBbox(cleanLeft);
 
-        std::fprintf(stderr,
-          "[auto-measure-10x-clean-blob-validate] areaRatio=%.3f areaOk=%d orderOk=%d sizeOk=%d neighborhoodOk=%d\n",
-          areaRatio, areaOk ? 1 : 0, orderOk ? 1 : 0,
-          sizeOk ? 1 : 0, neighborhoodOk ? 1 : 0);
-        std::fflush(stderr);
 
         if (orderOk && sizeOk && areaOk && neighborhoodOk) {
           corners.top = cleanTop;
@@ -3552,31 +3292,18 @@ void RefineTipsForTwoLineMode(
           cleanBlobAccepted = true;
           finalSource = "clean-blob";
           finalReason = "blob-valid";
-          std::fprintf(stderr,
-            "[auto-measure-10x-final-source] source=clean-blob reason=blob-valid\n");
-          std::fflush(stderr);
         } else {
           const char* r = !areaOk ? "blob-area-out-of-range"
                           : !neighborhoodOk ? "blob-corner-outside-selected-bbox"
                           : !orderOk ? "blob-order-invalid"
                           : "blob-size-or-ratio-invalid";
           finalReason = r;
-          std::fprintf(stderr,
-            "[auto-measure-10x-final-source] source=prior reason=%s areaRatio=%.3f d1=%.2f d2=%.2f ratio=%.2f\n",
-            r, areaRatio, cd1, cd2, cRatio);
-          std::fflush(stderr);
         }
       } else {
         finalReason = "no-dark-blob-found";
-        std::fprintf(stderr,
-          "[auto-measure-10x-final-source] source=prior reason=no-dark-blob-found\n");
-        std::fflush(stderr);
       }
     } else {
       finalReason = "roi-too-small";
-      std::fprintf(stderr,
-        "[auto-measure-10x-final-source] source=prior reason=roi-too-small\n");
-      std::fflush(stderr);
     }
   } else {
     finalReason = "blurred-empty";
@@ -3593,38 +3320,10 @@ void RefineTipsForTwoLineMode(
     corners.bottom = priorBottom;
     corners.left = priorLeft;
   }
-  std::fprintf(stderr,
-    "[auto-measure-final-source] source=%s reason=%s\n",
-    finalSource, finalReason);
-  std::fprintf(stderr,
-    "[auto-measure-final-tips-before-return] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-    corners.top.x, corners.top.y, corners.right.x, corners.right.y,
-    corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y);
-  std::fflush(stderr);
-  std::fprintf(stderr,
-    "[detect-edge-lines] left=(%.2f,%.2f) right=(%.2f,%.2f) top=(%.2f,%.2f) bottom=(%.2f,%.2f)\n",
-    corners.left.x, corners.left.y, corners.right.x, corners.right.y,
-    corners.top.x, corners.top.y, corners.bottom.x, corners.bottom.y);
-  std::fflush(stderr);
-  std::fprintf(stderr,
-    "[detect-final-corners] left=(%.2f,%.2f) right=(%.2f,%.2f) top=(%.2f,%.2f) bottom=(%.2f,%.2f) source=%s\n",
-    corners.left.x, corners.left.y, corners.right.x, corners.right.y,
-    corners.top.x, corners.top.y, corners.bottom.x, corners.bottom.y,
-    finalSource);
-  std::fflush(stderr);
 
   const double d2PxFinal = std::hypot(
     static_cast<double>(corners.bottom.x - corners.top.x),
     static_cast<double>(corners.bottom.y - corners.top.y));
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] finalTop=(%.2f,%.2f)\n",
-    corners.top.x, corners.top.y);
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] finalBottom=(%.2f,%.2f)\n",
-    corners.bottom.x, corners.bottom.y);
-  std::fprintf(stderr,
-    "[auto-measure-d2-refine] d2Px=%.2f\n", d2PxFinal);
-  std::fflush(stderr);
 }
 
 Napi::Object PointObject(Napi::Env env, cv::Point2f point) {
@@ -3776,11 +3475,8 @@ Napi::Object Success(Napi::Env env, const Params& params, const OrderedCorners& 
   // drags an endpoint; the live D1/D2 are recomputed there from the new
   // corner positions and the measurement row is updated.
   if (params.objectiveForMeasure == "10X") {
-    std::fprintf(stderr, "[auto-measure-hv] hv=%.2f mode=two-line\n", hv);
   } else {
-    std::fprintf(stderr, "[auto-measure-hv] hv=%.2f mode=full\n", hv);
   }
-  std::fflush(stderr);
 
   auto object = Napi::Object::New(env);
   object.Set("ok", Napi::Boolean::New(env, true));
@@ -3886,13 +3582,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.requestedThresholdMode = params.thresholdMode;
     debug.smoothing = params.smoothing;
     debug.threshold = params.threshold;
-    std::fprintf(stderr,
-      "[detect-settings-received] smoothing=%d threshold=%d objective=%s thresholdMode=%s\n",
-      params.smoothing,
-      params.threshold,
-      params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str(),
-      params.thresholdMode.empty() ? "unknown" : params.thresholdMode.c_str());
-    std::fflush(stderr);
     debug.erosion = params.erosion;
     debug.dilation = params.dilation;
     debug.factor = params.factor;
@@ -3907,11 +3596,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     debug.sideFitRoiWidth = params.sideFitRoiWidth;
     debug.gradientStrengthFactor = params.gradientStrengthFactor;
 
-    std::fprintf(stderr,
-      "[auto-measure][frame-freeze] width=%d height=%d bytes=%zu pixelFormat=%s source=%s\n",
-      params.width, params.height, frame.size,
-      params.pixelFormat.c_str(), params.sourceType.c_str());
-    std::fflush(stderr);
 
     cv::Mat gray;
     if (!DecodeToGray(frame, params, gray, reason)) {
@@ -3921,20 +3605,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // Unconditional spec-format diagnostic lines — these always emit (no
     // AUTO_MEASURE_DEBUG env required) so the operator can correlate a
     // rejection with the actual objective + frame size + tuned thresholds.
-    std::fprintf(stderr,
-      "[auto-measure-start] objective=%s frameWidth=%d frameHeight=%d\n",
-      params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str(),
-      params.width, params.height);
-    std::fprintf(stderr,
-      "[auto-measure-native-params] objective=%s roi=%d minArea=%.1f maxArea=%.1f diagonalMin=%.1f morphologyKernel=%d\n",
-      params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str(),
-      params.sideFitRoiWidth,
-      MinIndentationAreaPixels(params),
-      std::max(MinIndentationAreaPixels(params) * 2.0,
-               static_cast<double>(params.width) * params.height * params.maxAreaRatio),
-      MinIndentationDiagonalPixels(params),
-      params.morphologyKernelSize);
-    std::fflush(stderr);
 
     if (AutoMeasureDebugEnabled()) {
       const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3947,11 +3617,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
 
     const Preprocessed pre = Preprocess(gray, params);
     debug.gaussianKernel = pre.gaussianKernel;
-    std::fprintf(stderr,
-      "[auto-measure][preprocess] clahe=on gaussianKernel=%d thresholdMode=%s masks=%zu gradMean=%.2f gradStd=%.2f\n",
-      pre.gaussianKernel, params.thresholdMode.c_str(), pre.masks.size(),
-      pre.gradMean, pre.gradStd);
-    std::fflush(stderr);
 
     DebugLog(
       "[opencv-auto] preprocess smoothing=%d kernel=%d threshold=%d mode=%s\n",
@@ -3960,18 +3625,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       params.threshold,
       params.thresholdMode == "manual" ? "fixed" : params.thresholdMode.c_str()
     );
-    if (params.objectiveForMeasure == "10X") {
-      std::fprintf(stderr,
-        "[opencv-auto] preprocess smoothing=%d kernel=%d threshold=%d mode=%s objective=10X masks=%zu\n",
-        params.smoothing,
-        pre.gaussianKernel,
-        params.threshold,
-        params.thresholdMode == "manual" ? "fixed" : params.thresholdMode.c_str(),
-        pre.masks.size()
-      );
-      std::fflush(stderr);
-    }
-
     std::optional<Candidate> best;
     if (!pre.masks.empty()) {
       best = SelectBestContour(pre.masks.front().second, pre.masks.front().first, params, debug);
@@ -3986,12 +3639,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       }
     }
     if (best) {
-      std::fprintf(stderr,
-        "[detect-selected] idx=%d score=%.4f mode=%s reason=best-score centerX=%.2f centerY=%.2f\n",
-        best->contourIndex, best->score,
-        best->thresholdMode.empty() ? "unknown" : best->thresholdMode.c_str(),
-        best->center.x, best->center.y);
-      std::fflush(stderr);
 
       // Repeatability self-test. Gated on AUTO_MEASURE_REPEATABILITY env var
       // because it triples per-mask selection cost. Runs the SAME masks
@@ -4003,10 +3650,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
         double maxDeltaPx = 0.0;
         cv::Point2f firstCenter = best->center;
         int firstIdx = best->contourIndex;
-        std::fprintf(stderr,
-          "[detect-repeatability] run=1 idx=%d centerX=%.2f centerY=%.2f score=%.4f\n",
-          firstIdx, firstCenter.x, firstCenter.y, best->score);
-        std::fflush(stderr);
         for (int run = 2; run <= 3; ++run) {
           std::optional<Candidate> probe;
           if (!pre.masks.empty()) {
@@ -4026,20 +3669,8 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
             const double dy = probe->center.y - firstCenter.y;
             const double delta = std::sqrt(dx * dx + dy * dy);
             if (delta > maxDeltaPx) maxDeltaPx = delta;
-            std::fprintf(stderr,
-              "[detect-repeatability] run=%d idx=%d centerX=%.2f centerY=%.2f score=%.4f deltaPx=%.3f\n",
-              run, probe->contourIndex, probe->center.x, probe->center.y, probe->score, delta);
-            std::fflush(stderr);
           } else {
-            std::fprintf(stderr,
-              "[detect-repeatability] run=%d idx=none\n", run);
-            std::fflush(stderr);
           }
-        }
-        if (maxDeltaPx > 1.0) {
-          std::fprintf(stderr,
-            "[detect-repeatability-warning] maxDeltaPx=%.3f\n", maxDeltaPx);
-          std::fflush(stderr);
         }
       }
     }
@@ -4049,10 +3680,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       const char* msg = isTenX
         ? "no valid dark diamond indentation found"
         : "no valid centered diamond indentation contour found";
-      if (isTenX) {
-        std::fprintf(stderr, "[auto-measure-reject] reason=no-valid-dark-diamond objective=10X\n");
-        std::fflush(stderr);
-      }
       DebugLog("[opencv-auto] reject reason=%s\n", msg);
       return Failure(env, msg, debug);
     }
@@ -4073,23 +3700,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     {
       const float rectShort = std::min(best->rect.size.width, best->rect.size.height);
       const float rectLong = std::max(best->rect.size.width, best->rect.size.height);
-      std::fprintf(stderr,
-        "[auto-measure-candidate] centerX=%.2f centerY=%.2f area=%.2f rectShort=%.2f rectLong=%.2f angle=%.2f\n",
-        best->center.x, best->center.y, best->contourArea, rectShort, rectLong, best->rect.angle);
-      std::fprintf(stderr,
-        "[auto-measure][contour-selected] mode=%s centerX=%.2f centerY=%.2f area=%.2f score=%.4f sideRatio=%.4f diagonalRatio=%.4f\n",
-        best->thresholdMode.c_str(), best->center.x, best->center.y,
-        best->contourArea, best->score,
-        best->metrics.sideRatio, best->metrics.diagonalRatio);
-      std::fprintf(stderr,
-        "[auto-measure][diamond-candidate] sides=4 area=%.2f centerX=%.2f centerY=%.2f diagonalRatio=%.4f sideRatio=%.4f score=%.4f\n",
-        best->contourArea, best->center.x, best->center.y,
-        best->metrics.diagonalRatio, best->metrics.sideRatio, best->score);
-      std::fprintf(stderr,
-        "[auto-measure][minrect-rough] centerX=%.2f centerY=%.2f width=%.2f height=%.2f angle=%.2f note=initialization-only\n",
-        best->rect.center.x, best->rect.center.y,
-        best->rect.size.width, best->rect.size.height, best->rect.angle);
-      std::fflush(stderr);
     }
 
     // 10X simplified path: at low magnification the indent is small and
@@ -4111,24 +3721,12 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     const bool twoLineMode = false;
     const bool isTenX = params.objectiveForMeasure == "10X";
     OrderedCorners contourCorners;
-    if (isTenX) {
-      std::fprintf(stderr,
-        "[auto-measure-mode] objective=10X mode=four-edge\n");
-      std::fflush(stderr);
-    }
     contourCorners = ExtractAxisTipsFromContour(
       best->contour,
       best->hull,
       best->corners,
       best->center
     );
-    std::fprintf(stderr,
-      "[auto-measure-corners] top=%.2f,%.2f right=%.2f,%.2f bottom=%.2f,%.2f left=%.2f,%.2f\n",
-      contourCorners.top.x, contourCorners.top.y,
-      contourCorners.right.x, contourCorners.right.y,
-      contourCorners.bottom.x, contourCorners.bottom.y,
-      contourCorners.left.x, contourCorners.left.y);
-    std::fflush(stderr);
     std::string contourRejectReason;
     if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
       contourCorners = best->corners;
@@ -4136,27 +3734,9 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     }
     if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
       DebugLog("[opencv-auto] reject reason=%s\n", contourRejectReason.c_str());
-      if (params.objectiveForMeasure == "10X") {
-        std::fprintf(stderr,
-          "[auto-measure-reject] objective=10X reason=%s\n",
-          contourRejectReason.c_str());
-        std::fflush(stderr);
-      }
-      std::fprintf(stderr,
-        "[auto-measure][reject-no-refined-corners] reason=%s objective=%s\n",
-        contourRejectReason.c_str(),
-        params.objectiveForMeasure.empty() ? "unknown" : params.objectiveForMeasure.c_str());
-      std::fflush(stderr);
       return Failure(env, "Refined diamond corners not available", debug);
     }
 
-    std::fprintf(stderr,
-      "[auto-measure][side-roi] sideFitRoiWidth=%d sides=4 source=ordered-corners\n",
-      params.sideFitRoiWidth);
-    std::fprintf(stderr,
-      "[auto-measure][edge-refine] method=sobel-gradient+fitLine driver=gradient-not-threshold gradStrengthFactor=%.1f\n",
-      params.gradientStrengthFactor);
-    std::fflush(stderr);
     // Side-fit refinement (formerly 40X-only). 10X now runs through this
     // path too — the user reports 40X corner detection is reliable and
     // wants the same behavior at 10X. Critically, this path is driven by
@@ -4164,59 +3744,8 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // refinement is itself exposure-invariant once a rough contour exists.
     TryRefineCorners(pre.blurred, contourCorners, params);
     const ShapeMetrics contourMetrics = ComputeShapeMetrics(contourCorners);
-    std::fprintf(stderr,
-      "[auto-measure][exposure-robustness] selectedMask=%s gradStd=%.2f confidenceProxy=%.4f decision=accept-across-exposure\n",
-      best->thresholdMode.c_str(), pre.gradStd, best->score);
-    std::fflush(stderr);
-    std::fprintf(stderr,
-      "[auto-measure][edge-points] sides=4 sideLengths=[%.2f,%.2f,%.2f,%.2f] gradientStrengthFactor=%.1f\n",
-      contourMetrics.sideLengths[0], contourMetrics.sideLengths[1],
-      contourMetrics.sideLengths[2], contourMetrics.sideLengths[3],
-      params.gradientStrengthFactor);
-    std::fprintf(stderr,
-      "[auto-measure][line-fit] method=cv::fitLine+Huber sides=4\n");
-    std::fprintf(stderr,
-      "[auto-measure][corner-intersections] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-      contourCorners.top.x, contourCorners.top.y,
-      contourCorners.right.x, contourCorners.right.y,
-      contourCorners.bottom.x, contourCorners.bottom.y,
-      contourCorners.left.x, contourCorners.left.y);
-    std::fprintf(stderr,
-      "[auto-measure][diagonals] d1Px=%.3f d2Px=%.3f note=D1=left-to-right D2=top-to-bottom\n",
-      contourMetrics.d1, contourMetrics.d2);
-    std::fflush(stderr);
     if (isTenX) {
       // 4 edge lines = sides of the diamond polygon (corner→corner).
-      std::fprintf(stderr,
-        "[auto-measure-10x-edge-lines] topLeft=(%.2f,%.2f)->(%.2f,%.2f) topRight=(%.2f,%.2f)->(%.2f,%.2f) bottomRight=(%.2f,%.2f)->(%.2f,%.2f) bottomLeft=(%.2f,%.2f)->(%.2f,%.2f)\n",
-        contourCorners.left.x, contourCorners.left.y, contourCorners.top.x, contourCorners.top.y,
-        contourCorners.top.x, contourCorners.top.y, contourCorners.right.x, contourCorners.right.y,
-        contourCorners.right.x, contourCorners.right.y, contourCorners.bottom.x, contourCorners.bottom.y,
-        contourCorners.bottom.x, contourCorners.bottom.y, contourCorners.left.x, contourCorners.left.y);
-      std::fprintf(stderr,
-        "[auto-measure-10x-intersections] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-        contourCorners.top.x, contourCorners.top.y,
-        contourCorners.right.x, contourCorners.right.y,
-        contourCorners.bottom.x, contourCorners.bottom.y,
-        contourCorners.left.x, contourCorners.left.y);
-      std::fprintf(stderr,
-        "[auto-measure-final-tips] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-        contourCorners.top.x, contourCorners.top.y,
-        contourCorners.right.x, contourCorners.right.y,
-        contourCorners.bottom.x, contourCorners.bottom.y,
-        contourCorners.left.x, contourCorners.left.y);
-      std::fprintf(stderr,
-        "[auto-measure-d1] lengthPx=%.2f\n", contourMetrics.d1);
-      std::fprintf(stderr,
-        "[auto-measure-d2] lengthPx=%.2f\n", contourMetrics.d2);
-      std::fprintf(stderr,
-        "[auto-measure-final] d1=%.3f d2=%.3f top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
-        contourMetrics.d1, contourMetrics.d2,
-        contourCorners.top.x, contourCorners.top.y,
-        contourCorners.right.x, contourCorners.right.y,
-        contourCorners.bottom.x, contourCorners.bottom.y,
-        contourCorners.left.x, contourCorners.left.y);
-      std::fflush(stderr);
     }
     debug.finalCorners = contourCorners;
     debug.finalMetrics = contourMetrics;
@@ -4265,12 +3794,6 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
 
     if (debug.confidence < params.minConfidence) {
       DebugLog("[opencv-auto] reject reason=confidence score is low\n");
-      if (params.objectiveForMeasure == "10X") {
-        std::fprintf(stderr,
-          "[auto-measure-reject] objective=10X reason=confidence-too-low confidence=%.4f minConfidence=%.4f\n",
-          debug.confidence, params.minConfidence);
-        std::fflush(stderr);
-      }
       return Failure(env, "confidence score is low", debug);
     }
 
@@ -4279,24 +3802,7 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // already returned Failure(), so emitting [stable-corners] here gives
     // the operator a single clear "detection success" marker that names the
     // final geometry that drives D1/D2.
-    std::fprintf(stderr,
-      "[auto-measure][stable-corners] top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f) d1Px=%.3f d2Px=%.3f confidence=%.4f\n",
-      contourCorners.top.x, contourCorners.top.y,
-      contourCorners.right.x, contourCorners.right.y,
-      contourCorners.bottom.x, contourCorners.bottom.y,
-      contourCorners.left.x, contourCorners.left.y,
-      contourMetrics.d1, contourMetrics.d2, debug.confidence);
-    std::fprintf(stderr,
-      "[auto-measure][success-refined-diamond-only] d1Px=%.3f d2Px=%.3f confidence=%.4f source=refined-corners\n",
-      contourMetrics.d1, contourMetrics.d2, debug.confidence);
-    std::fflush(stderr);
 
-    if (params.objectiveForMeasure == "10X") {
-      std::fprintf(stderr,
-        "[auto-measure-success] objective=10X d1Px=%.3f d2Px=%.3f\n",
-        debug.d1Pixels, debug.d2Pixels);
-      std::fflush(stderr);
-    }
     return Success(env, params, contourCorners, debug);
   } catch (const cv::Exception& ex) {
     return Failure(env, std::string("OpenCV error: ") + ex.what(), debug);

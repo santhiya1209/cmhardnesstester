@@ -103,13 +103,9 @@ function formatHv(hv: number | null | undefined): string {
 
 function AlbumTabImpl({ measurements }: Props) {
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[album][fetch] measurements count=', measurements.length);
   }, [measurements.length]);
 
-  const handleGo = useCallback((m: Measurement) => {
-    // eslint-disable-next-line no-console
-    console.log('[GO] Move to measurement', m.id, m.xMm ?? null, m.yMm ?? null);
+  const handleGo = useCallback((_m: Measurement) => {
   }, []);
 
   return (
@@ -123,8 +119,6 @@ function AlbumTabImpl({ measurements }: Props) {
               const scale = formatHardnessScale(m.testForceKgf);
               const value = formatHv(m.hv);
               const hasImage = !!m.imageDataUrl;
-              // eslint-disable-next-line no-console
-              console.log('[album] render card id=', m.id, 'hasImage=', hasImage, 'src=', hasImage ? `${(m.imageDataUrl ?? '').slice(0, 32)}...` : null);
               if (!hasImage) {
                 // eslint-disable-next-line no-console
                 console.warn('[album] missing image for measurementId=', m.id);

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createCameraSetting } from '@/api/createCameraSetting';
-import { updateCameraSetting } from '@/api/updateCameraSetting';
+import { createCameraSetting } from '@/api/camera';
+import { updateCameraSetting } from '@/api/camera';
 import type {
   CameraSetting,
   CameraSettingPayload,

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createMicrometerConfig } from '@/api/createMicrometerConfig';
-import { updateMicrometerConfig } from '@/api/updateMicrometerConfig';
+import { createMicrometerConfig } from '@/api/micrometer';
+import { updateMicrometerConfig } from '@/api/micrometer';
 import type { MicrometerConfig, MicrometerConfigPayload } from '@/types/micrometerConfig';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

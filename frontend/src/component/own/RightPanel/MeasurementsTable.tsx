@@ -163,8 +163,6 @@ function DepthCell({
       return false;
     }
     if (next === persistedManual) return true;
-    // eslint-disable-next-line no-console
-    console.log(`[manual-depth-save-start] rowId=${measurement.id} value=${next ?? 'null'}`);
     onManualDepthChange?.(measurement.id, next);
     return true;
   }, [draft, measurement.id, onManualDepthChange, persistedManual]);
@@ -177,8 +175,6 @@ function DepthCell({
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
       onFocus={() => {
-        // eslint-disable-next-line no-console
-        console.log(`[manual-depth-edit-start] rowId=${measurement.id} value=${draft}`);
       }}
       onBlur={() => {
         commit();
@@ -278,32 +274,20 @@ function MeasurementsTableImpl({
       const list = measurementsRef.current;
       const idx = list.findIndex((m) => m.id === currentId);
       if (idx < 0) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[manual-depth-focus-failed] nextRowId=null reason=current-row-not-found`
-        );
         return;
       }
       const target = direction === 'next' ? list[idx + 1] : list[idx - 1];
       if (!target) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[manual-depth-focus-failed] nextRowId=null reason=no-${direction}-row`
-        );
         return;
       }
       const nextId = target.id;
       requestAnimationFrame(() => {
         const el = depthInputRefs.current[nextId];
         if (!el) {
-          // eslint-disable-next-line no-console
-          console.log(`[manual-depth-focus-failed] nextRowId=${nextId} reason=ref-missing`);
           return;
         }
         el.focus();
         el.select?.();
-        // eslint-disable-next-line no-console
-        console.log(`[manual-depth-focus-next] nextRowId=${nextId}`);
       });
     },
     []
@@ -311,60 +295,12 @@ function MeasurementsTableImpl({
 
   useEffect(() => {
     const first = measurements[0];
-    const firstD1Um = first ? first.d1Um ?? (first.unit === 'um' ? first.d1 : null) : null;
-    const firstD2Um = first ? first.d2Um ?? (first.unit === 'um' ? first.d2 : null) : null;
-    const firstDavgUm = first
-      ? first.averageUm ??
-        (first.unit === 'um' ? first.average : null) ??
-        (firstD1Um !== null && firstD2Um !== null ? (firstD1Um + firstD2Um) / 2 : null)
-      : null;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[measurement-table-render] rowCount=${measurements.length} firstRow={ id:${first?.id ?? '-'}, d1Um:${firstD1Um ?? '-'}, d2Um:${firstD2Um ?? '-'}, davgUm:${firstDavgUm ?? '-'}, hv:${first?.hv ?? '-'}, objective:${first?.objective ?? '-'} }`
-    );
     if (first) {
       // Per-column binding so we can prove which raw measurement field each
       // table cell reads from. If the measurement-row-save-success log shows
       // d1Um=84.5 but [row-table-bind] column=D1(um) value=- prints, the bug
       // is in the table mapping; otherwise the row never carried d1Um.
-      // eslint-disable-next-line no-console
-      console.log(`[row-table-bind] column=D1(um) value=${firstD1Um ?? '-'} source=d1Um|unit=um?d1`);
-      // eslint-disable-next-line no-console
-      console.log(`[row-table-bind] column=D2(um) value=${firstD2Um ?? '-'} source=d2Um|unit=um?d2`);
-      // eslint-disable-next-line no-console
-      console.log(`[row-table-bind] column=Davg(um) value=${firstDavgUm ?? '-'} source=averageUm|unit=um?average|fallback`);
-      // eslint-disable-next-line no-console
-      console.log(`[row-table-bind] column=Hardness value=${first.hv ?? '-'} source=hv`);
-      // eslint-disable-next-line no-console
-      console.log(`[row-table-bind] column=Objective value=${first.objective ?? '-'} source=objective`);
     }
-    measurements.forEach((m, i) => {
-      const depth =
-        typeof m.depthMm === 'number' && Number.isFinite(m.depthMm) ? m.depthMm : '-';
-      const convertType = m.convertType ?? '-';
-      const convertValue =
-        typeof m.convertValue === 'number' && Number.isFinite(m.convertValue)
-          ? m.convertValue
-          : '-';
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-table] row=${i + 1} id=${m.id} depth=${depth} convertType=${convertType} convertValue=${convertValue}`
-      );
-      const d1Um = m.d1Um ?? (m.unit === 'um' ? m.d1 : null);
-      const d2Um = m.d2Um ?? (m.unit === 'um' ? m.d2 : null);
-      const davgUm =
-        m.averageUm ??
-        (m.unit === 'um' ? m.average : null) ??
-        (d1Um !== null && d2Um !== null ? (d1Um + d2Um) / 2 : null);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-table-display] row=${i + 1} objective=${m.objective ?? '-'} d1Um=${d1Um ?? '-'} d2Um=${d2Um ?? '-'} davgUm=${davgUm ?? '-'} hardness=${m.hv ?? '-'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[measurement-table-render] hardness=${m.hv ?? '-'} convertType=${m.convertType ?? '-'} convertValue=${m.convertValue ?? '-'}`
-      );
-    });
   }, [measurements]);
 
   return (
@@ -407,10 +343,6 @@ function MeasurementsTableImpl({
                 (d1Um !== null && d2Um !== null ? (d1Um + d2Um) / 2 : null);
 
               const hardnessType = formatBlank(measurement.hardnessType) || 'HV';
-              // eslint-disable-next-line no-console
-              console.log(
-                `[measurement-table-render] rowId=${measurement.id} hardnessType=${measurement.hardnessType ?? 'null'} hvType=${hardnessType}`
-              );
               const qualified = formatQualified(measurement.qualified);
               const convertType =
                 formatBlank(measurement.convertType) || hardnessType || 'NONE';

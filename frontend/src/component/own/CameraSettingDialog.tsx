@@ -92,14 +92,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   useEffect(() => {
     if (open) {
-      // eslint-disable-next-line no-console
-      console.log('[camera-settings-open]');
       setLiveApplyError(null);
       void refetch();
       void refetchStatus();
     } else {
-      // eslint-disable-next-line no-console
-      console.log('[camera-settings-close]');
     }
   }, [open, refetch, refetchStatus]);
 
@@ -114,10 +110,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           window.hardnessCamera.getExposureRange(),
           window.hardnessCamera.getGainRange(),
         ]);
-        // eslint-disable-next-line no-console
-        console.log('[camera-settings][frontend] exposure range:', er);
-        // eslint-disable-next-line no-console
-        console.log('[camera-settings][frontend] gain range:', gr);
         if (cancelled) return;
         if (er.ok && er.min !== undefined && er.max !== undefined) {
           const step = er.step !== undefined && er.step > 0 ? er.step : EXPOSURE_TIME_STEP_MS;
@@ -161,16 +153,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     async (rawValue: number) => {
       const value = clamp(rawValue, gainRange.min, gainRange.max);
       // eslint-disable-next-line no-console
-      console.log('[camera-settings][frontend] gain changed:', value);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-settings][gain-change] value=${value} min=${gainRange.min} max=${gainRange.max}`
-      );
+      console.log('[camera-ui][settings-change] gain=' + value);
       try {
         dropPendingCameraFrames('gain-change');
         const reply = await window.hardnessCamera.setGain(value);
-        // eslint-disable-next-line no-console
-        console.log('[camera-settings][frontend] setGain reply:', reply);
         if (!reply.ok) {
           // eslint-disable-next-line no-console
           console.error('[camera-settings][frontend] setGain failed:', reply);
@@ -194,16 +180,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     async (rawValueMs: number) => {
       const valueMs = clamp(rawValueMs, exposureRange.min, exposureRange.max);
       // eslint-disable-next-line no-console
-      console.log('[camera-settings][frontend] exposure changed:', valueMs);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-settings][exposure-change] valueMs=${valueMs} min=${exposureRange.min} max=${exposureRange.max}`
-      );
+      console.log('[camera-ui][settings-change] exposureMs=' + valueMs);
       try {
         dropPendingCameraFrames('exposure-change');
         const reply = await window.hardnessCamera.setExposure(valueMs);
-        // eslint-disable-next-line no-console
-        console.log('[camera-settings][frontend] setExposure reply:', reply);
         if (!reply.ok) {
           // eslint-disable-next-line no-console
           console.error('[camera-settings][frontend] setExposure failed:', reply);
@@ -259,8 +239,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     (valueMs: number) => {
       if (exposureInFlightRef.current) {
         exposurePendingRef.current = valueMs;
-        // eslint-disable-next-line no-console
-        console.log(`[camera-exposure-apply-skip] reason=pending latest=${valueMs}`);
         return;
       }
       if (exposureLastSentValueRef.current === valueMs) {
@@ -270,16 +248,12 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       exposureInFlightRef.current = true;
       exposureLastSentValueRef.current = valueMs;
       exposureLastSentAtRef.current = Date.now();
-      // eslint-disable-next-line no-console
-      console.log(`[camera-exposure-apply-start] value=${valueMs}`);
       void (async () => {
         let next: number | null = valueMs;
         while (next !== null) {
           const v = next;
           next = null;
           await sendExposure(v);
-          // eslint-disable-next-line no-console
-          console.log(`[camera-exposure-apply-success] value=${v}`);
           if (exposurePendingRef.current !== null) {
             next = exposurePendingRef.current;
             exposurePendingRef.current = null;
@@ -324,8 +298,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const handleGainChange = useCallback(
     (_: Event, value: number | number[]) => {
       if (typeof value !== 'number') return;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-setting-change] gain=${value}`);
       setAnalogGain(value);
       applyGainLive(value);
     },
@@ -345,10 +317,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       // Mark a drag in progress on the first onChange. onChangeCommitted
       // clears it. While set, IPC replies do not overwrite the local value.
       exposureDraggingRef.current = true;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-setting-change] exposure=${value}`);
-      // eslint-disable-next-line no-console
-      console.log(`[camera-exposure-ui] value=${value}`);
       setExposureMs(value);
       applyExposureLive(value);
     },
@@ -365,8 +333,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
         exposureThrottleTimerRef.current = null;
       }
       exposurePendingRef.current = null;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-exposure-apply-final] value=${value}`);
       flushExposureLive(value);
     },
     [flushExposureLive]
@@ -414,8 +380,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   ]);
 
   const handleCancel = useCallback(() => {
-    // eslint-disable-next-line no-console
-    console.log('[modal-close-click] modal=camera-settings');
     if (liveAvailable && data) {
       dropPendingCameraFrames('gain-change');
       void window.hardnessCamera.setGain(data.analogGain).catch(() => {});
@@ -456,8 +420,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     const now = performance.now();
     if (now - drag.lastLogAt > 100) {
       drag.lastLogAt = now;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-settings-drag] x=${Math.round(nextX)} y=${Math.round(nextY)}`);
     }
   }, []);
 

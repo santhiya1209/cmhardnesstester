@@ -30,7 +30,7 @@ import { useCreateCalibration } from '@/hooks/mutations/useCreateCalibration';
 import { useDeleteCalibration } from '@/hooks/mutations/useDeleteCalibration';
 import { useClearCalibrations } from '@/hooks/mutations/useClearCalibrations';
 import { useImportCalibrations } from '@/hooks/mutations/useImportCalibrations';
-import { exportCalibrations } from '@/api/exportCalibrations';
+import { exportCalibrations } from '@/api/calibration';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 import type {
   Calibration,
@@ -272,14 +272,6 @@ function CalibrationDialogImpl({
     const hasMeasuredPixels =
       pxX !== DEFAULT_FORM_STATE.pixelLengthX || pxY !== DEFAULT_FORM_STATE.pixelLengthY;
     setTab(hasMeasuredPixels ? 'length' : 'hardness');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-dialog-open] objective=${objective} pixelX=${pxX} pixelY=${pxY}`
-    );
-    if (hasMeasuredPixels) {
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-autofill] pixelLengthX=${pxX} pixelLengthY=${pxY}`);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -310,10 +302,6 @@ function CalibrationDialogImpl({
     );
     if (lastLivePixelLogRef.current !== logKey) {
       lastLivePixelLogRef.current = logKey;
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-live-update] pixelX=${pxX} pixelY=${pxY}`);
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-live-pixels] pixelX=${pxX} pixelY=${pxY}`);
     }
   }, [open, autoFillPixelLengthX, autoFillPixelLengthY]);
 
@@ -341,11 +329,6 @@ function CalibrationDialogImpl({
     const selectionKey = `${objective}|${force}|${hardnessLevel}`;
     const keyChanged = lastSelectionKeyRef.current !== selectionKey;
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-selection-check] objective=${objective} force=${force}`
-    );
-
     const anyForObjectiveForce = items.find(
       (it) => it.zoomTime === objective && it.force === force
     );
@@ -359,12 +342,6 @@ function CalibrationDialogImpl({
     if (anyForObjectiveForce) {
       const message = `${objective} / ${force} is already calibrated. Updating Middle, Low, and High values will overwrite the existing calibration.`;
       setSelectionStatus({ mode: 'update', message });
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-existing-found] id=${anyForObjectiveForce.id} objective=${objective} force=${force} hardnessLevel=${anyForObjectiveForce.hardnessLevel} pixelLengthX=${anyForObjectiveForce.pixelLengthX} pixelLengthY=${anyForObjectiveForce.pixelLengthY} hardness=${anyForObjectiveForce.hardness}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-popup] mode=update message=${message}`);
 
       if (keyChanged) {
         lastSelectionKeyRef.current = selectionKey;
@@ -387,12 +364,6 @@ function CalibrationDialogImpl({
     } else {
       const message = `${objective} / ${force} is not calibrated yet. Please enter Middle, Low, and High values to calibrate.`;
       setSelectionStatus({ mode: 'insert', message });
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-not-found] objective=${objective} force=${force}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-popup] mode=insert message=${message}`);
 
       if (keyChanged) {
         lastSelectionKeyRef.current = selectionKey;
@@ -449,50 +420,7 @@ function CalibrationDialogImpl({
       // calibration diagonal (in µm) is derived by inverse Vickers from the
       // known Hardness Value + Force, then per-axis coefficients are
       // derived as D_um / pixelLengthX|Y. realDistanceX/Y carries D_um.
-      const knownReferenceUm = payload.realDistanceX ?? 0;
-      const xUmPerPixel = payload.pixelLengthX > 0 && knownReferenceUm > 0
-        ? knownReferenceUm / payload.pixelLengthX
-        : null;
-      const yUmPerPixel = payload.pixelLengthY > 0 && knownReferenceUm > 0
-        ? knownReferenceUm / payload.pixelLengthY
-        : null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-raw-pixels] pixelX=${payload.pixelLengthX} pixelY=${payload.pixelLengthY}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-live-pixels] pixelX=${payload.pixelLengthX} pixelY=${payload.pixelLengthY}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-reference] knownReferenceUm=${knownReferenceUm} derivedFromHv=${payload.hardness} force=${payload.force}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-coefficient] xUmPerPixel=${xUmPerPixel ?? 'n/a'} yUmPerPixel=${yUmPerPixel ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-convert-to-um-per-pixel] xUmPerPixel=${xUmPerPixel ?? 'n/a'} yUmPerPixel=${yUmPerPixel ?? 'n/a'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-save] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-save-request] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} pixelLengthX=${payload.pixelLengthX} pixelLengthY=${payload.pixelLengthY} hardness=${payload.hardness}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-save-mode] mode=${selectionStatus?.mode ?? 'insert'} objective=${payload.zoomTime} force=${payload.force}`
-      );
       const savedCalibration = await saveCalibration(payload);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-save-success] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} pixelLengthX=${payload.pixelLengthX} pixelLengthY=${payload.pixelLengthY} knownReferenceUm=${knownReferenceUm} xUmPerPixel=${xUmPerPixel ?? 'n/a'} yUmPerPixel=${yUmPerPixel ?? 'n/a'}`
-      );
       await refetch();
       onChanged?.();
       onStatusChange?.('Calibration saved.');
@@ -501,34 +429,21 @@ function CalibrationDialogImpl({
       // the table is populated immediately — see onAutoCreateMeasurementRow.
       const currentD1Px = payload.pixelLengthX;
       const currentD2Px = payload.pixelLengthY;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-current-lines] d1Px=${currentD1Px} d2Px=${currentD2Px}`
-      );
       if (
         !Number.isFinite(currentD1Px) ||
         !Number.isFinite(currentD2Px) ||
         currentD1Px <= 0 ||
         currentD2Px <= 0
       ) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[calibration-auto-row-blocked] reason=current-lines-zero d1Px=${currentD1Px} d2Px=${currentD2Px}`
-        );
         setActionError(
           'Calibration saved, but D1/D2 line pixels are zero — no measurement row was created. Run Manual or Auto Measure first, then Add Calibration.'
         );
       } else if (onAutoCreateMeasurementRow) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-auto-row-create] objective=${payload.zoomTime} force=${payload.force} d1Px=${currentD1Px} d2Px=${currentD2Px}`
-        );
         try {
           await onAutoCreateMeasurementRow({ savedCalibration, payload });
         } catch (rowErr) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[calibration-auto-row-blocked] reason=row-create-error detail="${rowErr instanceof Error ? rowErr.message : String(rowErr)}"`
+          console.error(
+            `[calibration] auto-row failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`
           );
           setActionError(
             `Calibration saved, but creating the measurement row failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`
@@ -536,6 +451,7 @@ function CalibrationDialogImpl({
         }
       }
     } catch (e) {
+      console.error(`[calibration] save failed: ${getApiErrorMessage(e, 'Failed to save calibration.')}`);
       setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
     }
   }, [form, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, selectionStatus, tab]);
@@ -545,22 +461,14 @@ function CalibrationDialogImpl({
       onStatusChange?.('Manual measurement not wired.');
       return;
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-mode-start] objective=${form.zoomTime} force=${form.force} hardnessLevel=${form.hardnessLevel}`
-    );
     onRequestManualMeasure();
-  }, [form.force, form.hardnessLevel, form.zoomTime, onRequestManualMeasure, onStatusChange]);
+  }, [onRequestManualMeasure, onStatusChange]);
 
   const handleAutoMeasure = useCallback(async () => {
     if (!onRequestAutoMeasure) {
       onStatusChange?.('Auto measurement not wired.');
       return;
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[calibration-mode-start] objective=${form.zoomTime} force=${form.force} hardnessLevel=${form.hardnessLevel}`
-    );
     setActionError(null);
     try {
       const detected = await onRequestAutoMeasure(form.zoomTime);
@@ -576,10 +484,9 @@ function CalibrationDialogImpl({
         pixelLengthY: pxY,
       }));
       lastLivePixelLogRef.current = `${pxX}|${pxY}`;
-      // eslint-disable-next-line no-console
-      console.log(`[calibration-live-update] pixelX=${pxX} pixelY=${pxY}`);
       onStatusChange?.(`Auto Measure filled Pixel X=${pxX}, Pixel Y=${pxY}.`);
     } catch (e) {
+      console.error(`[calibration] auto-measure failed: ${getApiErrorMessage(e, 'Auto Measure failed.')}`);
       setActionError(getApiErrorMessage(e, 'Auto Measure failed.'));
     }
   }, [form.force, form.hardnessLevel, form.zoomTime, onRequestAutoMeasure, onStatusChange]);
@@ -700,15 +607,11 @@ function CalibrationDialogImpl({
     if (open) {
       if (panelLoggedOpenRef.current) return;
       panelLoggedOpenRef.current = true;
-      // eslint-disable-next-line no-console
-      console.log('[calibration-panel-open]');
       return;
     }
     if (!panelLoggedOpenRef.current) return;
     panelLoggedOpenRef.current = false;
     lastLivePixelLogRef.current = null;
-    // eslint-disable-next-line no-console
-    console.log('[calibration-panel-close]');
   }, [open]);
 
   if (!open) return null;
@@ -788,10 +691,6 @@ function CalibrationDialogImpl({
                     it.pixelLengthY > 0 && knownReferenceUm > 0
                       ? knownReferenceUm / it.pixelLengthY
                       : 0;
-                  // eslint-disable-next-line no-console
-                  console.log(
-                    `[calibration-table-row] id=${it.id} xPixelLengthUmPerPx=${xUmPerPixel.toFixed(5)} yPixelLengthUmPerPx=${yUmPerPixel.toFixed(5)}`
-                  );
                   return (
                     <TableRow key={it.id} hover selected={selectedIds.includes(it.id)}>
                       <TableCell padding="checkbox">

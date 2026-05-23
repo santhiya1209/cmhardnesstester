@@ -1,4 +1,0 @@
-# Drop OpenCV runtime DLLs here for packaging (e.g. opencv_world4100.dll).
-# At runtime they end up at:
-#   <app>/resources/native/hardness-addon/opencv/bin/
-# which is already on the DLL search path added by electron/cameraService.js.

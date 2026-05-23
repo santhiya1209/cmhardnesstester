@@ -102,9 +102,6 @@ export function useManualMeasureOverlay({
     const initialGuides = createDefaultManualGuideLines(imageSize, objective);
     guidesRef.current = initialGuides;
     setGuides(initialGuides);
-    // eslint-disable-next-line no-console
-    console.log('[manual-measure] initialized objective=', objective ?? 'unknown',
-      'imageSize=', imageSize, 'guides=', initialGuides);
   }, [active, imageSize, objective]);
 
   const scheduleDraw = useCallback(() => {
@@ -165,8 +162,6 @@ export function useManualMeasureOverlay({
     const points = guideLinesToPoints(current);
     const d1Px = distancePx(points[1], points[3]);
     const d2Px = distancePx(points[0], points[2]);
-    // eslint-disable-next-line no-console
-    console.log('[manual-measure] markers updated', { guides: current });
     onMeasurementUpdated({ points, d1Px, d2Px });
   }, [onMeasurementUpdated]);
 

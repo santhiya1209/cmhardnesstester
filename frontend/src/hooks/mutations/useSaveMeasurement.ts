@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createMeasurement } from '@/api/createMeasurement';
-import { updateMeasurement } from '@/api/updateMeasurement';
+import { createMeasurement } from '@/api/measurement';
+import { updateMeasurement } from '@/api/measurement';
 import type { Measurement, MeasurementSavePayload } from '@/types/measurement';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

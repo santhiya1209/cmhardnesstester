@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getTestRecords } from '@/api/getTestRecords';
+import { getTestRecords } from '@/api/testRecord';
 import type { TestRecord } from '@/types/testRecord';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

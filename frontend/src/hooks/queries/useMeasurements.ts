@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getMeasurements } from '@/api/getMeasurements';
+import { getMeasurements } from '@/api/measurement';
 import type { Measurement } from '@/types/measurement';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

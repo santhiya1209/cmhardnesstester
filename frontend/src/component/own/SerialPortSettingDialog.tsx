@@ -22,7 +22,7 @@ import {
   type SerialPortSetting,
   type SerialPortSettingPayload,
 } from '@/types/serialPortSetting';
-import { listSerialPorts } from '@/api/listSerialPorts';
+import { listSerialPorts } from '@/api/serialPort';
 import type { SerialPortInfo } from '@/types/serial';
 import { colors } from '@/theme/theme';
 
@@ -195,10 +195,6 @@ function SerialPortSettingDialogImpl({
   useEffect(() => {
     if (open && !loading) {
       setForm(toFormState(data));
-      // eslint-disable-next-line no-console
-      console.log(
-        `[serial-settings][load-saved] machineComPort=${data?.machineComPort ?? 'null'} xyPortName=${data?.xyPortName ?? 'null'} zPortName=${data?.zPortName ?? 'null'}`
-      );
     }
   }, [data, loading, open]);
 
@@ -215,10 +211,6 @@ function SerialPortSettingDialogImpl({
   useEffect(() => {
     if (open && !micLoading) {
       setMicrometerComPort(micrometerData?.comPort ?? '');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[serial-settings][load-saved] source=micrometer comPort=${micrometerData?.comPort ?? 'null'}`
-      );
     }
   }, [micrometerData, micLoading, open]);
 
@@ -240,8 +232,6 @@ function SerialPortSettingDialogImpl({
 
   const handleMicrometerComPortChange = useCallback((next: string) => {
     setMicrometerComPort(next);
-    // eslint-disable-next-line no-console
-    console.log(`[micrometer-port-selected-current] port=${next || 'null'}`);
   }, []);
 
   const portConflict =
@@ -253,20 +243,12 @@ function SerialPortSettingDialogImpl({
       const nextMachinePort = machineComPort.trim().length > 0 ? machineComPort.trim() : null;
       const persistedMicrometerPort =
         micrometerComPort.trim().length > 0 ? micrometerComPort.trim() : null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[serial-settings][save] machineComPort=${nextMachinePort ?? 'null'} micrometerComPort=${persistedMicrometerPort ?? 'null'} xyPortName=${form.xyPortName ?? 'null'} zPortName=${form.zPortName ?? 'null'}`
-      );
       // Persist machine + XY/Z stage ports together. Machine port is now part
       // of the persisted record so the next launch can auto-connect.
       await saveSerialPortSetting({
         id: data?.id,
         values: { ...form, machineComPort: nextMachinePort },
       });
-      // eslint-disable-next-line no-console
-      console.log(`[machine-com-saved] port=${nextMachinePort ?? 'null'}`);
-      // eslint-disable-next-line no-console
-      console.log(`[serial-settings][machine-port-fixed] port=${nextMachinePort ?? 'null'}`);
 
       await saveMicrometerConfig({
         id: micrometerData?.id,
@@ -275,10 +257,6 @@ function SerialPortSettingDialogImpl({
           comPort: persistedMicrometerPort,
         },
       });
-      // eslint-disable-next-line no-console
-      console.log(`[micrometer-com-saved] port=${persistedMicrometerPort ?? 'null'}`);
-      // eslint-disable-next-line no-console
-      console.log(`[serial-settings][micrometer-port-fixed] port=${persistedMicrometerPort ?? 'null'}`);
 
       setApplyingMachine(true);
       try {

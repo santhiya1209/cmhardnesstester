@@ -108,12 +108,7 @@ function AutoMeasureSettingsDialogImpl({
 
   useEffect(() => {
     if (open) {
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-settings-open]');
       void refetch();
-    } else {
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-settings-close]');
     }
   }, [open, refetch]);
 
@@ -126,16 +121,6 @@ function AutoMeasureSettingsDialogImpl({
         next.objectiveForMeasure = synced;
         next.smoothing = defaults.smoothing;
         next.threshold = defaults.threshold;
-        // eslint-disable-next-line no-console
-        console.log(`[auto-measure-settings-sync] objective=${synced}`);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[auto-measure-defaults-apply] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-        );
       }
       formRef.current = next;
       setForm(next);
@@ -166,20 +151,6 @@ function AutoMeasureSettingsDialogImpl({
       smoothing: defaults.smoothing,
       threshold: defaults.threshold,
     });
-    // eslint-disable-next-line no-console
-    console.log(`[auto-measure-settings-sync] objective=${synced}`);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-defaults-load] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-settings][settings-sync] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-defaults-apply] objective=${synced} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
     formRef.current = next;
     setForm(next);
     // Intentionally do NOT call onPreviewChange here. App-level state is
@@ -199,36 +170,20 @@ function AutoMeasureSettingsDialogImpl({
     return next;
   }, []);
 
-  const clearPreviewDebounce = useCallback((reason: string) => {
+  const clearPreviewDebounce = useCallback((_reason: string) => {
     if (previewDebounceRef.current === null) return;
     window.clearTimeout(previewDebounceRef.current);
     previewDebounceRef.current = null;
-    // eslint-disable-next-line no-console
-    console.log(`[auto-measure-settings][preview-debounce-clear] reason=${reason}`);
   }, []);
 
   // Commit the current form to the parent preview pipeline. Stamps a
   // monotonic sequence so the App-side stale guard (latestPreviewSettings)
   // discards an older detection finishing after a newer one was scheduled.
   const flushPreview = useCallback(
-    (source: string) => {
+    (_source: string) => {
       clearPreviewDebounce('flush');
       const snapshot = formRef.current;
-      const seq = ++previewSeqRef.current;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-settings][preview-commit] seq=${seq} source=${source} smoothing=${snapshot.smoothing} threshold=${snapshot.threshold}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-settings][preview-request] seq=${seq} source=${source} smoothing=${snapshot.smoothing} threshold=${snapshot.threshold}`
-      );
-      // eslint-disable-next-line no-console
-      console.log('[auto-measure-settings-preview-update]');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[settings-preview-callback] smoothing=${snapshot.smoothing} threshold=${snapshot.threshold}`
-      );
+      previewSeqRef.current++;
       onPreviewChange?.(snapshot);
     },
     [clearPreviewDebounce, onPreviewChange]
@@ -238,13 +193,7 @@ function AutoMeasureSettingsDialogImpl({
     (source: string) => {
       if (previewDebounceRef.current !== null) {
         window.clearTimeout(previewDebounceRef.current);
-        // eslint-disable-next-line no-console
-        console.log('[auto-measure-settings][preview-debounce-clear] reason=reschedule');
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-settings][preview-debounce-schedule] source=${source} delayMs=${PREVIEW_DEBOUNCE_MS} smoothing=${formRef.current.smoothing} threshold=${formRef.current.threshold}`
-      );
       previewDebounceRef.current = window.setTimeout(() => {
         previewDebounceRef.current = null;
         flushPreview(`${source}:debounced`);
@@ -281,18 +230,6 @@ function AutoMeasureSettingsDialogImpl({
       if (prev === next) return;
       sliderDraggingRef.current = true;
       writeLocal({ [field]: next } as Partial<AutoMeasureSettingsPayload>);
-      // eslint-disable-next-line no-console
-      console.log(`[settings-slider-change] name=${field} value=${next}`);
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-slider-change] type=${field} value=${next}`);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-settings][slider-change] field=${field} prev=${prev} next=${next}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[auto-measure-settings][slider-local-change] field=${field} value=${next}`
-      );
       schedulePreview(`slider:${field}`);
     },
     [schedulePreview, writeLocal]
@@ -316,13 +253,6 @@ function AutoMeasureSettingsDialogImpl({
     (field: 'turretAfterImpress' | 'measureAfterImpress') =>
       (event: React.ChangeEvent<HTMLInputElement>) => {
         const value = event.target.checked;
-        if (field === 'measureAfterImpress') {
-          // eslint-disable-next-line no-console
-          console.log(`[measure-after-impress-checkbox-change] value=${value}`);
-        } else {
-          // eslint-disable-next-line no-console
-          console.log(`[turret-after-impress-checkbox-change] value=${value}`);
-        }
         writeLocal({ [field]: value } as Partial<AutoMeasureSettingsPayload>);
         flushPreview(`checkbox:${field}`);
       },
@@ -345,18 +275,10 @@ function AutoMeasureSettingsDialogImpl({
     });
     formRef.current = next;
     setForm(next);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-settings-default-click] objective=${synced} smoothing=${objectiveDefaults.smoothing} threshold=${objectiveDefaults.threshold}`
-    );
-    // eslint-disable-next-line no-console
-    console.log('[settings-preview-callback] source=default');
     flushPreview('default');
   }, [activeObjective, flushPreview]);
 
   const handleCancel = useCallback(() => {
-    // eslint-disable-next-line no-console
-    console.log('[modal-close-click] modal=auto-measure-settings');
     clearPreviewDebounce('cancel');
     formRef.current = savedBaseline;
     setForm(savedBaseline);
@@ -413,8 +335,6 @@ function AutoMeasureSettingsDialogImpl({
     const now = performance.now();
     if (now - drag.lastLogAt > DRAG_LOG_THROTTLE_MS) {
       drag.lastLogAt = now;
-      // eslint-disable-next-line no-console
-      console.log(`[auto-measure-settings-drag] x=${Math.round(nextX)} y=${Math.round(nextY)}`);
     }
   }, []);
 

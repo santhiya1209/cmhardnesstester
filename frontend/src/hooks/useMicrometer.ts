@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MicrometerState } from '@/types/micrometer';
-import { getMicrometerState } from '@/api/getMicrometerState';
+import { getMicrometerState } from '@/api/micrometer';
 
 const INITIAL_STATE: MicrometerState = {
   connected: false,
@@ -33,8 +33,6 @@ export function useMicrometer(): MicrometerState {
       .then((reply) => {
         if (cancelled || !reply || !reply.ok) return;
         const next = reply.state;
-        // eslint-disable-next-line no-console
-        console.log('[micrometer][hook-received] payload=', next);
         const key = `${next.connected}|${next.value}|${next.rawHex}|${next.updatedAt}`;
         if (key === lastSerializedRef.current) return;
         lastSerializedRef.current = key;
@@ -45,15 +43,9 @@ export function useMicrometer(): MicrometerState {
       });
 
     const off = window.api.on('micrometer:state', (next) => {
-      // eslint-disable-next-line no-console
-      console.log('[micrometer][hook-received] payload=', next);
       const key = `${next.connected}|${next.value}|${next.rawHex}|${next.updatedAt}`;
       if (key === lastSerializedRef.current) return;
       lastSerializedRef.current = key;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[micrometer-depth] current value updated depth=${typeof next.value === 'number' && Number.isFinite(next.value) ? next.value : '-'}`
-      );
       setState(next);
     });
 

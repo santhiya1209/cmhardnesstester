@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createDepthImageSetting } from '@/api/createDepthImageSetting';
-import { updateDepthImageSetting } from '@/api/updateDepthImageSetting';
+import { createDepthImageSetting } from '@/api/settings';
+import { updateDepthImageSetting } from '@/api/settings';
 import type {
   DepthImageSetting,
   DepthImageSettingPayload,

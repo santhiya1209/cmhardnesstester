@@ -64,10 +64,6 @@ async function upsert(input: CreateCalibrationInput): Promise<Calibration> {
         createdAt: input.createdAt ?? now,
         updatedAt: now,
       });
-      console.log(
-        `[calibration-upsert-check] objective=${input.zoomTime} force=${input.force} hardnessLevel=${input.hardnessLevel} existingId=null`
-      );
-      console.log(`[calibration-upsert-insert] id=${entity.id}`);
       return {
         database: { ...database, calibrations: [...items, entity] },
         result: entity,
@@ -91,16 +87,6 @@ async function upsert(input: CreateCalibrationInput): Promise<Calibration> {
       createdAt: current.createdAt,
       updatedAt: now,
     });
-
-    console.log(
-      `[calibration-upsert-check] objective=${input.zoomTime} force=${input.force} hardnessLevel=${input.hardnessLevel} existingId=${current.id}`
-    );
-    console.log(`[calibration-upsert-update] id=${merged.id}`);
-    if (removedIds.length > 0) {
-      console.log(
-        `[calibration-duplicates-cleanup] objective=${input.zoomTime} force=${input.force} hardnessLevel=${input.hardnessLevel} keptId=${merged.id} removed=${removedIds.join(',')}`
-      );
-    }
 
     const removedSet = new Set(removedIds);
     const next = items

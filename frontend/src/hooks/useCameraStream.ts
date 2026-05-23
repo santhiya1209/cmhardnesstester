@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import CameraStreamWorker from '@/workers/cameraStream.worker.ts?worker';
-import { getCameraFrame } from '@/api/getCameraFrame';
-import { ackCameraFrame } from '@/api/ackCameraFrame';
-import { flushCameraStream } from '@/api/flushCameraStream';
+import { ackCameraFrame } from '@/api/camera';
+import { flushCameraStream } from '@/api/camera';
 import type { CameraFrameMeta, CameraPixelFormat } from '@/types/camera';
 
 // Live-preview subsample factor. The worker decodes a (W/SCALE)×(H/SCALE)
@@ -106,8 +105,6 @@ let pendingPaint: {
   grabTs: number;
 } | null = null;
 let rafScheduled = false;
-let fallbackTimer: number | null = null;
-let fallbackInFlight = false;
 // Reset by resetCameraSession() on close so the next open re-fires the
 // first-frame / first-paint logs. The IPC subscription itself stays attached
 // for the page lifetime — only the per-session telemetry is reset.
@@ -139,10 +136,8 @@ function getWorker(): Worker {
   return sharedWorker;
 }
 
-function recordCameraFrameDrop(reason = 'stale', frameId = 0, ageMs = 0): void {
+function recordCameraFrameDrop(_reason = 'stale', _frameId = 0, _ageMs = 0): void {
   latencyDroppedSinceLastSummary += 1;
-  // eslint-disable-next-line no-console
-  console.log(`[camera-renderer-drop-old] frameId=${frameId} reason=${reason} ageMs=${ageMs}`);
 }
 
 function installMainThreadPaintHandler() {
@@ -170,10 +165,6 @@ function installMainThreadPaintHandler() {
       // the freshly-cleared canvas.
       if (paintEpoch < frameEpoch) {
         recordCameraFrameDrop('stale-epoch', resolvedFrameId);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-frame-drop] reason=stale-before-objective-switch frameId=${resolvedFrameId} paintEpoch=${paintEpoch} currentEpoch=${frameEpoch}`
-        );
         decoderBusy = false;
         // Still ack so main process releases its slot — the frame was
         // delivered + decoded; main shouldn't be stuck waiting.
@@ -254,36 +245,20 @@ function schedulePaintRaf() {
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
-    const latencyStartTs = p.grabTs > 0 ? p.grabTs : p.capturedAt;
-    const totalMs = latencyStartTs > 0 ? lastPaintAt - latencyStartTs : 0;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-canvas-draw] frameId=${p.frameId} ageMs=${totalMs}`);
     if (lastPaintAt - lastCanvasPresentLogAt >= 5000) {
       lastCanvasPresentLogAt = lastPaintAt;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-canvas-present] frameId=${p.frameId} w=${img.width} h=${img.height}`
-      );
     }
     // [camera-render] — grab→pixels-on-canvas latency, throttled 1Hz. This is
     // the number the user actually sees. Stage labels: native, ipc, render.
     if (lastPaintAt - lastRenderLogAt > 5000) {
       lastRenderLogAt = lastPaintAt;
-      const renderLatency = p.grabTs > 0 ? lastPaintAt - p.grabTs : 0;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-render] frameId=${p.frameId} latencyMs=${renderLatency}`);
     }
     if (!firstPaintLoggedThisSession) {
       firstPaintLoggedThisSession = true;
-      // eslint-disable-next-line no-console
-      console.log('[camera-ui] first-paint-after-open ok=true');
     }
     if (lastPaintAt - lastLatencyLogAt > 1000) {
       lastLatencyLogAt = lastPaintAt;
-      const dropped = latencyDroppedSinceLastSummary;
       latencyDroppedSinceLastSummary = 0;
-      // eslint-disable-next-line no-console
-      console.log(`[camera-display-latency-total] latestFrameId=${p.frameId} totalMs=${totalMs} dropped=${dropped}`);
     }
     if (p.frameId > 0) ackCameraFrame(p.frameId);
   });
@@ -292,20 +267,11 @@ function schedulePaintRaf() {
 function subscribeIpcOnce() {
   if (ipcSubscribed) return;
   ipcSubscribed = true;
-  // eslint-disable-next-line no-console
-  console.log('[camera-render-mode] latest-frame-only=true');
   window.api.on('camera:frame', (meta: CameraFrameMeta, body: ArrayBufferLike) => {
     const receivedAt = Date.now();
     lastFrameAt = receivedAt;
     if (receivedAt - lastRendererRecvLogAt >= 5000) {
       lastRendererRecvLogAt = receivedAt;
-      const grabTsLog = (meta && meta.grabTs) ?? 0;
-      const ageMs = grabTsLog > 0 ? receivedAt - grabTsLog : 0;
-      const bytes = (body as { byteLength?: number }).byteLength ?? 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-renderer-recv] frameId=${meta.frameId} ageMs=${ageMs} bytes=${bytes} w=${meta.width} h=${meta.height}`
-      );
     }
     frameIdCounter += 1;
     // Explicit type-and-value check: `meta.frameId ?? counter` falls through
@@ -371,11 +337,6 @@ function subscribeIpcOnce() {
     }
     if (!firstFrameLoggedThisSession) {
       firstFrameLoggedThisSession = true;
-      const bytes = (body as { byteLength?: number }).byteLength ?? 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[camera-frame] first-frame-after-open width=${meta.width} height=${meta.height} bytes=${bytes}`
-      );
     }
     // Latest-frame-only policy: if the worker is still decoding a previous
     // frame, replace any pending frame with this one and drop the older
@@ -415,8 +376,6 @@ export function resetCameraSession() {
   lastLatencyLogAt = 0;
   latencyDroppedSinceLastSummary = 0;
   getWorker().postMessage({ type: 'clear-queue', epoch: frameEpoch, reason: 'session-reset' });
-  // eslint-disable-next-line no-console
-  console.log(`[camera-worker-queue-clear] reason=session-reset epoch=${frameEpoch}`);
 }
 
 function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
@@ -439,10 +398,6 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId
   const nowPost = Date.now();
   if (nowPost - lastWorkerRecvLogAt >= 5000) {
     lastWorkerRecvLogAt = nowPost;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[camera-worker-recv] frameId=${frameId} w=${meta.width} h=${meta.height} bytes=${ab.byteLength}`
-    );
   }
   worker.postMessage(
     {
@@ -459,64 +414,6 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId
     },
     [ab]
   );
-}
-
-function startSnapshotFallback() {
-  if (fallbackTimer !== null) return;
-  fallbackTimer = window.setInterval(() => {
-    if (!attached || fallbackInFlight) return;
-    if (Date.now() - lastFrameAt < 1500) return;
-    fallbackInFlight = true;
-    void getCameraFrame(1000)
-      .then((reply) => {
-        if (
-          !reply.ok ||
-          !reply.data ||
-          typeof reply.width !== 'number' ||
-          typeof reply.height !== 'number' ||
-          !reply.pixelFormat ||
-          (reply.bits !== 8 && reply.bits !== 16) ||
-          typeof reply.timestamp !== 'number' ||
-          typeof reply.seq !== 'number' ||
-          typeof reply.bytes !== 'number'
-        ) {
-          return;
-        }
-        lastFrameAt = Date.now();
-        // Snapshot fallback may come without a streamed frameId; fall back to
-        // the shared counter so logs still show a monotonic value (never 0).
-        const replyFrameId =
-          typeof reply.frameId === 'number' && reply.frameId > 0 ? reply.frameId : 0;
-        if (replyFrameId > 0) {
-          frameIdCounter = Math.max(frameIdCounter, replyFrameId);
-        } else {
-          frameIdCounter += 1;
-        }
-        const frameId = replyFrameId > 0 ? replyFrameId : frameIdCounter;
-        latestFrameIdRef.current = Math.max(latestFrameIdRef.current, frameId);
-        postFrameToWorker(
-          {
-            width: reply.width,
-            height: reply.height,
-            pixelFormat: reply.pixelFormat,
-            bits: reply.bits,
-            timestamp: reply.timestamp,
-            seq: reply.seq,
-            bytes: reply.bytes,
-            frameId,
-            grabTs: reply.grabTs,
-          },
-          reply.data,
-          frameId
-        );
-      })
-      .catch(() => {
-        // Live stream events may resume; keep the fallback quiet.
-      })
-      .finally(() => {
-        fallbackInFlight = false;
-      });
-  }, 1000);
 }
 
 export function getLastCameraFrameAt(): number {
@@ -564,10 +461,6 @@ export function dropPendingCameraFrames(reason = 'stale'): number {
   }
   decoderBusy = false;
   getWorker().postMessage({ type: 'clear-queue', epoch: frameEpoch, reason });
-  // eslint-disable-next-line no-console
-  console.log(`[camera-worker-queue-clear] reason=${reason} epoch=${frameEpoch}`);
-  // eslint-disable-next-line no-console
-  console.log(`[camera-pre-switch-drop] reason=${reason} dropped=${dropped} ts=${ts}`);
   return ts;
 }
 
@@ -583,8 +476,6 @@ export function dropPendingCameraFrames(reason = 'stale'): number {
  */
 export function bumpFrameEpochOnCanvasClear(): number {
   frameEpoch += 1;
-  // eslint-disable-next-line no-console
-  console.log(`[camera-objective-flush] newEpoch=${frameEpoch}`);
   dropPendingCameraFrames('objective-change');
   // Ask main process to drop SDK-buffered frames captured before this point.
   flushCameraStream('objective-change');
@@ -604,18 +495,10 @@ export function waitForFreshCameraFrame(timeoutMs = 1500): Promise<boolean> {
       // pixels; baselinePaint guards against an old paint that already
       // happened before this call.
       if (lastPaintEpoch >= targetEpoch && lastPaintAt > baselinePaint) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-post-switch-ready] epoch=${targetEpoch} elapsedMs=${Date.now() - startedAt}`
-        );
         resolve(true);
         return;
       }
       if (Date.now() - startedAt >= timeoutMs) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[camera-post-switch-ready] epoch=${targetEpoch} elapsedMs=${Date.now() - startedAt} timeout=true`
-        );
         resolve(false);
         return;
       }
@@ -660,7 +543,6 @@ export function useCameraStream() {
       worker.postMessage({ type: 'init-2d' });
       attached = { el, fallbackCtx: el.getContext('2d') };
     }
-    startSnapshotFallback();
   }, []);
 
   useEffect(() => {

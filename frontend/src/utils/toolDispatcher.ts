@@ -82,8 +82,6 @@ export function dispatchToolbarAction(
 
     case 'device:openCamera':
       if (ctx.openCameraDevice) {
-        // eslint-disable-next-line no-console
-        console.log('[camera-toggle-open-request]');
         ctx.openCameraDevice();
         ctx.setStatus(`${label} requested`);
       } else {
@@ -92,8 +90,6 @@ export function dispatchToolbarAction(
       return;
     case 'device:closeCamera':
       if (ctx.closeCameraDevice) {
-        // eslint-disable-next-line no-console
-        console.log('[camera-toggle-close-request]');
         ctx.closeCameraDevice();
         ctx.setStatus(`${label} requested`);
       } else {

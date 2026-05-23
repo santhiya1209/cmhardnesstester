@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getCameraStatus } from '@/api/getCameraStatus';
+import { getCameraStatus } from '@/api/camera';
 import type { CameraStatus } from '@/types/camera';
 
 const INITIAL: CameraStatus = {

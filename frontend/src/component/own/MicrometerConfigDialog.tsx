@@ -18,7 +18,7 @@ import Typography from '@mui/material/Typography';
 import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
 import { useSaveMicrometerConfig } from '@/hooks/mutations/useSaveMicrometerConfig';
 import { DEFAULT_MICROMETER_CONFIG } from '@/types/micrometerConfig';
-import { listSerialPorts } from '@/api/listSerialPorts';
+import { listSerialPorts } from '@/api/serialPort';
 import type { SerialPortInfo } from '@/types/serial';
 import { colors } from '@/theme/theme';
 
@@ -124,10 +124,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
         startOffsetY: dragOffset.y,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[micrometer-dialog-drag-start] clientX=${event.clientX} clientY=${event.clientY} offsetX=${dragOffset.x} offsetY=${dragOffset.y}`
-      );
     },
     [dragOffset.x, dragOffset.y]
   );
@@ -140,10 +136,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
       const nextY = state.startOffsetY + (event.clientY - state.startClientY);
       const clamped = clampOffset(nextX, nextY);
       setDragOffset(clamped);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[micrometer-dialog-drag-move] x=${clamped.x.toFixed(0)} y=${clamped.y.toFixed(0)}`
-      );
     },
     [clampOffset]
   );
@@ -156,10 +148,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[micrometer-dialog-drag-end] x=${dragOffset.x.toFixed(0)} y=${dragOffset.y.toFixed(0)}`
-      );
     },
     [dragOffset.x, dragOffset.y]
   );
@@ -175,14 +163,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
           comPort: persistedPort,
         },
       });
-      // eslint-disable-next-line no-console
-      console.log(
-        `[micrometer-config] enabled=${enabled} comPort=${persistedPort ?? 'null'}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(`[micrometer-enabled] value=${enabled}`);
-      // eslint-disable-next-line no-console
-      console.log(`[micrometer-port-selected] port=${persistedPort ?? 'null'}`);
       onStatusChange?.(
         enabled
           ? persistedPort

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createMachineSettings } from '@/api/createMachineSettings';
-import { updateMachineSettings } from '@/api/updateMachineSettings';
+import { createMachineSettings } from '@/api/machine';
+import { updateMachineSettings } from '@/api/machine';
 import type { MachineSettings, MachineSettingsPayload } from '@/types/machineSettings';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

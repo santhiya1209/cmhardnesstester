@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { createToolbarState } from '@/api/createToolbarState';
-import { updateToolbarState } from '@/api/updateToolbarState';
+import { createToolbarState } from '@/api/toolbar';
+import { updateToolbarState } from '@/api/toolbar';
 import type { ToolbarState, ToolbarStatePayload } from '@/types/toolbarState';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 

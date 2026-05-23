@@ -242,8 +242,6 @@ function MenuBarImpl({ onSelect }: Props) {
   const handleClose = useCallback(() => setOpenId(null), []);
   const handleSelect = useCallback(
     (action: MenuActionId) => {
-      // eslint-disable-next-line no-console
-      console.log('[menu] item clicked', action);
       onSelect?.(action);
     },
     [onSelect]

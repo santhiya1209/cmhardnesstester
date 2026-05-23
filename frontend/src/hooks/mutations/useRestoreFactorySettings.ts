@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { restoreFactorySettings } from '@/api/restoreFactorySettings';
+import { restoreFactorySettings } from '@/api/settings';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useRestoreFactorySettings() {
