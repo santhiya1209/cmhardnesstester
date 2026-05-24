@@ -1,10 +1,10 @@
-import { memo, useEffect } from 'react';
+﻿import { memo, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 import type { MachineState } from '@/types/machine';
 
@@ -13,22 +13,22 @@ const BAR_SX: SxProps<Theme> = {
   alignItems: 'center',
   height: 28,
   px: 1.5,
-  bgcolor: colors.panel,
+  bgcolor: tokens.surface.raised,
   borderTop: 1,
-  borderColor: colors.border,
+  borderColor: tokens.border.default,
   fontSize: 11,
   gap: 2,
 };
 
 const SETTINGS_ICON_SX: SxProps<Theme> = {
   fontSize: 16,
-  color: colors.textMuted,
+  color: tokens.text.muted,
   mr: 0.5,
 };
 
 const MESSAGE_SX: SxProps<Theme> = {
   fontSize: 11,
-  color: colors.textMuted,
+  color: tokens.text.muted,
   fontWeight: 500,
 };
 
@@ -39,16 +39,16 @@ const READOUT_SX: SxProps<Theme> = {
   ml: 'auto',
 };
 
-const LABEL_SX: SxProps<Theme> = { fontSize: 11, color: colors.textMuted, fontWeight: 500 };
+const LABEL_SX: SxProps<Theme> = { fontSize: 11, color: tokens.text.muted, fontWeight: 500 };
 const VALUE_SX: SxProps<Theme> = {
   fontSize: 11,
-  color: colors.headingPrimary,
+  color: tokens.accent.base,
   fontWeight: 600,
   fontVariantNumeric: 'tabular-nums',
 };
 const CONNECTION_SX: SxProps<Theme> = {
   fontSize: 11,
-  color: colors.textMuted,
+  color: tokens.text.muted,
   fontWeight: 500,
 };
 const STATUS_ITEM_SX: SxProps<Theme> = {
@@ -67,7 +67,7 @@ const MACHINE_READOUT_SX: SxProps<Theme> = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 1.5,
-  color: colors.headingPrimary,
+  color: tokens.accent.base,
   flexShrink: 0,
 };
 

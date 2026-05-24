@@ -1,4 +1,4 @@
-import { memo, useCallback, useState, type ReactNode } from 'react';
+﻿import { memo, useCallback, useState, type ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
@@ -9,7 +9,7 @@ import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
 import type { ToolId, ToolbarActionId } from '@/types/tool';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 import MeasurementsWorkspace, { type MeasurementDisplayValues } from './MeasurementsWorkspace';
 import MachineControlTab from './MachineControlTab';
@@ -50,7 +50,7 @@ const TABS_SX: SxProps<Theme> = {
   bgcolor: 'background.paper',
   px: 0.5,
   '& .MuiTabs-indicator': {
-    backgroundColor: colors.accentSkyBlue,
+    backgroundColor: tokens.accentSecondary.base,
     height: 2,
     borderRadius: '2px 2px 0 0',
   },
@@ -64,11 +64,11 @@ const TABS_SX: SxProps<Theme> = {
     color: 'text.secondary',
     transition: 'color 160ms ease',
     '&:hover': {
-      color: colors.accentSkyBlue,
+      color: tokens.accentSecondary.base,
       backgroundColor: 'transparent',
     },
     '&.Mui-selected': {
-      color: colors.accentSkyBlue,
+      color: tokens.accentSecondary.base,
       fontWeight: 600,
     },
   },
@@ -111,9 +111,6 @@ function renderTab(
     onObjectiveChange,
     onTurretIntent,
     onObjectiveChangeIntent,
-    onToolbarAction,
-    activeTool,
-    cameraReady,
     targetMinHv,
     targetMaxHv,
   }: TabContentProps
@@ -128,9 +125,6 @@ function renderTab(
           onObjectiveChange={onObjectiveChange}
           onTurretIntent={onTurretIntent}
           onObjectiveChangeIntent={onObjectiveChangeIntent}
-          onToolbarAction={onToolbarAction}
-          activeTool={activeTool}
-          cameraReady={cameraReady}
         />
       );
     case 1: return <XYZPlatformTab />;
@@ -196,7 +190,7 @@ type Props = {
    * calibration screen is active. Slot
    * pattern (vs. drilling all 9 calibration props) so the camera + machine
    * controls + measurement table remain visible and interactive while the
-   * user calibrates — no modal blocking, matches industrial-software UX.
+   * user calibrates â€” no modal blocking, matches industrial-software UX.
    */
   calibrationSlot?: ReactNode;
   micrometerEnabled: boolean;

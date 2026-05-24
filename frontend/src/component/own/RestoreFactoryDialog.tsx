@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+﻿import { memo, useCallback, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Dialog from '@mui/material/Dialog';
@@ -10,7 +10,7 @@ import Typography from '@mui/material/Typography';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 
 import { useRestoreFactorySettings } from '@/hooks/mutations/useRestoreFactorySettings';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Props = {
   open: boolean;
@@ -39,12 +39,12 @@ function RestoreFactoryDialogImpl({ open, onClose, onStatusChange, onRestored }:
 
   return (
     <Dialog open={open} onClose={restoring ? undefined : onClose} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 }}>
+      <DialogTitle sx={{ bgcolor: tokens.accent.base, color: '#FFFFFF', py: 1.25 }}>
         Info
       </DialogTitle>
       <DialogContent dividers>
         <Stack direction="row" spacing={2} sx={{ alignItems: 'center', py: 1 }}>
-          <InfoOutlinedIcon sx={{ fontSize: 40, color: colors.headingPrimary }} />
+          <InfoOutlinedIcon sx={{ fontSize: 40, color: tokens.accent.base }} />
           <Typography variant="body1">Restore Factory Settings?</Typography>
         </Stack>
         {errorMessage ? (

@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useState, type ComponentType } from 'react';
+﻿import { Fragment, memo, useCallback, useEffect, useState, type ComponentType } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Menu from '@mui/material/Menu';
@@ -7,7 +7,7 @@ import Tooltip from '@mui/material/Tooltip';
 import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 import type { ToolbarActionId } from '@/types/tool';
 
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
@@ -83,9 +83,9 @@ const BAR_SX: SxProps<Theme> = {
   gap: '6px',
   px: '6px',
   py: '4px',
-  bgcolor: colors.headingPrimary,
+  bgcolor: tokens.accent.base,
   borderBottom: 1,
-  borderColor: colors.border,
+  borderColor: tokens.border.default,
   flexWrap: 'nowrap',
   overflow: 'hidden',
 };

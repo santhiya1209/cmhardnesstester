@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
+﻿import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
@@ -14,7 +14,7 @@ import {
   useCameraStream,
   waitForFreshCameraFrame,
 } from '@/hooks/useCameraStream';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 import ImageOverlay from '@/component/own/ImageOverlay';
 import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
 import MagnifierLens from '@/component/own/MagnifierLens';
@@ -31,7 +31,7 @@ const ROOT_SX: SxProps<Theme> = {
   flexDirection: 'column',
   minWidth: 0,
   minHeight: 0,
-  bgcolor: colors.background,
+  bgcolor: tokens.surface.base,
 };
 
 const VIEW_SX: SxProps<Theme> = {
@@ -39,9 +39,7 @@ const VIEW_SX: SxProps<Theme> = {
   position: 'relative',
   overflow: 'hidden',
   bgcolor: '#000',
-  border: 1,
-  borderColor: colors.border,
-  m: 1,
+  ml: '2px',
 };
 
 const COORD_BAR_SX: SxProps<Theme> = {
@@ -50,10 +48,10 @@ const COORD_BAR_SX: SxProps<Theme> = {
   gap: 4,
   px: 2,
   py: 0.25,
-  bgcolor: colors.panel,
+  bgcolor: tokens.surface.raised,
   fontSize: 12,
   borderTop: 1,
-  borderColor: colors.border,
+  borderColor: tokens.border.default,
 };
 
 const COORD_VALUE_SX: SxProps<Theme> = {
@@ -61,7 +59,7 @@ const COORD_VALUE_SX: SxProps<Theme> = {
     "'Cascadia Mono', 'Cascadia Code', Consolas, 'JetBrains Mono', ui-monospace, monospace",
   fontVariantNumeric: 'tabular-nums',
   fontSize: 12,
-  color: colors.textPrimary,
+  color: tokens.text.primary,
   letterSpacing: 0.2,
 };
 
@@ -94,7 +92,7 @@ type Props = {
   overlayShapes: OverlayShape[];
   autoMeasureGraphics: AutoMeasureGraphics | null;
   autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
-  /** Bumped by App on objective change → forces AutoMeasureOverlay to do an
+  /** Bumped by App on objective change â†’ forces AutoMeasureOverlay to do an
    *  imperative canvas clearRect so no stale yellow lines linger across the
    *  switch. */
   autoMeasureClearNonce?: number;
@@ -105,7 +103,7 @@ type Props = {
   /**
    * Bumps every time the machine confirms a new objective via L<n>OK RX.
    * CameraWindow uses it to clear the live canvas + frozen snapshot so the
-   * next worker frame draws fresh at the new magnification — no stale pixels
+   * next worker frame draws fresh at the new magnification â€” no stale pixels
    * from the previous lens, no cached transform.
    */
   objectiveRefreshKey?: number;
@@ -125,13 +123,13 @@ type Props = {
   turretMoving?: boolean;
   /** Target objective for the in-progress turret move (e.g. "10X").
    *  Surfaced in the "Turret moving to X..." popup so the operator knows
-   *  what magnification the camera is switching to. Optional — falls back
+   *  what magnification the camera is switching to. Optional â€” falls back
    *  to the generic "Turret moving..." string if unknown. */
   turretMovingTarget?: string | null;
   /** Live camera open flag. Forwarded to AutoMeasureOverlay so it can hard-
-   *  gate drawing — no yellow lines may paint when the camera is closed. */
+   *  gate drawing â€” no yellow lines may paint when the camera is closed. */
   cameraOpen?: boolean;
-  /** Active objective's calibration in µm per image pixel. Threaded into
+  /** Active objective's calibration in Âµm per image pixel. Threaded into
    *  ImageOverlay so Measure Length renders calibrated microns. */
   umPerPixel?: number | null;
   /** Endpoint-drag commit for an existing length shape (Measure Length). */
@@ -224,7 +222,7 @@ function CameraWindowImpl(
   // Set whenever the live canvas is cleared (objective change). If the next
   // worker frame hasn't arrived yet, captureDisplayedFrame would otherwise
   // hand the native addon a transparent/black image and detection silently
-  // fails — gate the capture on a fresh frame after this timestamp.
+  // fails â€” gate the capture on a fresh frame after this timestamp.
   const liveCanvasClearedAtRef = useRef<number>(0);
 
   const toggleFreeze = useCallback(() => {
@@ -290,7 +288,7 @@ function CameraWindowImpl(
     // trip through the worker), the pixels are still transparent or carry
     // pre-clear stale content. Refuse to capture so callers can await a
     // fresh post-clear frame instead of shipping a stale image to the
-    // native detector. Note: paint-time, not IPC-arrival time — the IPC
+    // native detector. Note: paint-time, not IPC-arrival time â€” the IPC
     // body is forwarded to the worker before any pixels land on the canvas.
     if (
       source === live &&
@@ -305,14 +303,14 @@ function CameraWindowImpl(
     // native frame (2592x1944 bgr24), regardless of the UI freeze state.
     // The visible canvas is now also at full native resolution
     // (PREVIEW_SCALE=1) and CSS-scaled to fit the panel, but reading the
-    // canvas pixels would still mix in any overlay strokes — go straight
+    // canvas pixels would still mix in any overlay strokes â€” go straight
     // to the raw IPC buffer kept in latestFullFrame instead.
     if (imageSourceRef.current === 'live-camera') {
       const full = getLatestFullFrame();
       if (full && full.body) {
         const buffer = toOwnedArrayBuffer(full.body);
         if (options?.freeze) {
-          // Visual freeze only — copies the (downscaled) live canvas onto
+          // Visual freeze only â€” copies the (downscaled) live canvas onto
           // the snap canvas so the user sees the frozen preview. The native
           // detector receives the full-res buffer above; this is purely UI.
           if (snap && live && live.width > 0 && live.height > 0) {
@@ -336,7 +334,7 @@ function CameraWindowImpl(
           source: 'live-camera',
         };
       }
-      // No silent fallback to the downscaled rgb32 canvas — reject so the
+      // No silent fallback to the downscaled rgb32 canvas â€” reject so the
       // caller can surface the failure and the user can re-click once a
       // fresh native frame arrives.
       return { ok: false, error: 'native-full-frame-not-available' };
@@ -453,7 +451,7 @@ function CameraWindowImpl(
       const source = frozen && snap && snap.width > 0 && snap.height > 0 ? snap : live;
       if (!source || source.width <= 0 || source.height <= 0) {
         // eslint-disable-next-line no-console
-        console.warn('[album] snapshot capture skipped — no source frame', {
+        console.warn('[album] snapshot capture skipped â€” no source frame', {
           source: source ? 'live-or-snap' : 'null',
           width: source?.width ?? 0,
           height: source?.height ?? 0,
@@ -469,7 +467,7 @@ function CameraWindowImpl(
       const ctx = out.getContext('2d');
       if (!ctx) {
         // eslint-disable-next-line no-console
-        console.warn('[album] snapshot capture failed — no 2d context');
+        console.warn('[album] snapshot capture failed â€” no 2d context');
         return null;
       }
       ctx.drawImage(source, 0, 0, w, h);
@@ -527,7 +525,7 @@ function CameraWindowImpl(
     // yet painted on the main thread) is dropped on arrival instead of
     // repainting stale previous-objective pixels onto the cleared canvas.
     // Why: do NOT null imageSize here. The camera resolution is unchanged on
-    // objective change — the magnification is optical, not pixel. Nulling
+    // objective change â€” the magnification is optical, not pixel. Nulling
     // imageSize unmounts/blanks the AutoMeasureOverlay and the next overlay
     // commit fails to render until status polls a width/height change (which
     // never happens because the camera frame size is constant).
@@ -542,7 +540,7 @@ function CameraWindowImpl(
   // is dropped on arrival. Falling edge logs the first fresh post-turret
   // paint so the operator can see streaming resumed. While `turretMoving`
   // is true a "Turret moving..." overlay is rendered above the (now blank)
-  // canvas — the old indentation image must not remain visible during the
+  // canvas â€” the old indentation image must not remain visible during the
   // motion window.
   const turretMovingPrevRef = useRef(false);
   useEffect(() => {
@@ -616,7 +614,7 @@ function CameraWindowImpl(
     lastSeenObjectiveRefreshKeyRef.current = objectiveRefreshKey;
 
 
-    // Drop any frozen snapshot — it was captured under the previous objective.
+    // Drop any frozen snapshot â€” it was captured under the previous objective.
     if (frozen) {
       const snap = freezeCanvasRef.current;
       const ctx = snap?.getContext('2d');
@@ -625,7 +623,7 @@ function CameraWindowImpl(
       setFrozen(false);
     }
     // Clear the live canvas so the next worker frame paints onto a clean
-    // surface — no stale pixels from the previous magnification.
+    // surface â€” no stale pixels from the previous magnification.
     clearLiveCanvas();
 
   }, [objectiveRefreshKey, clearLiveCanvas, frozen, manualMeasureObjective]);
@@ -703,7 +701,7 @@ function CameraWindowImpl(
       const viewport = viewportRef.current;
       if (!viewport || !imageSize) {
         // Hide the magnifier marker but keep the last coordinate readout
-        // — industrial UI never blanks the X/Y display.
+        // â€” industrial UI never blanks the X/Y display.
         setCursorDisplay(null);
         return;
       }
@@ -733,8 +731,8 @@ function CameraWindowImpl(
       setCursorDisplay(displayPoint);
       const imagePoint = displayToImage(displayPoint, placement, imageSize);
       if (magnifierEnabled) {
-        // Full coordinate-map trace: client → viewport (canvas CSS) →
-        // image (post-letterbox) → source bitmap pixel. devicePixelRatio is
+        // Full coordinate-map trace: client â†’ viewport (canvas CSS) â†’
+        // image (post-letterbox) â†’ source bitmap pixel. devicePixelRatio is
         // included because the lens canvas is allocated at DPR for crispness.
       }
       setCursorCoordinate({
@@ -779,7 +777,7 @@ function CameraWindowImpl(
               variant="caption"
               sx={{ color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}
             >
-              {status.width}×{status.height}
+              {status.width}Ã—{status.height}
             </Typography>
           ) : null}
         </Box>

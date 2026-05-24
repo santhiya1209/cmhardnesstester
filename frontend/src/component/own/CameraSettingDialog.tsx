@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -24,7 +24,7 @@ import {
   EXPOSURE_TIME_MIN_MS,
   EXPOSURE_TIME_STEP_MS,
 } from '@/types/cameraSetting';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Range = { min: number; max: number; step: number };
 
@@ -216,7 +216,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       if (!liveAvailable) return;
       // MUI Slider's onChange + onChangeCommitted fire with the same value on
       // a click without drag. Skip if this exact value has already been sent
-      // (or is currently queued) — one UI change = one IPC.
+      // (or is currently queued) â€” one UI change = one IPC.
       if (
         gainLastSentValueRef.current === value &&
         gainPendingRef.current === null
@@ -259,7 +259,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
         return;
       }
       if (exposureLastSentValueRef.current === valueMs) {
-        // Duplicate of last sent — don't re-emit.
+        // Duplicate of last sent â€” don't re-emit.
         return;
       }
       exposureInFlightRef.current = true;
@@ -344,7 +344,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     (_: unknown, value: number | number[]) => {
       exposureDraggingRef.current = false;
       if (typeof value !== 'number') return;
-      // Cancel any pending throttled send — the commit value is authoritative.
+      // Cancel any pending throttled send â€” the commit value is authoritative.
       if (exposureThrottleTimerRef.current !== null) {
         window.clearTimeout(exposureThrottleTimerRef.current);
         exposureThrottleTimerRef.current = null;
@@ -480,7 +480,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           gap: 1,
           px: 1.5,
           py: 1,
-          bgcolor: colors.headingPrimary,
+          bgcolor: tokens.accent.base,
           color: '#FFFFFF',
           cursor: 'grab',
           userSelect: 'none',

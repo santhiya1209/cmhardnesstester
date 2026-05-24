@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -24,13 +24,13 @@ import {
 } from '@/types/serialPortSetting';
 import { listSerialPorts } from '@/api/serialPort';
 import type { SerialPortInfo } from '@/types/serial';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Props = {
   open: boolean;
   onClose: () => void;
   onStatusChange?: (message: string) => void;
-  // Current in-memory machine COM port. Lives in App state — never read from
+  // Current in-memory machine COM port. Lives in App state â€” never read from
   // or written to the database. `null` means "no current selection".
   currentMachinePort: string | null;
   // Callback that disconnects the previous port (if any) and connects the
@@ -49,14 +49,14 @@ function toFormState(settings: SerialPortSetting | null): SerialPortSettingPaylo
   };
 }
 
-const TITLE_SX = { bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 };
+const TITLE_SX = { bgcolor: tokens.accent.base, color: '#FFFFFF', py: 1.25 };
 const SECTION_PAPER_SX = { p: 2, mb: 1.5 };
-const SECTION_TITLE_SX = { color: colors.headingSecondary, fontWeight: 600, mb: 1 };
+const SECTION_TITLE_SX = { color: tokens.status.success, fontWeight: 600, mb: 1 };
 const ROW_LABEL_SX = { minWidth: 90 };
 
 function renderPortLabel(port: SerialPortInfo): string {
-  if (port.friendlyName) return `${port.path} — ${port.friendlyName}`;
-  if (port.manufacturer) return `${port.path} — ${port.manufacturer}`;
+  if (port.friendlyName) return `${port.path} â€” ${port.friendlyName}`;
+  if (port.manufacturer) return `${port.path} â€” ${port.manufacturer}`;
   return port.path;
 }
 
@@ -94,7 +94,7 @@ const DevicePortSelect = memo(function DevicePortSelect({
           <em>(none)</em>
         </MenuItem>
         {savedMissing ? (
-          <MenuItem value={value}>{`${value} — not detected`}</MenuItem>
+          <MenuItem value={value}>{`${value} â€” not detected`}</MenuItem>
         ) : null}
         {availablePorts.map((port) => (
           <MenuItem key={port.path} value={port.path}>

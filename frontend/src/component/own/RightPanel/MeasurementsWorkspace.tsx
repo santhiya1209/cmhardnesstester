@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -10,7 +10,7 @@ import ClearAllIcon from '@mui/icons-material/ClearAll';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
 import { updateMeasurement } from '@/api/measurement';
 import type { Measurement } from '@/types/measurement';
@@ -62,16 +62,16 @@ const ACTION_BTN_SX: SxProps<Theme> = {
   bgcolor: 'background.paper',
   boxShadow: '0 1px 2px rgba(15, 42, 71, 0.04)',
   '&:hover': {
-    borderColor: colors.accentSkyBlue,
-    color: colors.accentSkyBlue,
-    bgcolor: colors.accentSkyBlueSoft,
+    borderColor: tokens.accentSecondary.base,
+    color: tokens.accentSecondary.base,
+    bgcolor: tokens.accentSecondary.soft,
   },
 };
 const ACTION_BTN_ACTIVE_SX: SxProps<Theme> = {
   ...ACTION_BTN_SX,
-  borderColor: colors.accentSkyBlue,
-  color: colors.accentSkyBlue,
-  bgcolor: colors.accentSkyBlueSoft,
+  borderColor: tokens.accentSecondary.base,
+  color: tokens.accentSecondary.base,
+  bgcolor: tokens.accentSecondary.soft,
   boxShadow: `0 0 0 2px rgba(14, 165, 233, 0.18)`,
 };
 const STATUS_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, px: 1.5, pb: 0.75 };
@@ -154,7 +154,7 @@ function MeasurementsWorkspaceImpl({
   // Single source of truth for the convert-value box. Computed live from the
   // currently selected dropdown type + the displayed row's HV so the box
   // never goes blank between dropdown change and server refetch. Always
-  // resolves to a non-empty string — "N/A" when conversion is unsupported
+  // resolves to a non-empty string â€” "N/A" when conversion is unsupported
   // or out of range.
   const displayConvertValue = useMemo<string>(() => {
     const hv =
@@ -209,14 +209,14 @@ function MeasurementsWorkspaceImpl({
       if (!target) {
         return;
       }
-      // Original HV is the row's existing hv — it is NEVER overwritten by
+      // Original HV is the row's existing hv â€” it is NEVER overwritten by
       // the conversion path below. The convertValue is a derived/companion
       // field stored alongside.
       const originalHv = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
-      // Analytical Vickers→target conversion (see utils/hardnessConvert.ts).
+      // Analytical Vickersâ†’target conversion (see utils/hardnessConvert.ts).
       // These are widely-used approximations for hardened/soft steel, NOT
       // ISO 18265 / E140 table-grade values. Returns `null` when the input
-      // HV falls outside the target scale's reasonable range — the UI then
+      // HV falls outside the target scale's reasonable range â€” the UI then
       // renders a dash, which is the correct industrial behaviour (don't
       // fabricate a number you can't justify).
       const convertValue = convertVickers(originalHv, next as ConvertTargetType);

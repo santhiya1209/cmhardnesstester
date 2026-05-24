@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -30,7 +30,7 @@ import {
   type AutoMeasureSettingsPayload,
   type ObjectiveForMeasure,
 } from '@/types/autoMeasureSettings';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Props = {
   open: boolean;
@@ -58,7 +58,7 @@ function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsP
 const PANEL_WIDTH = 560;
 const DRAG_LOG_THROTTLE_MS = 100;
 // Preview backend (native detection + overlay paint) is heavy. Hold the
-// preview dispatch until the user pauses the slider for this long — the
+// preview dispatch until the user pauses the slider for this long â€” the
 // thumb/number remain fully decoupled and update on every tick.
 // Live-preview cadence. The App-side coalescing (autoMeasurePendingPreviewRef)
 // ensures only one detection runs at a time and the latest pending settings
@@ -81,7 +81,7 @@ function AutoMeasureSettingsDialogImpl({
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
   const [form, setForm] = useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   // formRef mirrors `form` so slider handlers see the latest value without
-  // closure staleness — required because a drag fires onChange faster than
+  // closure staleness â€” required because a drag fires onChange faster than
   // React batches the prior setState commit.
   const formRef = useRef<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const previewSeqRef = useRef(0);
@@ -162,7 +162,7 @@ function AutoMeasureSettingsDialogImpl({
   // Local-only form write. Synchronous: updates ref + React state in the
   // same commit so the slider thumb and the numeric readout move together
   // with no preview-side coupling. Side effects (preview dispatch) MUST NOT
-  // happen here — see schedulePreview / flushPreview below.
+  // happen here â€” see schedulePreview / flushPreview below.
   const writeLocal = useCallback((patch: Partial<AutoMeasureSettingsPayload>) => {
     const next = normalizeAutoMeasureSettings({ ...formRef.current, ...patch });
     formRef.current = next;
@@ -220,7 +220,7 @@ function AutoMeasureSettingsDialogImpl({
   );
 
   // Slider onChange: write LOCAL form only. Never run detection or call the
-  // parent on the per-tick path — that's what made the slider feel sticky.
+  // parent on the per-tick path â€” that's what made the slider feel sticky.
   // Preview dispatch is debounced (schedulePreview) and force-flushed on
   // release (handleSliderCommitted).
   const handleSliderChange = useCallback(
@@ -299,7 +299,7 @@ function AutoMeasureSettingsDialogImpl({
     }
   }, [clearPreviewDebounce, data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
-  // Drag handlers — pointer events give us automatic capture across the entire
+  // Drag handlers â€” pointer events give us automatic capture across the entire
   // window, so we don't need a global mousemove listener and the panel keeps
   // tracking the cursor even if it briefly leaves the header.
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -395,7 +395,7 @@ function AutoMeasureSettingsDialogImpl({
         flexDirection: 'column',
         overflow: 'hidden',
         // Important: no backdrop, no scrim. The live camera below stays at
-        // full brightness — only this panel's own pointer events are captured.
+        // full brightness â€” only this panel's own pointer events are captured.
       }}
     >
       <Box
@@ -409,7 +409,7 @@ function AutoMeasureSettingsDialogImpl({
           gap: 1,
           px: 1.5,
           py: 1,
-          bgcolor: colors.headingPrimary,
+          bgcolor: tokens.accent.base,
           color: '#FFFFFF',
           cursor: 'grab',
           userSelect: 'none',
@@ -434,7 +434,7 @@ function AutoMeasureSettingsDialogImpl({
       <Box sx={{ p: 2, overflowY: 'auto', maxHeight: 'calc(100vh - 120px)' }}>
         <Typography
           variant="subtitle2"
-          sx={{ color: colors.headingSecondary, fontWeight: 600, mb: 1 }}
+          sx={{ color: tokens.status.success, fontWeight: 600, mb: 1 }}
         >
           Auto Measure Correct
         </Typography>
@@ -444,7 +444,7 @@ function AutoMeasureSettingsDialogImpl({
 
         <Typography
           variant="subtitle2"
-          sx={{ color: colors.headingSecondary, fontWeight: 600, mt: 2, mb: 1 }}
+          sx={{ color: tokens.status.success, fontWeight: 600, mt: 2, mb: 1 }}
         >
           Auto Measure
         </Typography>

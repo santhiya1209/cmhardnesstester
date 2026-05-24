@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -38,7 +38,7 @@ import type {
   CalibrationType,
   LengthMode,
 } from '@/types/calibration';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 const ZOOM_OPTIONS = ['2.5X', '5X', '10X', '20X', '40X', '50X'] as const;
 const FORCE_OPTIONS = ['0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'] as const;
@@ -65,7 +65,7 @@ const DEFAULT_FORM_STATE: FormState = {
 };
 
 // Inverse Vickers: given the known HV and force (kgf), the calibration
-// diagonal in µm is sqrt(1.8544 * F / HV) * 1000. Used to derive the per-axis
+// diagonal in Âµm is sqrt(1.8544 * F / HV) * 1000. Used to derive the per-axis
 // calibration coefficients (xUmPerPixel = D_um / pixelX, similarly Y) without
 // asking the user for a separate reference value.
 function diagonalUmFromHv(forceKgf: number, hv: number): number | null {
@@ -92,7 +92,7 @@ type Props = {
    * Latest measured pixel diagonals from the live image (Manual Measure).
    * When the dialog opens, these auto-fill Pixel Length X / Y so the user
    * doesn't have to retype what they just measured. Editable after the
-   * auto-fill — typing into the fields wins. Pass null/0 to skip auto-fill.
+   * auto-fill â€” typing into the fields wins. Pass null/0 to skip auto-fill.
    */
   autoFillPixelLengthX?: number | null;
   autoFillPixelLengthY?: number | null;
@@ -167,7 +167,7 @@ function buildLengthPayload(form: FormState): CalibrationSavePayload | null {
   const forceKgf = parseForceKgfFromLabel(form.force);
   if (!form.zoomTime || !form.force || !form.hardnessLevel) return null;
   if (px === null || py === null || h === null || forceKgf === null) return null;
-  // Same inverse-Vickers derivation as the Hardness tab — both tabs now use
+  // Same inverse-Vickers derivation as the Hardness tab â€” both tabs now use
   // the input HV + Force to derive the calibration diagonal.
   const diagonalUm = diagonalUmFromHv(forceKgf, h);
   if (diagonalUm === null) return null;
@@ -187,11 +187,11 @@ function buildLengthPayload(form: FormState): CalibrationSavePayload | null {
 
 const HEADER_CELL_SX = {
   fontWeight: 600,
-  bgcolor: colors.headingPrimary,
+  bgcolor: tokens.accent.base,
   color: '#FFFFFF',
 };
 
-const SECTION_TITLE_SX = { color: colors.headingSecondary, fontWeight: 600 };
+const SECTION_TITLE_SX = { color: tokens.status.success, fontWeight: 600 };
 const NUMBER_SLOT_PROPS = { htmlInput: { min: 0, step: 'any' } } as const;
 
 function CalibrationDialogImpl({
@@ -417,7 +417,7 @@ function CalibrationDialogImpl({
     setActionError(null);
     try {
       // Pixel X/Y are RAW pixel lengths from Auto/Manual measure. The
-      // calibration diagonal (in µm) is derived by inverse Vickers from the
+      // calibration diagonal (in Âµm) is derived by inverse Vickers from the
       // known Hardness Value + Force, then per-axis coefficients are
       // derived as D_um / pixelLengthX|Y. realDistanceX/Y carries D_um.
       const savedCalibration = await saveCalibration(payload);
@@ -426,7 +426,7 @@ function CalibrationDialogImpl({
       onStatusChange?.('Calibration saved.');
 
       // Auto-create a measurement row from the CURRENT D1/D2 line pixels so
-      // the table is populated immediately — see onAutoCreateMeasurementRow.
+      // the table is populated immediately â€” see onAutoCreateMeasurementRow.
       const currentD1Px = payload.pixelLengthX;
       const currentD2Px = payload.pixelLengthY;
       if (
@@ -436,7 +436,7 @@ function CalibrationDialogImpl({
         currentD2Px <= 0
       ) {
         setActionError(
-          'Calibration saved, but D1/D2 line pixels are zero — no measurement row was created. Run Manual or Auto Measure first, then Add Calibration.'
+          'Calibration saved, but D1/D2 line pixels are zero â€” no measurement row was created. Run Manual or Auto Measure first, then Add Calibration.'
         );
       } else if (onAutoCreateMeasurementRow) {
         try {
@@ -630,7 +630,7 @@ function CalibrationDialogImpl({
         sx={{
           display: 'flex',
           alignItems: 'center',
-          bgcolor: colors.headingPrimary,
+          bgcolor: tokens.accent.base,
           color: '#FFFFFF',
           px: 2,
           py: 1.25,
@@ -661,17 +661,17 @@ function CalibrationDialogImpl({
                 <TableCell sx={HEADER_CELL_SX}>Force</TableCell>
                 <TableCell sx={HEADER_CELL_SX}>Hardness Level</TableCell>
                 <TableCell sx={HEADER_CELL_SX} align="right">
-                  X Pixel Length (µm/px)
+                  X Pixel Length (Âµm/px)
                 </TableCell>
                 <TableCell sx={HEADER_CELL_SX} align="right">
-                  Y Pixel Length (µm/px)
+                  Y Pixel Length (Âµm/px)
                 </TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {tableRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} align="center" sx={{ color: colors.textMuted }}>
+                  <TableCell colSpan={7} align="center" sx={{ color: tokens.text.muted }}>
                     {loading ? 'Loading...' : 'No calibrations yet.'}
                   </TableCell>
                 </TableRow>

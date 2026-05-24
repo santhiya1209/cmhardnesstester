@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -20,7 +20,7 @@ import {
   LINE_COLOR_OPTIONS,
   type LineColor,
 } from '@/types/lineColorSetting';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Props = {
   open: boolean;
@@ -66,7 +66,7 @@ function LineColorSettingDialogImpl({ open, onClose, onStatusChange, onSaved }: 
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 }}>
+      <DialogTitle sx={{ bgcolor: tokens.accent.base, color: '#FFFFFF', py: 1.25 }}>
         Line Color Setting
       </DialogTitle>
       <DialogContent dividers>
@@ -89,7 +89,7 @@ function LineColorSettingDialogImpl({ open, onClose, onStatusChange, onSaved }: 
               height: 28,
               bgcolor: LINE_COLOR_HEX[selected],
               border: 1,
-              borderColor: colors.border,
+              borderColor: tokens.border.default,
             }}
             aria-label={`Preview ${selected}`}
           />

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -21,7 +21,7 @@ import {
   type GenericSetting,
   type HardnessTestMode,
 } from '@/types/genericSetting';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Props = {
   open: boolean;
@@ -52,9 +52,9 @@ function parseHardness(value: string): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-const TITLE_SX = { bgcolor: colors.headingPrimary, color: '#FFFFFF', py: 1.25 };
+const TITLE_SX = { bgcolor: tokens.accent.base, color: '#FFFFFF', py: 1.25 };
 const SECTION_PAPER_SX = { p: 2, mb: 1.5 };
-const SECTION_TITLE_SX = { color: colors.headingSecondary, fontWeight: 600, mb: 1 };
+const SECTION_TITLE_SX = { color: tokens.status.success, fontWeight: 600, mb: 1 };
 const ROW_LABEL_SX = { minWidth: 90 };
 
 function GenericSettingDialogImpl({ open, onClose, onStatusChange }: Props) {

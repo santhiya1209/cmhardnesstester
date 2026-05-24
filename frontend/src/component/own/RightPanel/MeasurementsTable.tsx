@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
@@ -11,7 +11,7 @@ import Typography from '@mui/material/Typography';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
 import { getHardnessColor } from '@/utils/hardnessColor';
 
@@ -40,7 +40,7 @@ const TABLE_WRAP_SX: SxProps<Theme> = {
   bgcolor: 'background.paper',
 };
 // The global theme sets `.MuiTableHead-root .MuiTableCell-head` to navy on
-// white — to override industrial-light headers here, sx must beat that
+// white â€” to override industrial-light headers here, sx must beat that
 // specificity. `&.MuiTableCell-head` raises this rule to (0,2,1) which
 // outranks the theme's (0,2,0) descendant selector.
 const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
@@ -49,13 +49,13 @@ const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
     fontWeight: 600,
     letterSpacing: 0.3,
     textTransform: 'none',
-    color: colors.headingPrimary,
+    color: tokens.accent.base,
     backgroundColor: '#F1F4F9',
     py: 0.75,
     px: 1,
     whiteSpace: 'nowrap',
     cursor: 'default',
-    borderBottom: `1px solid ${colors.border}`,
+    borderBottom: `1px solid ${tokens.border.default}`,
   },
   '&.MuiTableCell-head:hover': {
     backgroundColor: '#E8EDF4',
@@ -79,8 +79,8 @@ const EMPTY_ICON_WRAP_SX: SxProps<Theme> = {
   alignItems: 'center',
   justifyContent: 'center',
   bgcolor: '#F1F4F9',
-  border: `1px dashed ${colors.borderStrong}`,
-  color: colors.textMuted,
+  border: `1px dashed ${tokens.border.strong}`,
+  color: tokens.text.muted,
 };
 const EMPTY_TEXT_SX: SxProps<Theme> = {
   fontSize: 13,
@@ -158,7 +158,7 @@ function DepthCell({
     const trimmed = draft.trim();
     const next = trimmed === '' ? null : Number(trimmed);
     if (trimmed !== '' && !Number.isFinite(next)) {
-      // Reject non-numeric input — restore last persisted value.
+      // Reject non-numeric input â€” restore last persisted value.
       setDraft(persistedManual === null ? '' : String(persistedManual));
       return false;
     }
@@ -185,7 +185,7 @@ function DepthCell({
           if (commit()) onFocusSibling?.(measurement.id, 'next');
         } else if (event.key === 'Tab') {
           // Prevent the browser from tabbing into the next table cell (a
-          // non-input <td>) — we move focus to the next Depth input instead.
+          // non-input <td>) â€” we move focus to the next Depth input instead.
           event.preventDefault();
           if (commit()) {
             onFocusSibling?.(measurement.id, event.shiftKey ? 'prev' : 'next');
@@ -326,9 +326,6 @@ function MeasurementsTableImpl({
             <TableRow>
               <TableCell colSpan={COLUMNS.length} sx={EMPTY_CELL_SX}>
                 <Box sx={EMPTY_STATE_SX}>
-                  <Box sx={EMPTY_ICON_WRAP_SX}>
-                    <DescriptionOutlinedIcon fontSize="medium" />
-                  </Box>
                   <Typography sx={EMPTY_TEXT_SX}>No measurements yet</Typography>
                 </Box>
               </TableCell>

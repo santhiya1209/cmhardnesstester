@@ -121,6 +121,7 @@ const BUTTON_BASE_SX = {
   fontSize: 12,
   lineHeight: 1,
   color: 'text.primary',
+  transition: 'none',
   '&:hover': { bgcolor: 'action.hover' },
 } as const;
 
@@ -142,8 +143,7 @@ const MENU_ITEM_SX: SxProps<Theme> = {
   justifyContent: 'flex-start',
   textAlign: 'left',
   px: 1.5,
-  pt: 1,
-  pb: 0.75,
+  py: 0.75,
 };
 
 const DIVIDER_SX: SxProps<Theme> = { my: 0.5 };
@@ -212,6 +212,7 @@ const MenuButton = memo(function MenuButton({
         anchorOrigin={MENU_ANCHOR_ORIGIN}
         transformOrigin={MENU_TRANSFORM_ORIGIN}
         slotProps={MENU_SLOT_PROPS}
+        transitionDuration={0}
       >
         {menu.items.map((item) => (
           <Fragment key={item.action}>

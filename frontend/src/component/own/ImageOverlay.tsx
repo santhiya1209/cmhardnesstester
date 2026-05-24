@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 import type {
   AngleShape,
   OverlayShape,
@@ -33,7 +33,7 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
-const STROKE_ANGLE = colors.measureAngleLine;
+const STROKE_ANGLE = tokens.overlay.measureAngleLine;
 const STROKE_CROSS = '#FF00FF';
 const STROKE_LENGTH = '#E040FB';
 const LENGTH_FONT = '600 15px "Cascadia Mono", Consolas, ui-monospace, monospace';
@@ -360,7 +360,7 @@ function drawAngleShape(
     ctx.arc(display.vertex.x, display.vertex.y, radius, arc.start, arc.end, arc.anticlockwise);
     ctx.stroke();
 
-    const label = `${value.toFixed(1)}°`;
+    const label = `${value.toFixed(1)}Â°`;
     const labelRadius = radius + 19;
     ctx.font = ANGLE_FONT;
     ctx.textAlign = 'center';

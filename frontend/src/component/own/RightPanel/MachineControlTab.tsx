@@ -8,18 +8,14 @@ import TextField from '@mui/material/TextField';
 import MenuItem from '@mui/material/MenuItem';
 import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import FormControl from '@mui/material/FormControl';
-import Divider from '@mui/material/Divider';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
-import Paper from '@mui/material/Paper';
 import Slider from '@mui/material/Slider';
 import { alpha, type SxProps, type Theme } from '@mui/material/styles';
 import Brightness5Icon from '@mui/icons-material/Brightness5';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
-import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
 import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
-import TouchAppIcon from '@mui/icons-material/TouchApp';
 import GpsFixedIcon from '@mui/icons-material/GpsFixed';
 import {
   IndentCenterIcon,
@@ -31,7 +27,6 @@ import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
-import type { ToolId, ToolbarActionId } from '@/types/tool';
 
 type MachineControlTabProps = {
   hvDisplay?: string;
@@ -53,15 +48,6 @@ type MachineControlTabProps = {
    * RX confirms.
    */
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
-  /**
-   * Reuses the main toolbar's dispatcher so the quick-action icons below the
-   * HV/HARDNESS boxes behave exactly like clicking the toolbar buttons — no
-   * duplicate logic, no separate measurement path.
-   */
-  onToolbarAction?: (action: ToolbarActionId) => void;
-  activeTool?: ToolId;
-  /** Disable the measure quick-action icons when no camera frame is ready. */
-  cameraReady?: boolean;
 };
 
 const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
@@ -106,15 +92,20 @@ const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
   flexDirection: 'column',
 };
+// Unified Machine-Control panel: one bordered container, two grid rows
+// (2 cols / 3 cols), zero gap between cells, internal 1px separators only.
+const CONTROL_CONTAINER_SX: SxProps<Theme> = {
+  borderBottom: 1,
+  borderColor: 'divider',
+  bgcolor: 'background.paper',
+};
 const TOP_ROW_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 1.25,
-  px: 1.5,
-  pt: 1.25,
-  pb: 0.75,
+  borderBottom: 1,
+  borderColor: 'divider',
 };
-function topCardSx(opts: { interactive: boolean; accentColor: 'info' | 'primary' }): SxProps<Theme> {
+function topCardSx(opts: { interactive: boolean; accentColor: 'info' | 'primary'; cellIndex: number }): SxProps<Theme> {
   return (theme) => {
     const accent = opts.accentColor === 'info' ? theme.palette.info : theme.palette.primary;
     const base = {
@@ -126,22 +117,16 @@ function topCardSx(opts: { interactive: boolean; accentColor: 'info' | 'primary'
       minHeight: 88,
       px: 1,
       py: 1.25,
-      borderRadius: 2,
-      border: 1,
+      borderRadius: 0,
+      borderLeft: opts.cellIndex > 0 ? 1 : 0,
       borderColor: 'divider',
       bgcolor: 'background.paper',
       color: accent.main,
       textTransform: 'none' as const,
-      boxShadow: `0 1px 2px ${alpha(theme.palette.common.black, 0.05)}`,
-      transition: theme.transitions.create(
-        ['background-color', 'border-color', 'box-shadow', 'transform'],
-        { duration: 180 }
-      ),
+      transition: theme.transitions.create(['background-color'], { duration: 180 }),
       '&.Mui-disabled': {
         color: 'text.disabled',
         bgcolor: 'background.paper',
-        borderColor: 'divider',
-        boxShadow: 'none',
       },
     };
     if (!opts.interactive) {
@@ -150,9 +135,7 @@ function topCardSx(opts: { interactive: boolean; accentColor: 'info' | 'primary'
     return {
       ...base,
       '&:hover': {
-        borderColor: accent.main,
         bgcolor: alpha(accent.main, 0.05),
-        boxShadow: `0 4px 14px ${alpha(accent.main, 0.18)}`,
       },
     };
   };
@@ -169,9 +152,6 @@ const TOP_CARD_ICON_SX: SxProps<Theme> = {
 const OBJECTIVE_ROW_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-  gap: 1.25,
-  px: 1.5,
-  pb: 1,
 };
 const TURRET_ICON_ROW_SX: SxProps<Theme> = {
   display: 'flex',
@@ -192,7 +172,7 @@ const TURRET_OBJECTIVE_ICON_SX: SxProps<Theme> = {
 
 type TurretVariant = '10X' | 'CENTER' | '40X';
 
-function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
+function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number): SxProps<Theme> {
   return (theme) => {
     const accent =
       variant === '10X'
@@ -204,7 +184,7 @@ function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
       position: 'relative',
       width: '100%',
       minWidth: 0,
-      height: 92,
+      minHeight: 92,
       px: 1,
       pt: 1,
       pb: 1.5,
@@ -212,21 +192,14 @@ function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      borderRadius: 2,
-      border: 1,
-      borderColor: active ? alpha(accent, 0.5) : 'divider',
-      bgcolor: 'background.paper',
+      borderRadius: 0,
+      borderLeft: cellIndex > 0 ? 1 : 0,
+      borderColor: 'divider',
+      bgcolor: active ? alpha(accent, 0.08) : 'background.paper',
       color: 'text.primary',
-      boxShadow: active
-        ? `0 2px 8px ${alpha(accent, 0.25)}`
-        : `0 1px 2px ${alpha(theme.palette.common.black, 0.05)}`,
       textTransform: 'none',
-      overflow: 'hidden',
-      transition: theme.transitions.create(
-        ['background-color', 'box-shadow', 'transform', 'border-color'],
-        { duration: 180 }
-      ),
-      // Bottom accent glow strip: yellow for 10X, blue for 40X, neutral for Center.
+      transition: theme.transitions.create(['background-color'], { duration: 180 }),
+      // Bottom accent strip: yellow for 10X, blue for 40X, neutral for Center.
       '&::after': {
         content: '""',
         position: 'absolute',
@@ -237,34 +210,16 @@ function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
         borderRadius: 2,
         backgroundColor: variant === 'CENTER' ? (active ? accent : 'transparent') : accent,
         opacity: variant === 'CENTER' ? 1 : active ? 1 : 0.7,
-        boxShadow:
-          variant === 'CENTER'
-            ? active
-              ? `0 0 6px ${alpha(accent, 0.55)}`
-              : 'none'
-            : `0 0 8px ${alpha(accent, 0.55)}`,
-        transition: 'background-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease',
+        transition: 'background-color 180ms ease, opacity 180ms ease',
       },
       '&:hover': {
         bgcolor: alpha(accent, 0.06),
-        borderColor: accent,
-        transform: 'translateY(-1px)',
-        boxShadow: `0 4px 12px ${alpha(accent, 0.25)}`,
-        '&::after': {
-          opacity: 1,
-          backgroundColor: accent,
-          boxShadow: `0 0 8px ${alpha(accent, 0.55)}`,
-        },
-      },
-      '&:active': {
-        transform: 'translateY(0)',
+        '&::after': { opacity: 1, backgroundColor: accent },
       },
       '&.Mui-disabled': {
         bgcolor: 'background.paper',
         color: 'text.disabled',
-        borderColor: 'divider',
-        boxShadow: 'none',
-        '&::after': { backgroundColor: 'transparent', boxShadow: 'none', opacity: 0 },
+        '&::after': { backgroundColor: 'transparent', opacity: 0 },
       },
     };
   };
@@ -300,123 +255,54 @@ const HV_BOTTOM_ROW_SX: SxProps<Theme> = {
   width: '100%',
   display: 'grid',
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 1.25,
-  alignItems: 'stretch',
-};
-const HV_COMPACT_CARD_SX: SxProps<Theme> = (theme) => ({
-  minWidth: 0,
-  overflow: 'hidden',
-  display: 'grid',
-  gridTemplateRows: `${theme.spacing(3.25)} ${theme.spacing(8)}`,
-  borderRadius: 2,
   border: 1,
   borderColor: 'divider',
+  borderRadius: 1,
   bgcolor: 'background.paper',
-  boxShadow: `0 1px 2px ${alpha(theme.palette.common.black, 0.05)}`,
-});
-const HV_COMPACT_TITLE_SX: SxProps<Theme> = (theme) => ({
-  minWidth: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  position: 'relative',
-  px: 1,
-  bgcolor: alpha(theme.palette.info.main, 0.12),
-  borderBottom: 1,
-  borderColor: alpha(theme.palette.info.main, 0.3),
-  color: theme.palette.info.dark,
-});
-const HV_COMPACT_TITLE_TEXT_SX: SxProps<Theme> = {
-  color: 'inherit',
-  fontWeight: 700,
-  fontSize: 11,
-  letterSpacing: 1,
-  lineHeight: 1,
-  textTransform: 'uppercase',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
 };
-const HV_COMPACT_VALUE_SX: SxProps<Theme> = {
+const hvItemSx = (cellIndex: number): SxProps<Theme> => ({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 0.5,
   minWidth: 0,
+  px: 1.5,
+  py: 1.25,
+  borderLeft: cellIndex > 0 ? 1 : 0,
+  borderColor: 'divider',
+});
+const HV_LABEL_SX: SxProps<Theme> = {
+  fontSize: 11,
+  fontWeight: 500,
+  letterSpacing: 0.4,
+  textTransform: 'uppercase',
+  color: 'text.secondary',
+  lineHeight: 1,
+};
+const HV_VALUE_SX: SxProps<Theme> = {
   display: 'flex',
   alignItems: 'baseline',
-  justifyContent: 'center',
-  gap: 0.75,
-  px: 1,
-  bgcolor: 'background.paper',
-  color: 'info.main',
+  gap: 0.5,
+  minWidth: 0,
 };
-const HV_COMPACT_VALUE_TEXT_SX: SxProps<Theme> = {
-  color: 'info.main',
-  fontSize: (theme) => theme.typography.pxToRem(30),
-  fontWeight: 700,
-  lineHeight: 1,
-  letterSpacing: 0,
+const HV_VALUE_TEXT_SX: SxProps<Theme> = {
+  fontSize: 20,
+  fontWeight: 600,
+  lineHeight: 1.1,
+  color: 'text.primary',
   fontVariantNumeric: 'tabular-nums',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-const HV_COMPACT_UNIT_TEXT_SX: SxProps<Theme> = {
-  color: 'text.secondary',
-  fontSize: (theme) => theme.typography.pxToRem(12),
+const HV_UNIT_TEXT_SX: SxProps<Theme> = {
+  fontSize: 11,
   fontWeight: 500,
-  lineHeight: 1,
-  letterSpacing: 0.5,
+  color: 'text.secondary',
+  letterSpacing: 0.3,
   textTransform: 'uppercase',
   whiteSpace: 'nowrap',
 };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
-const QUICK_ACTION_ROW_SX: SxProps<Theme> = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 1.25,
-  mt: 1.25,
-};
-const quickActionButtonSx = (active: boolean): SxProps<Theme> => (theme) => ({
-  width: '100%',
-  minHeight: 56,
-  display: 'flex',
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 1,
-  px: 1.25,
-  py: 1,
-  borderRadius: 2,
-  border: 1,
-  borderColor: active ? theme.palette.info.main : 'divider',
-  bgcolor: active ? alpha(theme.palette.info.main, 0.08) : 'background.paper',
-  color: active ? theme.palette.info.main : theme.palette.info.dark,
-  textTransform: 'none',
-  lineHeight: 1.1,
-  boxShadow: active
-    ? `0 0 0 2px ${alpha(theme.palette.info.main, 0.18)}`
-    : `0 1px 2px ${alpha(theme.palette.common.black, 0.05)}`,
-  transition: 'background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
-  '&:hover': {
-    bgcolor: alpha(theme.palette.info.main, 0.06),
-    borderColor: theme.palette.info.main,
-    boxShadow: `0 4px 12px ${alpha(theme.palette.info.main, 0.18)}`,
-  },
-  '&.Mui-disabled': {
-    bgcolor: 'background.paper',
-    color: 'text.disabled',
-    borderColor: 'divider',
-    boxShadow: 'none',
-  },
-});
-const QUICK_ACTION_LABEL_SX: SxProps<Theme> = {
-  fontSize: 13,
-  fontWeight: 600,
-  letterSpacing: 0.2,
-  color: 'inherit',
-};
-const QUICK_ACTION_ICON_SX: SxProps<Theme> = {
-  fontSize: 22,
-  color: 'inherit',
-};
 
 function machineToForm(state: MachineState | null): FormState {
   if (!state) return DEFAULT_FORM_STATE;
@@ -533,80 +419,29 @@ function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessCo
 }
 const LightnessControl = memo(LightnessControlImpl);
 
-type CompactHvCardProps = {
-  title: string;
+type HvReadoutProps = {
+  label: string;
   value: string;
   unit: string;
-  // Small accent icon rendered top-right inside the title strip. Optional so
-  // future cards can opt out without code branches.
-  accent?: 'target' | 'hv';
+  cellIndex: number;
 };
 
-const HV_ACCENT_WRAP_SX: SxProps<Theme> = (theme) => ({
-  position: 'absolute',
-  top: 4,
-  right: 6,
-  width: 18,
-  height: 18,
-  borderRadius: '50%',
-  bgcolor: alpha(theme.palette.info.main, 0.18),
-  border: `1px solid ${alpha(theme.palette.info.main, 0.5)}`,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  color: theme.palette.info.dark,
-  fontSize: 9,
-  fontWeight: 700,
-  letterSpacing: 0.4,
-  lineHeight: 1,
-});
-
-function CompactHvCard({ title, value, unit, accent }: CompactHvCardProps) {
+function HvReadout({ label, value, unit, cellIndex }: HvReadoutProps) {
   const showUnit = value !== 'N/A' && unit.length > 0;
-  const titleText = `${value}${showUnit ? ` ${unit}` : ''}`;
   return (
-    <Paper elevation={0} sx={HV_COMPACT_CARD_SX}>
-      <Box sx={HV_COMPACT_TITLE_SX}>
-        <Typography variant="overline" sx={HV_COMPACT_TITLE_TEXT_SX}>
-          {title}
-        </Typography>
-        {accent === 'target' ? (
-          <Box sx={HV_ACCENT_WRAP_SX} aria-hidden>
-            <Box
-              sx={{
-                width: 10,
-                height: 10,
-                borderRadius: '50%',
-                border: '1.5px solid currentColor',
-                position: 'relative',
-                '&::after': {
-                  content: '""',
-                  position: 'absolute',
-                  inset: 2,
-                  borderRadius: '50%',
-                  backgroundColor: 'currentColor',
-                },
-              }}
-            />
-          </Box>
-        ) : null}
-        {accent === 'hv' ? (
-          <Box sx={HV_ACCENT_WRAP_SX} aria-hidden>
-            HV
-          </Box>
-        ) : null}
-      </Box>
-      <Box sx={HV_COMPACT_VALUE_SX} title={titleText}>
-        <Typography component="span" sx={HV_COMPACT_VALUE_TEXT_SX}>
+    <Box sx={hvItemSx(cellIndex)}>
+      <Typography sx={HV_LABEL_SX}>{label}</Typography>
+      <Box sx={HV_VALUE_SX} title={`${value}${showUnit ? ` ${unit}` : ''}`}>
+        <Typography component="span" sx={HV_VALUE_TEXT_SX}>
           {value}
         </Typography>
         {showUnit ? (
-          <Typography component="span" sx={HV_COMPACT_UNIT_TEXT_SX}>
+          <Typography component="span" sx={HV_UNIT_TEXT_SX}>
             {unit}
           </Typography>
         ) : null}
       </Box>
-    </Paper>
+    </Box>
   );
 }
 
@@ -617,9 +452,6 @@ function MachineControlTabImpl({
   onObjectiveChange,
   onTurretIntent,
   onObjectiveChangeIntent,
-  onToolbarAction,
-  activeTool,
-  cameraReady = false,
 }: MachineControlTabProps = {}) {
   const { data: machineState, error: streamError } = useMachineState();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
@@ -927,83 +759,82 @@ function MachineControlTabImpl({
 
   return (
     <Box sx={ROOT_SX}>
-      <Box sx={TOP_ROW_SX}>
-        <Button
-          variant="text"
-          sx={topCardSx({ interactive: true, accentColor: 'info' })}
-          disabled={!connected || isIndentInFlight || isBusy || impressPopup.open}
-          onClick={handleIndentClick}
-          aria-label={indentLabel(indentStatus)}
-        >
-          <IndentCenterIcon sx={TOP_CARD_ICON_SX} />
-          <Typography component="span" sx={TOP_CARD_LABEL_SX}>
-            {indentLabel(indentStatus)}
-          </Typography>
-        </Button>
-        {/* Turret card: passive status surface showing the current objective.
-            Keeps the visual symmetry of the reference UI without taking over the
-            turret-rotation action — that still lives in the 10X / Center / 40X
-            cards below. */}
-        <Box
-          sx={topCardSx({ interactive: false, accentColor: 'primary' })}
-          aria-label={`Turret position ${formState.objective}`}
-        >
-          <RadioButtonCheckedIcon sx={TOP_CARD_ICON_SX} />
-          <Typography component="span" sx={TOP_CARD_LABEL_SX}>
-            Turret
-          </Typography>
+      <Box sx={CONTROL_CONTAINER_SX}>
+        <Box sx={TOP_ROW_SX}>
+          <Button
+            variant="text"
+            sx={topCardSx({ interactive: true, accentColor: 'info', cellIndex: 0 })}
+            disabled={!connected || isIndentInFlight || isBusy || impressPopup.open}
+            onClick={handleIndentClick}
+            aria-label={indentLabel(indentStatus)}
+          >
+            <IndentCenterIcon sx={TOP_CARD_ICON_SX} />
+            <Typography component="span" sx={TOP_CARD_LABEL_SX}>
+              {indentLabel(indentStatus)}
+            </Typography>
+          </Button>
+          {/* Turret card: passive status surface showing the current objective.
+              The turret-rotation action lives in the 10X / Center / 40X cards
+              below. */}
+          <Box
+            sx={topCardSx({ interactive: false, accentColor: 'primary', cellIndex: 1 })}
+            aria-label={`Turret position ${formState.objective}`}
+          >
+            <RadioButtonCheckedIcon sx={TOP_CARD_ICON_SX} />
+            <Typography component="span" sx={TOP_CARD_LABEL_SX}>
+              Turret
+            </Typography>
+          </Box>
+        </Box>
+
+        <Box sx={OBJECTIVE_ROW_SX}>
+          <Button
+            variant="text"
+            sx={turretCardSx('10X', formState.objective === '10X', 0)}
+            disabled={!connected || isBusy}
+            onClick={handleTurretClick('left')}
+            aria-label="Turret 10X"
+            aria-pressed={formState.objective === '10X'}
+          >
+            <Box sx={TURRET_ICON_ROW_SX}>
+              <Objective10xIcon sx={TURRET_OBJECTIVE_ICON_SX} />
+            </Box>
+            <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
+              10X
+            </Typography>
+          </Button>
+          <Button
+            variant="text"
+            sx={turretCardSx('CENTER', formState.objective === 'IND', 1)}
+            disabled={!connected || isBusy}
+            onClick={handleTurretClick('front')}
+            aria-label="Turret Center"
+            aria-pressed={formState.objective === 'IND'}
+          >
+            <Box sx={TURRET_ICON_ROW_SX}>
+              <GpsFixedIcon sx={TURRET_OBJECTIVE_ICON_SX} />
+            </Box>
+            <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
+              Center
+            </Typography>
+          </Button>
+          <Button
+            variant="text"
+            sx={turretCardSx('40X', formState.objective === '40X', 2)}
+            disabled={!connected || isBusy}
+            onClick={handleTurretClick('right')}
+            aria-label="Turret 40X"
+            aria-pressed={formState.objective === '40X'}
+          >
+            <Box sx={TURRET_ICON_ROW_SX}>
+              <Objective40xIcon sx={TURRET_OBJECTIVE_ICON_SX} />
+            </Box>
+            <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
+              40X
+            </Typography>
+          </Button>
         </Box>
       </Box>
-
-      <Box sx={OBJECTIVE_ROW_SX}>
-        <Button
-          variant="text"
-          sx={turretCardSx('10X', formState.objective === '10X')}
-          disabled={!connected || isBusy}
-          onClick={handleTurretClick('left')}
-          aria-label="Turret 10X"
-          aria-pressed={formState.objective === '10X'}
-        >
-          <Box sx={TURRET_ICON_ROW_SX}>
-            <Objective10xIcon sx={TURRET_OBJECTIVE_ICON_SX} />
-          </Box>
-          <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
-            10X
-          </Typography>
-        </Button>
-        <Button
-          variant="text"
-          sx={turretCardSx('CENTER', formState.objective === 'IND')}
-          disabled={!connected || isBusy}
-          onClick={handleTurretClick('front')}
-          aria-label="Turret Center"
-          aria-pressed={formState.objective === 'IND'}
-        >
-          <Box sx={TURRET_ICON_ROW_SX}>
-            <GpsFixedIcon sx={TURRET_OBJECTIVE_ICON_SX} />
-          </Box>
-          <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
-            Center
-          </Typography>
-        </Button>
-        <Button
-          variant="text"
-          sx={turretCardSx('40X', formState.objective === '40X')}
-          disabled={!connected || isBusy}
-          onClick={handleTurretClick('right')}
-          aria-label="Turret 40X"
-          aria-pressed={formState.objective === '40X'}
-        >
-          <Box sx={TURRET_ICON_ROW_SX}>
-            <Objective40xIcon sx={TURRET_OBJECTIVE_ICON_SX} />
-          </Box>
-          <Typography component="span" sx={TURRET_CARD_LABEL_SX}>
-            40X
-          </Typography>
-        </Button>
-      </Box>
-
-      <Divider />
 
       <Box sx={SETTINGS_GRID_SX}>
         <Typography sx={SETTING_LABEL_SX}>Force</Typography>
@@ -1072,36 +903,8 @@ function MachineControlTabImpl({
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
         <Box sx={HV_BOTTOM_ROW_SX}>
-          <CompactHvCard title="HV" value={bottomHvDisplay} unit="HV" accent="target" />
-          <CompactHvCard
-            title="HARDNESS"
-            value={bottomHardnessDisplay}
-            unit={bottomHvTypeDisplay}
-            accent="hv"
-          />
-        </Box>
-        <Box sx={QUICK_ACTION_ROW_SX}>
-          <Button
-            disableRipple
-            sx={quickActionButtonSx(false)}
-            disabled={!cameraReady || !onToolbarAction}
-            onClick={() => onToolbarAction?.('tools:autoMeasure')}
-            aria-label="Auto Measure"
-          >
-            <CenterFocusStrongIcon sx={QUICK_ACTION_ICON_SX} />
-            <Typography sx={QUICK_ACTION_LABEL_SX}>Auto Measure</Typography>
-          </Button>
-          <Button
-            disableRipple
-            sx={quickActionButtonSx(activeTool === 'manualMeasure')}
-            disabled={!cameraReady || !onToolbarAction}
-            onClick={() => onToolbarAction?.('tools:manualMeasure')}
-            aria-label="Manual Measure"
-            aria-pressed={activeTool === 'manualMeasure'}
-          >
-            <TouchAppIcon sx={QUICK_ACTION_ICON_SX} />
-            <Typography sx={QUICK_ACTION_LABEL_SX}>Manual Measure</Typography>
-          </Button>
+          <HvReadout label="HV" value={bottomHvDisplay} unit="HV" cellIndex={0} />
+          <HvReadout label="Hardness" value={bottomHardnessDisplay} unit={bottomHvTypeDisplay} cellIndex={1} />
         </Box>
       </Box>
 

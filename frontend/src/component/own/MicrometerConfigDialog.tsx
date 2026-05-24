@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -20,7 +20,7 @@ import { useSaveMicrometerConfig } from '@/hooks/mutations/useSaveMicrometerConf
 import { DEFAULT_MICROMETER_CONFIG } from '@/types/micrometerConfig';
 import { listSerialPorts } from '@/api/serialPort';
 import type { SerialPortInfo } from '@/types/serial';
-import { colors } from '@/theme/theme';
+import { tokens } from '@/theme/theme';
 
 type Props = {
   open: boolean;
@@ -167,7 +167,7 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
         enabled
           ? persistedPort
             ? `Micrometer enabled on ${persistedPort}.`
-            : 'Micrometer enabled — select a COM port to connect.'
+            : 'Micrometer enabled â€” select a COM port to connect.'
           : 'Micrometer disabled.'
       );
       onSaved?.(enabled);
@@ -198,7 +198,7 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         sx={{
-          bgcolor: colors.headingPrimary,
+          bgcolor: tokens.accent.base,
           color: '#FFFFFF',
           py: 1.25,
           cursor: dragStateRef.current ? 'grabbing' : 'grab',
@@ -253,14 +253,14 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
                 <em>(none)</em>
               </MenuItem>
               {comPort && !availablePorts.some((port) => port.path === comPort) ? (
-                <MenuItem value={comPort}>{`${comPort} — not detected`}</MenuItem>
+                <MenuItem value={comPort}>{`${comPort} â€” not detected`}</MenuItem>
               ) : null}
               {availablePorts.map((port) => (
                 <MenuItem key={port.path} value={port.path}>
                   {port.friendlyName
-                    ? `${port.path} — ${port.friendlyName}`
+                    ? `${port.path} â€” ${port.friendlyName}`
                     : port.manufacturer
-                      ? `${port.path} — ${port.manufacturer}`
+                      ? `${port.path} â€” ${port.manufacturer}`
                       : port.path}
                 </MenuItem>
               ))}
