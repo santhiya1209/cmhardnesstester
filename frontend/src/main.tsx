@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import { theme } from '@/theme/theme';
+import { StatusMessageProvider } from '@/contexts/StatusMessageContext';
+import { DialogProvider } from '@/contexts/DialogContext';
 import './index.css';
 import App from './App';
 
@@ -10,7 +12,11 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <App />
+      <StatusMessageProvider>
+        <DialogProvider>
+          <App />
+        </DialogProvider>
+      </StatusMessageProvider>
     </ThemeProvider>
   </StrictMode>
 );

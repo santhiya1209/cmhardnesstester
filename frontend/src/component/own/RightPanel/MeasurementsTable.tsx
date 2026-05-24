@@ -8,7 +8,6 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { tokens } from '@/theme/theme';
@@ -70,17 +69,6 @@ const EMPTY_STATE_SX: SxProps<Theme> = {
   justifyContent: 'center',
   gap: 1,
   color: 'text.disabled',
-};
-const EMPTY_ICON_WRAP_SX: SxProps<Theme> = {
-  width: 56,
-  height: 56,
-  borderRadius: 2,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  bgcolor: '#F1F4F9',
-  border: `1px dashed ${tokens.border.strong}`,
-  color: tokens.text.muted,
 };
 const EMPTY_TEXT_SX: SxProps<Theme> = {
   fontSize: 13,

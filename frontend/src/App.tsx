@@ -15,13 +15,12 @@ import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
-import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import { useTestRecords } from '@/hooks/queries/useTestRecords';
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot';
 import { useMachineState } from '@/hooks/queries/useMachineState';
-import { useConnectMachine } from '@/hooks/mutations/useConnectMachine';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
+import { useMachineConnection } from '@/hooks/useMachineConnection';
 import { getLatestMicrometerReading } from '@/api/micrometer';
 import { measureVickersAuto, measureVickersAutoPreview } from '@/api/system';
 import { getCameraSetting } from '@/api/camera';
@@ -61,6 +60,8 @@ import { saveImageDialog } from '@/api/system';
 import { exitApp } from '@/api/system';
 import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDispatcher';
 import { dispatchMenuAction } from '@/utils/menuDispatcher';
+import { useSetStatusMessage } from '@/contexts/StatusMessageContext';
+import { useDialog, type DialogKey } from '@/contexts/DialogContext';
 import { TOOL_ACTION_TO_TOOL, type ToolbarActionId } from '@/types/tool';
 import type { ConfigDialogId, MenuActionId } from '@/types/menu';
 import type {
@@ -769,18 +770,6 @@ function graphicsFromAutoMeasureResult(
   };
 }
 
-type DialogKey =
-  | 'autoMeasure'
-  | 'calibration'
-  | 'camera'
-  | 'generic'
-  | 'lineColor'
-  | 'micrometer'
-  | 'other'
-  | 'restoreFactory'
-  | 'serialPort'
-  | 'testRecords'
-  | null;
 
 // Two RAFs guarantees overlay canvases (AutoMeasure / ManualMeasure) finished
 // painting after a state-driven update before we composite them into the album
@@ -798,9 +787,25 @@ function delay(ms: number): Promise<void> {
 }
 
 function App() {
-  const [activeDialog, setActiveDialog] = useState<DialogKey>(null);
-  const [statusMessage, setStatusMessage] = useState('System Status: Ready');
-  const [initialTestRecordMeasurementIds, setInitialTestRecordMeasurementIds] = useState<string[]>([]);
+  // statusMessage lives in StatusMessageContext so App does not re-render on
+  // every status update. setStatusMessage from the context is referentially
+  // stable, so consuming it here costs nothing.
+  const setStatusMessage = useSetStatusMessage();
+  // Dialog state lives in DialogContext. App still reads activeDialog (since
+  // it renders every dialog conditionally), so re-renders on dialog change
+  // are unchanged; the win here is shrinking App and giving menu/toolbar
+  // dispatchers a clean hook to talk to.
+  const {
+    activeDialog,
+    setActiveDialog,
+    exitConfirmOpen,
+    setExitConfirmOpen,
+    trimMeasureOpen,
+    setTrimMeasureOpen,
+    initialTestRecordMeasurementIds,
+    closeDialog,
+    openTestRecordsDialog,
+  } = useDialog();
   const {
     data: measurements,
     error: measurementsError,
@@ -852,77 +857,10 @@ function App() {
     }
   }, [micrometerEnabled]);
   const { refetch: refetchCameraSetting } = useCameraSetting();
-  const { connect: connectMachineFn, disconnect: disconnectMachineFn } = useConnectMachine();
-  // Machine COM port is in-memory only. The Serial Port Setting dialog is the
-  // single source of truth: confirming a port routes through applyMachinePort
-  // below, which disconnects the previous selection and connects the new one.
-  // Nothing about the machine port is persisted — on next launch this returns
-  // to null and the operator must pick again.
-  const [currentMachinePort, setCurrentMachinePort] = useState<string | null>(null);
-  const applyMachinePort = useCallback(
-    async (nextPort: string | null) => {
-      const trimmed = typeof nextPort === 'string' && nextPort.trim() ? nextPort.trim() : null;
-      if (currentMachinePort && currentMachinePort !== trimmed) {
-        try {
-          await disconnectMachineFn();
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn('[machine-disconnect-old-port] failed:', err);
-        }
-      }
-      setCurrentMachinePort(trimmed);
-      if (!trimmed) {
-        return;
-      }
-      try {
-        await connectMachineFn({ port: trimmed });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(`[machine-connect-error] port=${trimmed}`, err);
-        throw err;
-      }
-    },
-    [connectMachineFn, currentMachinePort, disconnectMachineFn]
-  );
-
-  // Persisted serial-port settings. Loaded once at mount via useSerialPortSetting;
-  // the one-shot auto-connect effect below uses the saved machineComPort so the
-  // operator doesn't have to re-pick a port every launch. Camera open/close
-  // never touches this record — selection survives across sessions.
-  const { data: serialPortSetting } = useSerialPortSetting();
-  const machineAutoConnectAttemptedRef = useRef(false);
-  useEffect(() => {
-    if (machineAutoConnectAttemptedRef.current) return;
-    if (!serialPortSetting) return;
-    machineAutoConnectAttemptedRef.current = true;
-    const savedMachine = serialPortSetting.machineComPort ?? null;
-    if (!savedMachine) return;
-    void (async () => {
-      const listing = await listSerialPorts().catch(() => ({
-        ok: false as const,
-        ports: [],
-        error: 'list-failed',
-      }));
-      const available = listing.ok
-        ? listing.ports.map((p) => p.path).filter(Boolean)
-        : [];
-      if (!available.includes(savedMachine)) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[saved-com-missing] device=machine port=${savedMachine}`
-        );
-        setStatusMessage(
-          `Saved COM port not detected. Please check connection or select another port. (machine=${savedMachine})`
-        );
-        return;
-      }
-      try {
-        await applyMachinePort(savedMachine);
-      } catch {
-        // applyMachinePort already logs the error
-      }
-    })();
-  }, [applyMachinePort, micrometerConfig, serialPortSetting]);
+  // Machine COM port lifecycle (selection, connect/disconnect, one-shot
+  // auto-connect from persisted settings) lives in useMachineConnection so
+  // App is not in the business of orchestrating serial reconnects.
+  const { currentMachinePort, applyMachinePort } = useMachineConnection();
 
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
@@ -989,8 +927,6 @@ function App() {
   const previewMeasurementRef = useRef<{ d1Pixels: number; d2Pixels: number; confidence: number } | null>(null);
   const autoMeasureSettingsOpenRef = useRef(false);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
-  const [trimMeasureOpen, setTrimMeasureOpen] = useState(false);
-  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
   // Magnifier is an independent helper overlay (not a mode). It can be on
   // alongside Manual Measure for precision diamond-tip placement, and turns
@@ -4104,7 +4040,6 @@ function App() {
       setActiveTool,
       currentMachinePort,
       micrometerConfig,
-      connectMachineFn,
       refetchCameraSetting,
       refetchCalibrationSettings,
     ]
@@ -4117,16 +4052,6 @@ function App() {
 
     return measurements.map((measurement) => measurement.id);
   }, [initialTestRecordMeasurementIds, measurements]);
-
-  const closeDialog = useCallback(() => {
-    setActiveDialog((prev) => {
-      if (prev === 'autoMeasure') {
-      } else if (prev === 'camera') {
-      }
-      return null;
-    });
-    setInitialTestRecordMeasurementIds([]);
-  }, []);
 
   const openConfigDialog = useCallback((id: ConfigDialogId) => {
     if (id === 'config:calibration') {
@@ -4155,10 +4080,7 @@ function App() {
       dispatchMenuAction(action, {
         ...buildSharedCtx(),
         openConfigDialog,
-        openSampleInfo: () => {
-          setInitialTestRecordMeasurementIds([]);
-          setActiveDialog('testRecords');
-        },
+        openSampleInfo: () => openTestRecordsDialog([]),
         exitApplication: () => setExitConfirmOpen(true),
       });
     },
@@ -4247,8 +4169,7 @@ function App() {
   }, [toolbarState, toolbarStateError, toolbarStateLoading]);
 
   const handleOpenTestRecords = useCallback((measurementIds: string[]) => {
-    setInitialTestRecordMeasurementIds(measurementIds);
-    setActiveDialog('testRecords');
+    openTestRecordsDialog(measurementIds);
     setStatusMessage('System Status: Test Records opened');
   }, []);
 
@@ -4342,7 +4263,6 @@ function App() {
       </Box>
 
       <StatusBar
-        message={statusMessage}
         cameraStatus={cameraStatus}
         objective={activeObjective}
         autoMeasureStatus={autoMeasureStatus}

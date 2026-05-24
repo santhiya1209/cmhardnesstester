@@ -6,6 +6,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { tokens } from '@/theme/theme';
 import { useMicrometerReading } from '@/hooks/useMicrometerReading';
+import { useStatusMessage } from '@/contexts/StatusMessageContext';
 import type { MachineState } from '@/types/machine';
 
 const BAR_SX: SxProps<Theme> = {
@@ -106,7 +107,6 @@ const AUTO_MEASURE_STATUS_LABEL: Record<AutoMeasureStatusState, string> = {
 };
 
 type Props = {
-  message?: string;
   cameraStatus?: CameraStatusState;
   objective?: string | null;
   autoMeasureStatus?: AutoMeasureStatusState;
@@ -191,12 +191,12 @@ function MicrometerReadoutImpl() {
 const MicrometerReadout = memo(MicrometerReadoutImpl);
 
 function StatusBarImpl({
-  message = 'System Status: Failed To Load Hardness Tester',
   cameraStatus,
   objective,
   autoMeasureStatus,
   machineState,
 }: Props) {
+  const message = useStatusMessage();
   const machineConnected = machineState?.connected ?? false;
   const machinePort = machineState?.port?.trim() || '-';
   const machineStatus = getMachineStatusLabel(machineState);
