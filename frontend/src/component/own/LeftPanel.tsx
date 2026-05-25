@@ -2,6 +2,7 @@ import { forwardRef, memo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import CameraWindow, { type CameraWindowHandle } from '@/component/own/CameraWindow';
+import { useRenderCount } from '@/utils/renderStats';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
@@ -66,6 +67,7 @@ function LeftPanelImpl(
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
+  useRenderCount('LeftPanel');
   return (
     <Box sx={PANEL_SX}>
       <CameraWindow

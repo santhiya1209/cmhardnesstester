@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from 'react';
 import type { Point } from '@/types/tool';
 import { getImagePlacement } from '@/utils/manualMeasure';
+import { useRenderCount } from '@/utils/renderStats';
 
 const LENS_SIZE = 140;
 const LENS_ZOOM = 2.5;
@@ -14,6 +15,7 @@ type Props = {
 };
 
 function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, imageSize }: Props) {
+  useRenderCount('MagnifierLens');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
 

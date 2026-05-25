@@ -54,6 +54,7 @@ import {
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
+import { useRenderCount } from '@/utils/renderStats';
 import { listSerialPorts } from '@/api/serialPort';
 import { openImageDialog } from '@/api/system';
 import { saveImageDialog } from '@/api/system';
@@ -879,6 +880,7 @@ function App() {
   const { activeTool, setActiveTool } = useActiveTool('pointer');
   const overlay = useImageOverlay();
   const lineThickness = useLineThickness();
+  useRenderCount('App');
   const cameraRef = useRef<CameraWindowHandle | null>(null);
   const autoMeasureInFlightRef = useRef(false);
   // Set true between Impress TX and the FINISH RX so any concurrent Auto
@@ -4180,6 +4182,75 @@ function App() {
     clearActiveMeasurement('clear-table');
   }, [clearActiveMeasurement]);
 
+  // Stable interactive props for RightPanel so its memo holds across unrelated
+  // App re-renders (notably machine-state pushes). Inline arrows / a freshly
+  // built calibrationSlot element previously created new identities every
+  // render and forced RightPanel + its subtree to re-render on every update.
+  const handleTurretIntentClick = useCallback(
+    () => markTurretIntent('turret-click'),
+    [markTurretIntent]
+  );
+  const handleObjectiveChangeIntent = useCallback(
+    (target: '10X' | '40X') => markTurretIntent('objective-change-click', target),
+    [markTurretIntent]
+  );
+  const handleCloseTrimMeasure = useCallback(
+    () => setTrimMeasureOpen(false),
+    [setTrimMeasureOpen]
+  );
+  const handleDialogStatusChange = useCallback(
+    (message: string) => setStatusMessage(`System Status: ${message}`),
+    []
+  );
+  const handleCalibrationClose = useCallback(() => {
+    if (calibrationManualModeRef.current) {
+      calibrationManualModeRef.current = false;
+    }
+    setManualMeasureResetKey((current) => current + 1);
+    setAutoMeasureSessionActive(false);
+    clearAutoMeasureOverlay('calibration-closed');
+    setCalibrationMeasureMode('none', 'panel-closed');
+    closeDialog();
+  }, [clearAutoMeasureOverlay, setCalibrationMeasureMode, closeDialog]);
+  const handleCalibrationChanged = useCallback(() => {
+    void refetchCalibrations();
+  }, [refetchCalibrations]);
+  const calibrationDefaultObjective = useMemo(
+    () => liveMachineState?.confirmedObjectiveFromMachine?.trim() || activeObjective || null,
+    [liveMachineState?.confirmedObjectiveFromMachine, activeObjective]
+  );
+  const calibrationOpen = activeDialog === 'calibration';
+  const calibrationAutoFillX = latestManualPixels?.d1Px ?? null;
+  const calibrationAutoFillY = latestManualPixels?.d2Px ?? null;
+  const calibrationSlot = useMemo(
+    () => (
+      <CalibrationDialog
+        open={calibrationOpen}
+        onClose={handleCalibrationClose}
+        onStatusChange={handleDialogStatusChange}
+        onChanged={handleCalibrationChanged}
+        autoFillPixelLengthX={calibrationAutoFillX}
+        autoFillPixelLengthY={calibrationAutoFillY}
+        defaultObjective={calibrationDefaultObjective}
+        onRequestAutoMeasure={handleCalibrationAutoMeasure}
+        onRequestManualMeasure={handleCalibrationManualMeasure}
+        onAutoCreateMeasurementRow={handleCalibrationAutoCreateRow}
+      />
+    ),
+    [
+      calibrationOpen,
+      handleCalibrationClose,
+      handleDialogStatusChange,
+      handleCalibrationChanged,
+      calibrationAutoFillX,
+      calibrationAutoFillY,
+      calibrationDefaultObjective,
+      handleCalibrationAutoMeasure,
+      handleCalibrationManualMeasure,
+      handleCalibrationAutoCreateRow,
+    ]
+  );
+
   return (
     <Box sx={ROOT_SX}>
       <MenuBar onSelect={handleMenuSelect} />
@@ -4220,45 +4291,13 @@ function App() {
           onOpenTestRecords={handleOpenTestRecords}
           onMeasurementsCleared={handleMeasurementsCleared}
           onObjectiveChange={handleObjectiveChangeFromUI}
-          onTurretIntent={() => markTurretIntent('turret-click')}
-          onObjectiveChangeIntent={(target) =>
-            markTurretIntent('objective-change-click', target)
-          }
+          onTurretIntent={handleTurretIntentClick}
+          onObjectiveChangeIntent={handleObjectiveChangeIntent}
           trimMeasureOpen={trimMeasureOpen}
-          onCloseTrimMeasure={() => setTrimMeasureOpen(false)}
+          onCloseTrimMeasure={handleCloseTrimMeasure}
           onTrimAdjust={handleTrimAdjust}
           calibrationActive={activeDialog === 'calibration'}
-          calibrationSlot={
-            <CalibrationDialog
-              open={activeDialog === 'calibration'}
-              onClose={() => {
-                if (calibrationManualModeRef.current) {
-                  calibrationManualModeRef.current = false;
-                }
-                if (calibrationMeasureModeRef.current !== 'none') {
-                }
-                setManualMeasureResetKey((current) => current + 1);
-                setAutoMeasureSessionActive(false);
-                clearAutoMeasureOverlay('calibration-closed');
-                setCalibrationMeasureMode('none', 'panel-closed');
-                closeDialog();
-              }}
-              onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-              onChanged={() => {
-                void refetchCalibrations();
-              }}
-              autoFillPixelLengthX={latestManualPixels?.d1Px ?? null}
-              autoFillPixelLengthY={latestManualPixels?.d2Px ?? null}
-              defaultObjective={
-                liveMachineState?.confirmedObjectiveFromMachine?.trim() ||
-                activeObjective ||
-                null
-              }
-              onRequestAutoMeasure={handleCalibrationAutoMeasure}
-              onRequestManualMeasure={handleCalibrationManualMeasure}
-              onAutoCreateMeasurementRow={handleCalibrationAutoCreateRow}
-            />
-          }
+          calibrationSlot={calibrationSlot}
         />
       </Box>
 

@@ -3,6 +3,7 @@ import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { tokens } from '@/theme/theme';
+import { useRenderCount } from '@/utils/renderStats';
 import type {
   AngleShape,
   OverlayShape,
@@ -502,6 +503,7 @@ function ImageOverlayImpl({
   onUpdateShape,
   onCursor,
 }: Props) {
+  useRenderCount('ImageOverlay');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<Draft>(null);

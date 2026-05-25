@@ -10,6 +10,7 @@ import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
 import type { ToolId, ToolbarActionId } from '@/types/tool';
 import { tokens } from '@/theme/theme';
+import { useRenderCount } from '@/utils/renderStats';
 
 import MeasurementsWorkspace, { type MeasurementDisplayValues } from './MeasurementsWorkspace';
 import MachineControlTab from './MachineControlTab';
@@ -220,6 +221,7 @@ function RightPanelImpl({
   targetMinHv,
   targetMaxHv,
 }: Props) {
+  useRenderCount('RightPanel');
   const [tab, setTab] = useState(0);
   const {
     data: patternPrograms,

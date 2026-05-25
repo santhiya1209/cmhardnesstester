@@ -2,6 +2,7 @@ import { memo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useManualMeasureOverlay } from '@/hooks/useManualMeasureOverlay';
+import { useRenderCount } from '@/utils/renderStats';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { Point } from '@/types/tool';
 import type { ManualMeasureImageSize } from '@/utils/manualMeasureOverlayCanvas';
@@ -38,6 +39,7 @@ function ManualMeasureOverlayImpl({
   onMeasurementUpdated,
   strokeWidth,
 }: Props) {
+  useRenderCount('ManualMeasureOverlay');
   const {
     canvasRef,
     cursor,

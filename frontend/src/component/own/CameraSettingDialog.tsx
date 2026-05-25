@@ -80,6 +80,14 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const exposureLastSentValueRef = useRef<number | null>(null);
   const exposureLastSentAtRef = useRef<number>(0);
   const EXPOSURE_DRAG_THROTTLE_MS = 100;
+  // Value currently applied ON THE DEVICE. Distinct from *LastSentValueRef
+  // (which tracks the last value queued through the throttle). A send whose
+  // clamped value equals this is a no-op: applying it would restart the
+  // camera stream (frameId back to 1) for no visual change, so we skip the
+  // native call + the dropPendingCameraFrames boundary entirely. Seeded from
+  // the persisted setting on open and updated on every successful apply.
+  const appliedGainRef = useRef<number | null>(null);
+  const appliedExposureMsRef = useRef<number | null>(null);
 
   // Floating-panel drag state. null = use the initial anchored placement;
   // once the user grabs the header, becomes an explicit (x, y).
@@ -144,7 +152,15 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   }, [open, status.open]);
 
   useEffect(() => {
-    if (open && !loading && !liveAvailable) {
+    if (!open) return;
+    // Seed the device-applied baseline from the persisted setting. On camera
+    // open the backend applies persisted gain/exposure, so device == persisted
+    // here — this lets "open dialog, Save without changing" skip a no-op apply.
+    if (data) {
+      appliedGainRef.current = data.analogGain ?? null;
+      appliedExposureMsRef.current = data.exposureTimeMs ?? null;
+    }
+    if (!loading && !liveAvailable) {
       setAnalogGain(data?.analogGain ?? DEFAULT_ANALOG_GAIN);
       setExposureMs(data?.exposureTimeMs ?? DEFAULT_EXPOSURE_TIME_MS);
     }
@@ -153,12 +169,28 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const sendGain = useCallback(
     async (rawValue: number) => {
       const value = clamp(rawValue, gainRange.min, gainRange.max);
+      // No-op guard: the value is already applied on the device. Skip the
+      // native call + the dropPendingCameraFrames boundary so we don't restart
+      // the stream (frameId → 1) for no visual change.
+      if (appliedGainRef.current !== null && value === appliedGainRef.current) {
+        return;
+      }
+      // Mark the value applied SYNCHRONOUSLY, before the boundary + IPC. The
+      // ref tracks the last requested (clamped) value — not the device reply —
+      // so an identical follow-up request (slider re-emit, Save path, throttle
+      // trailing edge) is skipped even if the device quantizes its reply to a
+      // slightly different number, and concurrent same-value calls can't both
+      // pass the guard before a reply lands. Restored on failure so a genuine
+      // retry isn't blocked.
+      const previousAppliedGain = appliedGainRef.current;
+      appliedGainRef.current = value;
       // eslint-disable-next-line no-console
       console.log('[camera-ui][settings-change] gain=' + value);
       try {
         dropPendingCameraFrames('gain-change');
         const reply = await window.hardnessCamera.setGain(value);
         if (!reply.ok) {
+          appliedGainRef.current = previousAppliedGain;
           // eslint-disable-next-line no-console
           console.error('[camera-settings][frontend] setGain failed:', reply);
           setLiveApplyError(reply.message ?? reply.error ?? 'Failed to apply gain.');
@@ -169,6 +201,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           setLiveApplyError(null);
         }
       } catch (err) {
+        appliedGainRef.current = previousAppliedGain;
         // eslint-disable-next-line no-console
         console.error('[camera-settings][frontend] setGain threw:', err);
         setLiveApplyError(err instanceof Error ? err.message : String(err));
@@ -180,12 +213,22 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const sendExposure = useCallback(
     async (rawValueMs: number) => {
       const valueMs = clamp(rawValueMs, exposureRange.min, exposureRange.max);
+      // No-op guard: already applied on the device — skip to avoid a stream
+      // restart (frameId → 1) for no visual change.
+      if (appliedExposureMsRef.current !== null && valueMs === appliedExposureMsRef.current) {
+        return;
+      }
+      // Mark applied SYNCHRONOUSLY before the boundary + IPC (see sendGain for
+      // the rationale). Tracks the requested clamped value, restored on failure.
+      const previousAppliedExposure = appliedExposureMsRef.current;
+      appliedExposureMsRef.current = valueMs;
       // eslint-disable-next-line no-console
       console.log('[camera-ui][settings-change] exposureMs=' + valueMs);
       try {
         dropPendingCameraFrames('exposure-change');
         const reply = await window.hardnessCamera.setExposure(valueMs);
         if (!reply.ok) {
+          appliedExposureMsRef.current = previousAppliedExposure;
           // eslint-disable-next-line no-console
           console.error('[camera-settings][frontend] setExposure failed:', reply);
           setLiveApplyError(reply.message ?? reply.error ?? 'Failed to apply exposure.');
@@ -203,6 +246,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
           setLiveApplyError(null);
         }
       } catch (err) {
+        appliedExposureMsRef.current = previousAppliedExposure;
         // eslint-disable-next-line no-console
         console.error('[camera-settings][frontend] setExposure threw:', err);
         setLiveApplyError(err instanceof Error ? err.message : String(err));
@@ -398,13 +442,14 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   const handleCancel = useCallback(() => {
     if (liveAvailable && data) {
-      dropPendingCameraFrames('gain-change');
-      void window.hardnessCamera.setGain(data.analogGain).catch(() => {});
-      dropPendingCameraFrames('exposure-change');
-      void window.hardnessCamera.setExposure(data.exposureTimeMs).catch(() => {});
+      // Restore persisted values through the guarded senders so that, if the
+      // device is already at those values (user opened but changed nothing),
+      // the no-op guard skips the apply and no stream restart occurs.
+      void sendGain(data.analogGain);
+      void sendExposure(data.exposureTimeMs);
     }
     onClose();
-  }, [data, liveAvailable, onClose]);
+  }, [data, liveAvailable, onClose, sendGain, sendExposure]);
 
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;

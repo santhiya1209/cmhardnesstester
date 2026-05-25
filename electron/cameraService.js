@@ -25,13 +25,18 @@ const DEFAULT_OPENCV_DIR = 'C:\\Users\\SANTHIYA\\opencv\\build';
 // bursts, but the camera's real-world FPS is exposure-bound — at e.g. 200ms
 // exposure the slot is naturally 200ms old between frames and a 50ms gate
 // drops EVERY frame, blanking the live view. Set high enough that healthy
-// low-FPS operation passes through; only truly broken pipelines (>1s lag)
-// trigger a drop. The atomic-slot in native already guarantees "freshest
-// available" so a slightly old frame is the best the SDK can give us.
-// Temporarily lenient (was 100ms) so post-stream-restart frames at 8 FPS
-// don't all get dropped while we debug the display pipeline. Tighten
-// back to ~50–100ms once the pipeline is verified end-to-end.
-const STALE_AGE_MS = 500;
+// low-FPS operation passes through; only truly broken pipelines trigger a
+// drop. The atomic-slot in native already guarantees "freshest available" so
+// a slightly old frame is the best the SDK can give us.
+// Tightened 500 → 300 now the pipeline is verified: the renderer's live gate
+// is 250ms, so any frame older than ~300ms here is guaranteed to be discarded
+// downstream (it only ages further through IPC + decode). Shipping it spends a
+// ~15MB structured-clone copy on a frame the renderer always drops. 300 leaves
+// headroom over the exposure-bound floor (frames are naturally ~exposure_ms
+// old by grabTs; current exposures are ~130ms) so healthy low-FPS operation
+// still passes — do NOT drop this below the max usable exposure or the live
+// view blanks.
+const STALE_AGE_MS = 300;
 class CameraService {
   constructor() {
     this.webContents = null;

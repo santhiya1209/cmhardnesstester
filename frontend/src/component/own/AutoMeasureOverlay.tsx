@@ -9,6 +9,7 @@ import {
   type ManualMeasureImageSize,
 } from '@/utils/manualMeasureOverlayCanvas';
 import type { Point } from '@/types/tool';
+import { useRenderCount } from '@/utils/renderStats';
 
 // Frozen auto-measure overlay: detected Vickers tips are displayed using the
 // same guide-line style as Manual Measure.
@@ -140,6 +141,7 @@ function AutoMeasureOverlayImpl({
   clearNonce = 0,
   cameraOpen = true,
 }: Props) {
+  useRenderCount('AutoMeasureOverlay');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);

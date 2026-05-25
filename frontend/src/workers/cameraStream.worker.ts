@@ -2,20 +2,20 @@
 /*
  * cameraStream.worker.ts
  *
- * Receives transferred OffscreenCanvas + per-frame ArrayBuffers, decodes the
- * raw camera bytes (mono8 / rgb24 / bgr24 / *32) into ImageData, and draws
- * via OffscreenCanvasRenderingContext2D.putImageData. Throttles to one paint
- * per ArrayBuffer (no rAF needed inside a worker — incoming frame rate is
- * already the limiter).
+ * Receives per-frame ArrayBuffers, decodes the raw camera bytes
+ * (mono8 / rgb24 / bgr24 / *32) into ImageData, and transfers the ImageData
+ * back to the main thread, which blits it with putImageData. Single render
+ * path — the OffscreenCanvas path was removed (it produced a black canvas in
+ * this Electron version). The 2D canvas is the render target, not a camera
+ * source fallback; the camera source is always the native IPC stream.
  *
  * Messages in:
- *   { type: 'init',    canvas: OffscreenCanvas }
- *   { type: 'init-2d' }                          // OffscreenCanvas not supported
- *   { type: 'frame',   buffer, width, height, pixelFormat, bits }
+ *   { type: 'frame', buffer, width, height, pixelFormat, bits, epoch, seq, frameId, previewScale }
+ *   { type: 'clear-queue' }   // no-op (no retained per-frame state)
  *   { type: 'dispose' }
  *
- * Messages out (only when init-2d is in use):
- *   { type: 'paint', imageData: ImageData }
+ * Messages out:
+ *   { type: 'paint', imageData, epoch, seq, frameId }   // imageData transferred
  */
 
 type PixelFormat =
@@ -31,8 +31,6 @@ type PixelFormat =
   | 'bayer_rg'
   | 'raw';
 
-type InitMsg = { type: 'init'; canvas: OffscreenCanvas };
-type Init2dMsg = { type: 'init-2d' };
 type FrameMsg = {
   type: 'frame';
   buffer: ArrayBuffer;
@@ -60,31 +58,14 @@ type FrameMsg = {
 };
 type DisposeMsg = { type: 'dispose' };
 type ClearQueueMsg = { type: 'clear-queue'; epoch?: number; reason?: string };
-type IncomingMsg = InitMsg | Init2dMsg | FrameMsg | ClearQueueMsg | DisposeMsg;
-
-let canvas: OffscreenCanvas | null = null;
-let ctx: OffscreenCanvasRenderingContext2D | null = null;
-let mainThreadPaint = false;
-let imageData: ImageData | null = null;
-let imageDataDims: { w: number; h: number } | null = null;
+type IncomingMsg = FrameMsg | ClearQueueMsg | DisposeMsg;
 
 function ensureImageData(w: number, h: number): ImageData {
-  // In the main-thread paint path (2D-fallback) we need to transfer the
-  // decoded ImageData to the renderer — and transferring detaches the
-  // backing store. Reusing a single shared ImageData would therefore force
-  // us to memcpy the pixels into a fresh buffer every frame (the previous
-  // code's `new Uint8ClampedArray(img.data)` line). For a 1920x1080 frame
-  // that is ~8 MB / frame of avoidable copying. Allocate fresh per frame
-  // when we know we're about to transfer.
-  if (mainThreadPaint) {
-    return new ImageData(w, h);
-  }
-  if (imageData && imageDataDims && imageDataDims.w === w && imageDataDims.h === h) {
-    return imageData;
-  }
-  imageData = new ImageData(w, h);
-  imageDataDims = { w, h };
-  return imageData;
+  // Always allocate fresh: the decoded ImageData is transferred to the main
+  // thread (its backing store detaches on postMessage), so it can never be
+  // reused across frames. This is the single render path — the OffscreenCanvas
+  // path was removed (it produced a black canvas in this Electron version).
+  return new ImageData(w, h);
 }
 
 // Precomputed 256-entry LUT mapping mono8 byte → packed RGBA32 (little-endian
@@ -410,7 +391,6 @@ function decode(
   return out;
 }
 
-let paintCount = 0;
 let resolutionLogged = false;
 function paint(frame: FrameMsg) {
   const previewScale = frame.previewScale ?? 1;
@@ -429,62 +409,36 @@ function paint(frame: FrameMsg) {
       `[camera-worker][decoded-resolution] ${img.width}x${img.height} ` +
         `(from ${frame.width}x${frame.height} previewScale=${previewScale} ` +
         `pixelFormat=${frame.pixelFormat} bits=${frame.bits} ` +
-        `paintPath=${mainThreadPaint ? '2d-fallback' : 'offscreen'})`
+        `paintPath=2d-canvas)`
     );
   }
   const rawFid = (frame as { frameId?: unknown }).frameId;
   const frameId =
     typeof rawFid === 'number' && rawFid > 0 ? rawFid : 0;
-  if (mainThreadPaint) {
-    // ImageData was freshly allocated by ensureImageData() above, so we can
-    // transfer its backing store directly — zero copies. Previously this
-    // path did `new Uint8ClampedArray(img.data)` which was an ~8MB memcpy
-    // per 1080p frame.
-    (self as DedicatedWorkerGlobalScope).postMessage(
-      {
-        type: 'paint',
-        imageData: img,
-        epoch: frame.epoch ?? 0,
-        seq: frame.seq ?? 0,
-        frameId,
-      },
-      [img.data.buffer]
-    );
-    return;
-  }
-  if (!canvas || !ctx) {
-    return;
-  }
-  if (canvas.width !== img.width || canvas.height !== img.height) {
-    canvas.width = img.width;
-    canvas.height = img.height;
-    // eslint-disable-next-line no-console
-    console.log(`[camera-canvas][bitmap-resolution] ${canvas.width}x${canvas.height}`);
-  }
-  ctx.putImageData(img, 0, 0);
-  paintCount++;
+  // ImageData was freshly allocated by ensureImageData() above, so we transfer
+  // its backing store directly — zero copies. The main thread blits it with
+  // putImageData (see installMainThreadPaintHandler in useCameraStream.ts).
+  (self as DedicatedWorkerGlobalScope).postMessage(
+    {
+      type: 'paint',
+      imageData: img,
+      epoch: frame.epoch ?? 0,
+      seq: frame.seq ?? 0,
+      frameId,
+    },
+    [img.data.buffer]
+  );
 }
 
 self.onmessage = (e: MessageEvent<IncomingMsg>) => {
   const msg = e.data;
-  if (msg.type === 'init') {
-    canvas = msg.canvas;
-    ctx = canvas.getContext('2d');
-    mainThreadPaint = false;
-  } else if (msg.type === 'init-2d') {
-    canvas = null;
-    ctx = null;
-    mainThreadPaint = true;
-  } else if (msg.type === 'frame') {
+  if (msg.type === 'frame') {
     paint(msg);
   } else if (msg.type === 'clear-queue') {
-    imageData = null;
-    imageDataDims = null;
+    // No per-frame state is retained (every ImageData is allocated fresh and
+    // transferred), so there is nothing to clear here. Accepted as a no-op so
+    // the renderer's boundary/reset signals don't error.
   } else if (msg.type === 'dispose') {
-    canvas = null;
-    ctx = null;
-    imageData = null;
-    imageDataDims = null;
     (self as DedicatedWorkerGlobalScope).close();
   }
 };

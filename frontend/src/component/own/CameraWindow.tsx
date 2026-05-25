@@ -15,6 +15,7 @@ import {
   waitForFreshCameraFrame,
 } from '@/hooks/useCameraStream';
 import { tokens } from '@/theme/theme';
+import { useRenderCount } from '@/utils/renderStats';
 import ImageOverlay from '@/component/own/ImageOverlay';
 import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
 import MagnifierLens from '@/component/own/MagnifierLens';
@@ -68,7 +69,13 @@ const CANVAS_STYLE: React.CSSProperties = {
   height: '100%',
   display: 'block',
   objectFit: 'contain',
-  imageRendering: 'pixelated',
+  // 'auto' = browser smooth (bilinear) sampling. The canvas is full native
+  // resolution (2592x1944) and CSS-downscaled to the panel; 'pixelated'
+  // (nearest-neighbour) aliased that downscale and made the preview look soft
+  // while focusing. Smooth sampling is correct for a downscaled microscope
+  // image. Display-only — Auto/Manual measure read the full-res raw buffer
+  // (latestFullFrame), never these scaled canvas pixels.
+  imageRendering: 'auto',
 };
 
 type ImageSize = { width: number; height: number };
@@ -201,6 +208,7 @@ function CameraWindowImpl(
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
+  useRenderCount('CameraWindow');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const freezeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -229,19 +237,25 @@ function CameraWindowImpl(
     const live = canvasRef.current;
     const snap = freezeCanvasRef.current;
     if (!live || !snap) return false;
+    // The overlay/measurement coordinate space (and the µm-per-pixel
+    // calibration reference) is the FULL native frame — NOT the live canvas
+    // bitmap, which is subsampled by PREVIEW_SCALE for display. Derive
+    // imageSize from the full-res raw frame so a frozen frame's overlays stay
+    // aligned and manual-measure microns stay correct. The snap canvas itself
+    // stays at preview resolution (it is only the displayed frozen bitmap).
+    const full = getLatestFullFrame();
+    const measurementSize =
+      full && full.width > 0 && full.height > 0
+        ? { width: full.width, height: full.height }
+        : live.width > 0 && live.height > 0
+          ? { width: live.width, height: live.height }
+          : null;
     if (frozen) {
       const ctx = snap.getContext('2d');
       if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
-      setImageSize((current) =>
-        keepImageSizeIfSame(
-          current,
-          live.width > 0 && live.height > 0
-            ? { width: live.width, height: live.height }
-            : null
-        )
-      );
+      setImageSize((current) => keepImageSizeIfSame(current, measurementSize));
       return false;
     }
     if (live.width === 0 || live.height === 0) return false;
@@ -251,9 +265,7 @@ function CameraWindowImpl(
     if (!ctx) return false;
     ctx.drawImage(live, 0, 0);
     imageSourceRef.current = 'live-camera';
-    setImageSize((current) =>
-      keepImageSizeIfSame(current, { width: live.width, height: live.height })
-    );
+    setImageSize((current) => keepImageSizeIfSame(current, measurementSize));
     setFrozen(true);
     return true;
   }, [frozen]);

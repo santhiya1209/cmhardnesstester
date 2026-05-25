@@ -27,6 +27,7 @@ import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
+import { useRenderCount } from '@/utils/renderStats';
 
 type MachineControlTabProps = {
   hvDisplay?: string;
@@ -391,6 +392,7 @@ type LightnessControlProps = {
 };
 
 function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessControlProps) {
+  useRenderCount('LightnessControl');
   const parsed = Number(value);
   const sliderValue = Number.isFinite(parsed) ? clampLightness(parsed) : LIGHTNESS_MIN;
   return (
@@ -453,6 +455,7 @@ function MachineControlTabImpl({
   onTurretIntent,
   onObjectiveChangeIntent,
 }: MachineControlTabProps = {}) {
+  useRenderCount('MachineControlTab');
   const { data: machineState, error: streamError } = useMachineState();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();

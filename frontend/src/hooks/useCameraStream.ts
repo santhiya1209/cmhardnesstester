@@ -4,23 +4,35 @@ import { ackCameraFrame } from '@/api/camera';
 import { flushCameraStream } from '@/api/camera';
 import type { CameraFrameMeta, CameraPixelFormat } from '@/types/camera';
 
-// Live-preview subsample factor. 1 = stream the native sensor resolution
-// (2592×1944) end-to-end: native → IPC → worker decode → canvas bitmap, with
-// the UI scaling visually via CSS objectFit: contain. Auto Measure reads the
-// same full-res raw buffer (latestFullFrame via getLatestFullFrame), so this
-// constant only affects the live-preview decode cost and ImageData transfer
-// size in the 2D-fallback path. Integer ≥1.
-const PREVIEW_SCALE = 1;
+// Live-preview subsample factor — affects the DISPLAY path ONLY.
+//
+//   2 = the worker decodes the native frame down to half width/height
+//   (2592×1944 → 1296×972) for the live canvas. That is ¼ the decode work,
+//   ¼ the worker→main ImageData transfer (~5MB vs ~20MB), and ¼ the
+//   main-thread putImageData cost per frame — the direct fix for the
+//   over-250ms-before-draw bursts at full res. 1296×972 is still LARGER than
+//   the canvas's CSS box (~1021×675), so with imageRendering:auto the preview
+//   stays crisp (it is downscaled, never upscaled). Going to 3 (864 wide)
+//   would drop below the display box and soften the image — 2 is the sweet
+//   spot.
+//
+// Measurement is UNAFFECTED: Auto/Manual measure, freeze-capture, and export
+// all read the full-resolution raw IPC buffer (latestFullFrame via
+// getLatestFullFrame), which is stored before the worker decode and never
+// subsampled. This constant only changes the live-preview bitmap. Integer ≥1.
+const PREVIEW_SCALE = 2;
 
-// Stale-frame age threshold (grab→renderer-receive). Lenient enough not to
-// drop frames that are naturally old because the camera runs at low FPS
-// (e.g. 200ms exposure → 5 FPS, slot age up to 200ms is normal). The
-// native atomic-slot already delivers the freshest available frame; this
-// gate only catches truly broken pipelines, not normal low-FPS operation.
-// Temporarily lenient (was 100ms) so post-stream-restart frames at 8 FPS
-// don't all get dropped while we debug the display pipeline. Once the
-// pipeline is verified working we can tighten this back to ~50–100ms.
-const STALE_AGE_MS = 500;
+// Stale-frame age threshold (grab→renderer-receive). A frame whose grab
+// timestamp is older than this is dropped at both the renderer-inbound gate
+// and the paint-time gate so the live canvas never shows pixels that lag the
+// physical machine. Set to 250ms: a 100ms gate dropped frames in bursts while
+// the operator turned the focus knob (fast scene change + decode backlog),
+// which froze the preview and then snapped forward when one finally survived.
+// 250ms keeps continuity during focusing while still discarding genuinely
+// stale frames — a quarter-second is the most lag we tolerate on the live
+// view. This is the live-preview gate only; it does not affect the full-res
+// frame held for measurement.
+const STALE_AGE_MS = 250;
 
 /**
  * Owns the camera-stream worker. Subscribes to `camera:frame` events on
@@ -91,6 +103,14 @@ let lastWorkerRecvLogAt = 0;
 let lastCanvasPresentLogAt = 0;
 let latencyDroppedSinceLastSummary = 0;
 let staleFramesBeforeTs = 0;
+// Paint-lifecycle counters, flushed once per second by maybeLogPaintLifecycle()
+// — NOT per frame (per CLAUDE.md: no per-frame logging). Let the operator see
+// how many decoded frames got queued for paint vs skipped (stale/superseded)
+// vs actually painted, without log spam.
+let paintQueuedSinceLog = 0;
+let paintSkippedSinceLog = 0;
+let paintFinishedSinceLog = 0;
+let lastLifecycleLogAt = 0;
 // Pending paint for rAF coalescing. The 2D paint path receives 'paint'
 // messages serially from the worker; on a hot loop we could call
 // putImageData N times per rAF tick. Coalescing means only the most recent
@@ -105,6 +125,11 @@ let pendingPaint: {
   grabTs: number;
 } | null = null;
 let rafScheduled = false;
+// Render-path identity log, emitted once per app lifetime (not per session).
+// Records that the active render path is the worker-decode → transferable
+// ImageData → main-thread putImageData path (the OffscreenCanvas path was
+// removed — see attachCanvas).
+let renderPathLogged = false;
 // Reset by resetCameraSession() on close so the next open re-fires the
 // first-frame / first-paint logs. The IPC subscription itself stays attached
 // for the page lifetime — only the per-session telemetry is reset.
@@ -145,7 +170,34 @@ function recordCameraFrameDrop(reason = 'stale', frameId = 0, ageMs = 0): void {
     console.log(
       `[camera-render-blocked-check] first-drop reason=${reason} frameId=${frameId} ageMs=${ageMs}`
     );
+    // Surface stale/over-threshold drops under the latency namespace too
+    // (first occurrence per session/boundary — re-armed when firstDropLogged
+    // resets, never per-frame).
+    if (reason.includes('over-') || reason.includes('stale')) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-render-latency][stale-frame-drop] reason=${reason} frameId=${frameId} ageMs=${ageMs}`
+      );
+    }
   }
+}
+
+// Flush the paint-lifecycle counters at most once per second. Called from the
+// worker 'paint' handler (which fires for every decoded frame while streaming,
+// so the summary still emits during a drop storm when no frame paints).
+function maybeLogPaintLifecycle(): void {
+  const now = Date.now();
+  if (now - lastLifecycleLogAt < 1000) return;
+  lastLifecycleLogAt = now;
+  // eslint-disable-next-line no-console
+  console.log(`[camera-render-latency][paint-queued] count1s=${paintQueuedSinceLog}`);
+  // eslint-disable-next-line no-console
+  console.log(`[camera-render-latency][paint-skipped] count1s=${paintSkippedSinceLog}`);
+  // eslint-disable-next-line no-console
+  console.log(`[camera-render-latency][paint-finished] count1s=${paintFinishedSinceLog}`);
+  paintQueuedSinceLog = 0;
+  paintSkippedSinceLog = 0;
+  paintFinishedSinceLog = 0;
 }
 
 function installMainThreadPaintHandler() {
@@ -173,29 +225,44 @@ function installMainThreadPaintHandler() {
       // the freshly-cleared canvas.
       if (paintEpoch < frameEpoch) {
         recordCameraFrameDrop('stale-epoch', resolvedFrameId);
+        paintSkippedSinceLog += 1;
         decoderBusy = false;
         // Still ack so main process releases its slot — the frame was
         // delivered + decoded; main shouldn't be stuck waiting.
         if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
         flushPendingFrame();
+        maybeLogPaintLifecycle();
+        return;
+      }
+      // Stale-before-stash: if the frame is already older than the threshold
+      // when the worker finishes decoding it (slow decode, or the main thread
+      // ran long on the previous tick), don't stash it or schedule an rAF the
+      // rAF would only drop. Discarding here — one step earlier than the
+      // rAF-time gate — avoids a doomed putImageData attempt during a stall, so
+      // the main thread recovers faster. Ack at idle + flush as usual.
+      const ageAtStash = inFlightGrabTs > 0 ? Date.now() - inFlightGrabTs : 0;
+      if (ageAtStash > STALE_AGE_MS) {
+        recordCameraFrameDrop('stale-before-stash', resolvedFrameId, ageAtStash);
+        paintSkippedSinceLog += 1;
+        decoderBusy = false;
+        if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
+        flushPendingFrame();
+        maybeLogPaintLifecycle();
         return;
       }
       // (Previously dropped on `resolvedFrameId < latestFrameIdRef`, but
       // the SDK frame counter can reset on stream restarts, so that gate
-      // would blank the live view post-restart. Removed; age gate below
-      // is the authority.)
-      if (false as boolean) {
-        decoderBusy = false;
-        ackCameraFrame(resolvedFrameId);
-        flushPendingFrame();
-        return;
-      }
+      // would blank the live view post-restart. Removed — the wall-clock
+      // age gate in schedulePaintRaf is the sole stale authority.)
       // Stash latest decoded image; rAF coalesces multiple paints into one
       // putImageData per frame. If a newer paint arrives before rAF fires,
       // it replaces this one — the older pixels never touch the canvas.
       if (pendingPaint) {
+        // The superseded paint was already acked to main at worker-idle (when
+        // it was stashed). Latest-frame-wins: its pixels never reach the canvas
+        // — just record the drop, do NOT re-ack.
         recordCameraFrameDrop('pending-paint-overwrite', pendingPaint.frameId);
-        ackCameraFrame(pendingPaint.frameId);
+        paintSkippedSinceLog += 1;
       }
       pendingPaint = {
         imageData: e.data.imageData,
@@ -205,9 +272,20 @@ function installMainThreadPaintHandler() {
         capturedAt: inFlightCapturedAt,
         grabTs: inFlightGrabTs,
       };
+      paintQueuedSinceLog += 1;
       decoderBusy = false;
+      // Backpressure ack at WORKER-IDLE — not after the rAF putImageData. The
+      // worker is free the instant it posts 'paint', so acking here lets the
+      // main process drain its newest pending frame and start the next IPC +
+      // decode immediately, overlapping it (worker thread) with this frame's
+      // putImageData (main thread, in rAF below). Previously the ack waited
+      // until after putImageData, so the decode pipeline sat idle for a full
+      // main↔renderer round-trip every frame — the source of the latency
+      // bursts. The rAF below is display-only and never re-acks.
+      if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
       flushPendingFrame();
       schedulePaintRaf();
+      maybeLogPaintLifecycle();
     }
   );
 }
@@ -221,8 +299,9 @@ function schedulePaintRaf() {
     pendingPaint = null;
     if (!p) return;
     if (staleFramesBeforeTs > 0 && p.grabTs > 0 && p.grabTs < staleFramesBeforeTs) {
+      // Already acked at worker-idle; rAF only decides whether to display.
       recordCameraFrameDrop('pre-change-frame', p.frameId, Date.now() - p.grabTs);
-      if (p.frameId > 0) ackCameraFrame(p.frameId);
+      paintSkippedSinceLog += 1;
       return;
     }
     // (Previously dropped on p.frameId < latestFrameIdRef. Removed for the
@@ -234,13 +313,13 @@ function schedulePaintRaf() {
     if (p.grabTs > 0) {
       const ageAtPaint = Date.now() - p.grabTs;
       if (ageAtPaint > STALE_AGE_MS) {
-        recordCameraFrameDrop('over-100ms-before-draw', p.frameId, ageAtPaint);
-        if (p.frameId > 0) ackCameraFrame(p.frameId);
+        recordCameraFrameDrop(`over-${STALE_AGE_MS}ms-before-draw`, p.frameId, ageAtPaint);
+        paintSkippedSinceLog += 1;
         return;
       }
     }
     if (!attached || !attached.fallbackCtx) {
-      if (p.frameId > 0) ackCameraFrame(p.frameId);
+      paintSkippedSinceLog += 1;
       return;
     }
     const { el, fallbackCtx } = attached;
@@ -253,6 +332,7 @@ function schedulePaintRaf() {
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
+    paintFinishedSinceLog += 1;
     if (lastPaintAt - lastCanvasPresentLogAt >= 5000) {
       lastCanvasPresentLogAt = lastPaintAt;
     }
@@ -265,12 +345,42 @@ function schedulePaintRaf() {
       firstPaintLoggedThisSession = true;
       // eslint-disable-next-line no-console
       console.log(`[camera-canvas-paint-check] first-paint frameId=${p.frameId}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-render-path][canvas-first-paint] frameId=${p.frameId}`);
+      // One-shot clarity diagnostics: source (intrinsic canvas) resolution vs
+      // the CSS box it is scaled into. If canvas px >> css px the frame is
+      // being downscaled by CSS; smooth (imageRendering:auto) sampling keeps
+      // that downscale clear.
+      // eslint-disable-next-line no-console
+      console.log(`[camera-canvas][source-resolution] ${img.width}x${img.height}`);
+      // Preview vs measurement resolution proof: preview is subsampled by
+      // PREVIEW_SCALE; measurement keeps the full raw frame.
+      // eslint-disable-next-line no-console
+      console.log(`[camera-preview][preview-scale] ${PREVIEW_SCALE}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-preview][display-resolution] ${img.width}x${img.height}`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-preview][measurement-resolution] ${latestFullFrame ? `${latestFullFrame.width}x${latestFullFrame.height}` : 'n/a'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-canvas][display-size] css=${el.clientWidth}x${el.clientHeight} ` +
+          `canvas=${el.width}x${el.height} objectFit=contain imageRendering=auto`
+      );
     }
     if (lastPaintAt - lastLatencyLogAt > 1000) {
       lastLatencyLogAt = lastPaintAt;
+      // Throttled 1Hz: grab→pixels-on-canvas latency + drops in the last
+      // second. The number the operator actually perceives as lag.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-render-latency][before-draw] ageMs=${p.grabTs > 0 ? lastPaintAt - p.grabTs : 0} dropped1s=${latencyDroppedSinceLastSummary}`
+      );
       latencyDroppedSinceLastSummary = 0;
     }
-    if (p.frameId > 0) ackCameraFrame(p.frameId);
+    // No ack here — the frame was acked to main at worker-idle (paint handler)
+    // so the next frame's decode already started while this paint ran.
   });
 }
 
@@ -340,7 +450,7 @@ function subscribeIpcOnce() {
     if (grabTs > 0) {
       const ageMs = receivedAt - grabTs;
       if (ageMs > STALE_AGE_MS) {
-        recordCameraFrameDrop('over-100ms-before-renderer', frameId, ageMs);
+        recordCameraFrameDrop(`over-${STALE_AGE_MS}ms-before-renderer`, frameId, ageMs);
         ackCameraFrame(frameId);
         return;
       }
@@ -374,7 +484,18 @@ function flushPendingFrame() {
   if (!pendingFrame || decoderBusy) return;
   const { meta, body, frameId } = pendingFrame;
   pendingFrame = null;
-  // No frameId<latest drop here either — SDK counter resets are legitimate.
+  // Drop-before-decode: if this frame aged past the stale threshold while it
+  // waited for the decoder to free up, decoding it (~20-30ms for a 5MP frame)
+  // only to have the paint gate discard it afterward would deepen the backlog.
+  // Drop it now so the decoder stays free for a current frame, and ack so the
+  // main process releases its in-flight slot. The next fresh ingest drives the
+  // next paint. (No frameId<latest drop — SDK counter resets are legitimate.)
+  const grabTs = meta.grabTs ?? meta.capturedAt ?? 0;
+  if (grabTs > 0 && Date.now() - grabTs > STALE_AGE_MS) {
+    recordCameraFrameDrop('stale-before-decode', frameId, Date.now() - grabTs);
+    if (frameId > 0) ackCameraFrame(frameId);
+    return;
+  }
   postFrameToWorker(meta, body, frameId);
 }
 
@@ -386,10 +507,26 @@ export function resetCameraSession() {
   pendingFrame = null;
   pendingPaint = null;
   decoderBusy = false;
-  staleFramesBeforeTs = 0;
+  // Arm a stale cutoff at reset time so any frame grabbed before this point
+  // (a prior session's SDK-buffered frames) is dropped at the cheap
+  // pre-change-frame gate instead of trickling through the per-frame age gate.
+  // Genuine post-open frames have a later grabTs and pass. This keeps the
+  // first surviving frame fresh so first-ipc-frame / first-paint fire on a
+  // recent frame, not a stale backlog frame.
+  staleFramesBeforeTs = Date.now();
+  inFlightFrameId = 0;
+  inFlightGrabTs = 0;
+  inFlightCapturedAt = 0;
   lastLatencyLogAt = 0;
   latencyDroppedSinceLastSummary = 0;
+  paintQueuedSinceLog = 0;
+  paintSkippedSinceLog = 0;
+  paintFinishedSinceLog = 0;
+  lastLifecycleLogAt = 0;
   getWorker().postMessage({ type: 'clear-queue', epoch: frameEpoch, reason: 'session-reset' });
+  // Drop the backend SDK's buffered frames too — the worker clear above only
+  // empties the renderer-side queue.
+  flushCameraStream('session-reset');
 }
 
 function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
@@ -465,11 +602,13 @@ export function dropPendingCameraFrames(reason = 'stale'): number {
   const ts = Date.now();
   let dropped = 0;
   staleFramesBeforeTs = ts;
-  // Re-arm the per-boundary "first IPC frame" / "first paint" / "first drop"
-  // diagnostic logs so we can see whether frames flow again after this
-  // boundary (settings change, objective change, etc.).
-  firstFrameLoggedThisSession = false;
-  firstPaintLoggedThisSession = false;
+  // Re-arm only the per-boundary "first drop" diagnostic so we can see
+  // whether frames get dropped after this boundary. The first-IPC-frame and
+  // first-paint markers are SESSION-scoped (camera open) — they are reset
+  // ONLY by resetCameraSession() on a real camera reopen, never on a
+  // gain/exposure/objective boundary. Re-arming them here was making
+  // "first-ipc-frame frameId=1 / first-paint frameId=1" repeat on every
+  // settings change even though no reopen occurred.
   firstDropLogged = false;
   // eslint-disable-next-line no-console
   console.log(`[camera-render-blocked-check] boundary reason=${reason} ts=${ts}`);
@@ -481,8 +620,9 @@ export function dropPendingCameraFrames(reason = 'stale'): number {
     dropped += 1;
   }
   if (pendingPaint) {
+    // pendingPaint was already acked to main at worker-idle when it was
+    // stashed — just discard the un-displayed pixels, do NOT re-ack.
     recordCameraFrameDrop(reason, pendingPaint.frameId);
-    ackCameraFrame(pendingPaint.frameId);
     pendingPaint = null;
     dropped += 1;
   }
@@ -547,38 +687,27 @@ export function useCameraStream() {
   const attachCanvas = useCallback((el: HTMLCanvasElement | null) => {
     if (!el) return;
     if (attached && attached.el === el) return;
-    if (attached && attached.el !== el) {
-      // A different canvas mounted (route change, etc.). The previous canvas
-      // was already transferred and cannot be reused; we just rebind to the
-      // new one in 2D-fallback mode.
-      attached = { el, fallbackCtx: el.getContext('2d') };
-      installMainThreadPaintHandler();
-      getWorker().postMessage({ type: 'init-2d' });
-      return;
-    }
-
-    const worker = getWorker();
-    // OffscreenCanvas presentation has been flaky in Electron (this version),
-    // producing a black canvas even though the worker successfully puts
-    // pixels into the offscreen bitmap. Re-enabling it (commit b5f7d37) made
-    // the live preview go dark — reverted. The 2D fallback path uses a
-    // transferable ImageData postMessage which is zero-copy on the JS side
-    // (the engine memcpy is small relative to a 5 MP frame's decode cost)
-    // and renders reliably. Do not flip this back to true without first
-    // verifying the offscreen bitmap actually composites to the visible
-    // canvas in a packaged build (not just dev).
-    const supportsOffscreen = false;
-
-    if (supportsOffscreen) {
-      const offscreen = (el as unknown as {
-        transferControlToOffscreen: () => OffscreenCanvas;
-      }).transferControlToOffscreen();
-      worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen as unknown as Transferable]);
-      attached = { el, fallbackCtx: null };
-    } else {
-      installMainThreadPaintHandler();
-      worker.postMessage({ type: 'init-2d' });
-      attached = { el, fallbackCtx: el.getContext('2d') };
+    // Single render path: the worker decodes each frame and transfers the
+    // ImageData back; the main thread blits it here with putImageData. This is
+    // the only render path — the OffscreenCanvas path was REMOVED because in
+    // this Electron version transferring control to the worker produced a
+    // black canvas (pixels written to the offscreen bitmap never composited to
+    // the visible canvas; re-enabling it in commit b5f7d37 darkened the live
+    // preview). The 2D canvas is the render target, NOT a camera-source
+    // fallback — the camera source is always the native IPC stream.
+    // (Handles both first attach and a rebind to a different canvas element.)
+    installMainThreadPaintHandler();
+    attached = { el, fallbackCtx: el.getContext('2d') };
+    if (!renderPathLogged) {
+      renderPathLogged = true;
+      // eslint-disable-next-line no-console
+      console.log(
+        '[camera-render-path][offscreen-disabled] OffscreenCanvas path removed (black-canvas in this Electron)'
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        '[camera-render-path][2d-fallback] worker-decode → transferable ImageData → main-thread putImageData (render path, not a camera-source fallback)'
+      );
     }
   }, []);
 
