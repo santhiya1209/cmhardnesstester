@@ -8,6 +8,27 @@ function logFrontendMachineState(state: MachineState): void {
   if (source !== 'machine') return;
 }
 
+// Fields the Machine Control UI (and the App-level objective/indent effects)
+// actually render or react to. A push that leaves all of these unchanged is
+// telemetry noise (only timestamps differ) and must NOT trigger a React commit.
+const UI_FIELDS: (keyof MachineState)[] = [
+  'connected',
+  'port',
+  'force',
+  'lightness',
+  'loadTime',
+  'objective',
+  'hardnessLevel',
+  'indentStatus',
+  'turretPosition',
+  'confirmedObjectiveFromMachine',
+  'lastObjectiveRx',
+  'lastError',
+  'syncStatus',
+  'syncMessage',
+  'machineStatus',
+];
+
 // Subscribes to GET /api/machine/events (Server-Sent Events) and exposes the
 // latest MachineState. Falls back to a one-shot fetch if the EventSource
 // connection fails (e.g. dev proxy hiccup).
@@ -30,11 +51,24 @@ export function useMachineState() {
     // the latest value, so only same-frame telemetry noise is collapsed.
     let pendingState: MachineState | null = null;
     let rafId: number | null = null;
+    let lastCommitted: MachineState | null = null;
     const flush = () => {
       rafId = null;
       if (cancelled || pendingState === null) return;
       const next = pendingState;
       pendingState = null;
+      const prev = lastCommitted;
+      // Dedupe: skip the commit when no UI-relevant field changed.
+      if (prev && UI_FIELDS.every((f) => prev[f] === next[f])) {
+        return;
+      }
+      for (const f of ['force', 'lightness', 'loadTime'] as const) {
+        if (!prev || prev[f] !== next[f]) {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-sync][ui-state] field=${f} value=${next[f]}`);
+        }
+      }
+      lastCommitted = next;
       setData(next);
     };
     const scheduleUpdate = (state: MachineState) => {
@@ -46,6 +80,7 @@ export function useMachineState() {
     void getMachineState()
       .then((reply) => {
         if (cancelled) return;
+        lastCommitted = reply.state;
         setData(reply.state);
       })
       .catch((err: unknown) => {

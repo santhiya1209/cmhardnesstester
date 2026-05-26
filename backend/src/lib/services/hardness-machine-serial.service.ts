@@ -486,6 +486,10 @@ class HardnessMachineSerialService extends EventEmitter {
     const parser = portInstance.pipe(new RegexParser({ regex: /\r\n|\r|\n|!/ }));
     parser.on('data', (frame: Buffer) => {
       if (!Buffer.isBuffer(frame)) return;
+      // The RegexParser has already reassembled split chunks (e.g. 'K' then
+      // '0004\r') into one complete, terminator-stripped frame here.
+      // eslint-disable-next-line no-console
+      console.log(`[machine-frame-assembled] frame=${JSON.stringify(frame.toString('ascii'))}`);
       // eslint-disable-next-line no-console
       console.log(
         `[machine-rx-frame] ascii=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
@@ -560,6 +564,8 @@ class HardnessMachineSerialService extends EventEmitter {
     const frame = parseFrame(rawFrame);
 
     // eslint-disable-next-line no-console
+    console.log(`[machine-rx] raw=${JSON.stringify(rxFrame.ascii)}`);
+    // eslint-disable-next-line no-console
     console.log(
       `[machine-rx-handle] kind=${frame.kind} pendingField=${this.pendingAckField ?? 'none'} ascii=${JSON.stringify(rxFrame.ascii)}`
     );
@@ -611,6 +617,26 @@ class HardnessMachineSerialService extends EventEmitter {
             this.pendingTurretAfterImpressConfirm = false;
           }
         }
+        // Machine-panel origin: log each synced field whose value actually
+        // changed (dedupe identical repeats in the AV status batch).
+        for (const k of ['force', 'lightness', 'loadTime'] as const) {
+          const incoming = frame.values[k];
+          if (incoming !== undefined && String(this.state[k]) !== String(incoming)) {
+            // eslint-disable-next-line no-console
+            console.log(`[machine-sync][machine-change] field=${k} value=${incoming}`);
+          }
+        }
+        for (const [k, v] of Object.entries(frame.values)) {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-rx-parse] field=${k} value=${v}`);
+        }
+        if (this.pendingAckField !== null) {
+          const received = frame.values[this.pendingAckField as MachineControlKey];
+          // eslint-disable-next-line no-console
+          console.log(
+            `[machine-ack-match] field=${this.pendingAckField} expected=${this.pendingAckExpectedValue ?? ''} received=${received ?? ''} matched=${expectedEcho || expectedTurretEcho}`
+          );
+        }
         this.setState(fullPatch, 'machine');
         if (expectedEcho || expectedTurretEcho) {
           this.emit('ack');
@@ -639,6 +665,8 @@ class HardnessMachineSerialService extends EventEmitter {
         };
         if (frame.objective !== undefined) {
           const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '');
+          // eslint-disable-next-line no-console
+          console.log(`[machine-rx-parse] field=objective value=${frame.objective}`);
           patch.objective = frame.objective;
           patch.lastObjectiveRx = rxAscii;
           patch.confirmedObjectiveFromMachine = frame.objective;
@@ -664,6 +692,14 @@ class HardnessMachineSerialService extends EventEmitter {
         // truth. If we asked for 1kgf and got C08 back, the dropdown
         // updates to the real value instead of timing out.
         const expectedEcho = this.pendingAckField === frame.key;
+        // eslint-disable-next-line no-console
+        console.log(`[machine-rx-parse] field=${frame.key} value=${frame.value}`);
+        if (this.pendingAckField !== null) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[machine-ack-match] field=${frame.key} expected=${this.pendingAckExpectedValue ?? ''} received=${frame.value} matched=${expectedEcho}`
+          );
+        }
         const patch: Partial<MachineState> = {
           [frame.key]: frame.value,
           lastRxAt: rxAt,
@@ -684,6 +720,15 @@ class HardnessMachineSerialService extends EventEmitter {
           if (this.pendingTurretAfterImpressConfirm) {
             this.pendingTurretAfterImpressConfirm = false;
           }
+        }
+        // Machine-panel origin: log a sync breadcrumb only when the value
+        // actually changed (dedupe identical repeats) for the synced fields.
+        if (
+          (frame.key === 'force' || frame.key === 'lightness' || frame.key === 'loadTime') &&
+          String(this.state[frame.key]) !== String(frame.value)
+        ) {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-sync][machine-change] field=${frame.key} value=${frame.value}`);
         }
         this.setState(patch, 'machine');
         // Persist machine-driven changes too — operator may have edited
@@ -846,6 +891,9 @@ class HardnessMachineSerialService extends EventEmitter {
     const commandId = ++this.commandSequence;
     const commandLabel = this.describeCommand(field, opts.expectedValue);
 
+    // eslint-disable-next-line no-console
+    console.log(`[machine-tx] field=${field} command=${JSON.stringify(frame.toString('ascii'))}`);
+
     if (field === 'objective') {
       // Stash on telemetry so the UI can correlate TX vs RX for the diagnostic.
       const codeAscii = frame.toString('ascii').replace(/\r$/, '');
@@ -950,6 +998,8 @@ class HardnessMachineSerialService extends EventEmitter {
     }
 
     try {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-sync][pc-change] field=${key} value=${normalizedValue}`);
       const txAt = new Date().toISOString();
       this.updateTelemetry({
         lastTxAt: txAt,
@@ -963,6 +1013,8 @@ class HardnessMachineSerialService extends EventEmitter {
         awaitAck: !is10xObjectiveCommand,
         expectedValue: normalizedValue,
       });
+      // eslint-disable-next-line no-console
+      console.log(`[machine-ack] field=${key} ok=true`);
       const confirmedByMachine =
         this.state.lastUpdatedBy === 'machine' &&
         String(this.state[key]) === String(normalizedValue);
@@ -992,6 +1044,8 @@ class HardnessMachineSerialService extends EventEmitter {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.log(`[machine-ack] field=${key} ok=false`);
       // eslint-disable-next-line no-console
       console.error(`[machine-service] set ${key}=${normalizedValue} failed: ${message}`);
       // UI must NOT show the requested value on failure. Backend state stays
