@@ -8,6 +8,9 @@ import {
   getTurretCommandKey,
   getTurretSlotForDirection,
   isCommandVerified,
+  forceCodeForValue,
+  lightnessFrameForValue,
+  loadTimeFrameForValue,
   parseFrame,
   type MachineCommandKey,
   type MachineCommandVerification,
@@ -695,9 +698,20 @@ class HardnessMachineSerialService extends EventEmitter {
         // eslint-disable-next-line no-console
         console.log(`[machine-rx-parse] field=${frame.key} value=${frame.value}`);
         if (this.pendingAckField !== null) {
+          // Show the machine frame form for force (Cxx) and lightness (Kxxxx);
+          // other fields are already human-readable.
+          const toDisplay = (v: string | number | undefined): string | number => {
+            if (v === undefined) return '';
+            if (frame.key === 'force') return forceCodeForValue(v) ?? v;
+            if (frame.key === 'lightness') return lightnessFrameForValue(v) ?? v;
+            if (frame.key === 'loadTime') return loadTimeFrameForValue(v) ?? v;
+            return v;
+          };
+          const expectedDisplay = toDisplay(this.pendingAckExpectedValue);
+          const receivedDisplay = toDisplay(frame.value);
           // eslint-disable-next-line no-console
           console.log(
-            `[machine-ack-match] field=${frame.key} expected=${this.pendingAckExpectedValue ?? ''} received=${frame.value} matched=${expectedEcho}`
+            `[machine-ack-match] field=${frame.key} expected=${expectedDisplay} received=${receivedDisplay} matched=${expectedEcho}`
           );
         }
         const patch: Partial<MachineState> = {

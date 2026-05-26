@@ -39,6 +39,48 @@ Frame format reference (from the legacy Communication.dll protocol):
 `UL3`→`L3OK` (objective). Frames are reassembled from split serial chunks by the
 RegexParser (`K` + `0004\r` → `K0004`) before `[machine-frame-assembled]`.
 
+## Force (Cxx profile codes)
+
+Force is exchanged as profile codes, not raw numbers:
+
+```
+C00=0.01kgf  C03=0.025kgf  C04=0.05kgf  C05=0.1kgf
+C06=0.2kgf   C07=0.3kgf    C08=0.5kgf   C09=1kgf
+```
+
+- Machine panel → PC: `Cxx` frame → `[machine-force-map] direction=machine-to-pc
+  frame=Cxx value=<value>` → `[machine-rx-parse] field=force …`.
+- PC → machine: the command is the Communication.dll-confirmed
+  `#<scale><value:D8>!` frame (NOT `UCxx`), logged as `[machine-force-map]
+  direction=pc-to-machine value=<value> command=#<scale><value:D8>!`. The machine
+  echoes `Cxx`, which the ack-match verifies against the expected force profile.
+- An **unknown** `Cxx` code is logged (`[machine-force-rx] unknown force code…`)
+  and **ignored** — never treated as ACK, so the previous confirmed value stays.
+
+## Lightness (Kxxxx, range 0–10)
+
+- Machine panel → PC: `Kxxxx` frame (e.g. `K0009`) → `[machine-lightness-map]
+  direction=machine-to-pc frame=K0009 value=9` → `[machine-rx-parse] field=lightness …`.
+- PC → machine: command `UKxxxx`, logged as `[machine-lightness-map]
+  direction=pc-to-machine value=9 command=UK0009`; the machine echoes `K0009` and
+  the ack-match logs `[machine-ack-match] field=lightness expected=K0009 received=K0009 matched=true`.
+- An **invalid/out-of-range** `Kxxxx` is logged (`[machine-lightness-rx] invalid
+  lightness frame…`) and **ignored** — never treated as success.
+
+## Load Time (Txx, seconds)
+
+- Machine panel → PC: `Txx` frame (e.g. `T04`) → `[machine-loadtime-map]
+  direction=machine-to-pc frame=T04 value=4` → `[machine-rx-parse] field=loadTime …`.
+- PC → machine: command `UTxx`, logged as `[machine-loadtime-map]
+  direction=pc-to-machine value=4 command=UT04`; the machine echoes `T04` and the
+  ack-match logs `[machine-ack-match] field=loadTime expected=T04 received=T04 matched=true`.
+- An **invalid/out-of-range** `Txx` is logged (`[machine-loadtime-rx] invalid
+  load-time frame…`) and **ignored** — never treated as success.
+
+> Force note: the machine→PC code is `Cxx`, but the PC→machine command remains the
+> Communication.dll-confirmed `#<scale><value:D8>!` frame (not `UCxx`). The machine
+> still echoes `Cxx`, so the ack-match works either way.
+
 ## What a missing / failed log means
 
 - **`[machine-tx]` missing** → the UI → preload IPC → backend path is broken

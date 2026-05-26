@@ -290,15 +290,63 @@ export function buildSetForceCommand(value: string | number): FrameOrNull {
   // Frame: '#<scale><value:D8>!' — no \r terminator. This is the DLL pattern
   // '#0{scale}{0:D8}!' confirmed by the original Communication.dll.
   const text = `#${scaleCode}${value8}!`;
+  // eslint-disable-next-line no-console
+  console.log(`[machine-force-map] direction=pc-to-machine value=${trimmed} command=${text}`);
   return Buffer.from(text, 'ascii');
 }
 
+/**
+ * Map a force dropdown value (e.g. '0.5kgf') to its machine profile code
+ * (e.g. 'C08'), or null if the value is not a known force option. Used for
+ * code-form ack-match logging; returns null for unknown values (no guessing).
+ */
+export function forceCodeForValue(value: string | number): string | null {
+  const code = FORCE_SCALE_CODE_BY_VALUE[String(value).trim()];
+  return code ? `C${code}` : null;
+}
+
 export function buildSetLightnessCommand(value: string | number): FrameOrNull {
-  return buildFromMap('lightness', value);
+  const frame = buildFromMap('lightness', value);
+  if (frame) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-lightness-map] direction=pc-to-machine value=${String(value).trim()} command=${frame
+        .toString('ascii')
+        .replace(/[\r\n]+$/, '')}`
+    );
+  }
+  return frame;
+}
+
+/**
+ * Map a lightness value (0–10) to its machine echo frame (e.g. 'K0009'), or
+ * null if it can't be formatted. Used for code-form ack-match logging only.
+ */
+export function lightnessFrameForValue(value: string | number): string | null {
+  const formatted = padInteger(value, 4);
+  return formatted ? `K${formatted}` : null;
 }
 
 export function buildSetLoadTimeCommand(value: string | number): FrameOrNull {
-  return buildFromMap('loadTime', value);
+  const frame = buildFromMap('loadTime', value);
+  if (frame) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-loadtime-map] direction=pc-to-machine value=${String(value).trim()} command=${frame
+        .toString('ascii')
+        .replace(/[\r\n]+$/, '')}`
+    );
+  }
+  return frame;
+}
+
+/**
+ * Map a load-time value to its machine echo frame (e.g. 'T04'), or null if it
+ * can't be formatted. Used for code-form ack-match logging only.
+ */
+export function loadTimeFrameForValue(value: string | number): string | null {
+  const formatted = padInteger(value, 2);
+  return formatted ? `T${formatted}` : null;
 }
 
 export function buildSetObjectiveCommand(value: string | number): FrameOrNull {
@@ -430,6 +478,8 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
   if (hashForceMatch) {
     const force = FORCE_VALUE_BY_SCALE_CODE[hashForceMatch[1]];
     if (force) {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-force-map] direction=machine-to-pc frame=${text} value=${force}`);
       return { kind: 'state-update', key: 'force', value: force };
     }
     // eslint-disable-next-line no-console
@@ -443,24 +493,29 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
   if (forceMatch) {
     const force = FORCE_VALUE_BY_SCALE_CODE[forceMatch[1]];
     if (force) {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-force-map] direction=machine-to-pc frame=${text} value=${force}`);
       return { kind: 'state-update', key: 'force', value: force };
     }
-    // Machine echoed a force/load frame but the scale code isn't in the mapping
-    // table. Treat as bare ACK so a pending force write doesn't time out — the
-    // dropdown keeps its last confirmed value, but TX is acknowledged.
+    // Unknown force code: do NOT treat as success. Log it and ignore the frame
+    // so the dropdown keeps its previous confirmed value (and a pending PC force
+    // write times out → keeps the last value rather than committing a wrong one).
     // eslint-disable-next-line no-console
-    console.warn(
-      `[machine-force-rx] unmapped scale code="${forceMatch[1]}" raw="${text}" — accepting as ACK`
-    );
-    return { kind: 'ack' };
+    console.warn(`[machine-force-rx] unknown force code="C${forceMatch[1]}" raw="${text}" — ignored`);
+    return { kind: 'unknown', raw: payload };
   }
 
   const loadTimeMatch = /^T(\d{2})$/.exec(text);
   if (loadTimeMatch) {
     const loadTime = Number(loadTimeMatch[1]);
     if (loadTime >= 1 && loadTime <= 99) {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-loadtime-map] direction=machine-to-pc frame=${text} value=${loadTime}`);
       return { kind: 'state-update', key: 'loadTime', value: loadTime };
     }
+    // Out-of-range load time: log and ignore. Never treated as success.
+    // eslint-disable-next-line no-console
+    console.warn(`[machine-loadtime-rx] invalid load-time frame="${text}" — ignored`);
     return { kind: 'unknown', raw: payload };
   }
 
@@ -468,8 +523,14 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
   if (lightnessMatch) {
     const lightness = Number(lightnessMatch[1]);
     if (lightness >= 0 && lightness <= 10) {
+      // eslint-disable-next-line no-console
+      console.log(`[machine-lightness-map] direction=machine-to-pc frame=${text} value=${lightness}`);
       return { kind: 'state-update', key: 'lightness', value: lightness };
     }
+    // Out-of-range lightness: log and ignore. Never treated as success, so a
+    // pending PC lightness write times out and the previous value is kept.
+    // eslint-disable-next-line no-console
+    console.warn(`[machine-lightness-rx] invalid lightness frame="${text}" — ignored`);
     return { kind: 'unknown', raw: payload };
   }
 
