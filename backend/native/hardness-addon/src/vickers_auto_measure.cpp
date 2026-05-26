@@ -321,8 +321,15 @@ double ObjectiveMaxAreaRatio(const std::string& objective);
 double PeakedAreaScore(double contourArea, double expectedArea);
 
 void DebugLog(const char* format, ...) {
-  // Body stubbed: production builds emit no auto-measure diagnostics.
-  (void)format;
+  // Diagnostics are env-gated: emit to stderr only when AUTO_MEASURE_DEBUG is
+  // set (checked once, cached). Without the flag every call pays a single bool
+  // check and prints nothing — detection math is untouched either way.
+  static const bool enabled = AutoMeasureDebugEnabled();
+  if (!enabled) return;
+  va_list args;
+  va_start(args, format);
+  std::vfprintf(stderr, format, args);
+  va_end(args);
 }
 
 bool ReadFrameBuffer(const Napi::Value& value, FrameView& out, std::string& reason) {
@@ -1062,7 +1069,13 @@ std::optional<Candidate> SelectBestContour(
       // raw metrics looked like. `aspect` is rectLong/rectShort (preserved
       // even after corner estimation overwrites curRatio with the diamond
       // diagonal ratio). Fields not yet computed at the point of rejection
-      // are -1 ("not-yet-evaluated").
+      // are -1 ("not-yet-evaluated"). Output is env-gated inside DebugLog.
+      DebugLog(
+        "[auto-measure-reject] objective=10X reason=%s metric=%.3f threshold=%.3f "
+        "area=%.2f centerDist=%.2f solidity=%.3f diagRatio=%.3f aspect=%.3f darkness=%.3f score=%.4f\n",
+        reason, metric, threshold,
+        curArea, curCenterDist, curSolidity, curRatio, curAspect, curDarkness, curDiamondScore
+      );
     }
   };
   for (const auto& contour : contours) {
@@ -3727,6 +3740,42 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
       best->corners,
       best->center
     );
+    if (isTenX) {
+      // ---- 10X corner-refinement diagnostics (env-gated, 10X-only, no math
+      // change) ----------------------------------------------------------
+      // The LIVE 10X path is extremes-with-center-penalty
+      // (ExtractAxisTipsFromContour) + cornerSubPix (TryRefineCorners). It is
+      // NOT the 4-side line-fit/intersection in RefineTipsForTwoLineMode —
+      // that function is dead (twoLineMode == false). We trace every stage
+      // that actually feeds D1/D2 so an off-by-a-few-px tip misfit can be
+      // pinned to the exact stage that introduces it. All output is gated by
+      // AUTO_MEASURE_DEBUG inside DebugLog AND by isTenX here, so 40X is
+      // entirely unaffected.
+      DebugLog(
+        "[auto-measure-refine] objective=10X smoothing=%d threshold=%d morphKernel=%d sideFitRoiWidth=%d\n",
+        params.smoothing, params.threshold, params.morphologyKernelSize, params.sideFitRoiWidth);
+      const cv::Rect bb = cv::boundingRect(best->contour);
+      DebugLog(
+        "[auto-measure-refine] selectedContour bboxX=%d bboxY=%d bboxW=%d bboxH=%d area=%.2f hullArea=%.2f "
+        "validationArea=%.2f contourPts=%d hullPts=%d\n",
+        bb.x, bb.y, bb.width, bb.height, best->contourArea, best->hullArea, best->validationArea,
+        static_cast<int>(best->contour.size()), static_cast<int>(best->hull.size()));
+      cv::Point2f rp[4];
+      best->rect.points(rp);
+      DebugLog(
+        "[auto-measure-refine] minAreaRect center=(%.2f,%.2f) size=(%.2f,%.2f) angle=%.2f "
+        "p0=(%.2f,%.2f) p1=(%.2f,%.2f) p2=(%.2f,%.2f) p3=(%.2f,%.2f)\n",
+        best->rect.center.x, best->rect.center.y, best->rect.size.width, best->rect.size.height,
+        best->rect.angle, rp[0].x, rp[0].y, rp[1].x, rp[1].y, rp[2].x, rp[2].y, rp[3].x, rp[3].y);
+      DebugLog(
+        "[auto-measure-refine] candidateCorners top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+        best->corners.top.x, best->corners.top.y, best->corners.right.x, best->corners.right.y,
+        best->corners.bottom.x, best->corners.bottom.y, best->corners.left.x, best->corners.left.y);
+      DebugLog(
+        "[auto-measure-refine] axisTips(extracted) top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+        contourCorners.top.x, contourCorners.top.y, contourCorners.right.x, contourCorners.right.y,
+        contourCorners.bottom.x, contourCorners.bottom.y, contourCorners.left.x, contourCorners.left.y);
+    }
     std::string contourRejectReason;
     if (!ValidateContourTips(contourCorners, params, debug, contourRejectReason)) {
       contourCorners = best->corners;
@@ -3742,8 +3791,29 @@ Napi::Value MeasureVickersAuto(const Napi::CallbackInfo& info) {
     // wants the same behavior at 10X. Critically, this path is driven by
     // Sobel-gradient peaks (pre.gradMag), NOT raw threshold pixels, so the
     // refinement is itself exposure-invariant once a rough contour exists.
+    const OrderedCorners beforeSubPix = contourCorners;
     TryRefineCorners(pre.blurred, contourCorners, params);
+    if (isTenX) {
+      DebugLog(
+        "[auto-measure-refine] cornerSubPix dTop=%.2f dRight=%.2f dBottom=%.2f dLeft=%.2f "
+        "final top=(%.2f,%.2f) right=(%.2f,%.2f) bottom=(%.2f,%.2f) left=(%.2f,%.2f)\n",
+        Distance(beforeSubPix.top, contourCorners.top),
+        Distance(beforeSubPix.right, contourCorners.right),
+        Distance(beforeSubPix.bottom, contourCorners.bottom),
+        Distance(beforeSubPix.left, contourCorners.left),
+        contourCorners.top.x, contourCorners.top.y, contourCorners.right.x, contourCorners.right.y,
+        contourCorners.bottom.x, contourCorners.bottom.y, contourCorners.left.x, contourCorners.left.y);
+    }
     const ShapeMetrics contourMetrics = ComputeShapeMetrics(contourCorners);
+    if (isTenX) {
+      DebugLog(
+        "[auto-measure-refine] result objective=10X D1_px=%.3f D2_px=%.3f "
+        "sides=[%.2f,%.2f,%.2f,%.2f] diagRatio=%.3f\n",
+        contourMetrics.d1, contourMetrics.d2,
+        contourMetrics.sideLengths[0], contourMetrics.sideLengths[1],
+        contourMetrics.sideLengths[2], contourMetrics.sideLengths[3],
+        contourMetrics.diagonalRatio);
+    }
     if (isTenX) {
       // 4 edge lines = sides of the diamond polygon (corner→corner).
     }

@@ -22,6 +22,8 @@ import AlbumTab from './AlbumTab';
 import DepthImageTab from './DepthImageTab';
 import TrimMeasurePanel, { type TrimCorner } from '@/component/own/TrimMeasurePanel';
 
+type ObjectiveCommitSource = 'ack' | '10x-hardware-workaround';
+
 const TAB_ITEMS = [
   'Machine Control',
   'XYZ Platform Control',
@@ -88,7 +90,9 @@ type TabContentProps = {
   albumItems: AlbumItem[];
   refetchAlbumItems: () => Promise<void>;
   measurementDisplay: MeasurementDisplayValues;
-  onObjectiveChange?: (objective: '10X' | '40X') => void;
+  activeObjective?: string | null;
+  onObjectiveChange?: (objective: '10X' | '40X', source: ObjectiveCommitSource) => void;
+  onCenterCommit?: () => void;
   onTurretIntent?: () => void;
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
   onToolbarAction?: (action: ToolbarActionId) => void;
@@ -109,7 +113,9 @@ function renderTab(
     albumItems,
     refetchAlbumItems,
     measurementDisplay,
+    activeObjective,
     onObjectiveChange,
+    onCenterCommit,
     onTurretIntent,
     onObjectiveChangeIntent,
     targetMinHv,
@@ -123,7 +129,9 @@ function renderTab(
           hvDisplay={measurementDisplay.hvDisplay}
           hvTypeValue={measurementDisplay.hvType}
           hardnessValue={measurementDisplay.hardnessValue}
+          activeObjective={activeObjective}
           onObjectiveChange={onObjectiveChange}
+          onCenterCommit={onCenterCommit}
           onTurretIntent={onTurretIntent}
           onObjectiveChangeIntent={onObjectiveChangeIntent}
         />
@@ -176,7 +184,9 @@ type Props = {
   refetchMeasurements: () => Promise<void>;
   onOpenTestRecords: (measurementIds: string[]) => void;
   onMeasurementsCleared?: () => void;
-  onObjectiveChange?: (objective: '10X' | '40X') => void;
+  activeObjective?: string | null;
+  onObjectiveChange?: (objective: '10X' | '40X', source: ObjectiveCommitSource) => void;
+  onCenterCommit?: () => void;
   onTurretIntent?: () => void;
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
   onToolbarAction?: (action: ToolbarActionId) => void;
@@ -206,7 +216,9 @@ function RightPanelImpl({
   onOpenTestRecords,
   onMeasurementsCleared,
   refetchMeasurements,
+  activeObjective,
   onObjectiveChange,
+  onCenterCommit,
   onTurretIntent,
   onObjectiveChangeIntent,
   onToolbarAction,
@@ -288,7 +300,9 @@ function RightPanelImpl({
             albumItems,
             refetchAlbumItems,
             measurementDisplay,
+            activeObjective,
             onObjectiveChange,
+            onCenterCommit,
             onTurretIntent,
             onObjectiveChangeIntent,
             onToolbarAction,

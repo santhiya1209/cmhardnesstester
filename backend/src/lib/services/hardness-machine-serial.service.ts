@@ -154,6 +154,17 @@ const LOAD_TIME_MIN = 1;
 const LOAD_TIME_MAX = 99;
 const INDENT_FINISH_GRACE_MS = 45_000;
 
+function requires10xObjectiveConfirmation(
+  field: MachineCommandKey | null,
+  expectedValue: string | number | undefined
+): boolean {
+  const expected = String(expectedValue ?? '').trim().toUpperCase();
+  return (
+    (field === 'objective' && expected === '10X') ||
+    (field === 'turretLeft' && expected === '1')
+  );
+}
+
 class HardnessMachineSerialService extends EventEmitter {
   private state: MachineState = { ...DEFAULT_STATE };
   private port: SerialPortInstance | null = null;
@@ -166,6 +177,7 @@ class HardnessMachineSerialService extends EventEmitter {
   // Set when an impress command is sent with turretAfterImpress=true. The next
   // machine-confirmed objective RX (L1OK/L2OK) clears this flag.
   private pendingTurretAfterImpressConfirm = false;
+  private pendingAckExpectedValue: string | number | undefined;
   private txQueue: Promise<void> = Promise.resolve();
   // Persisted-settings record bookkeeping. The latest row is loaded once at
   // service construction; subsequent saves update that same row instead of
@@ -591,6 +603,10 @@ class HardnessMachineSerialService extends EventEmitter {
           fullPatch.lastObjectiveRx = rxAscii;
           fullPatch.confirmedObjectiveFromMachine = String(frame.values.objective);
           fullPatch.lastObjectivePhysicalCheck = 'unknown';
+          // eslint-disable-next-line no-console
+          console.log(`[machine-objective-rx] raw=${rxAscii}`);
+          // eslint-disable-next-line no-console
+          console.log(`[machine-objective-ack] objective=${String(frame.values.objective)}`);
           if (this.pendingTurretAfterImpressConfirm) {
             this.pendingTurretAfterImpressConfirm = false;
           }
@@ -626,6 +642,10 @@ class HardnessMachineSerialService extends EventEmitter {
           patch.objective = frame.objective;
           patch.lastObjectiveRx = rxAscii;
           patch.confirmedObjectiveFromMachine = frame.objective;
+          // eslint-disable-next-line no-console
+          console.log(`[machine-objective-rx] raw=${rxAscii}`);
+          // eslint-disable-next-line no-console
+          console.log(`[machine-objective-ack] objective=${frame.objective}`);
           if (this.pendingTurretAfterImpressConfirm) {
             this.pendingTurretAfterImpressConfirm = false;
           }
@@ -707,16 +727,38 @@ class HardnessMachineSerialService extends EventEmitter {
         break;
       case 'ack': {
         const isIndentAck = this.pendingAckField === 'indent';
+        const pendingField = this.pendingAckField;
+        const lastTxCommand = String(this.state.lastTxCommand ?? '');
+        const objectiveAck =
+          pendingField === 'objective' ||
+          String(pendingField ?? '').startsWith('turret') ||
+          lastTxCommand.startsWith('objective=') ||
+          lastTxCommand.startsWith('turret=');
+        if (objectiveAck) {
+          const rxAscii = rxFrame.ascii.replace(/[\r\n]+$/, '') || 'ACK';
+          // eslint-disable-next-line no-console
+          console.log(`[machine-objective-rx] raw=${rxAscii}`);
+        }
+        const waitingFor10xObjectiveConfirmation = requires10xObjectiveConfirmation(
+          this.pendingAckField,
+          this.pendingAckExpectedValue
+        );
         this.updateTelemetry({
           lastRxAt: rxAt,
           lastRxTime: rxAt,
           lastRxFrame: rxFrame,
           machineStatus: isIndentAck ? 'indent-ack' : 'ack',
-          syncStatus: 'synced',
-          syncMessage: isIndentAck ? 'ACK indent=start' : 'ACK received',
+          syncStatus: waitingFor10xObjectiveConfirmation ? 'pending' : 'synced',
+          syncMessage: waitingFor10xObjectiveConfirmation
+            ? 'ACK received; waiting for 10X objective confirmation'
+            : isIndentAck
+              ? 'ACK indent=start'
+              : 'ACK received',
           lastError: undefined,
         });
-        this.emit('ack');
+        if (!waitingFor10xObjectiveConfirmation) {
+          this.emit('ack');
+        }
         break;
       }
       case 'nak':
@@ -746,7 +788,7 @@ class HardnessMachineSerialService extends EventEmitter {
    */
   private waitForAck(
     field: MachineCommandKey,
-    _expectedValue: string | number | undefined,
+    expectedValue: string | number | undefined,
     timeoutMs: number,
     commandId: number,
     commandLabel: string
@@ -758,6 +800,7 @@ class HardnessMachineSerialService extends EventEmitter {
         this.off('nak', onNak);
         if (this.pendingAckField === field) {
           this.pendingAckField = null;
+          this.pendingAckExpectedValue = undefined;
         }
       };
       const onAck = () => {
@@ -775,6 +818,7 @@ class HardnessMachineSerialService extends EventEmitter {
         reject(new Error('ack timeout'));
       }, timeoutMs);
       this.pendingAckField = field;
+      this.pendingAckExpectedValue = expectedValue;
       this.once('ack', onAck);
       this.once('nak', onNak);
     });
@@ -806,6 +850,15 @@ class HardnessMachineSerialService extends EventEmitter {
       // Stash on telemetry so the UI can correlate TX vs RX for the diagnostic.
       const codeAscii = frame.toString('ascii').replace(/\r$/, '');
       this.updateTelemetry({ lastObjectiveTx: codeAscii });
+      // eslint-disable-next-line no-console
+      console.log(`[machine-objective-tx] command=${codeAscii}`);
+    } else if (String(field).startsWith('turret')) {
+      // The turret buttons also emit UL<n> on the wire (left=UL1=10X,
+      // right=UL3=40X). Log them under the same tag so the TX is visible
+      // whichever control the operator used.
+      const codeAscii = frame.toString('ascii').replace(/\r$/, '');
+      // eslint-disable-next-line no-console
+      console.log(`[machine-objective-tx] command=${codeAscii}`);
     }
 
     // Pre-arm ack listener BEFORE the write completes — some machines reply
@@ -904,23 +957,39 @@ class HardnessMachineSerialService extends EventEmitter {
         syncStatus: 'pending',
         syncMessage: `TX ${machineField}=${normalizedValue}`,
       });
-      await this.transmit(key, frame, { awaitAck: true, expectedValue: normalizedValue });
+      const is10xObjectiveCommand =
+        key === 'objective' && String(normalizedValue).trim().toUpperCase() === '10X';
+      await this.transmit(key, frame, {
+        awaitAck: !is10xObjectiveCommand,
+        expectedValue: normalizedValue,
+      });
       const confirmedByMachine =
         this.state.lastUpdatedBy === 'machine' &&
         String(this.state[key]) === String(normalizedValue);
-      this.setState(
-        {
-          [key]: normalizedValue,
-          lastError: undefined,
-          syncStatus: 'synced',
-          syncMessage: `TX ACK ${machineField}=${normalizedValue}`,
-        } as Partial<MachineState>,
-        confirmedByMachine ? 'machine' : 'pc'
-      );
-      // Mirror successful changes to SQLite so they survive a restart and
-      // can be replayed to the machine on next connect. Persist all five
-      // fields together since the row is a single record.
-      this.schedulePersist();
+      if (is10xObjectiveCommand && !confirmedByMachine) {
+        this.setState(
+          {
+            lastError: undefined,
+            syncStatus: 'synced',
+            syncMessage: `TX sent ${machineField}=10X`,
+          },
+          'pc'
+        );
+      } else {
+        this.setState(
+          {
+            [key]: normalizedValue,
+            lastError: undefined,
+            syncStatus: 'synced',
+            syncMessage: `TX ACK ${machineField}=${normalizedValue}`,
+          } as Partial<MachineState>,
+          confirmedByMachine ? 'machine' : 'pc'
+        );
+        // Mirror successful changes to SQLite so they survive a restart and
+        // can be replayed to the machine on next connect. Persist all five
+        // fields together since the row is a single record.
+        this.schedulePersist();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
@@ -978,14 +1047,20 @@ class HardnessMachineSerialService extends EventEmitter {
         syncStatus: 'pending',
         syncMessage: `TX turret=${direction} slot=${slot}`,
       });
-      await this.transmit(commandKey, frame, { awaitAck: true, expectedValue: slot });
+      const is10xTurretWorkaround = direction === 'left';
+      await this.transmit(commandKey, frame, {
+        awaitAck: !is10xTurretWorkaround,
+        expectedValue: slot,
+      });
       const confirmedByMachine =
         this.state.lastUpdatedBy === 'machine' && this.state.turretPosition === direction;
       this.setState(
         {
           lastError: undefined,
           syncStatus: 'synced',
-          syncMessage: `TX ACK turret=${direction} slot=${slot}`,
+          syncMessage: is10xTurretWorkaround
+            ? `TX sent turret=${direction} slot=${slot}`
+            : `TX ACK turret=${direction} slot=${slot}`,
         },
         confirmedByMachine ? 'machine' : 'pc'
       );

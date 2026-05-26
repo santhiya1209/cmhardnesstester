@@ -234,6 +234,7 @@ type CommittedAutoMeasureFingerprint = {
 };
 
 type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save' | 'after-impress';
+type ObjectiveCommitSource = 'ack' | '10x-hardware-workaround';
 
 type CapturedAutoMeasureFrame = Extract<
   ReturnType<CameraWindowHandle['captureDisplayedFrame']>,
@@ -356,7 +357,7 @@ function upsertCommittedAutoMeasureFingerprint(
 // when a detection runs, and reset the UI when the objective changes.
 const AUTO_MEASURE_OBJECTIVE_DEFAULTS: Record<string, { smoothing: number; threshold: number }> = {
   '10X': { smoothing: 4, threshold: 44 },
-  '40X': { smoothing: 6, threshold: 71 },
+  '40X': { smoothing: 6, threshold: 91 },
 };
 
 function autoMeasureDefaultsForObjective(
@@ -364,6 +365,39 @@ function autoMeasureDefaultsForObjective(
 ): { smoothing: number; threshold: number } | null {
   const key = String(objective ?? '').trim().toUpperCase();
   return AUTO_MEASURE_OBJECTIVE_DEFAULTS[key] ?? null;
+}
+
+function objectiveForMeasureFromObjective(
+  objective: string | null | undefined
+): ObjectiveForMeasure | null {
+  const key = String(objective ?? '').trim().toUpperCase();
+  return (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(key)
+    ? (key as ObjectiveForMeasure)
+    : null;
+}
+
+function applyAutoMeasureObjectiveProfile(
+  settings: AutoMeasureSettingsPayload,
+  objective: string | null | undefined
+): AutoMeasureSettingsPayload {
+  const objectiveForMeasure = objectiveForMeasureFromObjective(objective);
+  const defaults = autoMeasureDefaultsForObjective(objectiveForMeasure);
+  if (!objectiveForMeasure || !defaults) {
+    return normalizeAutoMeasureSettings(settings);
+  }
+  return normalizeAutoMeasureSettings({
+    ...settings,
+    objectiveForMeasure,
+    smoothing: defaults.smoothing,
+    threshold: defaults.threshold,
+    manualThreshold: defaults.threshold,
+  });
+}
+
+function formatAutoMeasureCorners(corners: AutoMeasureCorners | null | undefined): string {
+  if (!corners) return '<null>';
+  const point = (p: { x: number; y: number }) => `(${p.x.toFixed(1)},${p.y.toFixed(1)})`;
+  return `<L${point(corners.left)} R${point(corners.right)} T${point(corners.top)} B${point(corners.bottom)}>`;
 }
 
 type AutoMeasureLogContext = {
@@ -953,6 +987,11 @@ function App() {
   // arrives, so a dropped ACK can never permanently suppress overlay
   // rendering.
   const [turretMoving, setTurretMoving] = useState(false);
+  const turretMovingRef = useRef(false);
+  const setTurretMovingState = useCallback((moving: boolean) => {
+    turretMovingRef.current = moving;
+    setTurretMoving(moving);
+  }, []);
   // Target objective for an in-progress turret move ("10X" / "40X").
   // Surfaced in the CameraWindow "Turret moving to X..." popup so the
   // operator knows exactly what the camera is switching to.
@@ -1033,9 +1072,9 @@ function App() {
     committedFingerprintsRef.current = next;
   }, [measurements]);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
-  // - Set by the user's lens button click (authoritative, instant).
-  // - Hydrated from SSE machine state when SSE pushes (guarded so it cannot
-  //   clobber a recent user click).
+  // - Set only by the objective commit pipeline (ack or the 10X hardware
+  //   workaround after command send + live-frame refresh).
+  // - Hydrated from machine-confirmed SSE state through that same pipeline.
   // - Used by Auto Measure, Manual Measure, calibration lookup, and the
   //   measurement table row.
   // - There is NO silent fallback to a hardcoded default. If this is ever
@@ -1089,6 +1128,11 @@ function App() {
   const [autoMeasureSessionActive, setAutoMeasureSessionActive] = useState(false);
   const [autoMeasureCapturedFrameId, setAutoMeasureCapturedFrameId] = useState<number | null>(null);
   const [objectiveChangeInProgress, setObjectiveChangeInProgress] = useState(false);
+  const objectiveChangeInProgressRef = useRef(false);
+  const setObjectiveChangeInProgressState = useCallback((inProgress: boolean) => {
+    objectiveChangeInProgressRef.current = inProgress;
+    setObjectiveChangeInProgress(inProgress);
+  }, []);
 
   // Hard render gate for the yellow Auto Measure overlay. Never show yellow
   // lines/dots unless the camera is streaming. Also drops graphics whose
@@ -1108,11 +1152,8 @@ function App() {
       return null;
     }
     const overlayObjective = (turretMovingGuardedGraphics.objective ?? '').trim().toUpperCase();
-    const confirmedFromMachine = (liveMachineState?.confirmedObjectiveFromMachine ?? '')
-      .trim()
-      .toUpperCase();
     const liveObjective = (activeObjective ?? '').trim().toUpperCase();
-    const referenceObjective = confirmedFromMachine || liveObjective;
+    const referenceObjective = liveObjective;
     if (overlayObjective && referenceObjective && overlayObjective !== referenceObjective) {
       return null;
     }
@@ -1131,20 +1172,30 @@ function App() {
     return turretMovingGuardedGraphics;
   })();
 
-  // Whenever the active objective changes (UI click OR machine echo), snap
+  // Whenever the active objective changes from machine confirmation, snap
   // Auto Measure smoothing/threshold to that objective's tuned defaults so
   // the Settings dialog and the next detection run pick them up. Also
   // emits the defaults log so we can verify in the console.
-  const previousActiveObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
     const defaults = autoMeasureDefaultsForObjective(activeObjective);
-    previousActiveObjectiveRef.current = activeObjective;
     if (!defaults) return;
+    const objectiveUpper = String(activeObjective).trim().toUpperCase();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-settings-sync] objective=${objectiveUpper} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-profile] objective=${objectiveUpper} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    );
     setAutoMeasurePreviewSettings((prev) => {
-      if (prev.smoothing === defaults.smoothing && prev.threshold === defaults.threshold) {
+      const next = applyAutoMeasureObjectiveProfile(prev, activeObjective);
+      if (autoMeasureSettingsEqual(next, prev)) {
+        latestAutoMeasurePreviewSettingsRef.current = prev;
         return prev;
       }
-      return { ...prev, smoothing: defaults.smoothing, threshold: defaults.threshold };
+      latestAutoMeasurePreviewSettingsRef.current = next;
+      return next;
     });
     if (shouldPreserveAfterImpressOverlay()) {
       return;
@@ -1213,13 +1264,13 @@ function App() {
   );
   useEffect(() => {
   }, [calibrationMeasureMode]);
-  const lastObjectiveClickAtRef = useRef<number>(0);
   // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
   // CameraWindow watches it to invalidate any per-objective caches and force a
   // fresh draw — separate from activeObjective so we can trigger a refresh
   // even when the confirmed value is identical (e.g. user re-selects same lens).
   const [objectiveRefreshKey, setObjectiveRefreshKey] = useState<number>(0);
   const lastSyncedObjectiveRef = useRef<string | null>(null);
+  const objectiveCommitSeqRef = useRef(0);
   // Set true whenever the active objective changes. The next would-be
   // settings-preview run is skipped so an objective change never paints
   // yellow lines on its own — they appear only after an explicit Auto
@@ -1254,29 +1305,90 @@ function App() {
     });
   }, []);
 
-  const handleObjectiveChangeFromUI = useCallback((objective: '10X' | '40X') => {
-    lastObjectiveClickAtRef.current = Date.now();
-    const isActualSwitch = (activeObjective ?? '').trim().toUpperCase() !== objective;
-    setActiveObjective(objective);
-    // Snap Auto Measure smoothing/threshold to the objective-tuned defaults
-    // so the Settings dialog and any next preview run use the right values.
-    const defaults = autoMeasureDefaultsForObjective(objective);
-    if (defaults) {
-      setAutoMeasurePreviewSettings((prev) => ({
-        ...prev,
-        smoothing: defaults.smoothing,
-        threshold: defaults.threshold,
-      }));
+  const commitActiveObjective = useCallback(
+    async (objective: '10X' | '40X', source: ObjectiveCommitSource) => {
+      const normalized = objectiveForMeasureFromObjective(objective);
+      if (!normalized) return;
+
+      const commitSeq = objectiveCommitSeqRef.current + 1;
+      objectiveCommitSeqRef.current = commitSeq;
+      setObjectiveChangeInProgressState(true);
+
+      if (source === '10x-hardware-workaround') {
+        await delay(4000);
+        if (objectiveCommitSeqRef.current !== commitSeq) return;
+      }
+
+      void refetchCalibrationSettings();
+      setObjectiveRefreshKey((key) => key + 1);
+      cameraRef.current?.clearLiveCanvas('objective-change-commit');
+      if (!shouldPreserveAfterImpressOverlay()) {
+        clearAutoMeasureOverlay('objective-change-commit');
+      }
+
+      const camera = cameraRef.current;
+      if (cameraOpen && camera) {
+        const fresh = await camera.waitForFreshFrame(2500);
+        if (objectiveCommitSeqRef.current !== commitSeq) return;
+        if (!fresh) {
+          // Live frame was slow to refresh after the turret move. Do NOT strand
+          // the objective: commit anyway so activeObjective (the single source
+          // of truth) updates and Auto Measure is unblocked — the live image
+          // catches up on the next frame. Returning here is what left the
+          // operator on "no active objective" after a valid 10X/40X selection.
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[camera-objective-sync] activeObjective=${normalized} note=frame-refresh-timeout-committing-anyway`
+          );
+        }
+      }
+
+      activeObjectiveRef.current = normalized;
+      lastSyncedObjectiveRef.current = normalized;
+      setActiveObjective((current) => (
+        String(current ?? '').trim().toUpperCase() === normalized ? current : normalized
+      ));
+      // eslint-disable-next-line no-console
+      console.log(`[machine-objective-commit] objective=${normalized} source=${source}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-objective-sync] activeObjective=${normalized}`);
+      setObjectiveChangeInProgressState(false);
+    },
+    [
+      cameraOpen,
+      clearAutoMeasureOverlay,
+      refetchCalibrationSettings,
+      setObjectiveChangeInProgressState,
+      setStatusMessage,
+      shouldPreserveAfterImpressOverlay,
+    ]
+  );
+
+  const handleObjectiveChangeFromUI = useCallback(
+    (objective: '10X' | '40X', source: ObjectiveCommitSource) => {
+      void commitActiveObjective(objective, source);
+    },
+    [commitActiveObjective]
+  );
+
+  // Center/indenter slot carries no measurement lens. Once the turret-front
+  // command is handled, clear the active objective so the 10X/40X highlights
+  // turn off, Center shows its own state, and Auto Measure blocks (truly no
+  // active objective). Bumping the commit sequence cancels any in-flight 10X
+  // workaround commit still inside its settle delay so a stale 10X can't land
+  // after the operator moved to Center.
+  const handleCenterCommit = useCallback(() => {
+    objectiveCommitSeqRef.current += 1;
+    activeObjectiveRef.current = null;
+    lastSyncedObjectiveRef.current = null;
+    setObjectiveChangeInProgressState(false);
+    setActiveObjective((current) => (current === null ? current : null));
+    // eslint-disable-next-line no-console
+    console.log('[machine-objective-commit] objective=CENTER source=ack');
+    if (!shouldPreserveAfterImpressOverlay()) {
+      clearAutoMeasureOverlay('center-commit');
     }
-    // Clear the yellow Auto Measure overlay immediately on the user's
-    // request — do not wait for the L#OK confirmation — so the live camera
-    // never shows D1/D2 from the previous magnification during the
-    // turret-switch window.
-    if (isActualSwitch) {
-      setObjectiveChangeInProgress(true);
-    }
-    clearAutoMeasureOverlay('objective-change');
-  }, [activeObjective, clearAutoMeasureOverlay]);
+  }, [clearAutoMeasureOverlay, setObjectiveChangeInProgressState, shouldPreserveAfterImpressOverlay]);
 
   // Calibration-mode Auto Measure: runs the same native detector used by
   // normal Auto Measure but does NOT save a measurement row. Returns the
@@ -1405,12 +1517,18 @@ function App() {
     }: {
       savedCalibration: Calibration;
       payload: CalibrationSavePayload;
-    }) => {
+      }) => {
       const d1Px = payload.pixelLengthX;
       const d2Px = payload.pixelLengthY;
-      const targetObjective = payload.zoomTime;
+      const targetObjective = activeObjectiveRef.current?.trim() || null;
       const forceKgf = parseForceKgf(payload.force);
 
+      if (!targetObjective) {
+        // eslint-disable-next-line no-console
+        console.warn('[calibration-auto-row-blocked] reason=no-active-objective activeObjective=null');
+        setUnavailableMsg('No active objective. Please click 10X or 40X in Machine Control before adding a row.');
+        return;
+      }
 
       // Derive PER-AXIS coefficients per spec:
       //   xUmPerPixel = knownReferenceUm / pixelLengthX
@@ -1563,6 +1681,8 @@ function App() {
         setActiveMeasurement(saved.id, calibrationFrameId, 'calibration-save');
         manualMeasurementIdRef.current = saved.id;
         autoMeasurementIdRef.current = saved.id;
+        // eslint-disable-next-line no-console
+        console.warn(`[measurement-add] objective=${saved.objective ?? normalizedObjective ?? 'null'}`);
         const savedMethod = saved.method ?? resolvedMethod;
         activeMeasurementMethodRef.current = savedMethod;
         await refetchMeasurements();
@@ -1609,11 +1729,7 @@ function App() {
   // through the same lookup helpers used by Manual Measure so Measure Length
   // renders the identical calibrated micron conversion instead of raw pixels.
   const umPerPixelForActiveObjective = useMemo<number | null>(() => {
-    const confirmedFromMachine =
-      liveMachineState?.confirmedObjectiveFromMachine?.trim() || null;
-    const optimisticActive = (activeObjective && activeObjective.trim()) || null;
-    const lastEchoed = liveMachineState?.objective?.trim() || null;
-    const targetObjective = confirmedFromMachine || optimisticActive || lastEchoed;
+    const targetObjective = (activeObjective && activeObjective.trim()) || null;
     if (!targetObjective) return null;
     const calibration = resolveManualCalibration({
       calibrationSettings,
@@ -1752,23 +1868,11 @@ function App() {
             return;
           }
 
-          // SINGLE SOURCE OF TRUTH (priority order, mirrors Auto Measure):
-          //   1) confirmedObjectiveFromMachine (real L<n>OK echo from hardware)
-          //   2) activeObjective (optimistic lens click — UI-only)
-          //   3) machineState.objective (last persisted echo)
-          // After app restart, activeObjective is null until the user clicks a
-          // lens; without the machine-confirmed value the manual measure was
-          // silently falling back to a stale machineState.objective and
-          // applying the wrong calibration row from SQLite.
-          const confirmedFromMachine =
-            machineState?.confirmedObjectiveFromMachine?.trim() || null;
-          const optimisticActive = (activeObjective && activeObjective.trim()) || null;
-          const lastEchoed = machineState?.objective?.trim() || null;
-          const targetObjective = confirmedFromMachine || optimisticActive || lastEchoed;
+          const targetObjective = activeObjectiveRef.current?.trim() || null;
           if (!targetObjective) {
             // eslint-disable-next-line no-console
             console.warn(
-              `[measurement-commit-blocked] method=Manual reason=no-active-objective confirmedFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'} machineObjective=${lastEchoed ?? 'null'}`
+              '[measurement-commit-blocked] method=Manual reason=no-active-objective activeObjective=null'
             );
             setUnavailableMsg(
               'No active objective. Please click 10X or 40X in Machine Control before measuring.'
@@ -1852,6 +1956,8 @@ function App() {
           autoMeasurementIdRef.current = saved.id;
 
           manualMeasurementIdRef.current = saved.id;
+          // eslint-disable-next-line no-console
+          console.warn(`[measurement-add] objective=${saved.objective ?? values.normalizedObjective ?? 'null'}`);
           await refetchMeasurements();
           setStatusMessage(
             `System Status: Manual measurement updated: HV ${values.hv ?? 'n/a (force missing)'}`
@@ -1881,7 +1987,6 @@ function App() {
       calibrationSettingsList,
       calibrations,
       getMachineStateSnapshot,
-      activeObjective,
       refetchMeasurements,
       saveManualMeasurement,
       getActiveMeasurementId,
@@ -1892,8 +1997,18 @@ function App() {
 
   useEffect(() => {
     const normalized = normalizeAutoMeasureSettings(autoMeasureSettings);
-    latestAutoMeasurePreviewSettingsRef.current = normalized;
-    setAutoMeasurePreviewSettings(normalized);
+    // Per-objective defaults are authoritative for smoothing/threshold. The
+    // persisted settings are a SINGLE GLOBAL row, so without this the global
+    // value clobbers the active objective's tuned defaults that the
+    // objective-change effect set — e.g. selecting 10X snaps to {4,44} but a
+    // later autoMeasureSettings load/refetch would overwrite it with the saved
+    // global (often 40X-shaped) numbers. Honor the objective defaults here so
+    // 10X stays smoothing=4/threshold=44 with objectiveForMeasure=10X and
+    // 40X stays smoothing=6/threshold=91; unrelated fields still come from
+    // the persisted row.
+    const resolved = applyAutoMeasureObjectiveProfile(normalized, activeObjectiveRef.current);
+    latestAutoMeasurePreviewSettingsRef.current = resolved;
+    setAutoMeasurePreviewSettings(resolved);
   }, [autoMeasureSettings]);
 
   useEffect(() => {
@@ -1901,7 +2016,12 @@ function App() {
   }, [displayedAutoMeasureGraphics]);
 
   const handleAutoMeasureSettingsPreviewChange = useCallback((settings: AutoMeasureSettingsPayload) => {
-    const normalized = normalizeAutoMeasureSettings(settings);
+    const base = normalizeAutoMeasureSettings(settings);
+    const active = objectiveForMeasureFromObjective(activeObjectiveRef.current);
+    const normalized =
+      active && base.objectiveForMeasure !== active
+        ? applyAutoMeasureObjectiveProfile(base, active)
+        : base;
     latestAutoMeasurePreviewSettingsRef.current = normalized;
     setAutoMeasurePreviewSettings(normalized);
   }, []);
@@ -2200,6 +2320,17 @@ function App() {
       }
 
       const savedAutoMethod = saved.method ?? autoRowPayload.method;
+      if (source === 'settings-save') {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[auto-settings-save] objective=${saved.objective ?? values.normalizedObjective ?? 'null'} d1=${values.d1Um}um d2=${values.d2Um}um hv=${saved.hv ?? values.hv ?? 'null'}`
+        );
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[measurement-add] objective=${saved.objective ?? values.normalizedObjective ?? 'null'} method=${savedAutoMethod} hv=${saved.hv ?? 'null'} new=${isNewAutoMeasurement}`
+        );
+      }
       autoMeasurementIdRef.current = saved.id;
       manualMeasurementIdRef.current = saved.id;
       setActiveMeasurement(saved.id, fingerprint.frameId, 'auto-save');
@@ -2271,6 +2402,13 @@ function App() {
       return Promise.resolve(false);
     }
 
+    if (objectiveChangeInProgressRef.current || turretMovingRef.current) {
+      if (!preview) {
+        setStatusMessage('System Status: Auto Measure blocked: objective switch in progress');
+      }
+      return Promise.resolve(false);
+    }
+
     if (autoMeasureInFlightRef.current) {
       // Coalesce: remember the latest preview settings so the trailing run
       // after the in-flight detection picks up the user's final slider value.
@@ -2282,7 +2420,7 @@ function App() {
     }
 
     return (async (): Promise<boolean> => {
-      const settings = normalizeAutoMeasureSettings(settingsInput);
+      let settings = normalizeAutoMeasureSettings(settingsInput);
       if (!preview && callSource !== 'after-impress') {
         // Drop the previously-committed yellow lines before running a new
         // detection — old D1/D2 must never linger over a fresh detection
@@ -2330,17 +2468,15 @@ function App() {
 
       try {
         const machineState = await getMachineStateSnapshot();
-        // SINGLE SOURCE OF TRUTH (priority order):
-        //   1) confirmedObjectiveFromMachine (real L<n>OK echo from hardware)
-        //   2) activeObjective (optimistic lens click — UI-only)
-        //   3) machineState.objective (last persisted echo)
-        // The machine RX value wins — Auto Measure must never run on a stale
-        // optimistic value when the turret has actually confirmed a different
-        // magnification.
-        const confirmedFromMachine = machineState?.confirmedObjectiveFromMachine?.trim() || null;
-        const optimisticActive = (activeObjective && activeObjective.trim()) || null;
-        const lastEchoed = machineState?.objective?.trim() || null;
-        const objectiveForCalibration = confirmedFromMachine || optimisticActive || lastEchoed;
+        const activeObjectiveSnapshot = activeObjectiveRef.current?.trim().toUpperCase() || null;
+        const machineConfirmed = machineState?.confirmedObjectiveFromMachine?.trim() || null;
+        const objectiveForCalibration = objectiveForMeasureFromObjective(activeObjectiveSnapshot);
+        if (callSource === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-click] activeObjective=${activeObjectiveSnapshot ?? 'null'} machineConfirmed=${machineConfirmed ?? 'null'}`
+          );
+        }
         if (!objectiveForCalibration) {
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed('no-active-objective');
@@ -2351,8 +2487,10 @@ function App() {
           );
           // eslint-disable-next-line no-console
           console.warn(
-            `[measurement-commit-blocked] method=Auto reason=no-active-objective confirmedFromMachine=${confirmedFromMachine ?? 'null'} activeObjective=${optimisticActive ?? 'null'}`
+            `[measurement-commit-blocked] method=Auto reason=no-active-objective activeObjective=${activeObjectiveSnapshot ?? 'null'} machineConfirmed=${machineConfirmed ?? 'null'}`
           );
+          // eslint-disable-next-line no-console
+          console.warn('[auto-measure-blocked] reason=no-active-objective');
           if (preview) {
             setStatusMessage('System Status: Auto Measure preview blocked: no active objective');
             return false;
@@ -2363,8 +2501,20 @@ function App() {
           setStatusMessage('System Status: Auto Measure blocked: no active objective');
           return false;
         }
-        if (machineState?.objective?.trim() && machineState.objective !== activeObjective) {
-          setActiveObjective(machineState.objective);
+        const resolvedObjectiveForMeasure = objectiveForCalibration;
+        if (settings.objectiveForMeasure !== resolvedObjectiveForMeasure) {
+          const profiledSettings = applyAutoMeasureObjectiveProfile(settings, objectiveForCalibration);
+          settings = profiledSettings;
+          latestAutoMeasurePreviewSettingsRef.current = profiledSettings;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-settings-sync] objective=${resolvedObjectiveForMeasure} smoothing=${profiledSettings.smoothing} threshold=${profiledSettings.threshold}`
+          );
+          if (callSource === 'auto-click' || callSource === 'after-impress') {
+            setAutoMeasurePreviewSettings((prev) =>
+              autoMeasureSettingsEqual(prev, profiledSettings) ? prev : profiledSettings
+            );
+          }
         }
         const machineStateForAuto = machineState
           ? { ...machineState, objective: objectiveForCalibration }
@@ -2376,6 +2526,12 @@ function App() {
           targetObjective: objectiveForCalibration,
           calibrationSettingsList,
         });
+        if (callSource === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-scale] objective=${objectiveForCalibration ?? 'null'} pxToUm=${calibration?.micronPerPixel ?? 'null'} calibration=${calibration?.calibrationName ?? 'null'}`
+          );
+        }
         const forceKgf = parseForceKgf(machineState?.force);
         if (!preview) {
         }
@@ -2399,11 +2555,6 @@ function App() {
           const capturedFrameId = getLastPaintedFrameId();
           capturedFrameIdForRun = capturedFrameId;
           setAutoMeasureCapturedFrameId(capturedFrameId);
-          // Auto Measure click is an explicit user intent — release the
-          // objective-change transition gate so the result is allowed to
-          // paint even if the camera's first-fresh-frame observer hasn't
-          // fired yet.
-          setObjectiveChangeInProgress(false);
         }
 
         // After an objective change the live canvas is cleared and the next
@@ -2482,6 +2633,16 @@ function App() {
         }
         const runSmoothing = settings.smoothing;
         const runThreshold = settings.threshold;
+        if (callSource === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-profile] objective=${objectiveForCalibration ?? 'null'} smoothing=${runSmoothing} threshold=${runThreshold}`
+          );
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-frame] objective=${objectiveForCalibration ?? 'null'} frameEpoch=${capturedFrameIdForRun ?? 'n/a'} source=${displayedFrame.source}`
+          );
+        }
         logAutoMeasurePhase('auto-measure-frame', {
           objective: objectiveForCalibration,
           smoothing: runSmoothing,
@@ -2589,12 +2750,22 @@ function App() {
           smoothing: runSmoothing,
           threshold: runThreshold,
         });
+        const logDetectResult = (
+          success: boolean,
+          corners: AutoMeasureCorners | null | undefined
+        ) => {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-detect-result] objective=${liveObjectiveForNative} success=${success} corners=${formatAutoMeasureCorners(corners)}`
+          );
+        };
         if (
           liveObjectiveForNative === '10X' &&
           nativeObjective !== '10X' &&
           nativeObjective !== ''
         ) {
           const reason = `native-branch-not-used (requested=10X native=${nativeObjective})`;
+          logDetectResult(false, null);
           logAutoMeasurePhase('auto-measure-reject', {
             objective: liveObjectiveForNative,
             smoothing: runSmoothing,
@@ -2617,6 +2788,7 @@ function App() {
         }
         if (!resolvedDetection.ok) {
           const reason = resolvedDetection.reason;
+          logDetectResult(false, null);
           if (preview) {
             // Preview rejection: keep last valid overlay; no log spam.
             logAutoMeasurePhase('auto-measure-reject', {
@@ -2646,6 +2818,8 @@ function App() {
           console.warn(
             `[measurement-commit-blocked] method=Auto reason=detection-rejected detail="${reason}"`
           );
+          // eslint-disable-next-line no-console
+          console.warn('[auto-measure-blocked] reason=detection-failed');
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed(reason);
           }
@@ -2654,6 +2828,13 @@ function App() {
 
         const result = resolvedDetection.result;
         const detectionMethod = resolvedDetection.method;
+        logDetectResult(true, result.corners);
+        if (callSource === 'auto-click') {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[auto-measure-success] objective=${objectiveForCalibration ?? 'null'} d1=${result.d1Pixels.toFixed(2)}px d2=${result.d2Pixels.toFixed(2)}px hv=${result.hv ?? 'null'}`
+          );
+        }
         if (result.confidence < minConfidence) {
           logAutoMeasurePhase('auto-measure-fallback-used', {
             objective: liveObjectiveForNative,
@@ -2692,11 +2873,7 @@ function App() {
         // user was viewing at click time AND to the frame captured then —
         // an in-flight result from a superseded objective/frame is dropped.
         {
-          const liveSnapshot = await getMachineStateSnapshot().catch(() => null);
-          const liveConfirmed =
-            liveSnapshot?.confirmedObjectiveFromMachine?.trim() ||
-            (activeObjective ?? '').trim() ||
-            null;
+          const liveConfirmed = activeObjectiveRef.current?.trim() || null;
           if (
             liveConfirmed &&
             objectiveForCalibration &&
@@ -2748,12 +2925,25 @@ function App() {
           if (!autoMeasureSettingsEqual(settings, latestAutoMeasurePreviewSettingsRef.current)) {
             return false;
           }
+          if (callSource === 'settings-preview') {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[auto-settings-preview] objective=${objectiveForCalibration ?? 'null'} smoothing=${runSmoothing} threshold=${runThreshold} d1=${result.d1Pixels.toFixed(2)}px d2=${result.d2Pixels.toFixed(2)}px confidence=${result.confidence.toFixed(3)}`
+            );
+          }
           setPreviewAutoMeasureOverlay((prev) => {
             if (prev && graphicsAlmostEqual(prev, graphics)) {
               return prev;
             }
             return graphics;
           });
+          if (callSource === 'settings-preview') {
+            const cc = graphics.corners;
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[auto-settings-preview-update] smoothing=${runSmoothing} threshold=${runThreshold} corners=L(${cc.left.x.toFixed(0)},${cc.left.y.toFixed(0)}) R(${cc.right.x.toFixed(0)},${cc.right.y.toFixed(0)}) T(${cc.top.x.toFixed(0)},${cc.top.y.toFixed(0)}) B(${cc.bottom.x.toFixed(0)},${cc.bottom.y.toFixed(0)})`
+            );
+          }
           autoMeasurePreviewSnapshotRef.current = snapshot;
           previewMeasurementRef.current = {
             d1Pixels: result.d1Pixels,
@@ -2833,7 +3023,6 @@ function App() {
     clearAutoMeasureOverlay,
     commitAutoMeasureSnapshot,
     getMachineStateSnapshot,
-    activeObjective,
   ]);
 
   // Keep a ref to the latest runAutoMeasure so the in-flight finally block
@@ -2879,12 +3068,7 @@ function App() {
       suppressAutoMeasurePreviewRef.current = false;
       preserveAfterImpressOverlay(12000);
 
-      const objective = (
-        liveMachineStateRef.current?.confirmedObjectiveFromMachine ??
-        activeObjectiveRef.current ??
-        liveMachineStateRef.current?.objective ??
-        ''
-      )
+      const objective = (activeObjectiveRef.current ?? '')
         .trim()
         .toUpperCase();
       const settleMs = objective === '40X' ? 600 : 350;
@@ -3025,7 +3209,12 @@ function App() {
 
   const handleAutoMeasureSettingsSaved = useCallback(
     (settings: AutoMeasureSettingsPayload) => {
-      const normalized = normalizeAutoMeasureSettings(settings);
+      const base = normalizeAutoMeasureSettings(settings);
+      const active = objectiveForMeasureFromObjective(activeObjectiveRef.current);
+      const normalized =
+        active && base.objectiveForMeasure !== active
+          ? applyAutoMeasureObjectiveProfile(base, active)
+          : base;
       latestAutoMeasurePreviewSettingsRef.current = normalized;
       setAutoMeasurePreviewSettings(normalized);
       void refetchAutoMeasureSettings();
@@ -3050,6 +3239,18 @@ function App() {
     [commitAutoMeasureSnapshot, refetchAutoMeasureSettings, runAutoMeasure]
   );
 
+  // Settings dialog open log. Fires when Auto Measure Settings opens so the
+  // operator's re-fit session is anchored to the frozen frame in the log
+  // trail. Deps = [activeDialog] only, so this runs solely on dialog transition.
+  useEffect(() => {
+    if (activeDialog !== 'autoMeasure') return;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[auto-settings-open] objective=${activeObjective ?? 'null'} frozenFrame=${autoMeasureCapturedFrameId ?? (committedAutoMeasureFrameRef.current ? 'present' : 'none')}`
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDialog]);
+
   // Note the latest machine-confirmed lightness so the camera consumer can
   // log/refresh on each new value. The physical change is driven by the
   // machine's LED, so this is observational — we do not block the camera
@@ -3063,83 +3264,25 @@ function App() {
     lastLoggedLightnessRef.current = next;
   }, [liveMachineState?.lightness]);
 
-  // Mirror SSE machine state's objective into App-level state — but never
-  // clobber a value the user just clicked. The toggle click is the
-  // authoritative source; SSE is only for picking up changes that originated
-  // outside this UI (other tab, another client, app restart).
-  useEffect(() => {
-    const next = liveMachineState?.objective?.trim() || null;
-    if (!next) return;
-    if (Date.now() - lastObjectiveClickAtRef.current < 5000) return;
-    if (next !== activeObjective) {
-      setActiveObjective(next);
-    }
-  }, [liveMachineState?.objective, activeObjective]);
-
   // Camera/objective sync pipeline. Triggered ONLY by a confirmed L<n>OK RX
   // from the machine (machineState.confirmedObjectiveFromMachine), not by the
   // OK-ACK or by the user click — so the UI never reflects a magnification the
   // turret hasn't actually reached.
   useEffect(() => {
-    const confirmed = liveMachineState?.confirmedObjectiveFromMachine?.trim() || null;
+    const confirmed = objectiveForMeasureFromObjective(
+      liveMachineState?.confirmedObjectiveFromMachine
+    );
     if (!confirmed) return;
-    if (lastSyncedObjectiveRef.current === confirmed) return;
-    lastSyncedObjectiveRef.current = confirmed;
-
-    // 1) Force activeObjective to the machine-confirmed value. Overrides the
-    //    optimistic value the click handler may have set.
-    setActiveObjective(confirmed);
-    setObjectiveChangeInProgress(true);
-
-    // L1 / L2 are the slot positions; the machine echoes L<n>OK on
-    // mechanical landing.
-
-    // 2) Reload calibration profile for the now-confirmed objective.
-    void refetchCalibrationSettings();
-
-    // 3) Bump the viewport refresh key so CameraWindow can clear any cached
-    //    transforms and force a fresh draw at the new magnification.
-    setObjectiveRefreshKey((k) => k + 1);
-
-    // 4) Invalidate the live canvas so the next worker frame draws onto a
-    //    cleared surface (no stale frame from the previous objective).
-    cameraRef.current?.clearLiveCanvas();
-
-    // 5) Clear any stale Auto Measure state from the previous magnification —
-    //    snapshot frame, frozen overlay, preview overlay, and preview snapshot.
-    //    Without this, a 40X frame/overlay can survive into a 10X session.
-    if (shouldPreserveAfterImpressOverlay()) {
-    } else {
-      clearAutoMeasureOverlay('objective-change-confirmed');
+    if (
+      lastSyncedObjectiveRef.current === confirmed &&
+      activeObjectiveRef.current === confirmed
+    ) {
+      return;
     }
-
-
-    // Objective change does NOT auto-run detection. Yellow overlay appears
-    // only after an explicit Auto Measure click. We just cleared the live
-    // canvas and the previous-objective overlay above; the next worker frame
-    // will paint the fresh live image on its own. Observer-only: wait for
-    // the next painted frame so we can log when the live image refreshed
-    // (does not capture, does not detect, does not block).
-    void (async () => {
-      const fresh = await (cameraRef.current?.waitForFreshFrame(2500) ?? Promise.resolve(false));
-      if (!fresh) {
-        // Don't strand the gate closed — re-open it even on timeout so the
-        // user isn't blocked from clicking Auto Measure later.
-        setObjectiveChangeInProgress(false);
-        return;
-      }
-      if (lastSyncedObjectiveRef.current !== confirmed) {
-        setObjectiveChangeInProgress(false);
-        return;
-      }
-      setObjectiveChangeInProgress(false);
-    })();
+    void commitActiveObjective(confirmed, 'ack');
   }, [
+    commitActiveObjective,
     liveMachineState?.confirmedObjectiveFromMachine,
-    calibrationSettingsList,
-    clearAutoMeasureOverlay,
-    refetchCalibrationSettings,
-    shouldPreserveAfterImpressOverlay,
   ]);
 
   const turretMovingTimerRef = useRef<number | null>(null);
@@ -3168,14 +3311,14 @@ function App() {
       setAutoMeasureSessionActive(false);
       setManualMeasureResetKey((current) => current + 1);
       clearTurretMovingTimer();
-      setTurretMoving(true);
+      setTurretMovingState(true);
       turretMovingTimerRef.current = window.setTimeout(() => {
         turretMovingTimerRef.current = null;
-        setTurretMoving(false);
+        setTurretMovingState(false);
         setTurretMovingTarget(null);
       }, 4000);
     },
-    [clearAutoMeasureOverlay, clearTurretMovingTimer]
+    [clearAutoMeasureOverlay, clearTurretMovingTimer, setTurretMovingState]
   );
   useEffect(() => clearTurretMovingTimer, [clearTurretMovingTimer]);
 
@@ -3209,7 +3352,7 @@ function App() {
     // this session (a hardware-driven turret move with no click also lands
     // here and must not leave the gate stuck on if a prior watchdog set it).
     clearTurretMovingTimer();
-    setTurretMoving(false);
+    setTurretMovingState(false);
     setTurretMovingTarget(null);
     if (shouldPreserveAfterImpressOverlay()) {
     } else {
@@ -3241,6 +3384,7 @@ function App() {
     clearAutoMeasureOverlay,
     cameraStatus,
     clearTurretMovingTimer,
+    setTurretMovingState,
     shouldPreserveAfterImpressOverlay,
   ]);
 
@@ -3285,12 +3429,7 @@ function App() {
       const latestSettings = latestAutoMeasurePreviewSettingsRef.current;
       const measureAfterImpressEnabled = latestSettings.measureAfterImpress === true;
       const turretAfterImpressEnabled = latestSettings.turretAfterImpress === true;
-      const currentObjective = (
-        liveMachineStateRef.current?.confirmedObjectiveFromMachine ??
-        activeObjectiveRef.current ??
-        liveMachineStateRef.current?.objective ??
-        ''
-      )
+      const currentObjective = (activeObjectiveRef.current ?? '')
         .trim()
         .toUpperCase();
       const targetObjective = latestSettings.objectiveForMeasure.trim().toUpperCase();
@@ -3313,23 +3452,19 @@ function App() {
           lastSeenObjectiveRx: liveMachineStateRef.current?.lastObjectiveRx ?? null,
         };
         impressInProgressRef.current = false;
-        // Watchdog: if L*OK never arrives within 10s the operator can still
-        // hit Auto Measure manually. Drop the gate so a future impress isn't
-        // permanently armed.
+        // Watchdog cleanup only. Never run Auto Measure unless the required
+        // objective confirmation arrives; this just prevents a stale pending
+        // gate from being reused by a later, unrelated machine RX.
         if (turretAfterImpressWatchdogRef.current !== null) {
           window.clearTimeout(turretAfterImpressWatchdogRef.current);
         }
         turretAfterImpressWatchdogRef.current = window.setTimeout(() => {
-          const pending = pendingTurretAfterImpressRef.current;
-          if (pending) {
+          if (pendingTurretAfterImpressRef.current) {
             // eslint-disable-next-line no-console
             console.warn(
-              '[turret-after-impress-done] reason=watchdog-timeout — L*OK never arrived; running fallback auto measure'
+              '[turret-after-impress-done] reason=watchdog-timeout objective-confirmation-missing action=auto-measure-not-run'
             );
             pendingTurretAfterImpressRef.current = null;
-            if (pending.measureAfterImpress) {
-              void runAutoMeasureAfterImpress();
-            }
           }
           turretAfterImpressWatchdogRef.current = null;
         }, 10000);
@@ -3380,8 +3515,9 @@ function App() {
       try {
         const snapshot = await getMachineStateSnapshot();
         if (cancelled) return;
-        if (snapshot?.objective?.trim()) {
-          setActiveObjective(snapshot.objective);
+        const confirmed = objectiveForMeasureFromObjective(snapshot?.confirmedObjectiveFromMachine);
+        if (confirmed && activeObjectiveRef.current !== confirmed) {
+          void commitActiveObjective(confirmed, 'ack');
         }
       } catch {
         /* non-fatal — fall back to whatever objective we already have */
@@ -3390,7 +3526,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeTool, getMachineStateSnapshot, manualMeasureResetKey]);
+  }, [activeTool, commitActiveObjective, getMachineStateSnapshot, manualMeasureResetKey]);
 
   const handleAutoMeasure = useCallback(() => {
     if (activeTool === 'manualMeasure') {
@@ -3399,7 +3535,7 @@ function App() {
     }
     suppressAutoMeasurePreviewRef.current = false;
     runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
-  }, [activeObjective, activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
+  }, [activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
 
   // Live recompute when the user drags edges/corners on the auto-measure
   // overlay. We coalesce rapid drag events with a 90ms trailing debounce so
@@ -3454,9 +3590,7 @@ function App() {
             const machineState = await getMachineStateSnapshot();
             // Same single source of truth as Auto Measure / Manual Measure.
             // No dialog-default silent fallback.
-            const objectiveForCalibration =
-              (activeObjective && activeObjective.trim()) ||
-              (machineState?.objective?.trim() ?? null);
+            const objectiveForCalibration = activeObjectiveRef.current?.trim() || null;
             if (!objectiveForCalibration) {
               setStatusMessage('System Status: Auto (Adjusted) blocked: no active objective');
               return;
@@ -3559,6 +3693,8 @@ function App() {
             });
             autoMeasurementIdRef.current = saved.id;
             manualMeasurementIdRef.current = saved.id;
+            // eslint-disable-next-line no-console
+            console.warn(`[measurement-add] objective=${saved.objective ?? values.normalizedObjective ?? 'null'}`);
             {
               const adjFrameId = getLastPaintedFrameId();
               const savedAdjMethod = saved.method ?? 'Auto (Adjusted)';
@@ -3625,7 +3761,6 @@ function App() {
       calibrationSettingsList,
       calibrations,
       getMachineStateSnapshot,
-      activeObjective,
       refetchMeasurements,
       saveManualMeasurement,
       setActiveMeasurement,
@@ -3876,23 +4011,53 @@ function App() {
                     )[0]
                   : null;
               if (saved) {
+                // eslint-disable-next-line no-console
+                console.log(
+                  `[camera-settings-startup-restore] loaded gain=${saved.analogGain} exposureMs=${saved.exposureTimeMs}`
+                );
+                // Apply the saved analog gain to the real camera SDK now that
+                // the handle is valid. Without this the live image resets to the
+                // SDK's hardware defaults on every restart.
                 try {
                   dropPendingCameraFrames('gain-change');
+                  // eslint-disable-next-line no-console
+                  console.log(`[camera-settings-apply] gain=${saved.analogGain}`);
+                  const gainReply = await window.hardnessCamera.setGain(saved.analogGain);
+                  if (gainReply.ok && typeof gainReply.gain === 'number') {
+                    // eslint-disable-next-line no-console
+                    console.log(`[camera-settings-verify] gain=${gainReply.gain}`);
+                  } else {
+                    // eslint-disable-next-line no-console
+                    console.error('[camera-settings-error] startup gain apply failed', gainReply);
+                  }
                 } catch (gainErr) {
                   // eslint-disable-next-line no-console
-                  console.error('[camera-settings] apply analogGain threw', gainErr);
+                  console.error('[camera-settings-error] startup gain apply threw', gainErr);
                 }
+                // Apply the saved exposure time to the real camera SDK.
                 try {
                   dropPendingCameraFrames('exposure-change');
+                  // eslint-disable-next-line no-console
+                  console.log(`[camera-settings-apply] exposureMs=${saved.exposureTimeMs}`);
+                  const expReply = await window.hardnessCamera.setExposure(saved.exposureTimeMs);
+                  if (expReply.ok && typeof expReply.exposureMs === 'number') {
+                    // eslint-disable-next-line no-console
+                    console.log(`[camera-settings-verify] exposureMs=${expReply.exposureMs}`);
+                  } else {
+                    // eslint-disable-next-line no-console
+                    console.error('[camera-settings-error] startup exposure apply failed', expReply);
+                  }
                 } catch (expErr) {
                   // eslint-disable-next-line no-console
-                  console.error('[camera-settings] apply exposure threw', expErr);
+                  console.error('[camera-settings-error] startup exposure apply threw', expErr);
                 }
               } else {
+                // eslint-disable-next-line no-console
+                console.log('[camera-settings-startup-restore] no saved settings to restore');
               }
             } catch (loadErr) {
               // eslint-disable-next-line no-console
-              console.warn('[camera-settings] failed to load saved settings', loadErr);
+              console.error('[camera-settings-error] failed to load saved settings', loadErr);
             }
             // Sync the React-side cache so the dialog opens with the right values.
             try {
@@ -4216,8 +4381,8 @@ function App() {
     void refetchCalibrations();
   }, [refetchCalibrations]);
   const calibrationDefaultObjective = useMemo(
-    () => liveMachineState?.confirmedObjectiveFromMachine?.trim() || activeObjective || null,
-    [liveMachineState?.confirmedObjectiveFromMachine, activeObjective]
+    () => activeObjective || null,
+    [activeObjective]
   );
   const calibrationOpen = activeDialog === 'calibration';
   const calibrationAutoFillX = latestManualPixels?.d1Px ?? null;
@@ -4290,7 +4455,9 @@ function App() {
           refetchMeasurements={refetchMeasurements}
           onOpenTestRecords={handleOpenTestRecords}
           onMeasurementsCleared={handleMeasurementsCleared}
+          activeObjective={activeObjective}
           onObjectiveChange={handleObjectiveChangeFromUI}
+          onCenterCommit={handleCenterCommit}
           onTurretIntent={handleTurretIntentClick}
           onObjectiveChangeIntent={handleObjectiveChangeIntent}
           trimMeasureOpen={trimMeasureOpen}

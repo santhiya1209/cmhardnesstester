@@ -97,9 +97,9 @@ type Props = {
   autoFillPixelLengthX?: number | null;
   autoFillPixelLengthY?: number | null;
   /**
-   * Active objective (confirmed-from-machine first, optimistic activeObjective
-   * fallback). Used to default the Zoom Time selector so the saved row lands
-   * under the right objective without the user having to re-pick it.
+   * Active objective from App's committed objective state. Used to default the
+   * Zoom Time selector so the saved row lands under the right objective
+   * without the user having to re-pick it.
    */
   defaultObjective?: string | null;
   /**

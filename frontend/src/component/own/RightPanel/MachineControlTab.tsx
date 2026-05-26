@@ -29,12 +29,21 @@ import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
 import { useRenderCount } from '@/utils/renderStats';
 
+type ObjectiveCommitSource = 'ack' | '10x-hardware-workaround';
+
 type MachineControlTabProps = {
   hvDisplay?: string;
   hvTypeValue?: string | null;
   hardnessValue?: string;
-  /** Called after the backend accepts a 10X / 40X lens change. */
-  onObjectiveChange?: (objective: '10X' | '40X') => void;
+  activeObjective?: string | null;
+  /** Called after a real objective commit source is available. */
+  onObjectiveChange?: (objective: '10X' | '40X', source: ObjectiveCommitSource) => void;
+  /**
+   * Fired after the turret-front (Center) command is handled. App-level clears
+   * activeObjective so 10X/40X highlights turn off and Auto Measure blocks —
+   * Center carries no measurement lens.
+   */
+  onCenterCommit?: () => void;
   /**
    * Fired the instant a turret direction button is clicked, before the IPC
    * is sent. App-level uses this to clear stale Auto/Manual/Calibration
@@ -83,7 +92,7 @@ const DEFAULT_FORM_STATE: FormState = {
   force: '0.5kgf',
   lightness: '5',
   loadTime: '5',
-  objective: '10X',
+  objective: 'IND',
   hardnessLevel: 'Middle',
 };
 
@@ -181,6 +190,8 @@ function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number
         : variant === '40X'
           ? theme.palette.info.main
           : theme.palette.grey[500];
+    const activeBackground =
+      variant === '10X' ? alpha(accent, 0.18) : alpha(accent, 0.08);
     return {
       position: 'relative',
       width: '100%',
@@ -196,7 +207,7 @@ function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number
       borderRadius: 0,
       borderLeft: cellIndex > 0 ? 1 : 0,
       borderColor: 'divider',
-      bgcolor: active ? alpha(accent, 0.08) : 'background.paper',
+      bgcolor: active ? activeBackground : 'background.paper',
       color: 'text.primary',
       textTransform: 'none',
       transition: theme.transitions.create(['background-color'], { duration: 180 }),
@@ -214,7 +225,7 @@ function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number
         transition: 'background-color 180ms ease, opacity 180ms ease',
       },
       '&:hover': {
-        bgcolor: alpha(accent, 0.06),
+        bgcolor: active ? activeBackground : alpha(accent, 0.06),
         '&::after': { opacity: 1, backgroundColor: accent },
       },
       '&.Mui-disabled': {
@@ -305,18 +316,28 @@ const HV_UNIT_TEXT_SX: SxProps<Theme> = {
 };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
 
-function machineToForm(state: MachineState | null): FormState {
-  if (!state) return DEFAULT_FORM_STATE;
-  // The dropdown reflects the machine-confirmed objective (set on L1OK/L2OK
-  // RX). state.objective is the optimistic activeObjective written by the
-  // last set-control TX — using it would let the dropdown jump to the user's
-  // pick before the lens physically rotates. Fall back to state.objective
-  // only when no confirmation has arrived yet (first connection).
+function normalizeObjectiveOption(value: string | null | undefined): string | null {
+  const key = String(value ?? '').trim().toUpperCase();
+  return OBJECTIVE_OPTIONS.includes(key) ? key : null;
+}
+
+function machineToForm(state: MachineState | null, activeObjective?: string | null): FormState {
+  if (!state) {
+    return {
+      ...DEFAULT_FORM_STATE,
+      objective: normalizeObjectiveOption(activeObjective) ?? DEFAULT_FORM_STATE.objective,
+    };
+  }
+  // The dropdown and turret cards reflect only committed objective sources:
+  // App activeObjective first, then a machine-confirmed SSE field.
   return {
     force: String(state.force),
     lightness: String(state.lightness),
     loadTime: String(state.loadTime),
-    objective: state.confirmedObjectiveFromMachine ?? state.objective,
+    objective:
+      normalizeObjectiveOption(activeObjective) ??
+      normalizeObjectiveOption(state.confirmedObjectiveFromMachine) ??
+      DEFAULT_FORM_STATE.objective,
     hardnessLevel: state.hardnessLevel,
   };
 }
@@ -451,7 +472,9 @@ function MachineControlTabImpl({
   hvDisplay = '',
   hvTypeValue = null,
   hardnessValue = 'N/A',
+  activeObjective = null,
   onObjectiveChange,
+  onCenterCommit,
   onTurretIntent,
   onObjectiveChangeIntent,
 }: MachineControlTabProps = {}) {
@@ -461,7 +484,10 @@ function MachineControlTabImpl({
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
   const { move: moveTurret, busy: turretBusy, error: turretError } = useTurret();
 
-  const formState = useMemo(() => machineToForm(machineState), [machineState]);
+  const formState = useMemo(
+    () => machineToForm(machineState, activeObjective),
+    [machineState, activeObjective]
+  );
   const bottomHvDisplay = hvDisplay.trim() ? hvDisplay : 'N/A';
   const bottomHvTypeDisplay = useMemo(() => {
     const trimmed = hvTypeValue?.trim();
@@ -488,14 +514,45 @@ function MachineControlTabImpl({
     setLightnessInput(incoming);
   }, [machineState?.lightness]);
 
-  // Mirror confirmedObjectiveFromMachine into a ref so the click handler can
-  // read the freshest value without re-binding on every SSE tick.
-  const lastConfirmedObjectiveRef = useRef<string | null>(null);
+  const lastObjectiveSyncLogRef = useRef<string | null>(null);
   useEffect(() => {
-    const confirmed = machineState?.confirmedObjectiveFromMachine ?? null;
-    if (confirmed === lastConfirmedObjectiveRef.current) return;
-    lastConfirmedObjectiveRef.current = confirmed;
-  }, [machineState?.confirmedObjectiveFromMachine]);
+    // Single sync log: the app-committed activeObjective (the source of truth,
+    // may be null until a real commit) paired with its active highlight color
+    // — yellow for 10X, blue for 40X (the other card's background clears).
+    const active = normalizeObjectiveOption(activeObjective);
+    const activeColor = active === '10X' ? 'yellow' : active === '40X' ? 'blue' : 'none';
+    const key = `${active ?? 'null'}|${activeColor}`;
+    if (key === lastObjectiveSyncLogRef.current) return;
+    lastObjectiveSyncLogRef.current = key;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[machine-ui-objective-sync] activeObjective=${active ?? 'null'} activeColor=${activeColor}`
+    );
+  }, [activeObjective]);
+
+  const commitObjectiveResult = useCallback(
+    (requested: '10X' | '40X', state: MachineState | null) => {
+      const confirmed = normalizeObjectiveOption(state?.confirmedObjectiveFromMachine);
+      if (confirmed === requested) {
+        onObjectiveChange?.(requested, 'ack');
+        return;
+      }
+      if (requested === '10X') {
+        // 10X is sent without awaiting an ack and this hardware does not echo
+        // L1OK — commit optimistically via the workaround.
+        onObjectiveChange?.('10X', '10x-hardware-workaround');
+        return;
+      }
+      // 40X is sent with awaitAck=true, so reaching here means the machine
+      // already ACKed the UL3 command (the move/setControl promise only
+      // resolves after a real ack; a missing ack rejects and is handled in
+      // .catch, committing nothing). Some units ack the command but never send
+      // the separate L3OK position echo, so confirmedObjectiveFromMachine may
+      // not equal 40X — commit on the genuine command ack. Not a fallback.
+      onObjectiveChange?.('40X', 'ack');
+    },
+    [onObjectiveChange]
+  );
 
   const pushChange = useCallback(
     async (key: MachineControlKey, value: string) => {
@@ -524,11 +581,13 @@ function MachineControlTabImpl({
         // Fire overlay-clear intent immediately so stale yellow lines are
         // gone before the optical zoom actually changes.
         if (value === '10X' || value === '40X') {
+          // eslint-disable-next-line no-console
+          console.log(`[machine-objective-click] requested=${value}`);
           onObjectiveChangeIntent?.(value);
         }
         void pushChange(field, value).then((state) => {
-          if ((value === '10X' || value === '40X') && state?.objective === value) {
-            onObjectiveChange?.(value);
+          if (value === '10X' || value === '40X') {
+            commitObjectiveResult(value, state);
           }
         });
         return;
@@ -539,7 +598,7 @@ function MachineControlTabImpl({
       }
       void pushChange(field, value);
     },
-    [formState.objective, onObjectiveChange, onObjectiveChangeIntent, pushChange]
+    [commitObjectiveResult, onObjectiveChangeIntent, pushChange]
   );
 
   const handleLoadTimeChange = useCallback(
@@ -658,10 +717,6 @@ function MachineControlTabImpl({
   }, []);
 
   const handleIndentClick = useCallback(() => {
-    // Source-of-truth resolution: confirmed lens position first, optimistic
-    // activeObjective only when no confirmation has arrived yet. Mirrors the
-    // backend command path so the operator can verify which objective the
-    // impress is actually firing under.
     if (impressAutoCloseTimerRef.current !== null) {
       clearTimeout(impressAutoCloseTimerRef.current);
       impressAutoCloseTimerRef.current = null;
@@ -730,15 +785,37 @@ function MachineControlTabImpl({
 
   const handleTurretClick = useCallback(
     (direction: TurretDirection) => () => {
+      // The 10X / 40X turret cards rotate to known objective slots
+      // (left=10X, right=40X); Center=front carries no objective. App-level
+      // objective state is committed only after the returned state contains
+      // the machine-confirmed objective from L<n>OK.
+      const objectiveForDirection: '10X' | '40X' | null =
+        direction === 'left' ? '10X' : direction === 'right' ? '40X' : null;
+      // eslint-disable-next-line no-console
+      console.log(`[machine-objective-click] requested=${objectiveForDirection ?? 'CENTER'}`);
       // Fire overlay-clear intent BEFORE the IPC so stale yellow lines are
       // gone from the moment the operator presses the button.
-      onTurretIntent?.();
-      void moveTurret(direction).catch(() => {
-        // Errors surface via turretError -> errorMessage. UI must NOT
-        // optimistically reflect motion; real state comes from machine RX.
-      });
+      if (objectiveForDirection) {
+        onObjectiveChangeIntent?.(objectiveForDirection);
+      } else {
+        onTurretIntent?.();
+      }
+      void moveTurret(direction)
+        .then((state) => {
+          if (objectiveForDirection) {
+            commitObjectiveResult(objectiveForDirection, state);
+          } else {
+            // Center/indenter slot — no measurement lens. Command handled, so
+            // clear the active objective at App level.
+            onCenterCommit?.();
+          }
+        })
+        .catch(() => {
+          // Errors surface via turretError -> errorMessage. The move was not
+          // accepted, so do NOT record the objective selection.
+        });
     },
-    [moveTurret, onTurretIntent]
+    [commitObjectiveResult, moveTurret, onCenterCommit, onObjectiveChangeIntent, onTurretIntent]
   );
 
   const connected = machineState?.connected ?? false;

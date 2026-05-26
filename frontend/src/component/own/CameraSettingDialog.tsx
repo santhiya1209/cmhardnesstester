@@ -161,6 +161,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       appliedExposureMsRef.current = data.exposureTimeMs ?? null;
     }
     if (!loading && !liveAvailable) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-settings-load] popup gain=${data?.analogGain ?? DEFAULT_ANALOG_GAIN} exposureMs=${data?.exposureTimeMs ?? DEFAULT_EXPOSURE_TIME_MS}`
+      );
       setAnalogGain(data?.analogGain ?? DEFAULT_ANALOG_GAIN);
       setExposureMs(data?.exposureTimeMs ?? DEFAULT_EXPOSURE_TIME_MS);
     }
@@ -410,35 +414,79 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   }, []);
 
   const handleSave = useCallback(async () => {
+    // Save is disabled while the camera is offline; guard defensively too.
+    // We never persist values the SDK hasn't confirmed.
+    if (!liveAvailable) {
+      setLiveApplyError('Camera is not connected — open the camera before saving.');
+      return;
+    }
+    setLiveApplyError(null);
+    // eslint-disable-next-line no-console
+    console.log(`[camera-settings-apply] requesting gain=${analogGain} exposureMs=${exposureMs}`);
     try {
+      // Apply to the real camera SDK FIRST. Persist only the values the SDK
+      // confirms, and only if BOTH applies succeed — never persist fake or
+      // unconfirmed values, never fall back to defaults.
+      dropPendingCameraFrames('gain-change');
+      const gainReply = await window.hardnessCamera.setGain(analogGain);
+      if (!gainReply.ok) {
+        // eslint-disable-next-line no-console
+        console.error('[camera-settings-error] gain apply failed:', gainReply);
+        setLiveApplyError(gainReply.message ?? gainReply.error ?? 'Failed to apply gain.');
+        return;
+      }
+      dropPendingCameraFrames('exposure-change');
+      const exposureReply = await window.hardnessCamera.setExposure(exposureMs);
+      if (!exposureReply.ok) {
+        // eslint-disable-next-line no-console
+        console.error('[camera-settings-error] exposure apply failed:', exposureReply);
+        setLiveApplyError(
+          exposureReply.message ?? exposureReply.error ?? 'Failed to apply exposure.'
+        );
+        return;
+      }
+      const confirmedGain = gainReply.gain;
+      const confirmedExposureMs = exposureReply.exposureMs;
+      if (
+        typeof confirmedGain !== 'number' ||
+        !Number.isFinite(confirmedGain) ||
+        typeof confirmedExposureMs !== 'number' ||
+        !Number.isFinite(confirmedExposureMs)
+      ) {
+        // eslint-disable-next-line no-console
+        console.error('[camera-settings-error] SDK returned no confirmed values:', {
+          gainReply,
+          exposureReply,
+        });
+        setLiveApplyError('Camera did not confirm applied values — not saved.');
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-settings-verify] confirmed gain=${confirmedGain} exposureMs=${confirmedExposureMs}`
+      );
+      // Reconcile the UI + device-applied baseline to the SDK-confirmed values.
+      setAnalogGain(confirmedGain);
+      setExposureMs(confirmedExposureMs);
+      appliedGainRef.current = confirmedGain;
+      appliedExposureMsRef.current = confirmedExposureMs;
+      // Persist the SDK-confirmed values to SQLite.
       await saveCameraSetting({
         id: data?.id,
-        values: { analogGain, exposureTimeMs: exposureMs },
+        values: { analogGain: confirmedGain, exposureTimeMs: confirmedExposureMs },
       });
-      if (liveAvailable) {
-        await sendGain(analogGain);
-        await sendExposure(exposureMs);
-      }
-      onStatusChange?.(
-        liveAvailable
-          ? 'Camera settings saved and applied.'
-          : 'Camera settings saved (camera not live).'
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-settings-save] persisted gain=${confirmedGain} exposureMs=${confirmedExposureMs}`
       );
+      onStatusChange?.('Camera settings saved and applied.');
       onClose();
-    } catch {
-      // surfaced via saveError
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[camera-settings-error] save flow threw:', err);
+      setLiveApplyError(err instanceof Error ? err.message : String(err));
     }
-  }, [
-    analogGain,
-    data?.id,
-    exposureMs,
-    liveAvailable,
-    onClose,
-    onStatusChange,
-    saveCameraSetting,
-    sendExposure,
-    sendGain,
-  ]);
+  }, [analogGain, data?.id, exposureMs, liveAvailable, onClose, onStatusChange, saveCameraSetting]);
 
   const handleCancel = useCallback(() => {
     if (liveAvailable && data) {
@@ -601,7 +649,7 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
           {!liveAvailable ? (
             <Alert severity="info" sx={{ py: 0.5 }}>
-              Camera is not live. Settings will be saved but not applied until the camera is opened.
+              Camera is not connected. Open the camera to apply and save settings.
             </Alert>
           ) : null}
 
@@ -617,7 +665,12 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
         spacing={1}
         sx={{ px: 2, py: 1.25, borderTop: 1, borderColor: 'divider', justifyContent: 'flex-end' }}
       >
-        <Button variant="contained" size="small" onClick={() => void handleSave()} disabled={busy}>
+        <Button
+          variant="contained"
+          size="small"
+          onClick={() => void handleSave()}
+          disabled={busy || !liveAvailable}
+        >
           Save
         </Button>
         <Button onClick={handleCancel} disabled={busy} size="small">

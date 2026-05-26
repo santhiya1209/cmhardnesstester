@@ -8,7 +8,7 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
-import Select, { type SelectChangeEvent } from '@mui/material/Select';
+import Select from '@mui/material/Select';
 import Slider from '@mui/material/Slider';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -38,9 +38,9 @@ type Props = {
   onPreviewChange?: (settings: AutoMeasureSettingsPayload) => void;
   onSaved?: (settings: AutoMeasureSettingsPayload) => void;
   onStatusChange?: (message: string) => void;
-  // Currently active objective in the app. Drives the dropdown value and the
-  // smoothing/threshold defaults so this panel never lags behind a machine- or
-  // PC-initiated objective change.
+  // Currently committed objective in the app. Drives the dropdown value and
+  // smoothing/threshold defaults so this panel never changes objective by
+  // local UI intent alone.
   activeObjective?: string | null;
 };
 
@@ -102,9 +102,23 @@ function AutoMeasureSettingsDialogImpl({
     offsetY: number;
     lastLogAt: number;
   } | null>(null);
+  const lastSettingsObjectiveLogRef = useRef<string | null>(null);
 
   const busy = loading || saving;
   const errorMessage = loadError ?? saveError;
+
+  const logSettingsObjective = useCallback(
+    (objective: ObjectiveForMeasure, smoothing: number, threshold: number) => {
+      const key = `${objective}|${smoothing}|${threshold}`;
+      if (lastSettingsObjectiveLogRef.current === key) return;
+      lastSettingsObjectiveLogRef.current = key;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-settings-sync] objective=${objective} smoothing=${smoothing} threshold=${threshold}`
+      );
+    },
+    []
+  );
 
   useEffect(() => {
     if (open) {
@@ -121,12 +135,13 @@ function AutoMeasureSettingsDialogImpl({
         next.objectiveForMeasure = synced;
         next.smoothing = defaults.smoothing;
         next.threshold = defaults.threshold;
+        logSettingsObjective(synced, defaults.smoothing, defaults.threshold);
       }
       formRef.current = next;
       setForm(next);
       setSavedBaseline(next);
     }
-  }, [data, loading, open, activeObjective]);
+  }, [data, loading, open, activeObjective, logSettingsObjective]);
 
   // Live sync: while the dialog is already open, react to objective changes
   // coming from the machine (L1OK/L2OK) or from a PC-driven toggle so the
@@ -151,13 +166,14 @@ function AutoMeasureSettingsDialogImpl({
       smoothing: defaults.smoothing,
       threshold: defaults.threshold,
     });
+    logSettingsObjective(synced, defaults.smoothing, defaults.threshold);
     formRef.current = next;
     setForm(next);
     // Intentionally do NOT call onPreviewChange here. App-level state is
     // already mirroring the objective-driven defaults; firing a preview
     // through this path would repaint yellow lines on objective change,
     // which violates the "lines only on Auto Measure click" rule.
-  }, [open, activeObjective]);
+  }, [open, activeObjective, logSettingsObjective]);
 
   // Local-only form write. Synchronous: updates ref + React state in the
   // same commit so the slider thumb and the numeric readout move together
@@ -210,14 +226,6 @@ function AutoMeasureSettingsDialogImpl({
       }
     };
   }, []);
-
-  const handleObjectiveChange = useCallback(
-    (event: SelectChangeEvent) => {
-      writeLocal({ objectiveForMeasure: event.target.value as ObjectiveForMeasure });
-      flushPreview('objective');
-    },
-    [flushPreview, writeLocal]
-  );
 
   // Slider onChange: write LOCAL form only. Never run detection or call the
   // parent on the per-tick path â€” that's what made the slider feel sticky.
@@ -275,11 +283,14 @@ function AutoMeasureSettingsDialogImpl({
     });
     formRef.current = next;
     setForm(next);
+    logSettingsObjective(synced, objectiveDefaults.smoothing, objectiveDefaults.threshold);
     flushPreview('default');
-  }, [activeObjective, flushPreview]);
+  }, [activeObjective, flushPreview, logSettingsObjective]);
 
   const handleCancel = useCallback(() => {
     clearPreviewDebounce('cancel');
+    // eslint-disable-next-line no-console
+    console.warn('[auto-settings-cancel]');
     formRef.current = savedBaseline;
     setForm(savedBaseline);
     onClose();
@@ -480,8 +491,7 @@ function AutoMeasureSettingsDialogImpl({
           <FormControl size="small" sx={{ flex: 1 }}>
             <Select
               value={form.objectiveForMeasure}
-              onChange={handleObjectiveChange}
-              disabled={busy}
+              disabled
             >
               {OBJECTIVE_FOR_MEASURE_OPTIONS.map((opt) => (
                 <MenuItem key={opt} value={opt}>
