@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { RegexParser } from '@serialport/parser-regex';
 import {
   buildCommandForKey,
@@ -19,7 +20,8 @@ import {
   type TurretDirection,
 } from './hardness-machine-protocol';
 import { machineSettingsService } from './machine-settings.service';
-import type { MachineSettingsPayload } from '../../models/machine-settings';
+import { MachineSettingsModel, type MachineSettingsPayload } from '../../models/machine-settings';
+import { upsertRows } from '../sqlite';
 import { autoMeasureSettingsService } from './auto-measure-settings.service';
 
 // Defensive require so the backend keeps booting even if `serialport` is not
@@ -180,9 +182,15 @@ class HardnessMachineSerialService extends EventEmitter {
   // service construction; subsequent saves update that same row instead of
   // creating a new history record on every keystroke.
   private persistedSettingsId: string | null = null;
+  private persistedCreatedAt: string | null = null;
   private persistLoadPromise: Promise<void> | null = null;
   private persistInFlight = false;
   private persistPending = false;
+  // Debounce so a burst of machine-status ticks (force/lightness/loadTime/
+  // objective/hardnessLevel) collapses into one narrow DB write. The UI state
+  // is emitted immediately via setState — only the disk write is delayed.
+  private persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly PERSIST_DEBOUNCE_MS = 1500;
 
   private loadPersistedSettings(): Promise<void> {
     if (this.persistLoadPromise) return this.persistLoadPromise;
@@ -196,6 +204,7 @@ class HardnessMachineSerialService extends EventEmitter {
           (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
         )[0];
         this.persistedSettingsId = latest.id;
+        this.persistedCreatedAt = latest.createdAt;
         // Seed in-memory state. Connection-related fields stay at defaults.
         this.state = {
           ...this.state,
@@ -229,35 +238,57 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   private schedulePersist(): void {
+    // Debounce: a timer is already pending → the flush will read the latest
+    // state when it fires, so this tick is coalesced into that one write.
+    if (this.persistDebounceTimer) {
+      // eslint-disable-next-line no-console
+      console.log('[db-persist-skip] reason=debounce-coalesced');
+      return;
+    }
+    this.persistDebounceTimer = setTimeout(() => {
+      this.persistDebounceTimer = null;
+      void this.flushPersist();
+    }, HardnessMachineSerialService.PERSIST_DEBOUNCE_MS);
+  }
+
+  /**
+   * Persist machine settings via the NARROW per-collection write so only the
+   * `machine_settings` table is touched. measurements / album_items (and their
+   * base64 image blobs) are never rewritten by a machine-state change.
+   */
+  private async flushPersist(): Promise<void> {
     if (this.persistInFlight) {
       this.persistPending = true;
       return;
     }
     this.persistInFlight = true;
-    void (async () => {
-      try {
-        await this.loadPersistedSettings();
-        const payload = this.buildPersistPayload();
-        if (this.persistedSettingsId) {
-          await machineSettingsService.update(this.persistedSettingsId, payload);
-        } else {
-          const created = await machineSettingsService.create(payload);
-          this.persistedSettingsId = created.id;
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(
-          '[machine-settings] persist failed:',
-          err instanceof Error ? err.message : String(err)
-        );
-      } finally {
-        this.persistInFlight = false;
-        if (this.persistPending) {
-          this.persistPending = false;
-          this.schedulePersist();
-        }
+    try {
+      await this.loadPersistedSettings();
+      const payload = this.buildPersistPayload();
+      const now = new Date().toISOString();
+      const id = this.persistedSettingsId ?? randomUUID();
+      const createdAt = this.persistedCreatedAt ?? now;
+      const row = MachineSettingsModel.parse({ id, ...payload, createdAt, updatedAt: now });
+      upsertRows('machineSettings', [row]);
+      this.persistedSettingsId = id;
+      this.persistedCreatedAt = createdAt;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[db-persist-machine-state] fields=force,lightness,loadTime,objective,hardnessLevel debounceMs=${HardnessMachineSerialService.PERSIST_DEBOUNCE_MS}`
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[machine-settings] persist failed:',
+        err instanceof Error ? err.message : String(err)
+      );
+    } finally {
+      this.persistInFlight = false;
+      if (this.persistPending) {
+        this.persistPending = false;
+        void this.flushPersist();
       }
-    })();
+    }
   }
 
   /**

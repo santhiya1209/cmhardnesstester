@@ -37,6 +37,50 @@ const DEFAULT_OPENCV_DIR = 'C:\\Users\\SANTHIYA\\opencv\\build';
 // still passes — do NOT drop this below the max usable exposure or the live
 // view blanks.
 const STALE_AGE_MS = 300;
+
+// Fixed-size in-memory ring buffer for the latest live frames. Live frames are
+// memory-only — NEVER written to disk. Capacity 3 keeps at most the 3 newest
+// frames resident and recycles each slot's backing Buffer instead of
+// allocating a fresh ~multi-MB Buffer per frame at full FPS (kills the GC
+// churn). Safety invariant: at most two live references exist at any instant
+// (`latestFrame` and an in-flight/pending frame — both always the newest
+// write), so a slot is only recycled after 3 newer writes, long after any
+// consumer (the renderer's structured-clone IPC copy, or the Auto Measure
+// fast-path read of `latestFrame.data`) has finished with it.
+const FRAME_RING_CAPACITY = 3;
+
+class FrameRingBuffer {
+  constructor(capacity = FRAME_RING_CAPACITY) {
+    this.capacity = Math.max(1, capacity);
+    this.slots = new Array(this.capacity).fill(null);
+    this.next = 0;
+    this.writes = 0;
+    this.drops = 0;
+    this.bytesPerSlot = 0;
+  }
+
+  // Copy `view` (Uint8Array) into the next slot, reusing the slot's Buffer when
+  // the byte length matches. Returns the owned Buffer (safe to hand to IPC,
+  // which structured-clone-copies it synchronously on send).
+  write(view) {
+    const i = this.next;
+    let buf = this.slots[i];
+    if (!buf || buf.length !== view.byteLength) {
+      buf = Buffer.allocUnsafe(view.byteLength);
+      this.slots[i] = buf;
+      this.bytesPerSlot = view.byteLength;
+    }
+    buf.set(view);
+    this.next = (this.next + 1) % this.capacity;
+    this.writes += 1;
+    return buf;
+  }
+
+  lastSlotIndex() {
+    return (this.next + this.capacity - 1) % this.capacity;
+  }
+}
+
 class CameraService {
   constructor() {
     this.webContents = null;
@@ -67,6 +111,14 @@ class CameraService {
     this._lastBusySkipLogAt = 0;
     this._lastMainRecvLogAt = 0;
     this._lastCanSendFalseResetAt = 0;
+    // In-memory ring buffer for the latest live frames (memory-only, never
+    // persisted). See FrameRingBuffer above.
+    this.frameRing = new FrameRingBuffer();
+    this._ringInitLogged = false;
+    this._diskWriteCheckLogged = false;
+    this._lastRingWriteLogAt = 0;
+    this._lastRingDropLogAt = 0;
+    this._lastFrameTransferLogAt = 0;
   }
 
   attach(webContents) {
@@ -607,7 +659,32 @@ class CameraService {
     // when x is an ArrayBuffer it returns a VIEW (still external), and even
     // for Buffer→Buffer it can keep referencing the external backing store on
     // some Node versions. Allocate + .set forces a real byte copy.
-    const payload = toOwnedBuffer(data);
+    // Write into the fixed-size in-memory ring (recycles backing buffers; no
+    // per-frame multi-MB allocation). The ring copies the bytes, so the
+    // native external buffer is not retained. Live frames stay memory-only.
+    const view = toUint8View(data);
+    if (!this._ringInitLogged) {
+      this._ringInitLogged = true;
+      const bytes = view ? view.byteLength : 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-shared-buffer-init] capacity=${this.frameRing.capacity} bytesPerFrame=${bytes} maxBytes=${bytes * this.frameRing.capacity}`
+      );
+      if (!this._diskWriteCheckLogged) {
+        this._diskWriteCheckLogged = true;
+        // eslint-disable-next-line no-console
+        console.log('[camera-disk-write-check] liveFrameDiskWrite=false');
+      }
+    }
+    const payload = view ? this.frameRing.write(view) : toOwnedBuffer(data);
+    const nowRingLog = Date.now();
+    if (nowRingLog - this._lastRingWriteLogAt >= 5000) {
+      this._lastRingWriteLogAt = nowRingLog;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-shared-buffer-write] writes=${this.frameRing.writes} slot=${this.frameRing.lastSlotIndex()} bytes=${payload.length}`
+      );
+    }
     this.latestFrame = {
       meta: safeMeta,
       data: payload,
@@ -625,6 +702,15 @@ class CameraService {
     if (inFlight) {
       if (this._pendingFrame) {
         this._droppedSinceLastFrame += 1;
+        this.frameRing.drops += 1;
+        const nowDropLog = Date.now();
+        if (nowDropLog - this._lastRingDropLogAt >= 5000) {
+          this._lastRingDropLogAt = nowDropLog;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[camera-shared-buffer-drop] reason=superseded-newer-frame totalDrops=${this.frameRing.drops}`
+          );
+        }
       }
       this._pendingFrame = { meta: safeMeta, data: payload };
       return;
@@ -651,6 +737,13 @@ class CameraService {
     this._droppedSinceLastFrame = 0;
     this._inFlightSeq = safeMeta.frameId;
     this._inFlightSentAt = sentAt;
+    if (sentAt - this._lastFrameTransferLogAt >= 5000) {
+      this._lastFrameTransferLogAt = sentAt;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-frame-transfer] direction=main-to-renderer frameId=${safeMeta.frameId} bytes=${payload.length}`
+      );
+    }
     try {
       this.webContents.send('camera:frame', safeMeta, payload);
     } catch (_e) {
@@ -698,6 +791,16 @@ class CameraService {
       this.rendererReady = false;
     }
   }
+}
+
+// Return a zero-copy Uint8Array view of any buffer-ish source (the ring does
+// the actual byte copy). null for unsupported inputs.
+function toUint8View(src) {
+  if (src == null) return null;
+  if (Buffer.isBuffer(src) || src instanceof Uint8Array) return src;
+  if (src instanceof ArrayBuffer) return new Uint8Array(src);
+  if (ArrayBuffer.isView(src)) return new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
+  return null;
 }
 
 function toOwnedBuffer(src) {

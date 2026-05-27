@@ -560,6 +560,10 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId
   const nowPost = Date.now();
   if (nowPost - lastWorkerRecvLogAt >= 5000) {
     lastWorkerRecvLogAt = nowPost;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-frame-transfer] direction=renderer-to-worker frameId=${frameId} bytes=${ab.byteLength}`
+    );
   }
   worker.postMessage(
     {
