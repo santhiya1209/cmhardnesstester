@@ -302,7 +302,7 @@ const HV_VALUE_TEXT_SX: SxProps<Theme> = {
   lineHeight: 1.1,
   color: 'text.primary',
   fontVariantNumeric: 'tabular-nums',
-  overflow: 'hidden',
+  // overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };

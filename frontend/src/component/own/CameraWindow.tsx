@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
@@ -69,12 +69,6 @@ const CANVAS_STYLE: React.CSSProperties = {
   height: '100%',
   display: 'block',
   objectFit: 'contain',
-  // 'auto' = browser smooth (bilinear) sampling. The canvas is full native
-  // resolution (2592x1944) and CSS-downscaled to the panel; 'pixelated'
-  // (nearest-neighbour) aliased that downscale and made the preview look soft
-  // while focusing. Smooth sampling is correct for a downscaled microscope
-  // image. Display-only — Auto/Manual measure read the full-res raw buffer
-  // (latestFullFrame), never these scaled canvas pixels.
   imageRendering: 'auto',
 };
 
@@ -99,47 +93,21 @@ type Props = {
   overlayShapes: OverlayShape[];
   autoMeasureGraphics: AutoMeasureGraphics | null;
   autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
-  /** Bumped by App on objective change â†’ forces AutoMeasureOverlay to do an
-   *  imperative canvas clearRect so no stale yellow lines linger across the
-   *  switch. */
   autoMeasureClearNonce?: number;
   crossLineVisible: boolean;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   manualMeasureObjective?: string | null;
-  /**
-   * Bumps every time the machine confirms a new objective via L<n>OK RX.
-   * CameraWindow uses it to clear the live canvas + frozen snapshot so the
-   * next worker frame draws fresh at the new magnification â€” no stale pixels
-   * from the previous lens, no cached transform.
-   */
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
   magnifierEnabled: boolean;
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
-  /** Yellow-line stroke width in CSS px (driven by useLineThickness). */
   lineStrokeWidth?: number;
-  /**
-   * App-level flag flipped true the instant a turret/objective intent is
-   * received and false once the machine RX confirms motion completed (or a
-   * 4 s watchdog expires). When true the camera blanks the live canvas,
-   * drops in-flight frames, and overlays a "Turret moving..." message.
-   * Defaults to false for safety.
-   */
   turretMoving?: boolean;
-  /** Target objective for the in-progress turret move (e.g. "10X").
-   *  Surfaced in the "Turret moving to X..." popup so the operator knows
-   *  what magnification the camera is switching to. Optional â€” falls back
-   *  to the generic "Turret moving..." string if unknown. */
   turretMovingTarget?: string | null;
-  /** Live camera open flag. Forwarded to AutoMeasureOverlay so it can hard-
-   *  gate drawing â€” no yellow lines may paint when the camera is closed. */
   cameraOpen?: boolean;
-  /** Active objective's calibration in Âµm per image pixel. Threaded into
-   *  ImageOverlay so Measure Length renders calibrated microns. */
   umPerPixel?: number | null;
-  /** Endpoint-drag commit for an existing length shape (Measure Length). */
   onUpdateShape?: (id: string, next: OverlayShapeInput) => void;
 };
 
@@ -163,6 +131,10 @@ export type CameraWindowHandle = {
     mimeType?: string;
     quality?: number;
   }) => string | null;
+  captureFinalizedThumbnail: (
+    expectedCornersKey: string,
+    options?: { maxWidth?: number; mimeType?: string; quality?: number }
+  ) => Promise<string | null>;
   refetchStatus: () => Promise<void>;
   clearLiveCanvas: (reason?: string) => void;
   clearLiveImage: (reason?: string) => void;
@@ -214,9 +186,6 @@ function CameraWindowImpl(
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const { attachCanvas } = useCameraStream();
   const { status, refetch: refetchStatus } = useCameraStatus();
-  // Industrial-software behavior: coordinate readout is always visible. Init
-  // to (1024, 1024) on startup, updates live while the cursor is over the
-  // image, and stays at the last valid value when the cursor leaves.
   const [cursorCoordinate, setCursorCoordinate] = useState<Point>({
     x: DEFAULT_CAMERA_X,
     y: DEFAULT_CAMERA_Y,
@@ -227,22 +196,12 @@ function CameraWindowImpl(
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [imageSize, setImageSize] = useState<ImageSize | null>(null);
   const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
-  // Set whenever the live canvas is cleared (objective change). If the next
-  // worker frame hasn't arrived yet, captureDisplayedFrame would otherwise
-  // hand the native addon a transparent/black image and detection silently
-  // fails â€” gate the capture on a fresh frame after this timestamp.
   const liveCanvasClearedAtRef = useRef<number>(0);
 
   const toggleFreeze = useCallback(() => {
     const live = canvasRef.current;
     const snap = freezeCanvasRef.current;
     if (!live || !snap) return false;
-    // The overlay/measurement coordinate space (and the µm-per-pixel
-    // calibration reference) is the FULL native frame — NOT the live canvas
-    // bitmap, which is subsampled by PREVIEW_SCALE for display. Derive
-    // imageSize from the full-res raw frame so a frozen frame's overlays stay
-    // aligned and manual-measure microns stay correct. The snap canvas itself
-    // stays at preview resolution (it is only the displayed frozen bitmap).
     const full = getLatestFullFrame();
     const measurementSize =
       full && full.width > 0 && full.height > 0
@@ -295,13 +254,6 @@ function CameraWindowImpl(
       return { ok: false, error: 'no displayed image' };
     }
 
-    // Live source: if the canvas was cleared by an objective change and no
-    // worker frame has actually PAINTED onto it since (epoch-tagged round
-    // trip through the worker), the pixels are still transparent or carry
-    // pre-clear stale content. Refuse to capture so callers can await a
-    // fresh post-clear frame instead of shipping a stale image to the
-    // native detector. Note: paint-time, not IPC-arrival time â€” the IPC
-    // body is forwarded to the worker before any pixels land on the canvas.
     if (
       source === live &&
       liveCanvasClearedAtRef.current > 0 &&
@@ -311,20 +263,11 @@ function CameraWindowImpl(
       return { ok: false, error: 'awaiting-fresh-frame' };
     }
 
-    // Live-camera detection MUST always use the latest full-resolution
-    // native frame (2592x1944 bgr24), regardless of the UI freeze state.
-    // The visible canvas is now also at full native resolution
-    // (PREVIEW_SCALE=1) and CSS-scaled to fit the panel, but reading the
-    // canvas pixels would still mix in any overlay strokes â€” go straight
-    // to the raw IPC buffer kept in latestFullFrame instead.
     if (imageSourceRef.current === 'live-camera') {
       const full = getLatestFullFrame();
       if (full && full.body) {
         const buffer = toOwnedArrayBuffer(full.body);
         if (options?.freeze) {
-          // Visual freeze only â€” copies the (downscaled) live canvas onto
-          // the snap canvas so the user sees the frozen preview. The native
-          // detector receives the full-res buffer above; this is purely UI.
           if (snap && live && live.width > 0 && live.height > 0) {
             snap.width = live.width;
             snap.height = live.height;
@@ -346,9 +289,6 @@ function CameraWindowImpl(
           source: 'live-camera',
         };
       }
-      // No silent fallback to the downscaled rgb32 canvas â€” reject so the
-      // caller can surface the failure and the user can re-click once a
-      // fresh native frame arrives.
       return { ok: false, error: 'native-full-frame-not-available' };
     }
 
@@ -439,7 +379,6 @@ function CameraWindowImpl(
       if (!source || source.width === 0 || source.height === 0) {
         return Promise.resolve(null);
       }
-      // Compose source + overlay shapes onto a fresh canvas matching source pixels.
       const out = document.createElement('canvas');
       out.width = source.width;
       out.height = source.height;
@@ -462,12 +401,6 @@ function CameraWindowImpl(
       const snap = freezeCanvasRef.current;
       const source = frozen && snap && snap.width > 0 && snap.height > 0 ? snap : live;
       if (!source || source.width <= 0 || source.height <= 0) {
-        // eslint-disable-next-line no-console
-        console.warn('[album] snapshot capture skipped â€” no source frame', {
-          source: source ? 'live-or-snap' : 'null',
-          width: source?.width ?? 0,
-          height: source?.height ?? 0,
-        });
         return null;
       }
       const scale = source.width > maxWidth ? maxWidth / source.width : 1;
@@ -478,17 +411,11 @@ function CameraWindowImpl(
       out.height = h;
       const ctx = out.getContext('2d');
       if (!ctx) {
-        // eslint-disable-next-line no-console
-        console.warn('[album] snapshot capture failed â€” no 2d context');
         return null;
       }
       ctx.drawImage(source, 0, 0, w, h);
 
-      // Compose overlay canvases (yellow Auto/Manual Measure lines, markers,
-      // ImageOverlay shapes) on top of the camera frame so the album thumbnail
-      // matches what the user sees in the live viewport.
       const viewport = viewportRef.current;
-      let overlayCount = 0;
       if (viewport && imageSize && imageSize.width > 0 && imageSize.height > 0) {
         const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
         const overlayCanvases = Array.from(viewport.querySelectorAll('canvas')).filter(
@@ -505,25 +432,44 @@ function CameraWindowImpl(
             if (sw <= 0 || sh <= 0) continue;
             try {
               ctx.drawImage(overlay, sx, sy, sw, sh, 0, 0, w, h);
-              overlayCount += 1;
-            } catch (err) {
-              // eslint-disable-next-line no-console
-              console.warn('[album] overlay compose failed', err);
+            } catch {
+              continue;
             }
           }
         }
       }
 
       try {
-        const dataUrl = out.toDataURL(mimeType, quality);
-        return dataUrl;
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('[album] snapshot toDataURL failed', err);
+        return out.toDataURL(mimeType, quality);
+      } catch {
         return null;
       }
     },
     [frozen, imageSize]
+  );
+
+  const overlayDrawnKeyRef = useRef<string>('');
+  const handleOverlayDrawn = useCallback((key: string) => {
+    overlayDrawnKeyRef.current = key;
+  }, []);
+
+  const captureFinalizedThumbnail = useCallback(
+    async (
+      expectedCornersKey: string,
+      options?: { maxWidth?: number; mimeType?: string; quality?: number }
+    ): Promise<string | null> => {
+      const deadline = Date.now() + 600;
+      if (expectedCornersKey && expectedCornersKey !== 'none') {
+        while (
+          overlayDrawnKeyRef.current !== expectedCornersKey &&
+          Date.now() < deadline
+        ) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+      }
+      return captureThumbnailDataUrl(options);
+    },
+    [captureThumbnailDataUrl]
   );
 
   const clearLiveCanvas = useCallback((_reason: string = 'objective-change') => {
@@ -533,27 +479,8 @@ function CameraWindowImpl(
     if (!ctx) return;
     ctx.clearRect(0, 0, live.width, live.height);
     liveCanvasClearedAtRef.current = Date.now();
-    // Bump epoch so any frame already in the worker queue (decoded but not
-    // yet painted on the main thread) is dropped on arrival instead of
-    // repainting stale previous-objective pixels onto the cleared canvas.
-    // Why: do NOT null imageSize here. The camera resolution is unchanged on
-    // objective change â€” the magnification is optical, not pixel. Nulling
-    // imageSize unmounts/blanks the AutoMeasureOverlay and the next overlay
-    // commit fails to render until status polls a width/height change (which
-    // never happens because the camera frame size is constant).
   }, []);
 
-  // Used by Close Camera: also drop any frozen snapshot and exit the frozen
-  // state so the user actually sees an empty viewport. clearLiveCanvas alone
-  // leaves a stale freeze-canvas overlay visible if the camera was frozen
-  // (e.g. via Auto Measure) at the moment of close.
-  // Turret/objective movement gate. Rising edge clears the live canvas +
-  // bumps the frame epoch so any in-flight worker frame from before motion
-  // is dropped on arrival. Falling edge logs the first fresh post-turret
-  // paint so the operator can see streaming resumed. While `turretMoving`
-  // is true a "Turret moving..." overlay is rendered above the (now blank)
-  // canvas â€” the old indentation image must not remain visible during the
-  // motion window.
   const turretMovingPrevRef = useRef(false);
   useEffect(() => {
     const prev = turretMovingPrevRef.current;
@@ -564,13 +491,6 @@ function CameraWindowImpl(
         const ctx = live.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, live.width, live.height);
       }
-      // The freeze canvas survives independently of the live canvas and
-      // overlays it (display:block when frozen). If Auto Measure or a
-      // manual freeze captured a frame under the previous objective, that
-      // frozen image keeps painting through the turret-moving window and
-      // shows the OLD objective for ~1s until the new frame arrives. Drop
-      // it + exit frozen state so the only thing visible is the
-      // "Turret moving..." popup, then the fresh post-switch frame.
       const snap = freezeCanvasRef.current;
       if (snap) {
         const snapCtx = snap.getContext('2d');
@@ -616,17 +536,12 @@ function CameraWindowImpl(
     return fresh;
   }, []);
 
-  // React to a machine-confirmed objective change by invalidating any cached
-  // viewport state so the next live frame is drawn fresh at the new mag.
-  // Skip the first render (initial value) so we don't clear on mount.
   const lastSeenObjectiveRefreshKeyRef = useRef<number | undefined>(objectiveRefreshKey);
   useEffect(() => {
     if (objectiveRefreshKey === undefined) return;
     if (lastSeenObjectiveRefreshKeyRef.current === objectiveRefreshKey) return;
     lastSeenObjectiveRefreshKeyRef.current = objectiveRefreshKey;
 
-
-    // Drop any frozen snapshot â€” it was captured under the previous objective.
     if (frozen) {
       const snap = freezeCanvasRef.current;
       const ctx = snap?.getContext('2d');
@@ -634,10 +549,7 @@ function CameraWindowImpl(
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
     }
-    // Clear the live canvas so the next worker frame paints onto a clean
-    // surface â€” no stale pixels from the previous magnification.
     clearLiveCanvas();
-
   }, [objectiveRefreshKey, clearLiveCanvas, frozen, manualMeasureObjective]);
 
   useImperativeHandle(
@@ -650,6 +562,7 @@ function CameraWindowImpl(
       loadImageFromBuffer,
       exportImageBlob,
       captureThumbnailDataUrl,
+      captureFinalizedThumbnail,
       refetchStatus,
       clearLiveCanvas,
       clearLiveImage,
@@ -663,6 +576,7 @@ function CameraWindowImpl(
       loadImageFromBuffer,
       exportImageBlob,
       captureThumbnailDataUrl,
+      captureFinalizedThumbnail,
       refetchStatus,
       clearLiveCanvas,
       clearLiveImage,
@@ -683,18 +597,9 @@ function CameraWindowImpl(
     return () => ro.disconnect();
   }, []);
 
-  // Attach the canvas to the worker exactly once when the element mounts.
   useEffect(() => {
     if (canvasRef.current) attachCanvas(canvasRef.current);
   }, [attachCanvas]);
-
-  useEffect(() => {
-    // Architectural beacon: ImageOverlay / AutoMeasureOverlay /
-    // ManualMeasureOverlay are rendered as SIBLINGS of canvasRef in the JSX
-    // below (lines ~702-735). They are independent DOM elements with their
-    // own React subtrees and do not paint on the live camera canvas, so
-    // overlay rerenders cannot stall the camera frame loop.
-  }, []);
 
   useEffect(() => {
     if (frozen) {
@@ -712,8 +617,6 @@ function CameraWindowImpl(
     (event: React.PointerEvent<HTMLDivElement>) => {
       const viewport = viewportRef.current;
       if (!viewport || !imageSize) {
-        // Hide the magnifier marker but keep the last coordinate readout
-        // â€” industrial UI never blanks the X/Y display.
         setCursorDisplay(null);
         return;
       }
@@ -742,11 +645,6 @@ function CameraWindowImpl(
 
       setCursorDisplay(displayPoint);
       const imagePoint = displayToImage(displayPoint, placement, imageSize);
-      if (magnifierEnabled) {
-        // Full coordinate-map trace: client â†’ viewport (canvas CSS) â†’
-        // image (post-letterbox) â†’ source bitmap pixel. devicePixelRatio is
-        // included because the lens canvas is allocated at DPR for crispness.
-      }
       setCursorCoordinate({
         x: Math.max(
           0,
@@ -758,11 +656,10 @@ function CameraWindowImpl(
         ),
       });
     },
-    [magnifierEnabled, imageSize]
+    [imageSize]
   );
 
   const clearCursor = useCallback(() => {
-    // Only hide the magnifier marker. Last valid X/Y stays on the coord bar.
     setCursorDisplay(null);
   }, []);
 
@@ -789,7 +686,7 @@ function CameraWindowImpl(
               variant="caption"
               sx={{ color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}
             >
-              {status.width}Ã—{status.height}
+              {status.width}×{status.height}
             </Typography>
           ) : null}
         </Box>
@@ -836,6 +733,7 @@ function CameraWindowImpl(
           activeObjective={manualMeasureObjective}
           clearNonce={autoMeasureClearNonce}
           cameraOpen={cameraOpen}
+          onOverlayDrawn={handleOverlayDrawn}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}

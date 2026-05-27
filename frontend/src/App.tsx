@@ -74,6 +74,7 @@ import type {
   VickersAutoMeasureResult,
   VickersAutoMeasureSuccess,
 } from '@/types/autoMeasure';
+import { autoMeasureCornersKey } from '@/utils/autoMeasureOverlayKey';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
 import type { IndentStatus, MachineState } from '@/types/machine';
@@ -100,7 +101,7 @@ const ROOT_SX: SxProps<Theme> = {
   flexDirection: 'column',
   height: '100vh',
   width: '100%',
-  overflow: 'hidden',
+  // overflow: 'hidden',
 };
 
 // Workspace = two side-by-side panels:
@@ -2227,6 +2228,10 @@ function App() {
       // updated but no fresh yellow lines drawn. The skip is still useful
       // for slider-driven preview spam, so keep it on settings-save only.
       const forceOverlayRefresh = source === 'auto-click' || source === 'after-impress';
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-final-corners] session=${graphics.sessionId ?? 'n/a'} objective=${graphics.objective ?? 'n/a'} key=${autoMeasureCornersKey(graphics.corners)}`
+      );
       setCommittedAutoMeasureOverlay((prev) => {
         if (!forceOverlayRefresh && prev && graphicsAlmostEqual(prev, graphics)) {
           return prev;
@@ -2289,8 +2294,20 @@ function App() {
           return false;
         }
       }
-      const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
+      // Deterministic finalize: capture ONLY after the overlay canvas has
+      // painted these exact final corners — never a preview/stale/blank scrape.
+      const finalCornersKey = autoMeasureCornersKey(graphics.corners);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[album-overlay-source] source=committed-final session=${graphics.sessionId ?? 'n/a'} key=${finalCornersKey}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[album-overlay-session] session=${graphics.sessionId ?? 'n/a'}`);
+      const imageDataUrl =
+        (await cameraRef.current?.captureFinalizedThumbnail(finalCornersKey)) ?? undefined;
       if (imageDataUrl) {
+        // eslint-disable-next-line no-console
+        console.log(`[album-overlay-save] session=${graphics.sessionId ?? 'n/a'} key=${finalCornersKey}`);
       } else {
         // eslint-disable-next-line no-console
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
@@ -3676,8 +3693,17 @@ function App() {
 
 
             await waitForOverlayPaint();
-            const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
+            // Deterministic finalize for the adjusted-corners save too.
+            const adjustedCornersKey = autoMeasureCornersKey(corners);
+            // eslint-disable-next-line no-console
+            console.log(`[auto-measure-final-corners] source=adjusted key=${adjustedCornersKey}`);
+            // eslint-disable-next-line no-console
+            console.log(`[album-overlay-source] source=adjusted-final key=${adjustedCornersKey}`);
+            const imageDataUrl =
+              (await cameraRef.current?.captureFinalizedThumbnail(adjustedCornersKey)) ?? undefined;
             if (imageDataUrl) {
+              // eslint-disable-next-line no-console
+              console.log(`[album-overlay-save] source=adjusted key=${adjustedCornersKey}`);
             } else {
               // eslint-disable-next-line no-console
               console.warn('[album] missing image for measurementId=', targetId ?? 'new');

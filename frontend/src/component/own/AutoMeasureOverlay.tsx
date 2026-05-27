@@ -9,6 +9,7 @@ import {
   type ManualMeasureImageSize,
 } from '@/utils/manualMeasureOverlayCanvas';
 import type { Point } from '@/types/tool';
+import { autoMeasureCornersKey } from '@/utils/autoMeasureOverlayKey';
 import { useRenderCount } from '@/utils/renderStats';
 
 // Frozen auto-measure overlay: detected Vickers tips are displayed using the
@@ -55,6 +56,10 @@ type Props = {
    *  drawing on every redraw pass — defends against stale yellow lines
    *  surviving a Close Camera while a rAF was already queued. */
   cameraOpen?: boolean;
+  /** Fired AFTER the canvas actually paints lines for a set of corners,
+   *  carrying their stable key. Lets the album capture wait for the final
+   *  refined overlay deterministically instead of a blind rAF delay. */
+  onOverlayDrawn?: (cornersKey: string) => void;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -116,19 +121,9 @@ function lerpCorners(a: AutoMeasureCorners, b: AutoMeasureCorners, t: number): A
   };
 }
 
-function pointKey(p: Point): string {
-  return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
-}
-
-function cornersKey(c: AutoMeasureCorners | null): string {
-  if (!c) return 'none';
-  return [
-    pointKey(c.top),
-    pointKey(c.right),
-    pointKey(c.bottom),
-    pointKey(c.left),
-  ].join('|');
-}
+// Stable per-frame identity of the drawn corners. Shared with App so the album
+// capture can confirm the overlay painted the exact final corners.
+const cornersKey = autoMeasureCornersKey;
 
 function AutoMeasureOverlayImpl({
   graphics,
@@ -140,6 +135,7 @@ function AutoMeasureOverlayImpl({
   activeObjective = null,
   clearNonce = 0,
   cameraOpen = true,
+  onOverlayDrawn,
 }: Props) {
   useRenderCount('AutoMeasureOverlay');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -337,8 +333,14 @@ function AutoMeasureOverlayImpl({
         strokeWidth,
         lineLayout: 'four-guides',
       });
+      // Signal the EXACT corners now painted on the canvas (only when real
+      // lines were drawn — not on a clear pass). The album capture waits for
+      // this key so it never scrapes a stale/preview/blank overlay.
+      if (corners && imageSize) {
+        onOverlayDrawn?.(cornersKey(corners));
+      }
     });
-  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen]);
+  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen, onOverlayDrawn]);
 
   // Latest `draw` reference for the ResizeObserver callback. The observer
   // is installed once with `[]` deps; without this ref it would either
