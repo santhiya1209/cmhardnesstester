@@ -353,6 +353,16 @@ export function buildSetObjectiveCommand(value: string | number): FrameOrNull {
   return buildFromMap('objective', value);
 }
 
+/**
+ * Map an objective value (e.g. '40X') to the machine echo frame that confirms
+ * it (e.g. 'L3OK'), or null for an unmapped value. Used for ack-match logging
+ * so the expected RX is shown in the same form the machine actually sends.
+ */
+export function objectiveFrameForValue(value: string | number): string | null {
+  const code = OBJECTIVE_TURRET_CODE_BY_VALUE[String(value).toUpperCase().trim()];
+  return code ? `L${code}OK` : null;
+}
+
 export function buildSetHardnessLevelCommand(value: string | number): FrameOrNull {
   return buildFromMap('hardnessLevel', value);
 }
@@ -429,7 +439,10 @@ export function buildCommandForKey(key: MachineControlKey, value: string | numbe
  * trailing CR/LF and hand off to classifyFrame for content classification.
  */
 export function parseFrame(frame: Buffer): ParsedMachineFrame {
-  const text = frame.toString('ascii').replace(/[\r\n]+$/, '');
+  // Normalise before matching: strip residual CR/LF, trim surrounding spaces,
+  // and upper-case so the machine's echo (e.g. ' l3ok\r') matches the L<n>OK /
+  // OK patterns regardless of casing or stray whitespace.
+  const text = frame.toString('ascii').replace(/[\r\n]+$/, '').trim().toUpperCase();
   if (text.length === 0) return { kind: 'unknown', raw: frame };
   return classifyFrame(Buffer.from(text, 'ascii'), text);
 }
@@ -464,11 +477,18 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
   const objectiveMatch = /^L(\d)OK$/.exec(text);
   if (objectiveMatch) {
     const slot = objectiveMatch[1];
+    const direction = getTurretDirectionForSlot(slot);
+    const objective = OBJECTIVE_VALUE_BY_TURRET_CODE[slot];
+    if (!direction || !objective) {
+      // eslint-disable-next-line no-console
+      console.warn(`[machine-objective-rx] unknown turret slot="${slot}" raw="${text}" — ignored`);
+      return { kind: 'unknown', raw: payload };
+    }
     return {
       kind: 'turret-update',
       slot,
-      direction: getTurretDirectionForSlot(slot),
-      objective: OBJECTIVE_VALUE_BY_TURRET_CODE[slot],
+      direction,
+      objective,
     };
   }
 
@@ -484,9 +504,9 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
     }
     // eslint-disable-next-line no-console
     console.warn(
-      `[machine-force-rx] unmapped # scale code="${hashForceMatch[1]}" raw="${text}" — accepting as ACK`
+      `[machine-force-rx] unmapped # scale code="${hashForceMatch[1]}" raw="${text}" — ignored`
     );
-    return { kind: 'ack' };
+    return { kind: 'unknown', raw: payload };
   }
 
   const forceMatch = /^C(\d{2})(?:OK)?$/.exec(text);
@@ -536,4 +556,3 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
 
   return { kind: 'unknown', raw: payload };
 }
-

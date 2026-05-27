@@ -15,7 +15,7 @@ import RadioGroup from '@mui/material/RadioGroup';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { useReportHeaderSetting } from '@/hooks/queries/useReportHeaderSetting';
-import { useMachineState } from '@/hooks/queries/useMachineState';
+import { useMachineSnapshot } from '@/contexts/MachineStateContext';
 import type { Measurement } from '@/types/measurement';
 import { exportReport, type ReportType } from '@/utils/exportReport';
 
@@ -50,7 +50,7 @@ function ExportReportDialogImpl({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const { values: header, setValues, persist, loading } = useReportHeaderSetting(open);
-  const { data: machineState } = useMachineState();
+  const machineState = useMachineSnapshot();
   const showChdInput = selected === 'word-depth' || selected === 'word-image-depth';
   const chdTargetHv = (() => {
     const parsed = Number(chdTargetInput.trim());

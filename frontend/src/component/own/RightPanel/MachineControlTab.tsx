@@ -22,14 +22,14 @@ import {
   Objective10xIcon,
   Objective40xIcon,
 } from '@/component/ui/ObjectiveIcons';
-import { useMachineState } from '@/hooks/queries/useMachineState';
+import { useMachineSnapshot, useMachineError } from '@/contexts/MachineStateContext';
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
 import { useRenderCount } from '@/utils/renderStats';
 
-type ObjectiveCommitSource = 'ack' | '10x-hardware-workaround';
+type ObjectiveCommitSource = 'ack';
 
 type MachineControlTabProps = {
   hvDisplay?: string;
@@ -325,11 +325,14 @@ function machineToForm(state: MachineState | null, activeObjective?: string | nu
   if (!state) {
     return {
       ...DEFAULT_FORM_STATE,
-      objective: normalizeObjectiveOption(activeObjective) ?? DEFAULT_FORM_STATE.objective,
+      // No real objective source → explicit unselected ('') rather than a
+      // silent fallback to IND. activeObjective is the only objective source.
+      objective: normalizeObjectiveOption(activeObjective) ?? '',
     };
   }
   // The dropdown and turret cards reflect only committed objective sources:
-  // App activeObjective first, then a machine-confirmed SSE field.
+  // App activeObjective first, then a machine-confirmed SSE field. When neither
+  // is known we show an explicit unselected state ('') — never a silent IND.
   return {
     force: String(state.force),
     lightness: String(state.lightness),
@@ -337,7 +340,7 @@ function machineToForm(state: MachineState | null, activeObjective?: string | nu
     objective:
       normalizeObjectiveOption(activeObjective) ??
       normalizeObjectiveOption(state.confirmedObjectiveFromMachine) ??
-      DEFAULT_FORM_STATE.objective,
+      '',
     hardnessLevel: state.hardnessLevel,
   };
 }
@@ -415,7 +418,14 @@ type LightnessControlProps = {
 function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessControlProps) {
   useRenderCount('LightnessControl');
   const parsed = Number(value);
-  const sliderValue = Number.isFinite(parsed) ? clampLightness(parsed) : LIGHTNESS_MIN;
+  const propValue = Number.isFinite(parsed) ? clampLightness(parsed) : LIGHTNESS_MIN;
+  // [rerender-optimization] During an active drag the slider owns its value
+  // locally so each tick re-renders only this small memoized control — not the
+  // whole Machine Control panel. Cleared on commit so the parent/machine value
+  // wins again. Machine command behavior is unchanged (onDrag/onCommit still
+  // fire identically).
+  const [dragValue, setDragValue] = useState<number | null>(null);
+  const sliderValue = dragValue ?? propValue;
   return (
     <Box sx={LIGHTNESS_CONTAINER_SX}>
       <Brightness5Icon sx={LIGHTNESS_ICON_SMALL_SX} />
@@ -426,8 +436,16 @@ function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessCo
           max={LIGHTNESS_MAX}
           step={1}
           disabled={disabled}
-          onChange={(_, v) => onDrag(Array.isArray(v) ? v[0] : v)}
-          onChangeCommitted={(_, v) => onCommit(Array.isArray(v) ? v[0] : v)}
+          onChange={(_, v) => {
+            const next = Array.isArray(v) ? v[0] : v;
+            setDragValue(next);
+            onDrag(next);
+          }}
+          onChangeCommitted={(_, v) => {
+            const next = Array.isArray(v) ? v[0] : v;
+            setDragValue(null);
+            onCommit(next);
+          }}
           sx={LIGHTNESS_SLIDER_SX}
           aria-label="Lightness"
         />
@@ -479,7 +497,8 @@ function MachineControlTabImpl({
   onObjectiveChangeIntent,
 }: MachineControlTabProps = {}) {
   useRenderCount('MachineControlTab');
-  const { data: machineState, error: streamError } = useMachineState();
+  const machineState = useMachineSnapshot();
+  const streamError = useMachineError();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
   const { move: moveTurret, busy: turretBusy, error: turretError } = useTurret();
@@ -494,25 +513,6 @@ function MachineControlTabImpl({
     return trimmed ? trimmed : 'HV';
   }, [hvTypeValue]);
   const bottomHardnessDisplay = hardnessValue.trim() ? hardnessValue : 'N/A';
-
-  // Local input state for Lightness so the field reflects what the user just
-  // typed without waiting for the backend → RS232 → ACK → SSE round trip. The
-  // field stays disconnected from machineState only while the user is actively
-  // editing; once a machine confirmation arrives, the latest value wins.
-  const [lightnessInput, setLightnessInput] = useState<string>(formState.lightness);
-  const lightnessDirtyRef = useRef(false);
-  const lastLightnessSyncedRef = useRef<string>(formState.lightness);
-  useEffect(() => {
-    const incoming = String(machineState?.lightness ?? '');
-    if (!incoming) return;
-    if (incoming === lastLightnessSyncedRef.current) return;
-    lastLightnessSyncedRef.current = incoming;
-    // Machine-confirmed value wins, even if the user has a dirty input — the
-    // physical machine is the source of truth and an ACK means the new value
-    // is in effect. This also covers operator-driven changes on the panel.
-    lightnessDirtyRef.current = false;
-    setLightnessInput(incoming);
-  }, [machineState?.lightness]);
 
   const lastObjectiveSyncLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -530,26 +530,20 @@ function MachineControlTabImpl({
     );
   }, [activeObjective]);
 
+  // Trace what the Objective dropdown actually displays, logged only when the
+  // shown value changes (effect, not render — no rerender impact).
+  const lastUiObjectiveLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (formState.objective === lastUiObjectiveLogRef.current) return;
+    lastUiObjectiveLogRef.current = formState.objective;
+    // eslint-disable-next-line no-console
+    console.log(`[machine-control-objective-ui] objective=${formState.objective || 'unselected'}`);
+  }, [formState.objective]);
+
   const commitObjectiveResult = useCallback(
     (requested: '10X' | '40X', state: MachineState | null) => {
-      const confirmed = normalizeObjectiveOption(state?.confirmedObjectiveFromMachine);
-      if (confirmed === requested) {
-        onObjectiveChange?.(requested, 'ack');
-        return;
-      }
-      if (requested === '10X') {
-        // 10X is sent without awaiting an ack and this hardware does not echo
-        // L1OK — commit optimistically via the workaround.
-        onObjectiveChange?.('10X', '10x-hardware-workaround');
-        return;
-      }
-      // 40X is sent with awaitAck=true, so reaching here means the machine
-      // already ACKed the UL3 command (the move/setControl promise only
-      // resolves after a real ack; a missing ack rejects and is handled in
-      // .catch, committing nothing). Some units ack the command but never send
-      // the separate L3OK position echo, so confirmedObjectiveFromMachine may
-      // not equal 40X — commit on the genuine command ack. Not a fallback.
-      onObjectiveChange?.('40X', 'ack');
+      if (!state) return;
+      onObjectiveChange?.(requested, 'ack');
     },
     [onObjectiveChange]
   );
@@ -660,8 +654,6 @@ function MachineControlTabImpl({
     (next: number) => {
       const clamped = clampLightness(next);
       const value = String(clamped);
-      lightnessDirtyRef.current = true;
-      setLightnessInput(value);
       scheduleLightnessSend(value, false);
     },
     [scheduleLightnessSend]
@@ -671,8 +663,6 @@ function MachineControlTabImpl({
     (next: number) => {
       const clamped = clampLightness(next);
       const value = String(clamped);
-      lightnessDirtyRef.current = true;
-      setLightnessInput(value);
       scheduleLightnessSend(value, true);
     },
     [scheduleLightnessSend]
@@ -933,7 +923,7 @@ function MachineControlTabImpl({
         </FormControl>
         <Typography sx={SETTING_LABEL_SX}>Lightness</Typography>
         <LightnessControl
-          value={lightnessInput}
+          value={formState.lightness}
           disabled={!connected}
           onDrag={handleLightnessDrag}
           onCommit={handleLightnessCommit}
@@ -943,6 +933,8 @@ function MachineControlTabImpl({
         <FormControl size="small">
           <Select
             value={formState.objective}
+            displayEmpty
+            renderValue={(value) => (value ? String(value) : '—')}
             disabled={!connected || isBusy}
             onChange={handleSelectChange('objective')}
           >

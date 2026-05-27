@@ -8,6 +8,7 @@ import { tokens } from '@/theme/theme';
 import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 import { useStatusMessage } from '@/contexts/StatusMessageContext';
 import type { MachineState } from '@/types/machine';
+import { useMachineSnapshot } from '@/contexts/MachineStateContext';
 
 const BAR_SX: SxProps<Theme> = {
   display: 'flex',
@@ -110,7 +111,6 @@ type Props = {
   cameraStatus?: CameraStatusState;
   objective?: string | null;
   autoMeasureStatus?: AutoMeasureStatusState;
-  machineState?: MachineState | null;
 };
 
 type MachineStatusLabel = 'Ready' | 'Moving' | 'Error';
@@ -194,9 +194,11 @@ function StatusBarImpl({
   cameraStatus,
   objective,
   autoMeasureStatus,
-  machineState,
 }: Props) {
   const message = useStatusMessage();
+  // Consume the shared machine-state store directly so a machine update
+  // re-renders StatusBar independently, without re-rendering App.
+  const machineState = useMachineSnapshot();
   const machineConnected = machineState?.connected ?? false;
   const machinePort = machineState?.port?.trim() || '-';
   const machineStatus = getMachineStatusLabel(machineState);

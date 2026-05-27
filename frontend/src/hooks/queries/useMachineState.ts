@@ -29,6 +29,22 @@ const UI_FIELDS: (keyof MachineState)[] = [
   'machineStatus',
 ];
 
+const SYNC_UI_LOG_FIELDS: (keyof MachineState)[] = [
+  'force',
+  'lightness',
+  'loadTime',
+  'objective',
+  'hardnessLevel',
+  'turretPosition',
+  'indentStatus',
+];
+
+function syncUiFieldName(field: keyof MachineState): string {
+  if (field === 'turretPosition') return 'turret';
+  if (field === 'indentStatus') return 'indent';
+  return field;
+}
+
 // Subscribes to GET /api/machine/events (Server-Sent Events) and exposes the
 // latest MachineState. Falls back to a one-shot fetch if the EventSource
 // connection fails (e.g. dev proxy hiccup).
@@ -62,10 +78,10 @@ export function useMachineState() {
       if (prev && UI_FIELDS.every((f) => prev[f] === next[f])) {
         return;
       }
-      for (const f of ['force', 'lightness', 'loadTime'] as const) {
+      for (const f of SYNC_UI_LOG_FIELDS) {
         if (!prev || prev[f] !== next[f]) {
           // eslint-disable-next-line no-console
-          console.log(`[machine-sync][ui-state] field=${f} value=${next[f]}`);
+          console.log(`[machine-sync][ui-state] field=${syncUiFieldName(f)} value=${next[f]}`);
         }
       }
       lastCommitted = next;

@@ -18,7 +18,10 @@ import { useMicrometerConfig } from '@/hooks/queries/useMicrometerConfig';
 import { useTestRecords } from '@/hooks/queries/useTestRecords';
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useMachineStateSnapshot } from '@/hooks/queries/useMachineStateSnapshot';
-import { useMachineState } from '@/hooks/queries/useMachineState';
+import {
+  useMachineSelector,
+  useMachineStoreApi,
+} from '@/contexts/MachineStateContext';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { useMachineConnection } from '@/hooks/useMachineConnection';
 import { getLatestMicrometerReading } from '@/api/micrometer';
@@ -234,7 +237,7 @@ type CommittedAutoMeasureFingerprint = {
 };
 
 type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save' | 'after-impress';
-type ObjectiveCommitSource = 'ack' | '10x-hardware-workaround';
+type ObjectiveCommitSource = 'ack';
 
 type CapturedAutoMeasureFrame = Extract<
   ReturnType<CameraWindowHandle['captureDisplayedFrame']>,
@@ -899,16 +902,39 @@ function App() {
 
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
-  // SSE-reactive machine state — same hook MachineControlTab uses, so the
-  // value App reads here is the same as the highlighted lens button.
-  const { data: liveMachineState } = useMachineState();
-  // Mirror to a ref so impress-complete / turret-after-impress closures can
-  // snapshot the current machine state without re-firing the effect on every
-  // state batch.
-  const liveMachineStateRef = useRef(liveMachineState);
+  // Single shared machine-state subscription lives in MachineStateProvider.
+  // App subscribes only to the slices it actually reacts to, so unrelated
+  // field updates (loadTime, sync/status, lightness) no longer re-render App.
+  const machineStore = useMachineStoreApi();
+  const machineForce = useMachineSelector((s) => s?.force ?? null);
+  const machineHardnessLevel = useMachineSelector((s) => s?.hardnessLevel ?? null);
+  const machineConfirmedObjective = useMachineSelector(
+    (s) => s?.confirmedObjectiveFromMachine ?? null
+  );
+  const machineTurretPosition = useMachineSelector((s) => s?.turretPosition ?? null);
+  const machineIndentStatus = useMachineSelector((s) => s?.indentStatus ?? null);
+  const machineLastObjectiveRx = useMachineSelector((s) => s?.lastObjectiveRx ?? null);
+  // Mirror the full snapshot to a ref so impress-complete / turret-after-impress
+  // closures can read current machine state without subscribing for re-renders.
+  // The observational lightness tracking (previously its own effect) is folded
+  // in here so it stays a pure ref-write that never re-renders App.
+  const liveMachineStateRef = useRef<MachineState | null>(machineStore.getSnapshot());
+  const lastLoggedLightnessRef = useRef<string | null>(null);
   useEffect(() => {
-    liveMachineStateRef.current = liveMachineState;
-  }, [liveMachineState]);
+    const sync = () => {
+      const snap = machineStore.getSnapshot();
+      liveMachineStateRef.current = snap;
+      const lv = snap?.lightness;
+      if (lv !== undefined && lv !== null) {
+        const next = String(lv);
+        if (lastLoggedLightnessRef.current !== next) {
+          lastLoggedLightnessRef.current = next;
+        }
+      }
+    };
+    sync();
+    return machineStore.subscribe(sync);
+  }, [machineStore]);
   const restoredToolbarActionRef = useRef(false);
   const manualMeasurementIdRef = useRef<string | null>(null);
   const { activeTool, setActiveTool } = useActiveTool('pointer');
@@ -972,7 +998,6 @@ function App() {
     useState<AutoMeasureGraphics | null>(null);
   const [previewAutoMeasureOverlay, setPreviewAutoMeasureOverlay] =
     useState<AutoMeasureGraphics | null>(null);
-  const [, setAutoMeasuring] = useState(false);
   // Strict lifecycle gate. Yellow Auto Measure overlay must never be visible
   // when the camera is not actively streaming — even if a stale graphics
   // state lingers in React. Flipped true only after a successful openDevice
@@ -1072,8 +1097,7 @@ function App() {
     committedFingerprintsRef.current = next;
   }, [measurements]);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
-  // - Set only by the objective commit pipeline (ack or the 10X hardware
-  //   workaround after command send + live-frame refresh).
+  // - Set only by the objective commit pipeline after machine ACK/RX.
   // - Hydrated from machine-confirmed SSE state through that same pipeline.
   // - Used by Auto Measure, Manual Measure, calibration lookup, and the
   //   measurement table row.
@@ -1116,15 +1140,15 @@ function App() {
     });
   }, []);
 
-  const [autoMeasureSessionId, setAutoMeasureSessionId] = useState(0);
+  // Bumped on objective change to force a re-render; the value itself is read
+  // via autoMeasureSessionIdRef, so only the setter is bound here.
+  const [, setAutoMeasureSessionId] = useState(0);
   const autoMeasureSessionIdRef = useRef(0);
   // Bump-counter that forces AutoMeasureOverlay to imperatively clearRect its
   // canvas (bypassing React state and the skip-redraw cache). Incremented on
   // every objective change so no stale yellow lines from the prior mag survive
   // into the next session.
   const [autoMeasureClearNonce, setAutoMeasureClearNonce] = useState(0);
-  useEffect(() => {
-  }, [autoMeasureSessionId]);
   const [autoMeasureSessionActive, setAutoMeasureSessionActive] = useState(false);
   const [autoMeasureCapturedFrameId, setAutoMeasureCapturedFrameId] = useState<number | null>(null);
   const [objectiveChangeInProgress, setObjectiveChangeInProgress] = useState(false);
@@ -1249,7 +1273,9 @@ function App() {
   // would leave the yellow auto guides visible underneath the manual
   // draggable lines. Updated only from the three calibration entry points
   // (auto click, manual click, dialog close).
-  const [calibrationMeasureMode, setCalibrationMeasureModeState] = useState<
+  // The live value is read via calibrationMeasureModeRef; only the setter is
+  // bound here so a mode change still triggers a re-render.
+  const [, setCalibrationMeasureModeState] = useState<
     'none' | 'auto' | 'manual'
   >('none');
   const calibrationMeasureModeRef = useRef<'none' | 'auto' | 'manual'>('none');
@@ -1262,8 +1288,6 @@ function App() {
     },
     []
   );
-  useEffect(() => {
-  }, [calibrationMeasureMode]);
   // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
   // CameraWindow watches it to invalidate any per-objective caches and force a
   // fresh draw — separate from activeObjective so we can trigger a refresh
@@ -1313,11 +1337,6 @@ function App() {
       const commitSeq = objectiveCommitSeqRef.current + 1;
       objectiveCommitSeqRef.current = commitSeq;
       setObjectiveChangeInProgressState(true);
-
-      if (source === '10x-hardware-workaround') {
-        await delay(4000);
-        if (objectiveCommitSeqRef.current !== commitSeq) return;
-      }
 
       void refetchCalibrationSettings();
       setObjectiveRefreshKey((key) => key + 1);
@@ -1375,8 +1394,7 @@ function App() {
   // command is handled, clear the active objective so the 10X/40X highlights
   // turn off, Center shows its own state, and Auto Measure blocks (truly no
   // active objective). Bumping the commit sequence cancels any in-flight 10X
-  // workaround commit still inside its settle delay so a stale 10X can't land
-  // after the operator moved to Center.
+  // objective commit so a stale 10X can't land after the operator moved to Center.
   const handleCenterCommit = useCallback(() => {
     objectiveCommitSeqRef.current += 1;
     activeObjectiveRef.current = null;
@@ -1731,15 +1749,28 @@ function App() {
   const umPerPixelForActiveObjective = useMemo<number | null>(() => {
     const targetObjective = (activeObjective && activeObjective.trim()) || null;
     if (!targetObjective) return null;
+    // resolveManualCalibration reads machineState.objective (overridden here),
+    // .force and .hardnessLevel only. Read the latest snapshot imperatively and
+    // re-run when force/hardnessLevel change — so this no longer re-renders App
+    // on unrelated machine fields.
+    const snap = machineStore.getSnapshot();
     const calibration = resolveManualCalibration({
       calibrationSettings,
       calibrationSettingsList,
       calibrations,
-      machineState: liveMachineState ? { ...liveMachineState, objective: targetObjective } : null,
+      machineState: snap ? { ...snap, objective: targetObjective } : null,
       targetObjective,
     });
     return calibration?.micronPerPixel ?? null;
-  }, [activeObjective, calibrationSettings, calibrationSettingsList, calibrations, liveMachineState]);
+  }, [
+    activeObjective,
+    calibrationSettings,
+    calibrationSettingsList,
+    calibrations,
+    machineStore,
+    machineForce,
+    machineHardnessLevel,
+  ]);
 
   const handleUpdateShape = overlay.updateShape;
 
@@ -2438,7 +2469,6 @@ function App() {
       }
 
       autoMeasureInFlightRef.current = true;
-      setAutoMeasuring(true);
       // Begin a fresh Auto Measure session. The session id stamps every
       // overlay produced by this run so a result that returns after a later
       // invalidator can be filtered out (overlay.sessionId !== current).
@@ -2471,6 +2501,10 @@ function App() {
         const activeObjectiveSnapshot = activeObjectiveRef.current?.trim().toUpperCase() || null;
         const machineConfirmed = machineState?.confirmedObjectiveFromMachine?.trim() || null;
         const objectiveForCalibration = objectiveForMeasureFromObjective(activeObjectiveSnapshot);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-objective-check] activeObjective=${activeObjectiveSnapshot ?? 'null'} machineConfirmed=${machineConfirmed ?? 'null'} resolved=${objectiveForCalibration ?? 'null'}`
+        );
         if (callSource === 'auto-click') {
           // eslint-disable-next-line no-console
           console.warn(
@@ -3005,7 +3039,6 @@ function App() {
         return false;
       } finally {
         autoMeasureInFlightRef.current = false;
-        setAutoMeasuring(false);
         // Drain coalesced preview: if a slider tick arrived while we were
         // running, fire one more pass with the latest settings so the user's
         // final position always wins.
@@ -3071,6 +3104,15 @@ function App() {
       const objective = (activeObjectiveRef.current ?? '')
         .trim()
         .toUpperCase();
+      if (!objective) {
+        // [objective-null-blocked] activeObjective is the only authoritative
+        // source. Without it we must NOT silently assume 10X-style settle
+        // timing — block the after-impress flow instead.
+        // eslint-disable-next-line no-console
+        console.warn('[objective-null-blocked] reason=after-impress action=auto-measure-not-run');
+        markAfterImpressFailed('objective-unknown');
+        return false;
+      }
       const settleMs = objective === '40X' ? 600 : 350;
       await delay(settleMs);
 
@@ -3251,27 +3293,15 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDialog]);
 
-  // Note the latest machine-confirmed lightness so the camera consumer can
-  // log/refresh on each new value. The physical change is driven by the
-  // machine's LED, so this is observational — we do not block the camera
-  // pipeline on it.
-  const lastLoggedLightnessRef = useRef<string | null>(null);
-  useEffect(() => {
-    const value = liveMachineState?.lightness;
-    if (value === undefined || value === null) return;
-    const next = String(value);
-    if (lastLoggedLightnessRef.current === next) return;
-    lastLoggedLightnessRef.current = next;
-  }, [liveMachineState?.lightness]);
+  // Observational lightness tracking is folded into the machineStore ref-sync
+  // effect above (a pure ref-write that never re-renders App).
 
   // Camera/objective sync pipeline. Triggered ONLY by a confirmed L<n>OK RX
   // from the machine (machineState.confirmedObjectiveFromMachine), not by the
   // OK-ACK or by the user click — so the UI never reflects a magnification the
   // turret hasn't actually reached.
   useEffect(() => {
-    const confirmed = objectiveForMeasureFromObjective(
-      liveMachineState?.confirmedObjectiveFromMachine
-    );
+    const confirmed = objectiveForMeasureFromObjective(machineConfirmedObjective);
     if (!confirmed) return;
     if (
       lastSyncedObjectiveRef.current === confirmed &&
@@ -3280,10 +3310,7 @@ function App() {
       return;
     }
     void commitActiveObjective(confirmed, 'ack');
-  }, [
-    commitActiveObjective,
-    liveMachineState?.confirmedObjectiveFromMachine,
-  ]);
+  }, [commitActiveObjective, machineConfirmedObjective]);
 
   const turretMovingTimerRef = useRef<number | null>(null);
   const clearTurretMovingTimer = useCallback(() => {
@@ -3338,7 +3365,7 @@ function App() {
   // Pure turret rotation on the same objective MUST keep streaming pixels.
   const lastSeenTurretPositionRef = useRef<string | null>(null);
   useEffect(() => {
-    const pos = liveMachineState?.turretPosition ?? null;
+    const pos = machineTurretPosition;
     if (!pos) return;
     if (lastSeenTurretPositionRef.current === null) {
       lastSeenTurretPositionRef.current = pos;
@@ -3380,7 +3407,7 @@ function App() {
       cancelled = true;
     };
   }, [
-    liveMachineState?.turretPosition,
+    machineTurretPosition,
     clearAutoMeasureOverlay,
     cameraStatus,
     clearTurretMovingTimer,
@@ -3397,7 +3424,7 @@ function App() {
   // "done" before the machine actually finishes.
   useEffect(() => {
     const prev = lastSeenIndentStatusRef.current;
-    const next: IndentStatus = liveMachineState?.indentStatus ?? 'idle';
+    const next: IndentStatus = machineIndentStatus ?? 'idle';
     if (prev === next) return;
     lastSeenIndentStatusRef.current = next;
 
@@ -3432,6 +3459,15 @@ function App() {
       const currentObjective = (activeObjectiveRef.current ?? '')
         .trim()
         .toUpperCase();
+      if (measureAfterImpressEnabled && !currentObjective) {
+        // [objective-null-blocked] Without a confirmed activeObjective we must
+        // not arm turret-after-impress or continue the detection flow on an
+        // assumed magnification. activeObjective is the only objective source.
+        // eslint-disable-next-line no-console
+        console.warn('[objective-null-blocked] reason=impress-complete action=auto-measure-not-run');
+        impressInProgressRef.current = false;
+        return;
+      }
       const targetObjective = latestSettings.objectiveForMeasure.trim().toUpperCase();
       const shouldWaitForTurretAfterImpress =
         turretAfterImpressEnabled &&
@@ -3484,7 +3520,7 @@ function App() {
   }, [
     clearActiveMeasurement,
     clearAutoMeasureOverlay,
-    liveMachineState?.indentStatus,
+    machineIndentStatus,
     runAutoMeasureAfterImpress,
   ]);
 
@@ -3496,7 +3532,7 @@ function App() {
   useEffect(() => {
     const pending = pendingTurretAfterImpressRef.current;
     if (!pending) return;
-    const currentRx = liveMachineState?.lastObjectiveRx ?? null;
+    const currentRx = machineLastObjectiveRx;
     if (!currentRx || currentRx === pending.lastSeenObjectiveRx) return;
     pendingTurretAfterImpressRef.current = null;
     if (turretAfterImpressWatchdogRef.current !== null) {
@@ -3504,7 +3540,7 @@ function App() {
       turretAfterImpressWatchdogRef.current = null;
     }
     void runAutoMeasureAfterImpress();
-  }, [liveMachineState?.lastObjectiveRx, runAutoMeasureAfterImpress]);
+  }, [machineLastObjectiveRx, runAutoMeasureAfterImpress]);
 
   // When Manual Measure activates, refresh the live objective so the initial
   // diamond size matches the magnification the user just toggled to.
@@ -4472,7 +4508,6 @@ function App() {
         cameraStatus={cameraStatus}
         objective={activeObjective}
         autoMeasureStatus={autoMeasureStatus}
-        machineState={liveMachineState}
       />
 
       <AutoMeasureSettingsDialog

@@ -22,7 +22,7 @@ import AlbumTab from './AlbumTab';
 import DepthImageTab from './DepthImageTab';
 import TrimMeasurePanel, { type TrimCorner } from '@/component/own/TrimMeasurePanel';
 
-type ObjectiveCommitSource = 'ack' | '10x-hardware-workaround';
+type ObjectiveCommitSource = 'ack';
 
 const TAB_ITEMS = [
   'Machine Control',

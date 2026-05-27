@@ -10,7 +10,7 @@ const FORCE_VALUES = new Set([
   '0.5kgf',
   '1kgf',
 ]);
-const OBJECTIVE_VALUES = new Set(['2.5X', '5X', '10X', '20X', '40X', '50X']);
+const OBJECTIVE_VALUES = new Set(['2.5X', '5X', '10X', 'IND', '20X', '40X', '50X']);
 const HARDNESS_LEVEL_VALUES = new Set(['Low', 'Middle', 'High']);
 
 export const ConnectMachineSchema = z.object({
