@@ -7,7 +7,6 @@ const ALLOWED_INVOKE = new Set([
   'camera:close',
   'camera:start-stream',
   'camera:stop-stream',
-  'camera:get-frame',
   'camera:get-status',
   'camera:set-exposure',
   'camera:set-live-exposure-fps',

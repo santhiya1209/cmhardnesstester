@@ -223,9 +223,6 @@ class CameraService {
   stopStream() {
     return this._call('cameraStopStream');
   }
-  getFrame(timeoutMs = 4000) {
-    return this._call('cameraGetFrame', { timeoutMs });
-  }
   getStatus() {
     if (!this.addon) {
       return Promise.resolve({

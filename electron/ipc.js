@@ -276,9 +276,6 @@ function registerIpc() {
     return cameraService.startStream();
   });
   ipcMain.handle('camera:stop-stream', () => cameraService.stopStream());
-  ipcMain.handle('camera:get-frame', (_e, payload) =>
-    cameraService.getFrame(num(payload && payload.timeoutMs, 4000))
-  );
   ipcMain.handle('camera:get-status', () => cameraService.getStatus());
   ipcMain.handle('camera:set-exposure', (_e, payload) => {
     // Accept canonical valueMs; fall back to legacy valueUs (microseconds → ms).

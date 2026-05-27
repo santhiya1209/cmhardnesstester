@@ -110,7 +110,6 @@ export type IpcInvokeChannel =
   | 'camera:close'
   | 'camera:start-stream'
   | 'camera:stop-stream'
-  | 'camera:get-frame'
   | 'camera:get-status'
   | 'camera:set-exposure'
   | 'camera:set-gain'
@@ -157,10 +156,6 @@ export type IpcInvokeMap = {
   'camera:close': { request: void; response: CameraReply<CameraStatus> };
   'camera:start-stream': { request: void; response: CameraReply<CameraStatus> };
   'camera:stop-stream': { request: void; response: CameraReply<CameraStatus> };
-  'camera:get-frame': {
-    request: { timeoutMs?: number } | void;
-    response: CameraReply<CameraFrameMeta & { data: ArrayBufferLike }>;
-  };
   'camera:get-status': { request: void; response: CameraReply<CameraStatus> };
   'camera:set-exposure': {
     request: { valueMs: number };

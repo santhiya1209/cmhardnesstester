@@ -12,11 +12,6 @@ export const openCamera = (index = 0): Promise<IpcInvokeMap['camera:open']['resp
 export const closeCamera = (): Promise<IpcInvokeMap['camera:close']['response']> =>
   window.api.invoke('camera:close');
 
-export const getCameraFrame = (
-  timeoutMs = 4000
-): Promise<IpcInvokeMap['camera:get-frame']['response']> =>
-  window.api.invoke('camera:get-frame', { timeoutMs });
-
 export const getCameraStatus = (): Promise<IpcInvokeMap['camera:get-status']['response']> =>
   window.api.invoke('camera:get-status');
 
