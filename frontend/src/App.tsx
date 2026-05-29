@@ -64,7 +64,6 @@ import {
   AUTO_MEASURE_DIAGONAL_TOLERANCE_PX,
   AUTO_MEASURE_HARDNESS_TOLERANCE_HV,
   applyAutoMeasureObjectiveProfile,
-  autoMeasureDefaultsForObjective,
   autoMeasureSettingsEqual,
   buildAutoMeasureFingerprintKey,
   cloneAutoMeasureGraphics,
@@ -103,15 +102,15 @@ import {
   type DepthSavePayload,
 } from '@/features/measurement/measurementRowHelpers';
 import { useCalibrationRowSave } from '@/features/calibration/useCalibrationRowSave';
+import { useUmPerPixelForObjective } from '@/features/calibration/useUmPerPixelForObjective';
+import { useTurretMotionGate } from '@/features/machine/useTurretMotionGate';
+import { useObjectiveSyncGate } from '@/features/machine/useObjectiveSyncGate';
 import { useManualMeasureSave } from '@/features/measurement/useManualMeasureSave';
 import { useAutoAdjustedSave } from '@/features/measurement/useAutoAdjustedSave';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { MachineState } from '@/types/machine';
-import {
-  calculateVickersFromPixels,
-  resolveManualCalibration,
-} from '@/utils/manualMeasure';
+import { calculateVickersFromPixels } from '@/utils/manualMeasure';
 
 const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
@@ -454,57 +453,24 @@ function App() {
     clearAutoMeasureOverlay,
   });
 
-  // Whenever the active objective changes from machine confirmation, snap
-  // Auto Measure smoothing/threshold to that objective's tuned defaults so
-  // the Settings dialog and the next detection run pick them up. Also
-  // emits the defaults log so we can verify in the console.
-  useEffect(() => {
-    const defaults = autoMeasureDefaultsForObjective(activeObjective);
-    if (!defaults) return;
-    const objectiveUpper = String(activeObjective).trim().toUpperCase();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-settings-sync] objective=${objectiveUpper} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-profile] objective=${objectiveUpper} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
-    );
-    setAutoMeasurePreviewSettings((prev) => {
-      const next = applyAutoMeasureObjectiveProfile(prev, activeObjective);
-      if (autoMeasureSettingsEqual(next, prev)) {
-        latestAutoMeasurePreviewSettingsRef.current = prev;
-        return prev;
-      }
-      latestAutoMeasurePreviewSettingsRef.current = next;
-      return next;
-    });
-    if (shouldPreserveAfterImpressOverlay()) {
-      return;
-    }
-    // Objective changed — drop any visible Auto Measure lines, end the
-    // current session (so async results from the old objective can't paint),
-    // and arm the suppression ref so a settings-preview detection cannot
-    // repaint yellow lines for the new magnification on its own. Lines
-    // reappear only after the user clicks Auto Measure again.
-    suppressAutoMeasurePreviewRef.current = true;
-    setCommittedAutoMeasureOverlay(null);
-    setPreviewAutoMeasureOverlay(null);
-    autoMeasurePreviewSnapshotRef.current = null;
-    committedAutoMeasureFrameRef.current = null;
-    previewMeasurementRef.current = null;
-    setAutoMeasureSessionActive(false);
-    setAutoMeasureCapturedFrameId(null);
-    setAutoMeasureSessionId((id) => {
-      const next = id + 1;
-      autoMeasureSessionIdRef.current = next;
-      return next;
-    });
-    setAutoMeasureStatusState('idle');
-    // Force AutoMeasureOverlay to imperatively clear its canvas — React state
-    // nulling alone was leaving yellow lines on screen across objective swaps.
-    setAutoMeasureClearNonce((n) => n + 1);
-  }, [activeObjective, shouldPreserveAfterImpressOverlay]);
+  useObjectiveSyncGate({
+    activeObjective,
+    shouldPreserveAfterImpressOverlay,
+    setAutoMeasurePreviewSettings,
+    latestAutoMeasurePreviewSettingsRef,
+    suppressAutoMeasurePreviewRef,
+    setCommittedAutoMeasureOverlay,
+    setPreviewAutoMeasureOverlay,
+    autoMeasurePreviewSnapshotRef,
+    committedAutoMeasureFrameRef,
+    previewMeasurementRef,
+    setAutoMeasureSessionActive,
+    setAutoMeasureCapturedFrameId,
+    setAutoMeasureSessionId,
+    autoMeasureSessionIdRef,
+    setAutoMeasureStatusState,
+    setAutoMeasureClearNonce,
+  });
 
   const {
     calibrationManualModeRef,
@@ -653,36 +619,7 @@ function App() {
     refetchMeasurements,
   });
 
-  // Index loaded calibrations by normalized objective so any debugging /
-  // future O(1) lookup paths see the same canonical map the lookup helpers
-  // use. Logged once per change so stale state is visible in devtools.
-  useEffect(() => {
-    const map: Record<string, number> = {};
-    for (const item of calibrationSettingsList) {
-      map[String(item.objective).trim().toUpperCase()] = item.pixelToMicron;
-    }
-  }, [calibrationSettingsList]);
-
-  // um-per-pixel calibration for the currently-active objective. Resolves
-  // through the same lookup helpers used by Manual Measure so Measure Length
-  // renders the identical calibrated micron conversion instead of raw pixels.
-  const umPerPixelForActiveObjective = useMemo<number | null>(() => {
-    const targetObjective = (activeObjective && activeObjective.trim()) || null;
-    if (!targetObjective) return null;
-    // resolveManualCalibration reads machineState.objective (overridden here),
-    // .force and .hardnessLevel only. Read the latest snapshot imperatively and
-    // re-run when force/hardnessLevel change — so this no longer re-renders App
-    // on unrelated machine fields.
-    const snap = machineStore.getSnapshot();
-    const calibration = resolveManualCalibration({
-      calibrationSettings,
-      calibrationSettingsList,
-      calibrations,
-      machineState: snap ? { ...snap, objective: targetObjective } : null,
-      targetObjective,
-    });
-    return calibration?.micronPerPixel ?? null;
-  }, [
+  const umPerPixelForActiveObjective = useUmPerPixelForObjective({
     activeObjective,
     calibrationSettings,
     calibrationSettingsList,
@@ -690,7 +627,7 @@ function App() {
     machineStore,
     machineForce,
     machineHardnessLevel,
-  ]);
+  });
 
   const handleUpdateShape = overlay.updateShape;
 
@@ -1816,108 +1753,17 @@ function App() {
   // Observational lightness tracking is folded into the machineStore ref-sync
   // effect above (a pure ref-write that never re-renders App).
 
-  const turretMovingTimerRef = useRef<number | null>(null);
-  const clearTurretMovingTimer = useCallback(() => {
-    if (turretMovingTimerRef.current !== null) {
-      window.clearTimeout(turretMovingTimerRef.current);
-      turretMovingTimerRef.current = null;
-    }
-  }, []);
-  const markTurretIntent = useCallback(
-    (
-      reason: 'turret-click' | 'objective-change-click',
-      target?: string | null
-    ) => {
-      if (reason === 'objective-change-click') {
-        const to = (target ?? 'unknown') || 'unknown';
-        setTurretMovingTarget(to === 'unknown' ? null : to);
-      }
-      // Force-clear overlay state. clearAutoMeasureOverlay nulls
-      // committedAutoMeasureOverlay → AutoMeasureOverlay re-renders empty.
-      // Bumping manualMeasureResetKey clears the manual measure overlay's
-      // internal corners + repaints empty. The calibration overlay shares
-      // committedAutoMeasureOverlay, so the same call clears it too.
-      clearAutoMeasureOverlay(reason);
-      setPreviewAutoMeasureOverlay(null);
-      setAutoMeasureSessionActive(false);
-      setManualMeasureResetKey((current) => current + 1);
-      clearTurretMovingTimer();
-      setTurretMovingState(true);
-      turretMovingTimerRef.current = window.setTimeout(() => {
-        turretMovingTimerRef.current = null;
-        setTurretMovingState(false);
-        setTurretMovingTarget(null);
-      }, 4000);
-    },
-    [clearAutoMeasureOverlay, clearTurretMovingTimer, setTurretMovingState]
-  );
-  useEffect(() => clearTurretMovingTimer, [clearTurretMovingTimer]);
-
-  // Turret position change — any direction button (left/front/right) that
-  // moves the turret can land on a different slot (incl. IND, which is not
-  // an objective lens and therefore does NOT bump confirmedObjective). The
-  // overlay was captured against a specific turret orientation, so any
-  // turret move invalidates it regardless of objective.
-  //
-  // IMPORTANT: do NOT clear the live canvas here. Turret rotation is a pure
-  // mechanical move on the same camera/sensor — closing or blanking the
-  // canvas would make the camera look frozen for the entire motion window
-  // (the next worker frame paints only when one is grabbed/decoded, which
-  // can lag a couple of frames during vibration). The canvas-flush belongs
-  // exclusively to the confirmed-objective-change handler below, which
-  // fires when the new turret slot actually changes the optical objective.
-  // Pure turret rotation on the same objective MUST keep streaming pixels.
-  const lastSeenTurretPositionRef = useRef<string | null>(null);
-  useEffect(() => {
-    const pos = machineTurretPosition;
-    if (!pos) return;
-    if (lastSeenTurretPositionRef.current === null) {
-      lastSeenTurretPositionRef.current = pos;
-      return;
-    }
-    if (lastSeenTurretPositionRef.current === pos) return;
-    lastSeenTurretPositionRef.current = pos;
-    const frameId = getLastPaintedFrameId();
-    // RX confirms the motion completed — release the overlay-render gate
-    // immediately, regardless of whether the gate was set by a click in
-    // this session (a hardware-driven turret move with no click also lands
-    // here and must not leave the gate stuck on if a prior watchdog set it).
-    clearTurretMovingTimer();
-    setTurretMovingState(false);
-    setTurretMovingTarget(null);
-    if (shouldPreserveAfterImpressOverlay()) {
-    } else {
-      clearAutoMeasureOverlay('turret-change');
-    }
-    // Schedule a one-shot post-RX log on the next paint so the user can
-    // verify the stream resumed (frameId advanced) without the camera ever
-    // being closed/reset.
-    const startId = frameId;
-    let cancelled = false;
-    const tickStart = Date.now();
-    const tick = () => {
-      if (cancelled) return;
-      const cur = getLastPaintedFrameId();
-      if (cur > startId) {
-        return;
-      }
-      if (Date.now() - tickStart > 2000) {
-        return;
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => {
-      cancelled = true;
-    };
-  }, [
+  const { markTurretIntent } = useTurretMotionGate({
     machineTurretPosition,
-    clearAutoMeasureOverlay,
     cameraStatus,
-    clearTurretMovingTimer,
     setTurretMovingState,
+    setTurretMovingTarget,
+    setPreviewAutoMeasureOverlay,
+    setAutoMeasureSessionActive,
+    setManualMeasureResetKey,
+    clearAutoMeasureOverlay,
     shouldPreserveAfterImpressOverlay,
-  ]);
+  });
 
   const handleAutoMeasure = useCallback(() => {
     if (activeTool === 'manualMeasure') {
