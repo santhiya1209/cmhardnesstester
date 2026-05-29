@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog';
-import CalibrationDialog from '@/component/own/CalibrationDialog';
+import { useCalibrationDialogSlot } from '@/features/calibration/useCalibrationDialogSlot';
 import CameraSettingDialog from '@/component/own/CameraSettingDialog';
 import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
 import MicrometerConfigDialog from '@/component/own/MicrometerConfigDialog';
@@ -55,11 +55,10 @@ import {
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
 import { useRenderCount } from '@/utils/renderStats';
-import { openImageDialog } from '@/api/system';
-import { saveImageDialog } from '@/api/system';
 import { exitApp } from '@/api/system';
-import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDispatcher';
+import { dispatchToolbarAction } from '@/utils/toolDispatcher';
 import { useMenuActions } from '@/features/shell/useMenuActions';
+import { useToolDispatchContext } from '@/features/shell/useToolDispatchContext';
 import { useSetStatusMessage } from '@/contexts/StatusMessageContext';
 import { useDialog } from '@/contexts/DialogContext';
 import { TOOL_ACTION_TO_TOOL, type ToolbarActionId } from '@/types/tool';
@@ -2028,141 +2027,34 @@ function App() {
     setStatusMessage,
   });
 
-  const buildSharedCtx = useCallback(
-    (): ToolDispatchContext => ({
-      setActiveTool,
-      setStatus: (message) => setStatusMessage(`System Status: ${message}`),
-      notifyUnavailable: (label) =>
-        setUnavailableMsg(`${label} is not available yet.`),
-      clearGraphics: () => {
-        // eslint-disable-next-line no-console
-        console.warn('[clear-graphics-click]');
-        overlay.clearAll();
-        // Delegate Auto Measure teardown to the tested clear path so session
-        // state, refs, and the render gate flip together. Force-bump the
-        // clear nonce so the overlay canvas clears synchronously even if a
-        // rAF was already queued from the prior frame.
-        clearAutoMeasureOverlay('toolbar-clear');
-        setAutoMeasureClearNonce((n) => n + 1);
-        manualMeasurementIdRef.current = null;
-        // Note: active measurement row is NOT cleared from the clear-graphics
-        // menu. Per spec only camera close/open ends the session and allows
-        // a new row.
-        resetManualMeasure();
-        // eslint-disable-next-line no-console
-        console.warn('[clear-graphics-finished]');
-      },
-      autoMeasure: handleAutoMeasure,
-      setLineThickness: lineThickness.setThickness,
-      toggleMagnifier: () => {
-        setMagnifierEnabled((prev) => {
-          const next = !prev;
-          if (next) {
-          } else {
-          }
-          return next;
-        });
-      },
-      trimLastMeasurement: overlay.trimLast,
-      openTrimMeasure: () => setTrimMeasureOpen(true),
-      toggleCenterCrossLine: overlay.toggleCrossLine,
-      resumeImage: () => {
-        const nowFrozen = cameraRef.current?.toggleFreeze() ?? false;
-        setStatusMessage(`System Status: Image ${nowFrozen ? 'frozen' : 'resumed'}`);
-      },
-      zoomIn: () => {
-        const z = cameraRef.current?.zoomIn() ?? 1;
-        setStatusMessage(`System Status: Zoom ${Math.round(z * 100)}%`);
-      },
-      zoomOut: () => {
-        const z = cameraRef.current?.zoomOut() ?? 1;
-        setStatusMessage(`System Status: Zoom ${Math.round(z * 100)}%`);
-      },
-      openCalibration: () => openCalibrationPanel('toolbar'),
-      openCameraSettings: openCameraSettingsPanel,
-      openImage: () => {
-        void (async () => {
-          try {
-            const reply = await openImageDialog();
-            if (!reply.ok) {
-              if (!reply.canceled) {
-                setUnavailableMsg(
-                  `Open Image failed: ${reply.error}${reply.message ? `: ${reply.message}` : ''}`
-                );
-              }
-              return;
-            }
-            const loaded = await cameraRef.current?.loadImageFromBuffer(reply.buffer);
-            if (loaded?.ok) {
-              resetManualMeasure();
-              setCommittedAutoMeasureOverlay(null);
-              setPreviewAutoMeasureOverlay(null);
-              autoMeasurePreviewSnapshotRef.current = null;
-              committedAutoMeasureFrameRef.current = null;
-              previewMeasurementRef.current = null;
-              autoMeasurementIdRef.current = null;
-              manualMeasurementIdRef.current = null;
-              // Note: active measurement row is NOT cleared on new-image
-              // load. Per spec only camera close/open starts a new row.
-              committedFingerprintsRef.current = [];
-              setStatusMessage(`System Status: Loaded ${reply.fileName}`);
-            } else {
-              setUnavailableMsg(
-                `Open Image failed: ${loaded?.error ?? 'unable to render'}`
-              );
-            }
-          } catch (err) {
-            setUnavailableMsg(
-              `Open Image failed: ${err instanceof Error ? err.message : String(err)}`
-            );
-          }
-        })();
-      },
-      saveImage: () => {
-        void (async () => {
-          try {
-            const reply = await saveImageDialog({
-              defaultName: `hardness-${Date.now()}.png`,
-            });
-            if (!reply.ok) return;
-            const blob = await cameraRef.current?.exportImageBlob('image/png');
-            if (!blob) {
-              setUnavailableMsg('Save Image failed: no image to save');
-              return;
-            }
-            const buf = await blob.arrayBuffer();
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
-            a.download = reply.fileName;
-            a.click();
-            URL.revokeObjectURL(a.href);
-            setStatusMessage(`System Status: Image saved as ${reply.fileName}`);
-          } catch (err) {
-            setUnavailableMsg(
-              `Save Image failed: ${err instanceof Error ? err.message : String(err)}`
-            );
-          }
-        })();
-      },
-      openCameraDevice,
-      closeCameraDevice,
-    }),
-    [
-      activeTool,
-      lineThickness.setThickness,
-      overlay.clearAll,
-      overlay.trimLast,
-      overlay.toggleCrossLine,
-      resetManualMeasure,
-      clearAutoMeasureOverlay,
-      handleAutoMeasure,
-      openCalibrationPanel,
-      openCameraSettingsPanel,
-      setActiveTool,
-      openCameraDevice,
-      closeCameraDevice,
-    ]
-  );
+  const { buildSharedCtx } = useToolDispatchContext({
+    cameraRef,
+    setActiveTool,
+    setStatusMessage,
+    setUnavailableMsg,
+    overlayClearAll: overlay.clearAll,
+    overlayTrimLast: overlay.trimLast,
+    overlayToggleCrossLine: overlay.toggleCrossLine,
+    resetManualMeasure,
+    manualMeasurementIdRef,
+    setLineThickness: lineThickness.setThickness,
+    setMagnifierEnabled,
+    setTrimMeasureOpen,
+    handleAutoMeasure,
+    clearAutoMeasureOverlay,
+    setAutoMeasureClearNonce,
+    setCommittedAutoMeasureOverlay,
+    setPreviewAutoMeasureOverlay,
+    autoMeasurePreviewSnapshotRef,
+    committedAutoMeasureFrameRef,
+    previewMeasurementRef,
+    autoMeasurementIdRef,
+    committedFingerprintsRef,
+    openCalibrationPanel,
+    openCameraSettingsPanel,
+    openCameraDevice,
+    closeCameraDevice,
+  });
 
   const testRecordMeasurementIds = useMemo(() => {
     if (initialTestRecordMeasurementIds.length > 0) {
@@ -2261,58 +2153,22 @@ function App() {
     () => setTrimMeasureOpen(false),
     [setTrimMeasureOpen]
   );
-  const handleDialogStatusChange = useCallback(
-    (message: string) => setStatusMessage(`System Status: ${message}`),
-    []
-  );
-  const handleCalibrationClose = useCallback(() => {
-    if (calibrationManualModeRef.current) {
-      calibrationManualModeRef.current = false;
-    }
-    setManualMeasureResetKey((current) => current + 1);
-    setAutoMeasureSessionActive(false);
-    clearAutoMeasureOverlay('calibration-closed');
-    setCalibrationMeasureMode('none', 'panel-closed');
-    closeDialog();
-  }, [clearAutoMeasureOverlay, setCalibrationMeasureMode, closeDialog]);
-  const handleCalibrationChanged = useCallback(() => {
-    void refetchCalibrations();
-  }, [refetchCalibrations]);
-  const calibrationDefaultObjective = useMemo(
-    () => activeObjective || null,
-    [activeObjective]
-  );
-  const calibrationOpen = activeDialog === 'calibration';
-  const calibrationAutoFillX = latestManualPixels?.d1Px ?? null;
-  const calibrationAutoFillY = latestManualPixels?.d2Px ?? null;
-  const calibrationSlot = useMemo(
-    () => (
-      <CalibrationDialog
-        open={calibrationOpen}
-        onClose={handleCalibrationClose}
-        onStatusChange={handleDialogStatusChange}
-        onChanged={handleCalibrationChanged}
-        autoFillPixelLengthX={calibrationAutoFillX}
-        autoFillPixelLengthY={calibrationAutoFillY}
-        defaultObjective={calibrationDefaultObjective}
-        onRequestAutoMeasure={handleCalibrationAutoMeasure}
-        onRequestManualMeasure={handleCalibrationManualMeasure}
-        onAutoCreateMeasurementRow={handleCalibrationAutoCreateRow}
-      />
-    ),
-    [
-      calibrationOpen,
-      handleCalibrationClose,
-      handleDialogStatusChange,
-      handleCalibrationChanged,
-      calibrationAutoFillX,
-      calibrationAutoFillY,
-      calibrationDefaultObjective,
-      handleCalibrationAutoMeasure,
-      handleCalibrationManualMeasure,
-      handleCalibrationAutoCreateRow,
-    ]
-  );
+  const { calibrationSlot } = useCalibrationDialogSlot({
+    calibrationOpen: activeDialog === 'calibration',
+    activeObjective,
+    latestManualPixels,
+    calibrationManualModeRef,
+    setCalibrationMeasureMode,
+    setManualMeasureResetKey,
+    setAutoMeasureSessionActive,
+    clearAutoMeasureOverlay,
+    closeDialog,
+    setStatusMessage,
+    refetchCalibrations,
+    onRequestAutoMeasure: handleCalibrationAutoMeasure,
+    onRequestManualMeasure: handleCalibrationManualMeasure,
+    onAutoCreateMeasurementRow: handleCalibrationAutoCreateRow,
+  });
 
   return (
     <Box sx={ROOT_SX}>
