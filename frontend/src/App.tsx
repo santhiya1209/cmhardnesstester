@@ -98,13 +98,15 @@ import {
   type AutoMeasureDetectionSnapshot,
   type CapturedAutoMeasureFrame,
   type CommitAutoMeasureSource,
-  type CommittedAutoMeasureFingerprint,
   type RunAutoMeasure,
 } from '@/features/autoMeasure/autoMeasureHelpers';
+import { useCommittedFingerprints } from '@/features/autoMeasure/useCommittedFingerprints';
 import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAutoMeasureCalibration';
 import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
 import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
+import { useObjectiveSync } from '@/features/objective/useObjectiveSync';
+import { useActiveMeasurement } from '@/features/measurement/useActiveMeasurement';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
@@ -205,8 +207,6 @@ function deriveQualifiedForRow(hv: number | null | undefined): 'YES' | 'NO' | nu
   const result = computeQualified(hv, QUALIFIED_TARGET_MIN_HV, QUALIFIED_TARGET_MAX_HV);
   return result;
 }
-
-type ObjectiveCommitSource = 'ack';
 
 function logAfterImpressDetectionFailed(reason: string) {
   // eslint-disable-next-line no-console
@@ -427,66 +427,14 @@ function App() {
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const autoMeasurementIdRef = useRef<string | null>(null);
-  // Frame-anchored active measurement: the single row currently "owned" by
-  // the frozen frame the user is interacting with. Auto Measure, Manual
-  // Measure, line drag, and Calibration all consult this so they update the
-  // same row instead of creating duplicates. Cleared on new frame / explicit
-  // new measurement boundaries (overlay clear, settings cancel, etc.).
-  const activeMeasurementIdRef = useRef<string | null>(null);
-  const activeMeasurementFrameIdRef = useRef<number | null>(null);
-  // Method last written to the active row. Lets us emit honest
-  // [measurement-mode-update] old=…new=… logs without re-reading the table.
-  const activeMeasurementMethodRef = useRef<string | null>(null);
-  // Camera-open scoped measurement session. Bumped on every camera open and
-  // cleared on close — its only role is to scope the "one active row per
-  // session" rule so we can log session boundaries clearly.
-  const cameraMeasurementSessionIdRef = useRef<number>(0);
-  // Returns the current active row id, regardless of which live frame is
-  // painted. The earlier strict-frame-id gate was buggy: while the user holds
-  // a frozen Auto Measure result and opens Calibration, the live camera keeps
-  // painting new frame ids, so getLastPaintedFrameId() drifts away from the
-  // frame the row was tagged with — and reuse fell through to POST, creating
-  // duplicate rows. The active id is invalidated ONLY by the explicit "new
-  // measurement" boundaries below (new image, camera close, clear table,
-  // clear-graphics).
-  const getActiveMeasurementId = useCallback((): string | undefined => {
-    const id = activeMeasurementIdRef.current ?? undefined;
-    if (id) {
-    }
-    return id;
-  }, []);
-  const setActiveMeasurement = useCallback(
-    (id: string, frameId: number | null, _reason: string) => {
-      activeMeasurementIdRef.current = id;
-      activeMeasurementFrameIdRef.current = frameId;
-    },
-    []
-  );
-  const clearActiveMeasurement = useCallback((_reason: string) => {
-    if (
-      activeMeasurementIdRef.current === null &&
-      activeMeasurementFrameIdRef.current === null &&
-      activeMeasurementMethodRef.current === null
-    ) {
-      return;
-    }
-    activeMeasurementIdRef.current = null;
-    activeMeasurementFrameIdRef.current = null;
-    activeMeasurementMethodRef.current = null;
-  }, []);
-  // Duplicate-measurement guard for every committed Auto Measure row in the
-  // current measurement session. It survives overlay clears and repeat Auto
-  // Measure clicks; only table clear, new image/session resets, or row removal
-  // prune it.
-  const committedFingerprintsRef = useRef<CommittedAutoMeasureFingerprint[]>([]);
-  useEffect(() => {
-    const currentRowIds = new Set(measurements.map((measurement) => measurement.id));
-    const next = committedFingerprintsRef.current.filter(
-      (entry) => entry.rowId !== null && currentRowIds.has(entry.rowId)
-    );
-    if (next.length === committedFingerprintsRef.current.length) return;
-    committedFingerprintsRef.current = next;
-  }, [measurements]);
+  const {
+    activeMeasurementMethodRef,
+    cameraMeasurementSessionIdRef,
+    getActiveMeasurementId,
+    setActiveMeasurement,
+    clearActiveMeasurement,
+  } = useActiveMeasurement();
+  const committedFingerprintsRef = useCommittedFingerprints(measurements);
   // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
   // - Set only by the objective commit pipeline after machine ACK/RX.
   // - Hydrated from machine-confirmed SSE state through that same pipeline.
@@ -495,10 +443,6 @@ function App() {
   // - There is NO silent fallback to a hardcoded default. If this is ever
   //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
-  const activeObjectiveRef = useRef<string | null>(null);
-  useEffect(() => {
-    activeObjectiveRef.current = activeObjective;
-  }, [activeObjective]);
 
   // Strict session-based Auto Measure gating.
   // - sessionId: bumps every time the user opens a fresh Auto Measure session
@@ -617,13 +561,6 @@ function App() {
     // nulling alone was leaving yellow lines on screen across objective swaps.
     setAutoMeasureClearNonce((n) => n + 1);
   }, [activeObjective, shouldPreserveAfterImpressOverlay]);
-  // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
-  // CameraWindow watches it to invalidate any per-objective caches and force a
-  // fresh draw — separate from activeObjective so we can trigger a refresh
-  // even when the confirmed value is identical (e.g. user re-selects same lens).
-  const [objectiveRefreshKey, setObjectiveRefreshKey] = useState<number>(0);
-  const lastSyncedObjectiveRef = useRef<string | null>(null);
-  const objectiveCommitSeqRef = useRef(0);
   // Set true whenever the active objective changes. The next would-be
   // settings-preview run is skipped so an objective change never paints
   // yellow lines on its own — they appear only after an explicit Auto
@@ -670,84 +607,26 @@ function App() {
     setStatusMessage,
   });
 
-  const commitActiveObjective = useCallback(
-    async (objective: '10X' | '40X', source: ObjectiveCommitSource) => {
-      const normalized = objectiveForMeasureFromObjective(objective);
-      if (!normalized) return;
-
-      const commitSeq = objectiveCommitSeqRef.current + 1;
-      objectiveCommitSeqRef.current = commitSeq;
-      setObjectiveChangeInProgressState(true);
-
-      void refetchCalibrationSettings();
-      setObjectiveRefreshKey((key) => key + 1);
-      cameraRef.current?.clearLiveCanvas('objective-change-commit');
-      if (!shouldPreserveAfterImpressOverlay()) {
-        clearAutoMeasureOverlay('objective-change-commit');
-      }
-
-      const camera = cameraRef.current;
-      if (cameraOpen && camera) {
-        const fresh = await camera.waitForFreshFrame(2500);
-        if (objectiveCommitSeqRef.current !== commitSeq) return;
-        if (!fresh) {
-          // Live frame was slow to refresh after the turret move. Do NOT strand
-          // the objective: commit anyway so activeObjective (the single source
-          // of truth) updates and Auto Measure is unblocked — the live image
-          // catches up on the next frame. Returning here is what left the
-          // operator on "no active objective" after a valid 10X/40X selection.
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[camera-objective-sync] activeObjective=${normalized} note=frame-refresh-timeout-committing-anyway`
-          );
-        }
-      }
-
-      activeObjectiveRef.current = normalized;
-      lastSyncedObjectiveRef.current = normalized;
-      setActiveObjective((current) => (
-        String(current ?? '').trim().toUpperCase() === normalized ? current : normalized
-      ));
-      // eslint-disable-next-line no-console
-      console.log(`[machine-objective-commit] objective=${normalized} source=${source}`);
-      // eslint-disable-next-line no-console
-      console.log(`[camera-objective-sync] activeObjective=${normalized}`);
-      setObjectiveChangeInProgressState(false);
-    },
-    [
-      cameraOpen,
-      clearAutoMeasureOverlay,
-      refetchCalibrationSettings,
-      setObjectiveChangeInProgressState,
-      setStatusMessage,
-      shouldPreserveAfterImpressOverlay,
-    ]
-  );
-
-  const handleObjectiveChangeFromUI = useCallback(
-    (objective: '10X' | '40X', source: ObjectiveCommitSource) => {
-      void commitActiveObjective(objective, source);
-    },
-    [commitActiveObjective]
-  );
-
-  // Center/indenter slot carries no measurement lens. Once the turret-front
-  // command is handled, clear the active objective so the 10X/40X highlights
-  // turn off, Center shows its own state, and Auto Measure blocks (truly no
-  // active objective). Bumping the commit sequence cancels any in-flight 10X
-  // objective commit so a stale 10X can't land after the operator moved to Center.
-  const handleCenterCommit = useCallback(() => {
-    objectiveCommitSeqRef.current += 1;
-    activeObjectiveRef.current = null;
-    lastSyncedObjectiveRef.current = null;
-    setObjectiveChangeInProgressState(false);
-    setActiveObjective((current) => (current === null ? current : null));
-    // eslint-disable-next-line no-console
-    console.log('[machine-objective-commit] objective=CENTER source=ack');
-    if (!shouldPreserveAfterImpressOverlay()) {
-      clearAutoMeasureOverlay('center-commit');
-    }
-  }, [clearAutoMeasureOverlay, setObjectiveChangeInProgressState, shouldPreserveAfterImpressOverlay]);
+  const {
+    activeObjectiveRef,
+    objectiveRefreshKey,
+    lastSyncedObjectiveRef,
+    handleObjectiveChangeFromUI,
+    handleCenterCommit,
+  } = useObjectiveSync({
+    activeObjective,
+    setActiveObjective,
+    cameraOpen,
+    cameraRef,
+    machineConfirmedObjective,
+    activeTool,
+    manualMeasureResetKey,
+    getMachineStateSnapshot,
+    refetchCalibrationSettings,
+    shouldPreserveAfterImpressOverlay,
+    clearAutoMeasureOverlay,
+    setObjectiveChangeInProgressState,
+  });
 
   // Calibration-mode Auto Measure: runs the same native detector used by
   // normal Auto Measure but does NOT save a measurement row. Returns the
@@ -2521,22 +2400,6 @@ function App() {
   // Observational lightness tracking is folded into the machineStore ref-sync
   // effect above (a pure ref-write that never re-renders App).
 
-  // Camera/objective sync pipeline. Triggered ONLY by a confirmed L<n>OK RX
-  // from the machine (machineState.confirmedObjectiveFromMachine), not by the
-  // OK-ACK or by the user click — so the UI never reflects a magnification the
-  // turret hasn't actually reached.
-  useEffect(() => {
-    const confirmed = objectiveForMeasureFromObjective(machineConfirmedObjective);
-    if (!confirmed) return;
-    if (
-      lastSyncedObjectiveRef.current === confirmed &&
-      activeObjectiveRef.current === confirmed
-    ) {
-      return;
-    }
-    void commitActiveObjective(confirmed, 'ack');
-  }, [commitActiveObjective, machineConfirmedObjective]);
-
   const turretMovingTimerRef = useRef<number | null>(null);
   const clearTurretMovingTimer = useCallback(() => {
     if (turretMovingTimerRef.current !== null) {
@@ -2766,28 +2629,6 @@ function App() {
     }
     void runAutoMeasureAfterImpress();
   }, [machineLastObjectiveRx, runAutoMeasureAfterImpress]);
-
-  // When Manual Measure activates, refresh the live objective so the initial
-  // diamond size matches the magnification the user just toggled to.
-  useEffect(() => {
-    if (activeTool !== 'manualMeasure') return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const snapshot = await getMachineStateSnapshot();
-        if (cancelled) return;
-        const confirmed = objectiveForMeasureFromObjective(snapshot?.confirmedObjectiveFromMachine);
-        if (confirmed && activeObjectiveRef.current !== confirmed) {
-          void commitActiveObjective(confirmed, 'ack');
-        }
-      } catch {
-        /* non-fatal — fall back to whatever objective we already have */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTool, commitActiveObjective, getMachineStateSnapshot, manualMeasureResetKey]);
 
   const handleAutoMeasure = useCallback(() => {
     if (activeTool === 'manualMeasure') {
