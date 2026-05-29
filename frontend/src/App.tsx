@@ -25,7 +25,7 @@ import {
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { useMachineConnection } from '@/hooks/useMachineConnection';
 import { getLatestMicrometerReading } from '@/api/micrometer';
-import { measureVickersAuto, measureVickersAutoPreview } from '@/api/system';
+import { measureVickersAuto } from '@/api/system';
 import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRestore';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
@@ -82,17 +82,15 @@ import {
   cloneAutoMeasureGraphics,
   cloneCapturedFrame,
   finiteOrNull,
-  formatAutoMeasureCorners,
-  formatAutoMeasureNumber,
   getAutoMeasureMaxCornerDelta,
   graphicsAlmostEqual,
   graphicsFromAutoMeasureResult,
   hasValidAutoMeasureCorners,
+  logAutoMeasureDetectResult,
   logAutoMeasurePhase,
   logUnexpectedAutoMeasureCall,
   normalizeAutoMeasureFingerprintObjective,
   objectiveForMeasureFromObjective,
-  resolveAutoMeasureDetection,
   roundAutoMeasurePixel,
   upsertCommittedAutoMeasureFingerprint,
   validateAutoMeasureGeometry,
@@ -103,6 +101,9 @@ import {
   type CommittedAutoMeasureFingerprint,
   type RunAutoMeasure,
 } from '@/features/autoMeasure/autoMeasureHelpers';
+import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAutoMeasureCalibration';
+import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
+import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
@@ -1875,25 +1876,14 @@ function App() {
             );
           }
         }
-        const machineStateForAuto = machineState
-          ? { ...machineState, objective: objectiveForCalibration }
-          : null;
-        const calibration = resolveManualCalibration({
+        const { machineStateForAuto, calibration, forceKgf } = resolveAutoMeasureCalibration({
+          machineState,
+          objectiveForCalibration,
           calibrationSettings,
-          calibrations,
-          machineState: machineStateForAuto,
-          targetObjective: objectiveForCalibration,
           calibrationSettingsList,
+          calibrations,
+          callSource,
         });
-        if (callSource === 'auto-click') {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[auto-measure-scale] objective=${objectiveForCalibration ?? 'null'} pxToUm=${calibration?.micronPerPixel ?? 'null'} calibration=${calibration?.calibrationName ?? 'null'}`
-          );
-        }
-        const forceKgf = parseForceKgf(machineState?.force);
-        if (!preview) {
-        }
         const minConfidence =
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         let displayedFrame;
@@ -2003,133 +1993,30 @@ function App() {
         if (isFreshCapture) {
           committedAutoMeasureFrameRef.current = cloneCapturedFrame(displayedFrame);
         }
-        const runSmoothing = settings.smoothing;
-        const runThreshold = settings.threshold;
-        if (callSource === 'auto-click') {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[auto-measure-profile] objective=${objectiveForCalibration ?? 'null'} smoothing=${runSmoothing} threshold=${runThreshold}`
-          );
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[auto-measure-frame] objective=${objectiveForCalibration ?? 'null'} frameEpoch=${capturedFrameIdForRun ?? 'n/a'} source=${displayedFrame.source}`
-          );
-        }
-        logAutoMeasurePhase('auto-measure-frame', {
-          objective: objectiveForCalibration,
-          smoothing: runSmoothing,
-          threshold: runThreshold,
-          method: 'refined',
-          reason: 'captured',
-          extra: `width=${displayedFrame.width} height=${displayedFrame.height} frameId=${capturedFrameIdForRun ?? 'n/a'} source=${displayedFrame.source}`,
-        });
+        const { nativeResult, liveObjectiveForNative, runSmoothing, runThreshold } =
+          await runNativeDetection({
+            preview,
+            callSource,
+            settings,
+            objectiveForCalibration,
+            displayedFrame,
+            capturedFrameIdForRun,
+            calibration,
+            forceKgf,
+            minConfidence,
+          });
 
-        // Only forward the live machine-control objective when it normalises
-        // to one of the canonical values. A transient empty / unknown machine
-        // string must never poison the value sent to native.
-        const liveObjectiveCandidate = String(objectiveForCalibration ?? '')
-          .trim()
-          .toUpperCase();
-        const liveObjectiveForNative: ObjectiveForMeasure =
-          (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(liveObjectiveCandidate)
-            ? (liveObjectiveCandidate as ObjectiveForMeasure)
-            : settings.objectiveForMeasure;
-        if (!preview) {
-          if (callSource === 'after-impress') {
-          }
-          if (callSource === 'auto-click') {
-          }
-        }
-        // Prove the frame about to be detected matches the confirmed
-        // objective AND was painted after the most recent canvas clear.
-        // Both fields must be aligned for detection to be trustworthy.
-        // Spec-format start log — also stamps a frameId we can grep for in
-        // the native [auto-measure-start ...] line in the terminal.
-        // Parity log: must match [calibration-auto-native-input] for the
-        // same indent so the two paths can be diffed in the console.
-        const measureFn = preview ? measureVickersAutoPreview : measureVickersAuto;
-        if (preview) {
-        }
-        // Slider values are the source of truth at detection time. Objective
-        // defaults seed the dialog when the objective changes (UI level) — at
-        // detection time we must honor whatever the user has in the form,
-        // otherwise dragging Smoothing/Threshold sliders produces no visible
-        // change in the yellow lines because every detection runs on the
-        // same hardcoded numbers.
-        if (preview) {
-        }
-        logAutoMeasurePhase('auto-measure-preprocess', {
-          objective: liveObjectiveForNative,
-          smoothing: runSmoothing,
-          threshold: runThreshold,
-          method: 'refined',
-          reason: 'clahe+adaptive-threshold+morphology',
-        });
-        const nativeResult = await measureFn({
-          smoothing: runSmoothing,
-          threshold: runThreshold,
-          objectiveForMeasure: liveObjectiveForNative,
-          frameBuffer: displayedFrame.buffer,
-          width: displayedFrame.width,
-          height: displayedFrame.height,
-          pixelFormat: displayedFrame.pixelFormat,
-          bits: displayedFrame.bits,
-          source: displayedFrame.source,
-          micronPerPixel: calibration?.micronPerPixel ?? null,
-          pxPerMm: calibration ? 1000 / calibration.micronPerPixel : null,
-          testForceKgf: forceKgf,
-          minConfidence,
-          timeoutMs: 4000,
-          maxFrameAgeMs: 1200,
-        });
-
-        if (!preview) {
-          if (callSource === 'auto-click') {
-          }
-        }
-
-        const debugObj = (nativeResult.debug ?? {}) as {
-          objectiveForMeasure?: unknown;
-          contourCount?: unknown;
-          selectedContourArea?: unknown;
-          selectedValidationArea?: unknown;
-          confidence?: unknown;
-        };
-        const nativeObjective =
-          typeof debugObj.objectiveForMeasure === 'string'
-            ? debugObj.objectiveForMeasure
-            : '';
-        logAutoMeasurePhase('auto-measure-contours', {
-          objective: liveObjectiveForNative,
-          smoothing: runSmoothing,
-          threshold: runThreshold,
-          method: nativeResult.ok ? 'refined' : 'rough',
-          d1Px: nativeResult.ok ? nativeResult.d1Pixels : null,
-          d2Px: nativeResult.ok ? nativeResult.d2Pixels : null,
-          center: nativeResult.ok
-            ? {
-                x: ((nativeResult.corners.left.x + nativeResult.corners.right.x) / 2 +
-                  (nativeResult.corners.top.x + nativeResult.corners.bottom.x) / 2) / 2,
-                y: ((nativeResult.corners.left.y + nativeResult.corners.right.y) / 2 +
-                  (nativeResult.corners.top.y + nativeResult.corners.bottom.y) / 2) / 2,
-              }
-            : null,
-          reason: nativeResult.ok ? 'native-result' : nativeResult.reason,
-          extra: `contourCount=${Number(debugObj.contourCount) || 0} selectedArea=${formatAutoMeasureNumber(Number(debugObj.selectedContourArea))} validationArea=${formatAutoMeasureNumber(Number(debugObj.selectedValidationArea))} confidence=${nativeResult.ok ? nativeResult.confidence.toFixed(3) : '0.000'}`,
-        });
-        const resolvedDetection = resolveAutoMeasureDetection(nativeResult, {
-          objective: liveObjectiveForNative,
-          smoothing: runSmoothing,
-          threshold: runThreshold,
+        const { nativeObjective, resolvedDetection } = validateDetectionResult({
+          nativeResult,
+          liveObjectiveForNative,
+          runSmoothing,
+          runThreshold,
         });
         const logDetectResult = (
           success: boolean,
           corners: AutoMeasureCorners | null | undefined
         ) => {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[auto-measure-detect-result] objective=${liveObjectiveForNative} success=${success} corners=${formatAutoMeasureCorners(corners)}`
-          );
+          logAutoMeasureDetectResult(liveObjectiveForNative, success, corners);
         };
         if (
           liveObjectiveForNative === '10X' &&

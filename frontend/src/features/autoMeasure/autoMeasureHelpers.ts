@@ -237,6 +237,17 @@ export function formatAutoMeasureCorners(corners: AutoMeasureCorners | null | un
   return `<L${point(corners.left)} R${point(corners.right)} T${point(corners.top)} B${point(corners.bottom)}>`;
 }
 
+export function logAutoMeasureDetectResult(
+  objective: ObjectiveForMeasure | string,
+  success: boolean,
+  corners: AutoMeasureCorners | null | undefined
+): void {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[auto-measure-detect-result] objective=${objective} success=${success} corners=${formatAutoMeasureCorners(corners)}`
+  );
+}
+
 type AutoMeasureLogContext = {
   objective: string | null | undefined;
   smoothing: number;
