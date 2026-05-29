@@ -92,6 +92,7 @@ import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAut
 import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
 import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
+import { useAutoMeasureSessionLifecycle } from '@/features/autoMeasure/useAutoMeasureSessionLifecycle';
 import { useAfterImpressFlow } from '@/features/impress/useAfterImpressFlow';
 import { useObjectiveSync } from '@/features/objective/useObjectiveSync';
 import { useActiveMeasurement } from '@/features/measurement/useActiveMeasurement';
@@ -372,8 +373,9 @@ function App() {
   }, []);
 
   // Overlay lifecycle state + hard render gate live in useOverlayLifecycle.
-  // clearAutoMeasureOverlay (below) stays in App because it also nulls
-  // controller/measurement/camera-frame refs; it drives these setters.
+  // These setters are destructured here because clearAutoMeasureOverlay (from
+  // useAutoMeasureSessionLifecycle, below) drives them alongside App-owned
+  // controller/measurement/camera-frame refs.
   const {
     committedAutoMeasureOverlay,
     setCommittedAutoMeasureOverlay,
@@ -400,34 +402,20 @@ function App() {
   // yellow lines on its own — they appear only after an explicit Auto
   // Measure click. Cleared by the click handler.
   const suppressAutoMeasurePreviewRef = useRef(false);
-  // Clears Auto Measure overlay/session state without touching committed row
-  // fingerprints. Duplicate suppression must survive overlay clears.
-  const clearAutoMeasureOverlay = useCallback((_reason: string) => {
-    setCommittedAutoMeasureOverlay((prev) => {
-      if (!prev) {
-      }
-      return null;
-    });
-    setPreviewAutoMeasureOverlay(null);
-    autoMeasurePreviewSnapshotRef.current = null;
-    committedAutoMeasureFrameRef.current = null;
-    previewMeasurementRef.current = null;
-    autoMeasurementIdRef.current = null;
-    // Cancel any pending coalesced trailing detection and mark the settings
-    // dialog closed in the ref the in-flight finally block consults so a
-    // queued preview run does not repaint after we just cleared.
-    autoMeasurePendingPreviewRef.current = null;
-    autoMeasureSettingsOpenRef.current = false;
-    // End the current Auto Measure session: any in-flight detection callback
-    // that observes the bumped sessionId will refuse to paint.
-    setAutoMeasureSessionActive(false);
-    setAutoMeasureCapturedFrameId(null);
-    setAutoMeasureSessionId((id) => {
-      const next = id + 1;
-      autoMeasureSessionIdRef.current = next;
-      return next;
-    });
-  }, []);
+  const { clearAutoMeasureOverlay } = useAutoMeasureSessionLifecycle({
+    setCommittedAutoMeasureOverlay,
+    setPreviewAutoMeasureOverlay,
+    autoMeasurePreviewSnapshotRef,
+    committedAutoMeasureFrameRef,
+    previewMeasurementRef,
+    autoMeasurementIdRef,
+    autoMeasurePendingPreviewRef,
+    autoMeasureSettingsOpenRef,
+    setAutoMeasureSessionActive,
+    setAutoMeasureCapturedFrameId,
+    setAutoMeasureSessionId,
+    autoMeasureSessionIdRef,
+  });
 
   const {
     impressInProgressRef,
