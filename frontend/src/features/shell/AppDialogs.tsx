@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog';
 import CameraSettingDialog from '@/component/own/CameraSettingDialog';
 import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
@@ -67,6 +68,13 @@ function AppDialogs({
   measurements,
   testRecordMeasurementIds,
 }: AppDialogsProps) {
+  // Single stable handler for every dialog's onStatusChange. Replaces the
+  // per-dialog inline arrows so all dialogs share one referentially-stable
+  // callback. Status message format is unchanged.
+  const handleDialogStatusChange = useCallback(
+    (message: string) => setStatusMessage(`System Status: ${message}`),
+    [setStatusMessage]
+  );
   return (
     <>
       <AutoMeasureSettingsDialog
@@ -74,13 +82,13 @@ function AppDialogs({
         onClose={closeDialog}
         onPreviewChange={handleAutoMeasureSettingsPreviewChange}
         onSaved={handleAutoMeasureSettingsSaved}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
         activeObjective={activeObjective}
       />
       <LineColorSettingDialog
         open={activeDialog === 'lineColor'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
         onSaved={() => {
           void refetchLineColor();
         }}
@@ -88,7 +96,7 @@ function AppDialogs({
       <MicrometerConfigDialog
         open={activeDialog === 'micrometer'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
         onSaved={() => {
           void refetchMicrometerConfig();
         }}
@@ -96,29 +104,29 @@ function AppDialogs({
       <SerialPortSettingDialog
         open={activeDialog === 'serialPort'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
         currentMachinePort={currentMachinePort}
         onApplyMachinePort={applyMachinePort}
       />
       <CameraSettingDialog
         open={activeDialog === 'camera'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
       />
       <GenericSettingDialog
         open={activeDialog === 'generic'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
       />
       <OtherSettingDialog
         open={activeDialog === 'other'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
       />
       <RestoreFactoryDialog
         open={activeDialog === 'restoreFactory'}
         onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
         onRestored={() => {
           void refetchLineColor();
           void refetchMeasurements();
@@ -189,7 +197,7 @@ function AppDialogs({
         onClose={closeDialog}
         measurements={measurements}
         initialMeasurementIds={testRecordMeasurementIds}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        onStatusChange={handleDialogStatusChange}
       />
     </>
   );
