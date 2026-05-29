@@ -104,13 +104,14 @@ import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAut
 import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
 import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
+import { useAfterImpressFlow } from '@/features/impress/useAfterImpressFlow';
 import { useObjectiveSync } from '@/features/objective/useObjectiveSync';
 import { useActiveMeasurement } from '@/features/measurement/useActiveMeasurement';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
-import type { IndentStatus, MachineState } from '@/types/machine';
+import type { MachineState } from '@/types/machine';
 import {
   calculateVickersFromPixels,
   calculateManualDiagonalsFromPixels,
@@ -221,10 +222,6 @@ function waitForOverlayPaint(): Promise<void> {
       requestAnimationFrame(() => resolve());
     });
   });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function App() {
@@ -354,35 +351,6 @@ function App() {
   // Measure entry point (manual click, settings preview, drag-recompute) is
   // refused — the indenter is still over the workpiece, the live frame is
   // mid-motion, and any detection would commit a row for the wrong instant.
-  const impressInProgressRef = useRef(false);
-  const lastSeenIndentStatusRef = useRef<IndentStatus>('idle');
-  // Set when an impress completes WITH turretAfterImpress=true. The next
-  // confirmed-objective RX (L1OK / L2OK / objective state-update) clears
-  // this and, when measureAfterImpress is also true, triggers detection
-  // against a fresh post-rotation frame. Without this gate the auto-detect
-  // would fire on the FINISH event before the turret has settled.
-  const pendingTurretAfterImpressRef = useRef<
-    | {
-        armedAt: number;
-        measureAfterImpress: boolean;
-        lastSeenObjectiveRx: string | null;
-      }
-    | null
-  >(null);
-  const turretAfterImpressWatchdogRef = useRef<number | null>(null);
-  const afterImpressOverlayPreserveUntilRef = useRef(0);
-  const preserveAfterImpressOverlay = useCallback((durationMs = 5000) => {
-    afterImpressOverlayPreserveUntilRef.current = Math.max(
-      afterImpressOverlayPreserveUntilRef.current,
-      Date.now() + durationMs
-    );
-  }, []);
-  const shouldPreserveAfterImpressOverlay = useCallback(() => {
-    return Date.now() < afterImpressOverlayPreserveUntilRef.current;
-  }, []);
-  const afterImpressAutoMeasureAttemptRef = useRef(0);
-  const afterImpressAutoMeasureRunIdRef = useRef(0);
-  const afterImpressAutoMeasureInFlightRef = useRef(false);
   // Latest preview settings that arrived while a detection was in flight.
   // Why: Slider drags fire faster than the native detection completes
   // (~60–200ms). Without coalescing, the user's final slider position can be
@@ -442,6 +410,13 @@ function App() {
   // - There is NO silent fallback to a hardcoded default. If this is ever
   //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
+  // Shared ref mirror of activeObjective: useAfterImpressFlow needs it before
+  // useObjectiveSync runs (circular dep), so the ref lives here and both hooks
+  // read/write through it. The sync effect is here too.
+  const activeObjectiveRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeObjectiveRef.current = activeObjective;
+  }, [activeObjective]);
 
   // Strict session-based Auto Measure gating.
   // - sessionId: bumps every time the user opens a fresh Auto Measure session
@@ -509,6 +484,64 @@ function App() {
     activeObjective,
   });
 
+  // Set true whenever the active objective changes. The next would-be
+  // settings-preview run is skipped so an objective change never paints
+  // yellow lines on its own — they appear only after an explicit Auto
+  // Measure click. Cleared by the click handler.
+  const suppressAutoMeasurePreviewRef = useRef(false);
+  // Clears Auto Measure overlay/session state without touching committed row
+  // fingerprints. Duplicate suppression must survive overlay clears.
+  const clearAutoMeasureOverlay = useCallback((_reason: string) => {
+    setCommittedAutoMeasureOverlay((prev) => {
+      if (!prev) {
+      }
+      return null;
+    });
+    setPreviewAutoMeasureOverlay(null);
+    autoMeasurePreviewSnapshotRef.current = null;
+    committedAutoMeasureFrameRef.current = null;
+    previewMeasurementRef.current = null;
+    autoMeasurementIdRef.current = null;
+    // Cancel any pending coalesced trailing detection and mark the settings
+    // dialog closed in the ref the in-flight finally block consults so a
+    // queued preview run does not repaint after we just cleared.
+    autoMeasurePendingPreviewRef.current = null;
+    autoMeasureSettingsOpenRef.current = false;
+    // End the current Auto Measure session: any in-flight detection callback
+    // that observes the bumped sessionId will refuse to paint.
+    setAutoMeasureSessionActive(false);
+    setAutoMeasureCapturedFrameId(null);
+    setAutoMeasureSessionId((id) => {
+      const next = id + 1;
+      autoMeasureSessionIdRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const {
+    impressInProgressRef,
+    preserveAfterImpressOverlay,
+    shouldPreserveAfterImpressOverlay,
+  } = useAfterImpressFlow({
+    machineIndentStatus,
+    machineLastObjectiveRx,
+    cameraRef,
+    activeObjectiveRef,
+    autoMeasureInFlightRef,
+    runAutoMeasureRef,
+    displayedAutoMeasureGraphicsRef,
+    autoMeasurementIdRef,
+    latestAutoMeasurePreviewSettingsRef,
+    liveMachineStateRef,
+    suppressAutoMeasurePreviewRef,
+    setAutoMeasureStatus,
+    setStatusMessage,
+    setManualMeasureResetKey,
+    setAutoMeasureClearNonce,
+    clearActiveMeasurement,
+    clearAutoMeasureOverlay,
+  });
+
   // Whenever the active objective changes from machine confirmation, snap
   // Auto Measure smoothing/threshold to that objective's tuned defaults so
   // the Settings dialog and the next detection run pick them up. Also
@@ -560,39 +593,6 @@ function App() {
     // nulling alone was leaving yellow lines on screen across objective swaps.
     setAutoMeasureClearNonce((n) => n + 1);
   }, [activeObjective, shouldPreserveAfterImpressOverlay]);
-  // Set true whenever the active objective changes. The next would-be
-  // settings-preview run is skipped so an objective change never paints
-  // yellow lines on its own — they appear only after an explicit Auto
-  // Measure click. Cleared by the click handler.
-  const suppressAutoMeasurePreviewRef = useRef(false);
-  // Clears Auto Measure overlay/session state without touching committed row
-  // fingerprints. Duplicate suppression must survive overlay clears.
-  const clearAutoMeasureOverlay = useCallback((_reason: string) => {
-    setCommittedAutoMeasureOverlay((prev) => {
-      if (!prev) {
-      }
-      return null;
-    });
-    setPreviewAutoMeasureOverlay(null);
-    autoMeasurePreviewSnapshotRef.current = null;
-    committedAutoMeasureFrameRef.current = null;
-    previewMeasurementRef.current = null;
-    autoMeasurementIdRef.current = null;
-    // Cancel any pending coalesced trailing detection and mark the settings
-    // dialog closed in the ref the in-flight finally block consults so a
-    // queued preview run does not repaint after we just cleared.
-    autoMeasurePendingPreviewRef.current = null;
-    autoMeasureSettingsOpenRef.current = false;
-    // End the current Auto Measure session: any in-flight detection callback
-    // that observes the bumped sessionId will refuse to paint.
-    setAutoMeasureSessionActive(false);
-    setAutoMeasureCapturedFrameId(null);
-    setAutoMeasureSessionId((id) => {
-      const next = id + 1;
-      autoMeasureSessionIdRef.current = next;
-      return next;
-    });
-  }, []);
 
   const {
     calibrationManualModeRef,
@@ -607,7 +607,6 @@ function App() {
   });
 
   const {
-    activeObjectiveRef,
     objectiveRefreshKey,
     lastSyncedObjectiveRef,
     handleObjectiveChangeFromUI,
@@ -615,6 +614,7 @@ function App() {
   } = useObjectiveSync({
     activeObjective,
     setActiveObjective,
+    activeObjectiveRef,
     cameraOpen,
     cameraRef,
     machineConfirmedObjective,
@@ -2175,121 +2175,6 @@ function App() {
     autoMeasurePreviewSettingsRef.current = autoMeasurePreviewSettings;
   }, [autoMeasurePreviewSettings]);
 
-  const runAutoMeasureAfterImpress = useCallback(async (): Promise<boolean> => {
-    const markAfterImpressFailed = (reason: string) => {
-      logAfterImpressDetectionFailed(reason);
-      setAutoMeasureStatus('failed');
-      setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
-    };
-
-    impressInProgressRef.current = false;
-    const settings = latestAutoMeasurePreviewSettingsRef.current;
-    const measureAfterImpressEnabled = settings.measureAfterImpress === true;
-    // Defensive sync visibility: surface both the ref (used for the decision)
-    // and the latest React state value so a drift between the two is obvious
-    // in the log trail if the operator saved settings and clicked Impress in
-    // the same tick.
-    if (!measureAfterImpressEnabled) {
-      return false;
-    }
-    if (afterImpressAutoMeasureInFlightRef.current) {
-      return false;
-    }
-
-    afterImpressAutoMeasureInFlightRef.current = true;
-    const runId = afterImpressAutoMeasureRunIdRef.current + 1;
-    afterImpressAutoMeasureRunIdRef.current = runId;
-
-    try {
-      suppressAutoMeasurePreviewRef.current = false;
-      preserveAfterImpressOverlay(12000);
-
-      const objective = (activeObjectiveRef.current ?? '')
-        .trim()
-        .toUpperCase();
-      if (!objective) {
-        // [objective-null-blocked] activeObjective is the only authoritative
-        // source. Without it we must NOT silently assume 10X-style settle
-        // timing — block the after-impress flow instead.
-        // eslint-disable-next-line no-console
-        console.warn('[objective-null-blocked] reason=after-impress action=auto-measure-not-run');
-        markAfterImpressFailed('objective-unknown');
-        return false;
-      }
-      const settleMs = objective === '40X' ? 600 : 350;
-      await delay(settleMs);
-
-      const camera = cameraRef.current;
-      if (!camera) {
-        markAfterImpressFailed('camera-unavailable');
-        return false;
-      }
-
-      const firstFresh = await camera.waitForFreshFrame(1200);
-      if (!firstFresh) {
-        // eslint-disable-next-line no-console
-        console.warn('[camera-fresh-frame] reason=after-impress result=timeout');
-      }
-
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        if (runId !== afterImpressAutoMeasureRunIdRef.current) {
-          markAfterImpressFailed('superseded');
-          return false;
-        }
-        if (attempt > 1) {
-          await delay(300);
-          const fresh = await camera.waitForFreshFrame(1200);
-          if (!fresh) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              `[camera-fresh-frame] reason=after-impress retry=${attempt} result=timeout`
-            );
-          }
-        }
-        if (autoMeasureInFlightRef.current) {
-          const waitStart = Date.now();
-          while (autoMeasureInFlightRef.current && Date.now() - waitStart < 2000) {
-            await delay(60);
-          }
-          if (autoMeasureInFlightRef.current) {
-            markAfterImpressFailed('in-flight-detection-did-not-clear-within-2s');
-            return false;
-          }
-        }
-
-        const runner = runAutoMeasureRef.current;
-        if (!runner) {
-          markAfterImpressFailed('runAutoMeasure-ref-missing');
-          return false;
-        }
-
-        afterImpressAutoMeasureAttemptRef.current = attempt;
-        preserveAfterImpressOverlay(12000);
-        suppressAutoMeasurePreviewRef.current = false;
-        const finished = await runner(latestAutoMeasurePreviewSettingsRef.current, false, 'after-impress');
-        await waitForOverlayPaint();
-        const overlayReady = displayedAutoMeasureGraphicsRef.current !== null;
-        if (finished && overlayReady) {
-          preserveAfterImpressOverlay(5000);
-          return true;
-        }
-
-        const reason = finished ? 'overlay-not-ready' : 'detection-failed';
-        if (attempt < 3) {
-          continue;
-        }
-        markAfterImpressFailed(reason);
-        return false;
-      }
-
-      markAfterImpressFailed('max-retries-exhausted');
-      return false;
-    } finally {
-      afterImpressAutoMeasureAttemptRef.current = 0;
-      afterImpressAutoMeasureInFlightRef.current = false;
-    }
-  }, [preserveAfterImpressOverlay, setAutoMeasureStatus]);
-
   useEffect(() => {
     if (activeDialog !== 'autoMeasure') {
       autoMeasureSettingsOpenRef.current = false;
@@ -2501,133 +2386,6 @@ function App() {
     setTurretMovingState,
     shouldPreserveAfterImpressOverlay,
   ]);
-
-  // Impress lifecycle. Drives:
-  //  - overlay clear at TX time (so old yellow lines disappear before motion),
-  //  - block on Auto Measure during the run (impressInProgressRef),
-  //  - auto-trigger Auto Measure on a FRESH frame after FINISH so the new
-  //    indentation is detected without an operator click.
-  // Driven entirely by the machine's confirmed indentStatus so we never flag
-  // "done" before the machine actually finishes.
-  useEffect(() => {
-    const prev = lastSeenIndentStatusRef.current;
-    const next: IndentStatus = machineIndentStatus ?? 'idle';
-    if (prev === next) return;
-    lastSeenIndentStatusRef.current = next;
-
-    const enteringRun =
-      (next === 'started' || next === 'running') && prev !== 'started' && prev !== 'running';
-    if (enteringRun) {
-      impressInProgressRef.current = true;
-      clearActiveMeasurement('impress-start');
-      clearAutoMeasureOverlay('impress-start');
-      setManualMeasureResetKey((current) => current + 1);
-      setAutoMeasureClearNonce((n) => n + 1);
-      return;
-    }
-
-    // Trigger post-impress flow on ANY transition into `completed` (including
-    // `idle → completed`, which the machine sends when a cycle completes
-    // faster than the running batch can land). The earlier
-    // `prev === 'started' || 'running'` guard caused the auto-detect to be
-    // silently skipped on fast hardware paths.
-    if (next === 'completed') {
-      const completedAt = Date.now();
-      autoMeasurementIdRef.current = null;
-      clearActiveMeasurement('impress-done');
-      // Read from the synchronously-updated ref (latestAutoMeasurePreviewSettingsRef)
-      // — autoMeasurePreviewSettingsRef lags by one render because it's
-      // synced via useEffect. If the operator saves Auto Measure Settings
-      // and clicks Impress in the same tick, the laggy ref can still hold
-      // the pre-save value.
-      const latestSettings = latestAutoMeasurePreviewSettingsRef.current;
-      const measureAfterImpressEnabled = latestSettings.measureAfterImpress === true;
-      const turretAfterImpressEnabled = latestSettings.turretAfterImpress === true;
-      const currentObjective = (activeObjectiveRef.current ?? '')
-        .trim()
-        .toUpperCase();
-      if (measureAfterImpressEnabled && !currentObjective) {
-        // [objective-null-blocked] Without a confirmed activeObjective we must
-        // not arm turret-after-impress or continue the detection flow on an
-        // assumed magnification. activeObjective is the only objective source.
-        // eslint-disable-next-line no-console
-        console.warn('[objective-null-blocked] reason=impress-complete action=auto-measure-not-run');
-        impressInProgressRef.current = false;
-        return;
-      }
-      const targetObjective = latestSettings.objectiveForMeasure.trim().toUpperCase();
-      const shouldWaitForTurretAfterImpress =
-        turretAfterImpressEnabled &&
-        measureAfterImpressEnabled &&
-        (!currentObjective || currentObjective !== targetObjective);
-      if (!measureAfterImpressEnabled) {
-      }
-      // When the machine is about to rotate the turret after impress, defer
-      // detection until the L*OK confirmation arrives. The other effect that
-      // watches confirmedObjectiveFromMachine + lastObjectiveRx clears
-      // pendingTurretAfterImpressRef and kicks off the fresh-frame wait +
-      // detection. Without this gate, auto-measure would fire on the next
-      // available camera frame mid-rotation and detect on a moving image.
-      if (shouldWaitForTurretAfterImpress) {
-        pendingTurretAfterImpressRef.current = {
-          armedAt: completedAt,
-          measureAfterImpress: measureAfterImpressEnabled,
-          lastSeenObjectiveRx: liveMachineStateRef.current?.lastObjectiveRx ?? null,
-        };
-        impressInProgressRef.current = false;
-        // Watchdog cleanup only. Never run Auto Measure unless the required
-        // objective confirmation arrives; this just prevents a stale pending
-        // gate from being reused by a later, unrelated machine RX.
-        if (turretAfterImpressWatchdogRef.current !== null) {
-          window.clearTimeout(turretAfterImpressWatchdogRef.current);
-        }
-        turretAfterImpressWatchdogRef.current = window.setTimeout(() => {
-          if (pendingTurretAfterImpressRef.current) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              '[turret-after-impress-done] reason=watchdog-timeout objective-confirmation-missing action=auto-measure-not-run'
-            );
-            pendingTurretAfterImpressRef.current = null;
-          }
-          turretAfterImpressWatchdogRef.current = null;
-        }, 10000);
-        return;
-      }
-      if (turretAfterImpressEnabled && measureAfterImpressEnabled) {
-      }
-      void runAutoMeasureAfterImpress();
-      return;
-    }
-
-    if (next === 'error' || next === 'idle') {
-      if (impressInProgressRef.current) {
-        impressInProgressRef.current = false;
-      }
-    }
-  }, [
-    clearActiveMeasurement,
-    clearAutoMeasureOverlay,
-    machineIndentStatus,
-    runAutoMeasureAfterImpress,
-  ]);
-
-  // Resolve the turret-after-impress gate: when the machine confirms the new
-  // objective slot (L*OK / objective state-update), the rotation has settled.
-  // Then wait for a fresh stable frame and, if measureAfterImpress is also on,
-  // run detection. Watching lastObjectiveRx is robust to multiple confirms
-  // landing in the same RX batch.
-  useEffect(() => {
-    const pending = pendingTurretAfterImpressRef.current;
-    if (!pending) return;
-    const currentRx = machineLastObjectiveRx;
-    if (!currentRx || currentRx === pending.lastSeenObjectiveRx) return;
-    pendingTurretAfterImpressRef.current = null;
-    if (turretAfterImpressWatchdogRef.current !== null) {
-      window.clearTimeout(turretAfterImpressWatchdogRef.current);
-      turretAfterImpressWatchdogRef.current = null;
-    }
-    void runAutoMeasureAfterImpress();
-  }, [machineLastObjectiveRx, runAutoMeasureAfterImpress]);
 
   const handleAutoMeasure = useCallback(() => {
     if (activeTool === 'manualMeasure') {

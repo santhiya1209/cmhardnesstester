@@ -7,11 +7,13 @@ export type ObjectiveCommitSource = 'ack';
 
 export type UseObjectiveSyncArgs = {
   // activeObjective state lives in App so useOverlayLifecycle (which renders
-  // before this hook can be called) keeps reading it directly. The hook owns
-  // the surrounding orchestration: commit, handlers, RX effect, manual-measure
-  // refresh effect, and the per-objective bookkeeping refs.
+  // before this hook can be called) keeps reading it directly. activeObjectiveRef
+  // is also App-owned because useAfterImpressFlow (called before useObjectiveSync
+  // to break a circular dep) also reads through it; sharing the ref keeps a
+  // single source of truth instead of mirroring it twice.
   activeObjective: string | null;
   setActiveObjective: React.Dispatch<React.SetStateAction<string | null>>;
+  activeObjectiveRef: React.MutableRefObject<string | null>;
   cameraOpen: boolean;
   cameraRef: React.RefObject<CameraWindowHandle | null>;
   machineConfirmedObjective: string | null | undefined;
@@ -25,7 +27,6 @@ export type UseObjectiveSyncArgs = {
 };
 
 export type UseObjectiveSyncResult = {
-  activeObjectiveRef: React.MutableRefObject<string | null>;
   objectiveRefreshKey: number;
   lastSyncedObjectiveRef: React.MutableRefObject<string | null>;
   commitActiveObjective: (
@@ -61,6 +62,7 @@ export type UseObjectiveSyncResult = {
 export function useObjectiveSync({
   activeObjective,
   setActiveObjective,
+  activeObjectiveRef,
   cameraOpen,
   cameraRef,
   machineConfirmedObjective,
@@ -72,10 +74,9 @@ export function useObjectiveSync({
   clearAutoMeasureOverlay,
   setObjectiveChangeInProgressState,
 }: UseObjectiveSyncArgs): UseObjectiveSyncResult {
-  const activeObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
     activeObjectiveRef.current = activeObjective;
-  }, [activeObjective]);
+  }, [activeObjective, activeObjectiveRef]);
 
   const [objectiveRefreshKey, setObjectiveRefreshKey] = useState<number>(0);
   const lastSyncedObjectiveRef = useRef<string | null>(null);
@@ -205,7 +206,6 @@ export function useObjectiveSync({
   }, [activeTool, commitActiveObjective, getMachineStateSnapshot, manualMeasureResetKey]);
 
   return {
-    activeObjectiveRef,
     objectiveRefreshKey,
     lastSyncedObjectiveRef,
     commitActiveObjective,
