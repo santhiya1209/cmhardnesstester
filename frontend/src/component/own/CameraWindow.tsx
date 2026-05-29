@@ -144,9 +144,11 @@ export type CameraWindowHandle = {
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 4;
 const ZOOM_STEP = 1.25;
-const COORDINATE_SCALE = 1024;
-const DEFAULT_CAMERA_X = 1024;
-const DEFAULT_CAMERA_Y = 1024;
+// Status-bar X/Y are reported in TRUE image-pixel coordinates (0..width-1,
+// 0..height-1) for the fixed 2592×1944 sensor — independent of zoom, panel
+// size, and CSS scaling. Defaults sit at image center until the first move.
+const DEFAULT_CAMERA_X = 1296;
+const DEFAULT_CAMERA_Y = 972;
 
 function statusLabel(o: { sdkLoaded: boolean; open: boolean; streaming: boolean }) {
   if (!o.sdkLoaded) return { label: 'SDK not loaded', color: 'warning' as const };
@@ -645,15 +647,15 @@ function CameraWindowImpl(
 
       setCursorDisplay(displayPoint);
       const imagePoint = displayToImage(displayPoint, placement, imageSize);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-coordinate] displayX=${Math.round(displayPoint.x)} displayY=${Math.round(displayPoint.y)} imageX=${Math.round(imagePoint.x)} imageY=${Math.round(imagePoint.y)} canvasWidth=${canvasRef.current?.width ?? 0} canvasHeight=${canvasRef.current?.height ?? 0} imageWidth=${imageSize.width} imageHeight=${imageSize.height}`
+      );
+      // TRUE image-pixel coordinates (0..width-1 / 0..height-1). displayToImage
+      // already cancels zoom/panel/CSS scaling; clamp to the valid index range.
       setCursorCoordinate({
-        x: Math.max(
-          0,
-          Math.min(COORDINATE_SCALE, (imagePoint.x / imageSize.width) * COORDINATE_SCALE)
-        ),
-        y: Math.max(
-          0,
-          Math.min(COORDINATE_SCALE, (imagePoint.y / imageSize.height) * COORDINATE_SCALE)
-        ),
+        x: Math.max(0, Math.min(imageSize.width - 1, imagePoint.x)),
+        y: Math.max(0, Math.min(imageSize.height - 1, imagePoint.y)),
       });
     },
     [imageSize]
