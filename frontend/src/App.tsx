@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
-import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog';
 import { useCalibrationDialogSlot } from '@/features/calibration/useCalibrationDialogSlot';
-import CameraSettingDialog from '@/component/own/CameraSettingDialog';
-import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
-import MicrometerConfigDialog from '@/component/own/MicrometerConfigDialog';
-import GenericSettingDialog from '@/component/own/GenericSettingDialog';
-import OtherSettingDialog from '@/component/own/OtherSettingDialog';
-import RestoreFactoryDialog from '@/component/own/RestoreFactoryDialog';
-import SerialPortSettingDialog from '@/component/own/SerialPortSettingDialog';
+import AppDialogs from '@/features/shell/AppDialogs';
 import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
 import { useCalibrationSettings } from '@/hooks/queries/useCalibrationSettings';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
@@ -44,7 +37,6 @@ import StatusBar, {
   type AutoMeasureStatusState,
   type CameraStatusState,
 } from '@/component/own/StatusBar';
-import TestRecordsDialog from '@/component/own/TestRecordsDialog';
 import { useMeasurements } from '@/hooks/queries/useMeasurements';
 import { useToolbarActionPersistence } from '@/features/shell/useToolbarActionPersistence';
 import { useActiveTool } from '@/hooks/useActiveTool';
@@ -55,7 +47,6 @@ import {
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
 import { useRenderCount } from '@/utils/renderStats';
-import { exitApp } from '@/api/system';
 import { dispatchToolbarAction } from '@/utils/toolDispatcher';
 import { useMenuActions } from '@/features/shell/useMenuActions';
 import { useToolDispatchContext } from '@/features/shell/useToolDispatchContext';
@@ -121,14 +112,6 @@ import {
   calculateVickersFromPixels,
   resolveManualCalibration,
 } from '@/utils/manualMeasure';
-import Dialog from '@mui/material/Dialog';
-import DialogTitle from '@mui/material/DialogTitle';
-import DialogContent from '@mui/material/DialogContent';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContentText from '@mui/material/DialogContentText';
-import MuiButton from '@mui/material/Button';
-import Snackbar from '@mui/material/Snackbar';
-import Alert from '@mui/material/Alert';
 
 const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
@@ -2228,129 +2211,27 @@ function App() {
         autoMeasureStatus={autoMeasureStatus}
       />
 
-      <AutoMeasureSettingsDialog
-        open={activeDialog === 'autoMeasure'}
-        onClose={closeDialog}
-        onPreviewChange={handleAutoMeasureSettingsPreviewChange}
-        onSaved={handleAutoMeasureSettingsSaved}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+      <AppDialogs
+        activeDialog={activeDialog}
+        closeDialog={closeDialog}
+        setStatusMessage={setStatusMessage}
         activeObjective={activeObjective}
-      />
-      <LineColorSettingDialog
-        open={activeDialog === 'lineColor'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-        onSaved={() => {
-          void refetchLineColor();
-        }}
-      />
-      <MicrometerConfigDialog
-        open={activeDialog === 'micrometer'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-        onSaved={() => {
-          void refetchMicrometerConfig();
-        }}
-      />
-      <SerialPortSettingDialog
-        open={activeDialog === 'serialPort'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        handleAutoMeasureSettingsPreviewChange={handleAutoMeasureSettingsPreviewChange}
+        handleAutoMeasureSettingsSaved={handleAutoMeasureSettingsSaved}
+        refetchLineColor={refetchLineColor}
+        refetchMicrometerConfig={refetchMicrometerConfig}
+        refetchMeasurements={refetchMeasurements}
+        refetchToolbarState={refetchToolbarState}
         currentMachinePort={currentMachinePort}
-        onApplyMachinePort={applyMachinePort}
-      />
-      <CameraSettingDialog
-        open={activeDialog === 'camera'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-      />
-      <GenericSettingDialog
-        open={activeDialog === 'generic'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-      />
-      <OtherSettingDialog
-        open={activeDialog === 'other'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-      />
-      <RestoreFactoryDialog
-        open={activeDialog === 'restoreFactory'}
-        onClose={closeDialog}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
-        onRestored={() => {
-          void refetchLineColor();
-          void refetchMeasurements();
-          void refetchToolbarState();
-        }}
-      />
-      <Dialog
-        open={exitConfirmOpen}
-        onClose={() => setExitConfirmOpen(false)}
-      >
-        <DialogTitle>Exit Hardness Tester?</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Any unsaved measurements will be lost. Continue?
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <MuiButton onClick={() => setExitConfirmOpen(false)}>Cancel</MuiButton>
-          <MuiButton
-            color="error"
-            variant="contained"
-            onClick={() => {
-              void exitApp().catch((err) => {
-                setExitConfirmOpen(false);
-                setUnavailableMsg(
-                  `Exit failed: ${err instanceof Error ? err.message : String(err)}`
-                );
-              });
-            }}
-          >
-            Exit
-          </MuiButton>
-        </DialogActions>
-      </Dialog>
-
-      <Snackbar
-        open={unavailableMsg !== null}
-        autoHideDuration={unavailableMsg?.startsWith('Calibration not found') ? null : 3000}
-        onClose={() => setUnavailableMsg(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert
-          severity="warning"
-          variant="filled"
-          onClose={() => setUnavailableMsg(null)}
-          action={
-            unavailableMsg?.startsWith('Calibration not found') ? (
-              <MuiButton
-                color="inherit"
-                size="small"
-                onClick={() => {
-                  setUnavailableMsg(null);
-                  openCalibrationPanel('snackbar');
-                }}
-              >
-                Go to Calibration
-              </MuiButton>
-            ) : undefined
-          }
-          sx={{ width: '100%' }}
-        >
-          {unavailableMsg}
-        </Alert>
-      </Snackbar>
-
-      <TestRecordsDialog
-        open={activeDialog === 'testRecords'}
-        onClose={closeDialog}
+        applyMachinePort={applyMachinePort}
+        exitConfirmOpen={exitConfirmOpen}
+        setExitConfirmOpen={setExitConfirmOpen}
+        unavailableMsg={unavailableMsg}
+        setUnavailableMsg={setUnavailableMsg}
+        openCalibrationPanel={openCalibrationPanel}
         measurements={measurements}
-        initialMeasurementIds={testRecordMeasurementIds}
-        onStatusChange={(message) => setStatusMessage(`System Status: ${message}`)}
+        testRecordMeasurementIds={testRecordMeasurementIds}
       />
-
     </Box>
   );
 }
