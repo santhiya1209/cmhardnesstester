@@ -60,8 +60,21 @@ app.commandLine.appendSwitch('v8-cache-options', 'none');
 const { registerIpc } = require('./ipc');
 const { cameraService } = require('./cameraService');
 const { micrometerService } = require('./micrometerService');
+const electronIsDev = require('electron-is-dev');
 
-const isDev = !app.isPackaged;
+const isDev = electronIsDev;
+
+async function installDevtools() {
+  if (!isDev) return;
+
+  try {
+    const { default: installExtension, REACT_DEVELOPER_TOOLS } = require('electron-devtools-installer');
+    await installExtension(REACT_DEVELOPER_TOOLS);
+    console.log('[react-devtools] installed');
+  } catch (err) {
+    console.error('[react-devtools] failed', err);
+  }
+}
 const DEV_URL = process.env.VITE_DEV_URL || 'http://localhost:5173';
 
 let mainWindow = null;
@@ -133,7 +146,7 @@ async function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Menu.setApplicationMenu(null);
   // Brand the Windows taskbar group so pinning/launch shows the productName
   // and our icon instead of the bare electron.exe label.
@@ -141,6 +154,9 @@ app.whenReady().then(() => {
     app.setAppUserModelId('com.chennaimetco.vickersmeasurementsoftware');
   }
   app.setName('Vickers Measurement Software');
+
+  await installDevtools();
+
   registerIpc();
   createWindow();
 });
@@ -163,3 +179,5 @@ app.on('before-quit', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
+
+

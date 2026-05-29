@@ -12,7 +12,7 @@ function pidsForPort(port) {
   // vary, and any non-zero PID bound to the port is something we want gone.
   let out = '';
   try {
-    out = execSync(`netstat -ano -p tcp`, { encoding: 'utf8' });
+    out = execSync(`netstat -ano`, { encoding: 'utf8' });
   } catch {
     return [];
   }

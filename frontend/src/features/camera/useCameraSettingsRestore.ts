@@ -1,0 +1,96 @@
+import { useCallback } from 'react';
+import { getCameraSetting } from '@/api/camera';
+import { dropPendingCameraFrames } from '@/hooks/useCameraStream';
+
+export interface UseCameraSettingsRestoreInput {
+  refetchCameraSetting: () => Promise<void> | void;
+}
+
+export interface CameraSettingsRestoreApi {
+  restoreCameraSettings: () => Promise<void>;
+}
+
+// Camera-settings restore on device open. Reads the most recently persisted
+// gain + exposure, drains pending frames, applies each to the SDK, then syncs
+// the React-side cache. Three independent try/catches are deliberate: a gain
+// failure must not block the exposure apply, an exposure failure must not
+// block the refetch, and the outer try/catch must surface load failures
+// without aborting the open path.
+export function useCameraSettingsRestore(
+  input: UseCameraSettingsRestoreInput
+): CameraSettingsRestoreApi {
+  const { refetchCameraSetting } = input;
+
+  const restoreCameraSettings = useCallback(async () => {
+    // Apply previously-saved camera settings (exposure / analog gain)
+    // to the SDK now that the handle is valid. Without this, every app
+    // restart resets the live image to the SDK's hardware defaults.
+    // Read fresh from the API to avoid the stale-closure value of
+    // `savedCameraSetting`; also keep the React-side cache in sync.
+    try {
+      const items = await getCameraSetting();
+      const saved =
+        items.length > 0
+          ? [...items].sort(
+              (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+            )[0]
+          : null;
+      if (saved) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[camera-settings-startup-restore] loaded gain=${saved.analogGain} exposureMs=${saved.exposureTimeMs}`
+        );
+        // Apply the saved analog gain to the real camera SDK now that
+        // the handle is valid. Without this the live image resets to the
+        // SDK's hardware defaults on every restart.
+        try {
+          dropPendingCameraFrames('gain-change');
+          // eslint-disable-next-line no-console
+          console.log(`[camera-settings-apply] gain=${saved.analogGain}`);
+          const gainReply = await window.hardnessCamera.setGain(saved.analogGain);
+          if (gainReply.ok && typeof gainReply.gain === 'number') {
+            // eslint-disable-next-line no-console
+            console.log(`[camera-settings-verify] gain=${gainReply.gain}`);
+          } else {
+            // eslint-disable-next-line no-console
+            console.error('[camera-settings-error] startup gain apply failed', gainReply);
+          }
+        } catch (gainErr) {
+          // eslint-disable-next-line no-console
+          console.error('[camera-settings-error] startup gain apply threw', gainErr);
+        }
+        // Apply the saved exposure time to the real camera SDK.
+        try {
+          dropPendingCameraFrames('exposure-change');
+          // eslint-disable-next-line no-console
+          console.log(`[camera-settings-apply] exposureMs=${saved.exposureTimeMs}`);
+          const expReply = await window.hardnessCamera.setExposure(saved.exposureTimeMs);
+          if (expReply.ok && typeof expReply.exposureMs === 'number') {
+            // eslint-disable-next-line no-console
+            console.log(`[camera-settings-verify] exposureMs=${expReply.exposureMs}`);
+          } else {
+            // eslint-disable-next-line no-console
+            console.error('[camera-settings-error] startup exposure apply failed', expReply);
+          }
+        } catch (expErr) {
+          // eslint-disable-next-line no-console
+          console.error('[camera-settings-error] startup exposure apply threw', expErr);
+        }
+      } else {
+        // eslint-disable-next-line no-console
+        console.log('[camera-settings-startup-restore] no saved settings to restore');
+      }
+    } catch (loadErr) {
+      // eslint-disable-next-line no-console
+      console.error('[camera-settings-error] failed to load saved settings', loadErr);
+    }
+    // Sync the React-side cache so the dialog opens with the right values.
+    try {
+      await refetchCameraSetting();
+    } catch {
+      /* non-fatal */
+    }
+  }, [refetchCameraSetting]);
+
+  return { restoreCameraSettings };
+}

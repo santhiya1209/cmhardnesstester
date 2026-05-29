@@ -26,7 +26,7 @@ import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { useMachineConnection } from '@/hooks/useMachineConnection';
 import { getLatestMicrometerReading } from '@/api/micrometer';
 import { measureVickersAuto, measureVickersAutoPreview } from '@/api/system';
-import { getCameraSetting } from '@/api/camera';
+import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRestore';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
@@ -45,14 +45,12 @@ import StatusBar, {
   type CameraStatusState,
 } from '@/component/own/StatusBar';
 import TestRecordsDialog from '@/component/own/TestRecordsDialog';
-import { useSaveToolbarState } from '@/hooks/mutations/useSaveToolbarState';
 import { useMeasurements } from '@/hooks/queries/useMeasurements';
-import { useToolbarState } from '@/hooks/queries/useToolbarState';
+import { useToolbarActionPersistence } from '@/features/shell/useToolbarActionPersistence';
 import { useActiveTool } from '@/hooks/useActiveTool';
 import {
   getLastPaintEpoch,
   getLastPaintedFrameId,
-  dropPendingCameraFrames,
   resetCameraSession,
 } from '@/hooks/useCameraStream';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
@@ -63,11 +61,10 @@ import { openImageDialog } from '@/api/system';
 import { saveImageDialog } from '@/api/system';
 import { exitApp } from '@/api/system';
 import { dispatchToolbarAction, type ToolDispatchContext } from '@/utils/toolDispatcher';
-import { dispatchMenuAction } from '@/utils/menuDispatcher';
+import { useMenuActions } from '@/features/shell/useMenuActions';
 import { useSetStatusMessage } from '@/contexts/StatusMessageContext';
-import { useDialog, type DialogKey } from '@/contexts/DialogContext';
+import { useDialog } from '@/contexts/DialogContext';
 import { TOOL_ACTION_TO_TOOL, type ToolbarActionId } from '@/types/tool';
-import type { ConfigDialogId, MenuActionId } from '@/types/menu';
 import type {
   AutoMeasureCorners,
   AutoMeasureGraphics,
@@ -107,6 +104,8 @@ import {
   type RunAutoMeasure,
 } from '@/features/autoMeasure/autoMeasureHelpers';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
+import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
+import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
 import type { IndentStatus, MachineState } from '@/types/machine';
@@ -254,13 +253,9 @@ function App() {
     loading: measurementsLoading,
     refetch: refetchMeasurements,
   } = useMeasurements();
-  const {
-    data: toolbarState,
-    error: toolbarStateError,
-    loading: toolbarStateLoading,
-    refetch: refetchToolbarState,
-  } = useToolbarState();
-  const { saveToolbarState } = useSaveToolbarState();
+  const { persistToolbarAction, refetchToolbarState } = useToolbarActionPersistence({
+    setStatusMessage,
+  });
   const { data: lineColorSetting, refetch: refetchLineColor } = useLineColorSetting();
   const {
     data: calibrationSettings,
@@ -299,6 +294,7 @@ function App() {
     }
   }, [micrometerEnabled]);
   const { refetch: refetchCameraSetting } = useCameraSetting();
+  const { restoreCameraSettings } = useCameraSettingsRestore({ refetchCameraSetting });
   // Machine COM port lifecycle (selection, connect/disconnect, one-shot
   // auto-connect from persisted settings) lives in useMachineConnection so
   // App is not in the business of orchestrating serial reconnects.
@@ -339,8 +335,15 @@ function App() {
     sync();
     return machineStore.subscribe(sync);
   }, [machineStore]);
-  const restoredToolbarActionRef = useRef(false);
-  const manualMeasurementIdRef = useRef<string | null>(null);
+  const {
+    manualMeasurementIdRef,
+    manualMeasureResetKey,
+    setManualMeasureResetKey,
+    latestManualPixels,
+    setLatestManualPixels,
+    latestManualPixelsRef,
+    resetManualMeasure,
+  } = useManualMeasureLifecycle();
   const { activeTool, setActiveTool } = useActiveTool('pointer');
   const overlay = useImageOverlay();
   const lineThickness = useLineThickness();
@@ -393,7 +396,6 @@ function App() {
   const previewMeasurementRef = useRef<{ d1Pixels: number; d2Pixels: number; confidence: number } | null>(null);
   const autoMeasureSettingsOpenRef = useRef(false);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
-  const [manualMeasureResetKey, setManualMeasureResetKey] = useState(0);
   // Magnifier is an independent helper overlay (not a mode). It can be on
   // alongside Manual Measure for precision diamond-tip placement, and turns
   // off when the user switches to Pointer/Auto Measure (see handleToolbarSelect).
@@ -614,47 +616,6 @@ function App() {
     // nulling alone was leaving yellow lines on screen across objective swaps.
     setAutoMeasureClearNonce((n) => n + 1);
   }, [activeObjective, shouldPreserveAfterImpressOverlay]);
-  // Last manual-measure pixel diagonals (d1Px = horizontal, d2Px = vertical).
-  // Captured in handleManualMeasurementUpdated and passed to CalibrationDialog
-  // so opening the dialog auto-fills Pixel Length X / Y. State (not ref) so
-  // the dialog re-renders with fresh values when re-opened.
-  const [latestManualPixels, setLatestManualPixels] = useState<{
-    d1Px: number;
-    d2Px: number;
-  } | null>(null);
-  // Mirror of latestManualPixels for synchronous reads from async callbacks
-  // (e.g. the auto-measure preview result handler, which needs to compute a
-  // geometry delta vs. the previous pixels without closing over stale state).
-  const latestManualPixelsRef = useRef<{ d1Px: number; d2Px: number } | null>(null);
-  useEffect(() => {
-    latestManualPixelsRef.current = latestManualPixels;
-  }, [latestManualPixels]);
-  // True while the user is doing a Manual Measure that was launched from the
-  // Calibration dialog. handleManualMeasurementUpdated checks this flag so it
-  // can suppress measurement-row creation (calibration mode is pixels-only)
-  // and the calibration dialog re-opens once the user is done.
-  const calibrationManualModeRef = useRef(false);
-  // Mutually-exclusive overlay mode for the Calibration panel. Without this
-  // the shared AutoMeasureOverlay and ManualMeasureOverlay state could both
-  // be populated while Calibration is open — clicking Auto, then Manual,
-  // would leave the yellow auto guides visible underneath the manual
-  // draggable lines. Updated only from the three calibration entry points
-  // (auto click, manual click, dialog close).
-  // The live value is read via calibrationMeasureModeRef; only the setter is
-  // bound here so a mode change still triggers a re-render.
-  const [, setCalibrationMeasureModeState] = useState<
-    'none' | 'auto' | 'manual'
-  >('none');
-  const calibrationMeasureModeRef = useRef<'none' | 'auto' | 'manual'>('none');
-  const setCalibrationMeasureMode = useCallback(
-    (next: 'none' | 'auto' | 'manual', _reason: string) => {
-      const prev = calibrationMeasureModeRef.current;
-      if (prev === next) return;
-      calibrationMeasureModeRef.current = next;
-      setCalibrationMeasureModeState(next);
-    },
-    []
-  );
   // Bumps every time the machine confirms a new objective via L1OK / L2OK RX.
   // CameraWindow watches it to invalidate any per-objective caches and force a
   // fresh draw — separate from activeObjective so we can trigger a refresh
@@ -695,6 +656,18 @@ function App() {
       return next;
     });
   }, []);
+
+  const {
+    calibrationManualModeRef,
+    calibrationMeasureModeRef,
+    setCalibrationMeasureMode,
+    handleCalibrationManualMeasure,
+  } = useCalibrationManualMeasure({
+    clearAutoMeasureOverlay,
+    setActiveTool,
+    setAutoMeasureSessionActive,
+    setStatusMessage,
+  });
 
   const commitActiveObjective = useCallback(
     async (objective: '10X' | '40X', source: ObjectiveCommitSource) => {
@@ -869,28 +842,6 @@ function App() {
     },
     [autoMeasureSettings, setActiveTool, setCalibrationMeasureMode]
   );
-
-  // Calibration-mode Manual Measure: activates the manual measure tool while
-  // keeping the calibration PANEL open (panel layout, not modal). The user
-  // drags the cross over the indent on the live image; each drag updates
-  // latestManualPixels (and emits [calibration-drag-update]); the panel's
-  // live-update effect syncs Pixel Length X / Y in real time. The flag
-  // suppresses measurement-row creation so the calibration drag does not
-  // pollute the measurement table.
-  const handleCalibrationManualMeasure = useCallback(() => {
-    // Mutually-exclusive calibration overlay: clear any auto state before
-    // entering manual mode so the yellow auto guides disappear immediately.
-    if (calibrationMeasureModeRef.current === 'auto') {
-    }
-    setAutoMeasureSessionActive(false);
-    clearAutoMeasureOverlay('switch-to-manual');
-    setCalibrationMeasureMode('manual', 'manual-measure-click');
-    calibrationManualModeRef.current = true;
-    setActiveTool('manualMeasure');
-    setStatusMessage(
-      'System Status: Calibration Manual Measure active: drag the cross over the indent. Pixel X/Y update live in the panel.'
-    );
-  }, [clearAutoMeasureOverlay, setActiveTool, setCalibrationMeasureMode]);
 
   // Triggered immediately after Add Calibration succeeds. Reads the CURRENT
   // D1/D2 line pixels (already in the calibration payload), runs the
@@ -1140,11 +1091,6 @@ function App() {
   ]);
 
   const handleUpdateShape = overlay.updateShape;
-
-  const resetManualMeasure = useCallback(() => {
-    manualMeasurementIdRef.current = null;
-    setManualMeasureResetKey((current) => current + 1);
-  }, []);
 
   const openCalibrationPanel = useCallback(
     (source: 'menu' | 'toolbar' | 'snackbar' = 'menu') => {
@@ -3040,7 +2986,7 @@ function App() {
             // Line drag must NEVER create a new row — that's how depth was
             // silently being lost. Fall back to the active row id so an
             // empty autoMeasurementIdRef (cross-flow edge case) still
-            // resolves to PUT instead of POST.
+
             const targetId =
               autoMeasurementIdRef.current ?? getActiveMeasurementId() ?? undefined;
             const timestamp = new Date().toISOString();
@@ -3438,74 +3384,7 @@ function App() {
             cameraMeasurementSessionIdRef.current += 1;
             clearActiveMeasurement('camera-session-start');
 
-            // Apply previously-saved camera settings (exposure / analog gain)
-            // to the SDK now that the handle is valid. Without this, every app
-            // restart resets the live image to the SDK's hardware defaults.
-            // Read fresh from the API to avoid the stale-closure value of
-            // `savedCameraSetting`; also keep the React-side cache in sync.
-            try {
-              const items = await getCameraSetting();
-              const saved =
-                items.length > 0
-                  ? [...items].sort(
-                      (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-                    )[0]
-                  : null;
-              if (saved) {
-                // eslint-disable-next-line no-console
-                console.log(
-                  `[camera-settings-startup-restore] loaded gain=${saved.analogGain} exposureMs=${saved.exposureTimeMs}`
-                );
-                // Apply the saved analog gain to the real camera SDK now that
-                // the handle is valid. Without this the live image resets to the
-                // SDK's hardware defaults on every restart.
-                try {
-                  dropPendingCameraFrames('gain-change');
-                  // eslint-disable-next-line no-console
-                  console.log(`[camera-settings-apply] gain=${saved.analogGain}`);
-                  const gainReply = await window.hardnessCamera.setGain(saved.analogGain);
-                  if (gainReply.ok && typeof gainReply.gain === 'number') {
-                    // eslint-disable-next-line no-console
-                    console.log(`[camera-settings-verify] gain=${gainReply.gain}`);
-                  } else {
-                    // eslint-disable-next-line no-console
-                    console.error('[camera-settings-error] startup gain apply failed', gainReply);
-                  }
-                } catch (gainErr) {
-                  // eslint-disable-next-line no-console
-                  console.error('[camera-settings-error] startup gain apply threw', gainErr);
-                }
-                // Apply the saved exposure time to the real camera SDK.
-                try {
-                  dropPendingCameraFrames('exposure-change');
-                  // eslint-disable-next-line no-console
-                  console.log(`[camera-settings-apply] exposureMs=${saved.exposureTimeMs}`);
-                  const expReply = await window.hardnessCamera.setExposure(saved.exposureTimeMs);
-                  if (expReply.ok && typeof expReply.exposureMs === 'number') {
-                    // eslint-disable-next-line no-console
-                    console.log(`[camera-settings-verify] exposureMs=${expReply.exposureMs}`);
-                  } else {
-                    // eslint-disable-next-line no-console
-                    console.error('[camera-settings-error] startup exposure apply failed', expReply);
-                  }
-                } catch (expErr) {
-                  // eslint-disable-next-line no-console
-                  console.error('[camera-settings-error] startup exposure apply threw', expErr);
-                }
-              } else {
-                // eslint-disable-next-line no-console
-                console.log('[camera-settings-startup-restore] no saved settings to restore');
-              }
-            } catch (loadErr) {
-              // eslint-disable-next-line no-console
-              console.error('[camera-settings-error] failed to load saved settings', loadErr);
-            }
-            // Sync the React-side cache so the dialog opens with the right values.
-            try {
-              await refetchCameraSetting();
-            } catch {
-              /* non-fatal */
-            }
+            await restoreCameraSettings();
 
             // Surface micrometer outcome. The micrometer port is opened only
             // when the user has enabled it AND selected a port that exists in
@@ -3648,7 +3527,7 @@ function App() {
       setActiveTool,
       currentMachinePort,
       micrometerConfig,
-      refetchCameraSetting,
+      restoreCameraSettings,
       refetchCalibrationSettings,
     ]
   );
@@ -3661,39 +3540,14 @@ function App() {
     return measurements.map((measurement) => measurement.id);
   }, [initialTestRecordMeasurementIds, measurements]);
 
-  const openConfigDialog = useCallback((id: ConfigDialogId) => {
-    if (id === 'config:calibration') {
-      openCalibrationPanel('menu');
-      return;
-    }
-    if (id === 'config:camera') {
-      openCameraSettingsPanel();
-      return;
-    }
-
-    const map: Record<Exclude<ConfigDialogId, 'config:calibration' | 'config:camera'>, DialogKey> = {
-      'config:lineColor': 'lineColor',
-      'config:autoMeasure': 'autoMeasure',
-      'config:micrometer': 'micrometer',
-      'config:serialPort': 'serialPort',
-      'config:generic': 'generic',
-      'config:other': 'other',
-      'config:restoreFactory': 'restoreFactory',
-    };
-    setActiveDialog(map[id]);
-  }, [openCalibrationPanel, openCameraSettingsPanel]);
-
-  const handleMenuSelect = useCallback(
-    (action: MenuActionId) => {
-      dispatchMenuAction(action, {
-        ...buildSharedCtx(),
-        openConfigDialog,
-        openSampleInfo: () => openTestRecordsDialog([]),
-        exitApplication: () => setExitConfirmOpen(true),
-      });
-    },
-    [buildSharedCtx, openConfigDialog]
-  );
+  const { handleMenuSelect } = useMenuActions({
+    openCalibrationPanel,
+    openCameraSettingsPanel,
+    openTestRecordsDialog,
+    setActiveDialog,
+    setExitConfirmOpen,
+    buildSharedCtx,
+  });
 
   const handleToolbarSelect = useCallback(
     (action: ToolbarActionId) => {
@@ -3726,17 +3580,7 @@ function App() {
       }
 
       dispatchToolbarAction(action, buildSharedCtx());
-      void (async () => {
-        try {
-          await saveToolbarState({
-            id: toolbarState?.id,
-            values: { lastAction: action },
-          });
-          await refetchToolbarState();
-        } catch {
-          // error surfaces via useSaveToolbarState's own error state
-        }
-      })();
+      persistToolbarAction(action);
     },
     [
       activeTool,
@@ -3745,11 +3589,9 @@ function App() {
       committedAutoMeasureOverlay,
       magnifierEnabled,
       overlay,
+      persistToolbarAction,
       previewAutoMeasureOverlay,
-      refetchToolbarState,
-      saveToolbarState,
       setActiveTool,
-      toolbarState?.id,
     ]
   );
 
@@ -3758,23 +3600,6 @@ function App() {
     const hex = LINE_COLOR_HEX[lineColorSetting?.lineColor ?? DEFAULT_LINE_COLOR];
     document.documentElement.style.setProperty('--line-color', hex);
   }, [lineColorSetting?.lineColor]);
-
-  useEffect(() => {
-    if (toolbarStateLoading || restoredToolbarActionRef.current) {
-      return;
-    }
-
-    restoredToolbarActionRef.current = true;
-
-    if (toolbarStateError) {
-      setStatusMessage(`System Status: ${toolbarStateError}`);
-      return;
-    }
-
-    if (toolbarState) {
-      setStatusMessage(`System Status: Last toolbar action: ${toolbarState.lastAction}`);
-    }
-  }, [toolbarState, toolbarStateError, toolbarStateLoading]);
 
   const handleOpenTestRecords = useCallback((measurementIds: string[]) => {
     openTestRecordsDialog(measurementIds);
