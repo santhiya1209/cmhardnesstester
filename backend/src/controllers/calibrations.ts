@@ -1,17 +1,26 @@
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { asyncHandler } from '../lib/http';
 import { createCrudController } from './create-crud-controller';
 import { calibrationsService } from '../lib/services/calibrations.service';
 import type { ValidatedRequest } from '../lib/validate';
-import type { ImportCalibrationsInput } from '../zod/calibrations.schema';
+import type { ImportCalibrationsInput, CreateCalibrationInput } from '../zod/calibrations.schema';
 
 const crud = createCrudController(calibrationsService);
 
-export const createCalibration = crud.create;
 export const getCalibrations = crud.getAll;
 export const getCalibrationById = crud.getById;
 export const updateCalibration = crud.update;
 export const deleteCalibration = crud.remove;
+
+export const createCalibration = asyncHandler(async (req: Request, res: Response) => {
+  const body = (req as unknown as { validated: { body: CreateCalibrationInput } }).validated.body;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[calibration-db-save] objective=${body.zoomTime} force=${body.force} hardnessLevel=${body.hardnessLevel} pixelLengthX=${body.pixelLengthX} realDistX=${body.realDistanceX ?? 0}`
+  );
+  const created = await calibrationsService.create(body);
+  res.status(201).json(created);
+});
 
 export const clearCalibrations = asyncHandler(async (_req, res: Response) => {
   await calibrationsService.clearAll();

@@ -31,6 +31,10 @@ function MicrometerDisplayImpl({ sx, enabled = true }: Props) {
 
   const compact = !enabled ? 'Manual Mode' : latched ?? 'Waiting for data...';
 
+  useEffect(() => {
+    console.log(`[micrometer][ui-display] value=${value} displayed="${compact}"`);
+  }, [value, compact]);
+
   const tooltip = !enabled
     ? 'Micrometer disabled — depth is entered manually per row in the Measurements table.'
     : !connected

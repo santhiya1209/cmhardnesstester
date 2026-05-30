@@ -3,46 +3,12 @@ module.exports = {
     name: 'VickersMeasurementSoftware',
     executableName: 'VickersMeasurementSoftware',
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
-    // App icon: drop `icon.ico` (win) / `icon.icns` (mac) / `icon.png` (linux)
-    // into build/ and uncomment the line below. Without this the packager
-    // falls back to Electron's default icon.
-    // icon: 'build/icon',
     asar: true,
     extraResource: [
-      // .env.prod files are NOT shipped — their parallel copy races with
-      // VS Code / Codex file watchers and produces EBUSY during `npm run
-      // make`. Frontend env vars are already baked into the Vite bundle at
-      // build time. Root + backend env vars (micrometer port/baud, backend
-      // PORT, SQLite DB location) fall back to defaults / undefined at
-      // runtime in the packaged app — set via OS env vars or wire defaults
-      // in code if needed.
-      //
-      // backend/native is NOT an extraResource — the .node files ride inside
-      // app.asar and are auto-extracted to app.asar.unpacked/ by the
-      // @electron-forge/plugin-auto-unpack-natives plugin below.
-      // native/serial-addon is intentionally NOT bundled.
-      //
-      // Third-party runtime DLLs the addon depends on. extraResource flattens
-      // the source folder into resources/<name>/ at install time:
-      //   drivers/opencv     -> resources/opencv/
-      //   drivers/DVP2 x64   -> resources/DVP2 x64/
-      // cameraService.js adds these to PATH / passes resources/DVP2 x64 as the
-      // DVP dllSearchDir at startup. The other drivers/ subfolders (DVP2,
-      // BasedCam3 x64, GigE Camera, USB Camera, USB3 Vision Camera,
-      // XGigeGrabber) are scaffold for future per-camera installers; add them
-      // here when populated.
       'drivers/opencv',
       'drivers/DVP2 x64',
-      // vc_redist.x64.exe — chained by build/installer.nsh during install.
-      // Fetched on demand by scripts/fetch-vc-redist.js (prepackage hook), not
-      // committed to git.
       'drivers/redist',
-      // Per-camera driver installers. Each subfolder may contain a vendor
-      // setup .exe; build/installer.nsh detects what's present at install
-      // time and offers the user a Yes/No prompt per available driver. Empty
-      // subfolders (only .gitkeep) are harmless — the NSIS scan finds nothing
-      // and continues. Lands at resources/installers/<vendor>/.
-      'drivers/installers',
+      'drivers/USB Camera',
     ],
     ignore: [
       /^\/release($|\/)/,
@@ -56,22 +22,27 @@ module.exports = {
       /^\/frontend\/package(-lock)?\.json$/,
       /^\/backend\/src($|\/)/,
       /^\/backend\/tsconfig\.json$/,
-      // hardness-addon native source + build intermediates — only the .node
-      // binary itself should travel into the asar. auto-unpack-natives moves
-      // it to app.asar.unpacked at package time.
-      /^\/backend\/native\/hardness-addon\/src($|\/)/,
-      /^\/backend\/native\/hardness-addon\/include($|\/)/,
-      /^\/backend\/native\/hardness-addon\/bin($|\/)/,
-      /^\/backend\/native\/hardness-addon\/node_modules($|\/)/,
-      /^\/backend\/native\/hardness-addon\/build\/(?!Release(\/|$))/,
-      /^\/backend\/native\/hardness-addon\/build\/Release\/.+\.(iobj|ipdb|pdb|exp|lib|obj)$/,
-      /^\/backend\/native\/hardness-addon\/build\/Release\/obj($|\/)/,
-      /^\/backend\/native\/hardness-addon\/build\/Release\/nothing\.lib$/,
-      /^\/backend\/native\/hardness-addon\/binding\.gyp$/,
-      /^\/backend\/native\/hardness-addon\/package(-lock)?\.json$/,
-      /^\/backend\/native\/hardness-addon\/README\.md$/,
-      // serial-addon excluded entirely per packaging decision.
-      /^\/native($|\/)/,
+      /^\/native\/hardness-addon\/src($|\/)/,
+      /^\/native\/hardness-addon\/include($|\/)/,
+      /^\/native\/hardness-addon\/bin($|\/)/,
+      /^\/native\/hardness-addon\/node_modules($|\/)/,
+      /^\/native\/hardness-addon\/build\/(?!Release(\/|$))/,
+      /^\/native\/hardness-addon\/build\/Release\/.+\.(iobj|ipdb|pdb|exp|lib|obj)$/,
+      /^\/native\/hardness-addon\/build\/Release\/obj($|\/)/,
+      /^\/native\/hardness-addon\/build\/Release\/nothing\.lib$/,
+      /^\/native\/hardness-addon\/binding\.gyp$/,
+      /^\/native\/hardness-addon\/package(-lock)?\.json$/,
+      /^\/native\/hardness-addon\/README\.md$/,
+      /^\/native\/serial-addon\/src($|\/)/,
+      /^\/native\/serial-addon\/node_modules($|\/)/,
+      /^\/native\/serial-addon\/build\/(?!Release(\/|$))/,
+      /^\/native\/serial-addon\/build\/Release\/.+\.(iobj|ipdb|pdb|exp|lib|obj)$/,
+      /^\/native\/serial-addon\/build\/Release\/obj($|\/)/,
+      /^\/native\/serial-addon\/binding\.gyp$/,
+      /^\/native\/serial-addon\/package(-lock)?\.json$/,
+      /^\/.claude($|\/)/,
+      /^\/.electron-dist($|\/)/,
+      /^\/.vscode($|\/)/,
     ],
   },
   rebuildConfig: {},
@@ -86,13 +57,6 @@ module.exports = {
         allowToChangeInstallationDirectory: true,
         perMachine: false,
         shortcutName: 'Vickers Measurement Software',
-        // Installer/app icon: drop build/icon.ico in the repo and uncomment
-        // the blocks below. Without these electron-builder uses NSIS defaults.
-        // win: { icon: 'build/icon.ico' },
-        // nsis: {
-        //   installerIcon: 'build/icon.ico',
-        //   uninstallerIcon: 'build/icon.ico',
-        // },
       },
     },
     { name: '@electron-forge/maker-zip', platforms: ['darwin'] },

@@ -214,6 +214,15 @@ function SerialPortSettingDialogImpl({
     }
   }, [micrometerData, micLoading, open]);
 
+  // Log what the dialog hydrated with so it's traceable in the console.
+  useEffect(() => {
+    if (!open || loading || micLoading) return;
+    const machine = data?.machineComPort ?? currentMachinePort ?? null;
+    const micrometer = micrometerData?.comPort ?? null;
+    // eslint-disable-next-line no-console
+    console.log(`[serial-port-ui] loaded machineComPort=${machine ?? '(none)'} micrometerComPort=${micrometer ?? '(none)'}`);
+  }, [open, loading, micLoading, data, micrometerData, currentMachinePort]);
+
   const handleStagePortChange = useCallback((field: StagePortField, value: string) => {
     setForm((current) => ({ ...current, [field]: value.length > 0 ? value : null }));
   }, []);
@@ -245,15 +254,20 @@ function SerialPortSettingDialogImpl({
         micrometerComPort.trim().length > 0 ? micrometerComPort.trim() : null;
       // Persist machine + XY/Z stage ports together. Machine port is now part
       // of the persisted record so the next launch can auto-connect.
+      // eslint-disable-next-line no-console
+      console.log(`[machine-port-save] port=${nextMachinePort ?? '(none)'}`);
       await saveSerialPortSetting({
         id: data?.id,
         values: { ...form, machineComPort: nextMachinePort },
       });
 
+      const micEnabled = micrometerData?.enabled ?? true;
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-port-save] port=${persistedMicrometerPort ?? '(none)'} enabled=${micEnabled}`);
       await saveMicrometerConfig({
         id: micrometerData?.id,
         values: {
-          enabled: micrometerData?.enabled ?? true,
+          enabled: micEnabled,
           comPort: persistedMicrometerPort,
         },
       });

@@ -312,7 +312,9 @@ class MicrometerService {
     }
 
     try {
-      wc.send('micrometer:state', this.getState());
+      const snapshot = this.getState();
+      console.log(`[micrometer][ipc-send] value=${snapshot.value}`);
+      wc.send('micrometer:state', snapshot);
     } catch (err) {
       console.error('[micrometer] IPC state send failed:', err && err.message ? err.message : err);
     }
@@ -428,6 +430,9 @@ class MicrometerService {
 
     this.portOpen = true;
     console.log(`[micrometer] open complete ${describeConfig(config)}`);
+    console.log(
+      `[micrometer][serial-open] path=${config.path} baudRate=${config.baudRate} dataBits=${config.dataBits} parity=${config.parity} stopBits=${config.stopBits}`
+    );
 
     this._primeControlLines(config.pulseMode);
     this._scheduleRequestPulse(config.pulseMode);
@@ -710,6 +715,11 @@ class MicrometerService {
       return;
     }
 
+    const chunkHex = Array.from(chunk.values())
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    console.log(`[micrometer][rx] bytes=${chunk.length} hex=${chunkHex}`);
+
     this.totalBytesReceived += chunk.length;
     this.rxBuffer = Buffer.from(Buffer.concat([this.rxBuffer, chunk]).subarray(-MAX_BUFFER_BYTES));
     this.asciiBuffer = Buffer.from(
@@ -735,6 +745,7 @@ class MicrometerService {
 
     for (const frame of frames) {
       const rawHex = bufferToHex(frame);
+      console.log(`[micrometer][frame] hex=${rawHex} length=${frame.length}`);
       if (rawHex !== this.lastCaptureCandidateHex) {
         this.lastCaptureCandidateHex = rawHex;
       }
@@ -751,6 +762,7 @@ class MicrometerService {
       if (!decoded) {
         continue;
       }
+      console.log(`[micrometer][decode] frame=${rawHex} value=${decoded.value} unit=${decoded.unit} source=${source}`);
 
       if (!this.lockedBaudRate && this.currentOpenConfig) {
         this.lockedBaudRate = this.currentOpenConfig.baudRate;
@@ -825,6 +837,13 @@ class MicrometerService {
       source: 'ascii',
     };
 
+    console.log(
+      `[micrometer][frame] hex=${rawHex} length=${frame.length}`
+    );
+    console.log(
+      `[micrometer][decode] frame=${rawHex} value=${decoded.value} unit=${decoded.unit} source=ascii`
+    );
+
     this.lastCandidateValue = decoded.value.toFixed(3);
     this.stableCount = STABLE_SAMPLE_COUNT;
     this._publishReading(decoded);
@@ -859,6 +878,7 @@ class MicrometerService {
       }
 
       this.rxBuffer = Buffer.from(this.rxBuffer.subarray(BINARY_FRAME_LENGTH));
+      console.log(`[micrometer][frame] hex=${validation.rawHex} length=${frame.length}`);
       this._handleValidFrame(frame);
     }
   }
@@ -868,6 +888,10 @@ class MicrometerService {
     if (!decoded) {
       return;
     }
+
+    console.log(
+      `[micrometer][decode] frame=${decoded.rawHex} value=${decoded.value} unit=${decoded.unit} source=binary`
+    );
 
     if (!this.lockedBaudRate && this.currentOpenConfig) {
       this.lockedBaudRate = this.currentOpenConfig.baudRate;
@@ -902,6 +926,7 @@ class MicrometerService {
   }
 
   _publishReading(decoded) {
+    console.log(`[micrometer][backend-value] value=${decoded.value} source=decoder`);
     const timestamp = Date.now();
     this.latestReading = {
       raw: decoded.rawHex,

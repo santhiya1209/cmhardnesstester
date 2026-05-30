@@ -31,7 +31,13 @@ export function useCalibrations() {
         return;
       }
 
-      setData(sortCalibrations(items));
+      const sorted = sortCalibrations(items);
+      if (sorted.length > 0) {
+        const objectives = [...new Set(sorted.map((c) => c.zoomTime))].join(',');
+        // eslint-disable-next-line no-console
+        console.log(`[calibration-restore] loadedCount=${sorted.length} objectives=${objectives}`);
+      }
+      setData(sorted);
     } catch (requestError) {
       if (requestIdRef.current !== requestId) {
         return;

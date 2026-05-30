@@ -37,11 +37,12 @@ export function useCalibrationSettings() {
         return;
       }
 
-      for (const _row of fetched) {
-        // SQLite stores a single per-axis ratio. Surface it as
-        // xUmPerPixel/yUmPerPixel so the operator can verify that the
-        // 40X (or any) calibration actually came back from disk and matches
-        // what was saved last session.
+      for (const row of fetched) {
+        const umpp = row.umPerPixel ?? row.pixelToMicron;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[calibration-restore] objective=${row.objective} umPerPixel=${umpp}`
+        );
       }
 
       setItems(fetched);

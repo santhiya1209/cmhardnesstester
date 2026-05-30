@@ -486,12 +486,22 @@ export function calculateVickersFromPixels({
   const yUmPerPixel = legacyCalibration?.micronPerPixelY ?? umPerPixel;
 
   if (umPerPixel <= 0 || xUmPerPixel <= 0 || yUmPerPixel <= 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[calibration-apply-skipped] reason=no-matching-calibration objective=${normalizedObjective}`
+    );
     return {
       ok: false,
       reason: `Calibration not found for ${normalizedObjective}. Please calibrate this objective before measurement.`,
       normalizedObjective,
     };
   }
+
+  const calibrationSource = calibration ? 'calibration-settings' : 'legacy-calibration';
+  // eslint-disable-next-line no-console
+  console.log(
+    `[calibration-apply] objective=${normalizedObjective} umPerPixel=${umPerPixel} source=${calibrationSource}`
+  );
 
   const d1Um = d1Px * xUmPerPixel;
   const d2Um = d2Px * yUmPerPixel;

@@ -421,6 +421,14 @@ function CalibrationDialogImpl({
       // known Hardness Value + Force, then per-axis coefficients are
       // derived as D_um / pixelLengthX|Y. realDistanceX/Y carries D_um.
       const savedCalibration = await saveCalibration(payload);
+      const umPerPixel =
+        payload.pixelLengthX > 0 && (payload.realDistanceX ?? 0) > 0
+          ? (payload.realDistanceX as number) / payload.pixelLengthX
+          : 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-save] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} umPerPixel=${umPerPixel.toFixed(4)}`
+      );
       await refetch();
       onChanged?.();
       onStatusChange?.('Calibration saved.');

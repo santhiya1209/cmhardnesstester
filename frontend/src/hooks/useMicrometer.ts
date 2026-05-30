@@ -43,9 +43,11 @@ export function useMicrometer(): MicrometerState {
       });
 
     const off = window.api.on('micrometer:state', (next) => {
+      console.log(`[micrometer][ipc-receive] value=${next.value}`);
       const key = `${next.connected}|${next.value}|${next.rawHex}|${next.updatedAt}`;
       if (key === lastSerializedRef.current) return;
       lastSerializedRef.current = key;
+      console.log(`[micrometer][ui-state] value=${next.value}`);
       setState(next);
     });
 

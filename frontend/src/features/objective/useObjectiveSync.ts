@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { applyObjectiveBrightness } from '@/api/machine';
 import type { CameraWindowHandle } from '@/component/own/CameraWindow';
 import { objectiveForMeasureFromObjective } from '@/features/autoMeasure/autoMeasureHelpers';
 import type { MachineState } from '@/types/machine';
@@ -124,6 +125,17 @@ export function useObjectiveSync({
       console.log(`[machine-objective-commit] objective=${normalized} source=${source}`);
       // eslint-disable-next-line no-console
       console.log(`[camera-objective-sync] activeObjective=${normalized}`);
+      // Authoritative objective changed → let the backend apply this lens's
+      // saved brightness. Fire-and-forget: brightness must never block or fail
+      // the objective commit.
+      void applyObjectiveBrightness(normalized).catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[machine-objective-brightness] apply failed objective=${normalized}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
       setObjectiveChangeInProgressState(false);
     },
     [
@@ -157,6 +169,9 @@ export function useObjectiveSync({
     setActiveObjective((current) => (current === null ? current : null));
     // eslint-disable-next-line no-console
     console.log('[machine-objective-commit] objective=CENTER source=ack');
+    // Center carries no measurement lens → tell the backend to stop attributing
+    // lightness edits to a lens slot and leave the current brightness as-is.
+    void applyObjectiveBrightness('IND').catch(() => {});
     if (!shouldPreserveAfterImpressOverlay()) {
       clearAutoMeasureOverlay('center-commit');
     }

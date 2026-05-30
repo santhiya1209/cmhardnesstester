@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { app, BrowserWindow, Menu } = require('electron');
 
 const APP_TITLE = 'Vickers Measurement Software';
@@ -20,16 +21,86 @@ function resolveAppIcon() {
   return null;
 }
 
+// Startup diagnostics + crash surface. A double-clicked packaged EXE has no
+// visible console, so a startup failure (backend require throwing, native
+// module ABI mismatch, loadURL failing) otherwise looks like "the app silently
+// closed". We mirror startup logs to a file under userData and convert any
+// startup error into a visible dialog instead of a silent exit.
+function startupLogPath() {
+  try {
+    return path.join(app.getPath('userData'), 'startup.log');
+  } catch {
+    return path.join(os.tmpdir(), 'vickers-startup.log');
+  }
+}
+
+function logStartup(line) {
+  const msg = `${new Date().toISOString()} ${line}`;
+  // eslint-disable-next-line no-console
+  console.log(msg);
+  try {
+    const file = startupLogPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${msg}\n`);
+  } catch {
+    // Logging must never break startup.
+  }
+}
+
+function logStartupDiagnostics() {
+  const preloadPath = path.join(__dirname, 'preload.js');
+  const frontendIndexPath = path.join(__dirname, '..', 'frontend', 'dist', 'index.html');
+  const backendEntry = path.join(__dirname, '..', 'backend', 'dist', 'index.js');
+  const nativeAddonPath = path.join(
+    __dirname,
+    '..',
+    'native',
+    'hardness-addon',
+    'build',
+    'Release',
+    'hardness_addon.node'
+  );
+  let userData = '(unavailable)';
+  try {
+    userData = app.getPath('userData');
+  } catch {
+    // userData resolves after the app path is set; ignore pre-ready failures.
+  }
+  logStartup(`[app-startup] packaged=${app.isPackaged}`);
+  logStartup(`[app-startup] appPath=${app.getAppPath()}`);
+  logStartup(`[app-startup] resourcesPath=${process.resourcesPath}`);
+  logStartup(`[app-startup] userData=${userData}`);
+  logStartup(`[app-startup] mainFile=${__filename}`);
+  logStartup(`[app-startup] preloadPath=${preloadPath} exists=${fs.existsSync(preloadPath)}`);
+  logStartup(`[app-startup] frontendIndexPath=${frontendIndexPath} exists=${fs.existsSync(frontendIndexPath)}`);
+  logStartup(`[app-startup] backendEntry=${backendEntry} exists=${fs.existsSync(backendEntry)}`);
+  logStartup(`[app-startup] nativeAddonPath=${nativeAddonPath}`);
+  logStartup(`[app-startup] nativeAddonExists=${fs.existsSync(nativeAddonPath)}`);
+}
+
+function handleStartupFailure(err) {
+  const detail = err && err.stack ? err.stack : String(err);
+  logStartup(`[app-startup] FATAL ${detail}`);
+  try {
+    const { dialog } = require('electron');
+    dialog.showErrorBox(
+      `${APP_TITLE} failed to start`,
+      `${err && err.message ? err.message : String(err)}\n\nStartup log:\n${startupLogPath()}`
+    );
+  } catch {
+    // If even the dialog fails, the log file still holds the full detail.
+  }
+  app.quit();
+}
+
 // NODE_OPTIONS=--force-node-api-uncaught-exceptions-policy=true is set by
 // scripts/dev-electron.js so throws inside native callbacks become real
 // uncaughtException events instead of the silent DEP0168 warning.
 process.on('uncaughtException', (err) => {
-  // eslint-disable-next-line no-console
-  console.error('[main] uncaughtException:', err && err.stack ? err.stack : err);
+  logStartup(`[main] uncaughtException: ${err && err.stack ? err.stack : err}`);
 });
 process.on('unhandledRejection', (reason) => {
-  // eslint-disable-next-line no-console
-  console.error('[main] unhandledRejection:', reason);
+  logStartup(`[main] unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`);
 });
 
 if (app.isPackaged) {
@@ -81,9 +152,12 @@ let mainWindow = null;
 let backendServer = null;
 
 async function startEmbeddedBackend() {
-  const { start } = require(path.join(__dirname, '..', 'backend', 'dist', 'index.js'));
+  const entry = path.join(__dirname, '..', 'backend', 'dist', 'index.js');
+  logStartup(`[backend-startup] packaged=${app.isPackaged} entry=${entry} exists=${fs.existsSync(entry)}`);
+  const { start } = require(entry);
   const { server, port } = await start();
   backendServer = server;
+  logStartup(`[backend-startup] listening port=${port}`);
   return `http://localhost:${port}`;
 }
 
@@ -114,6 +188,7 @@ async function createWindow() {
   if (!isDev) {
     process.env.MACHINE_BACKEND_URL = targetUrl;
   }
+  logStartup(`[frontend-load] mode=${isDev ? 'dev' : 'packaged'} url=${targetUrl}`);
   // Vite/dev server can briefly refuse connections right after wait-on returns.
   // Retry a few times so we don't crash the renderer in the dev race window.
   for (let attempt = 1; attempt <= 8; attempt++) {
@@ -147,28 +222,64 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  // Menu.setApplicationMenu(null);
-  // Brand the Windows taskbar group so pinning/launch shows the productName
-  // and our icon instead of the bare electron.exe label.
-  if (process.platform === 'win32') {
-    app.setAppUserModelId('com.chennaimetco.vickersmeasurementsoftware');
+  try {
+    logStartupDiagnostics();
+    // Brand the Windows taskbar group so pinning/launch shows the productName
+    // and our icon instead of the bare electron.exe label.
+    if (process.platform === 'win32') {
+      app.setAppUserModelId('com.chennaimetco.vickersmeasurementsoftware');
+    }
+    app.setName('Vickers Measurement Software');
+
+    await installDevtools();
+
+    registerIpc();
+    await createWindow();
+    logStartup('[app-startup] startup complete — window created');
+  } catch (err) {
+    handleStartupFailure(err);
   }
-  app.setName('Vickers Measurement Software');
-
-  await installDevtools();
-
-  registerIpc();
-  createWindow();
 });
 
 app.on('window-all-closed', () => {
-  if (backendServer) {
-    backendServer.close();
-    backendServer = null;
-  }
-  void cameraService.shutdown();
-  void micrometerService.shutdown();
-  if (process.platform !== 'darwin') app.quit();
+  // Shared teardown — called after the measurement clear (or after its timeout).
+  const doClose = () => {
+    if (backendServer) {
+      backendServer.close();
+      backendServer = null;
+    }
+    void cameraService.shutdown();
+    void micrometerService.shutdown();
+    if (process.platform !== 'darwin') app.quit();
+  };
+
+  // The embedded backend is still accepting connections at this point.
+  // Clear all measurement rows before closing the server so the next session
+  // starts with an empty table. Race against a 3 s timeout so a hung request
+  // never prevents the app from exiting.
+  const backendBaseUrl =
+    process.env.MACHINE_BACKEND_URL ||
+    `http://localhost:${process.env.PORT || 4000}`;
+
+  logStartup('[measurement-session-clear][start] reason=app-close');
+
+  const clearRequest = fetch(`${backendBaseUrl}/api/measurements`, { method: 'DELETE' })
+    .then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then((data) => {
+      logStartup(`[measurement-session-clear][success] deleted=${data && data.deleted != null ? data.deleted : 0}`);
+    })
+    .catch((err) => {
+      logStartup(`[measurement-session-clear][skip] reason=${err && err.message ? err.message : String(err)}`);
+    });
+
+  const clearTimeout = new Promise((resolve) => setTimeout(resolve, 3000));
+
+  Promise.race([clearRequest, clearTimeout]).finally(() => {
+    doClose();
+  });
 });
 
 app.on('before-quit', () => {

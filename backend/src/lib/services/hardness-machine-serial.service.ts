@@ -20,7 +20,11 @@ import {
   type TurretDirection,
 } from './hardness-machine-protocol';
 import { machineSettingsService } from './machine-settings.service';
-import { MachineSettingsModel, type MachineSettingsPayload } from '../../models/machine-settings';
+import {
+  DEFAULT_OBJECTIVE_BRIGHTNESS_MAP,
+  MachineSettingsModel,
+  type MachineSettingsPayload,
+} from '../../models/machine-settings';
 import { upsertRows } from '../sqlite';
 import { autoMeasureSettingsService } from './auto-measure-settings.service';
 
@@ -156,6 +160,9 @@ const ALLOWED_OBJECTIVES = new Set(['2.5X', '5X', '10X', 'IND', '20X', '40X', '5
 const ALLOWED_HARDNESS_LEVELS = new Set(['Low', 'Middle', 'High']);
 const LIGHTNESS_MIN = 0;
 const LIGHTNESS_MAX = 10;
+// Only these lenses carry a saved per-objective brightness; everything else
+// (IND / center) is left untouched and never written to the map.
+const BRIGHTNESS_OBJECTIVES = new Set(['10X', '40X']);
 const LOAD_TIME_MIN = 1;
 const LOAD_TIME_MAX = 99;
 const INDENT_FINISH_GRACE_MS = 45_000;
@@ -191,6 +198,13 @@ class HardnessMachineSerialService extends EventEmitter {
   // is emitted immediately via setState — only the disk write is delayed.
   private persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly PERSIST_DEBOUNCE_MS = 1500;
+  // Per-objective saved brightness (backend-owned). Seeded from defaults and
+  // overlaid with the persisted row on load.
+  private objectiveBrightnessMap: Record<string, number> = { ...DEFAULT_OBJECTIVE_BRIGHTNESS_MAP };
+  // The objective the renderer last marked authoritative (10X / 40X). Only set
+  // while a measurement lens is active — null for IND/center — so a lightness
+  // edit is attributed to the right slot, and never saved on IND/center.
+  private brightnessObjective: string | null = null;
 
   private loadPersistedSettings(): Promise<void> {
     if (this.persistLoadPromise) return this.persistLoadPromise;
@@ -205,6 +219,16 @@ class HardnessMachineSerialService extends EventEmitter {
         )[0];
         this.persistedSettingsId = latest.id;
         this.persistedCreatedAt = latest.createdAt;
+        // Overlay persisted brightness onto the defaults, keeping only the
+        // savable lenses so a stray IND/legacy key can never resurrect.
+        if (latest.objectiveBrightnessMap) {
+          const merged: Record<string, number> = { ...DEFAULT_OBJECTIVE_BRIGHTNESS_MAP };
+          for (const key of BRIGHTNESS_OBJECTIVES) {
+            const saved = latest.objectiveBrightnessMap[key];
+            if (Number.isInteger(saved)) merged[key] = saved;
+          }
+          this.objectiveBrightnessMap = merged;
+        }
         // Seed in-memory state. Connection-related fields stay at defaults.
         this.state = {
           ...this.state,
@@ -234,6 +258,7 @@ class HardnessMachineSerialService extends EventEmitter {
       loadTime: Number.isFinite(loadTimeNum) ? loadTimeNum : 5,
       objective: String(this.state.objective),
       hardnessLevel: String(this.state.hardnessLevel),
+      objectiveBrightnessMap: { ...this.objectiveBrightnessMap },
     };
   }
 
@@ -295,6 +320,21 @@ class HardnessMachineSerialService extends EventEmitter {
    * Replay saved lightness/load-time to the machine after a successful
    * connection so the physical display reflects the values stored in SQLite.
    * Fire-and-forget: failures are logged but never block the connect call.
+   *
+   * Startup-replay ACK-timeout guard:
+   * Many industrial controllers do NOT echo a command when the value is already
+   * at the requested level (no-change silent accept). If we push the same
+   * lightness/loadTime that the machine is already displaying, the machine
+   * sends no echo → waitForAck times out → setState({ lastError: 'ack timeout' })
+   * appears in the status bar even though the serial connection is healthy.
+   *
+   * Three mitigations applied here:
+   * 1. 1000 ms startup delay — lets the machine's initial AV-status batch
+   *    arrive and update this.state with the machine's own current values.
+   * 2. Skip replay when machine already reports the same value — avoids sending
+   *    to a machine that will silently accept and not echo.
+   * 3. finally block clears any ack-timeout error from the replay itself —
+   *    a replay timeout is non-fatal; the connection remains usable.
    */
   private replayPersistedToMachine(): void {
     void (async () => {
@@ -303,24 +343,62 @@ class HardnessMachineSerialService extends EventEmitter {
         if (!this.state.connected) {
           return;
         }
-        const lightness = this.state.lightness;
-        const loadTime = this.state.loadTime;
-        try {
-          await this.setControlValue('lightness', lightness);
-        } catch (err) {
+        // Capture the SQLite-saved values before the AV batch can overwrite them.
+        const savedLightness = this.state.lightness;
+        const savedLoadTime = this.state.loadTime;
+
+        // Wait for the machine's initial AV-status burst to settle so that
+        // this.state reflects the machine's actual current values.
+        await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+        if (!this.state.connected) {
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[machine-startup-sync] replay start savedLightness=${savedLightness} savedLoadTime=${savedLoadTime} machineCurrentLightness=${this.state.lightness} machineCurrentLoadTime=${this.state.loadTime}`
+        );
+
+        // Lightness: only send if machine's AV-batch-reported value differs.
+        if (Number(this.state.lightness) !== Number(savedLightness)) {
           // eslint-disable-next-line no-console
-          console.error(
-            '[machine-startup-sync] lightness replay failed:',
-            err instanceof Error ? err.message : String(err)
+          console.log(
+            `[machine-startup-sync] lightness mismatch machine=${this.state.lightness} saved=${savedLightness} — sending replay`
+          );
+          try {
+            await this.setControlValue('lightness', savedLightness);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(
+              '[machine-startup-sync] lightness replay failed:',
+              err instanceof Error ? err.message : String(err)
+            );
+          }
+        } else {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[machine-startup-sync] lightness already matches machine=${this.state.lightness} — skipping`
           );
         }
-        try {
-          await this.setControlValue('loadTime', loadTime);
-        } catch (err) {
+
+        // LoadTime: only send if machine's AV-batch-reported value differs.
+        if (Number(this.state.loadTime) !== Number(savedLoadTime)) {
           // eslint-disable-next-line no-console
-          console.error(
-            '[machine-startup-sync] loadTime replay failed:',
-            err instanceof Error ? err.message : String(err)
+          console.log(
+            `[machine-startup-sync] loadTime mismatch machine=${this.state.loadTime} saved=${savedLoadTime} — sending replay`
+          );
+          try {
+            await this.setControlValue('loadTime', savedLoadTime);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(
+              '[machine-startup-sync] loadTime replay failed:',
+              err instanceof Error ? err.message : String(err)
+            );
+          }
+        } else {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[machine-startup-sync] loadTime already matches machine=${this.state.loadTime} — skipping`
           );
         }
       } catch (err) {
@@ -329,6 +407,18 @@ class HardnessMachineSerialService extends EventEmitter {
           '[machine-startup-sync] failed:',
           err instanceof Error ? err.message : String(err)
         );
+      } finally {
+        // A replay ACK timeout is non-fatal — the connection is still alive.
+        // Clear any ack-timeout error that the replay itself set so the status
+        // bar shows "connected" rather than "Error: ack timeout".
+        if (this.state.connected && this.state.lastError === 'ack timeout') {
+          // eslint-disable-next-line no-console
+          console.log('[machine-startup-sync] cleared ack-timeout from startup replay — connection is healthy');
+          this.setState(
+            { lastError: undefined, syncStatus: 'synced', syncMessage: 'connected' },
+            'system'
+          );
+        }
       }
     })();
   }
@@ -1057,7 +1147,7 @@ class HardnessMachineSerialService extends EventEmitter {
     const commandId = ++this.commandSequence;
 
     // eslint-disable-next-line no-console
-    console.log(`[machine-tx] field=${field} command=${JSON.stringify(frame.toString('ascii'))}`);
+    console.log(`[machine-tx] field=${field} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`);
 
     if (field === 'objective') {
       // Stash on telemetry so the UI can correlate TX vs RX for the diagnostic.
@@ -1204,6 +1294,11 @@ class HardnessMachineSerialService extends EventEmitter {
         // fields together since the row is a single record.
         this.schedulePersist();
       }
+      // A lightness edit while a measurement lens is active is saved into that
+      // lens's brightness slot. No-op for IND/center (brightnessObjective null).
+      if (key === 'lightness') {
+        this.maybeSaveObjectiveBrightness(Number(this.state.lightness));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
@@ -1215,6 +1310,57 @@ class HardnessMachineSerialService extends EventEmitter {
       // formState from machineState in its own catch handler.
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw err;
+    }
+    return this.getState();
+  }
+
+  /**
+   * Save the given lightness into the active lens's brightness slot. Gated on
+   * brightnessObjective being a savable lens (10X/40X) so IND/center edits are
+   * ignored. Schedules the narrow machine_settings write.
+   */
+  private maybeSaveObjectiveBrightness(lightness: number): void {
+    const objective = this.brightnessObjective;
+    if (objective === null || !BRIGHTNESS_OBJECTIVES.has(objective)) return;
+    if (!Number.isInteger(lightness) || lightness < LIGHTNESS_MIN || lightness > LIGHTNESS_MAX) {
+      return;
+    }
+    if (this.objectiveBrightnessMap[objective] === lightness) return;
+    this.objectiveBrightnessMap = { ...this.objectiveBrightnessMap, [objective]: lightness };
+    // eslint-disable-next-line no-console
+    console.log(`[machine-objective-brightness-save] objective=${objective} lightness=${lightness}`);
+    this.schedulePersist();
+  }
+
+  /**
+   * Apply the saved brightness for the renderer's authoritative objective.
+   * 10X/40X: record the slot and push its saved lightness to the machine.
+   * Any other value (IND/center): clear the slot and leave lightness untouched.
+   * Failures to transmit are logged, never thrown — applying brightness must
+   * not break the objective-change flow that triggered it.
+   */
+  async applyObjectiveBrightness(objective: string): Promise<MachineState> {
+    const normalized = String(objective).trim().toUpperCase();
+    if (!BRIGHTNESS_OBJECTIVES.has(normalized)) {
+      this.brightnessObjective = null;
+      return this.getState();
+    }
+    this.brightnessObjective = normalized;
+    const saved = this.objectiveBrightnessMap[normalized];
+    if (!Number.isInteger(saved)) return this.getState();
+    // eslint-disable-next-line no-console
+    console.log(`[objective-brightness] objective=${normalized} brightness=${saved} source=restore`);
+    if (!this.state.connected) return this.getState();
+    if (Number(this.state.lightness) === saved) return this.getState();
+    try {
+      await this.setControlValue('lightness', saved);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[machine-objective-brightness] apply failed objective=${normalized} lightness=${saved}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
     }
     return this.getState();
   }

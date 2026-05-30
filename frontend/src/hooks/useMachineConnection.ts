@@ -57,7 +57,11 @@ export function useMachineConnection() {
     if (!serialPortSetting) return;
     machineAutoConnectAttemptedRef.current = true;
     const savedMachine = serialPortSetting.machineComPort ?? null;
+    // eslint-disable-next-line no-console
+    console.log(`[serial-port-restore] machineComPort=${savedMachine ?? '(none)'}`);
     if (!savedMachine) return;
+    // eslint-disable-next-line no-console
+    console.log(`[machine-restore] savedPort=${savedMachine}`);
     void (async () => {
       const listing = await listSerialPorts().catch(() => ({
         ok: false as const,
@@ -67,18 +71,32 @@ export function useMachineConnection() {
       const available = listing.ok
         ? listing.ports.map((p) => p.path).filter(Boolean)
         : [];
+      // eslint-disable-next-line no-console
+      console.log(`[machine-restore] availablePorts=${available.join(',') || '(none)'}`);
       if (!available.includes(savedMachine)) {
         // eslint-disable-next-line no-console
         console.warn(`[saved-com-missing] device=machine port=${savedMachine}`);
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-restore] port-exists=false`);
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-restore] auto-connect-skipped reason=port-not-found savedPort=${savedMachine}`);
         setStatusMessage(
           `Saved COM port not detected. Please check connection or select another port. (machine=${savedMachine})`
         );
         return;
       }
+      // eslint-disable-next-line no-console
+      console.log(`[machine-restore] port-exists=true`);
+      // eslint-disable-next-line no-console
+      console.log(`[machine-restore] auto-connect-start port=${savedMachine}`);
       try {
         await applyMachinePort(savedMachine);
-      } catch {
-        // applyMachinePort already logs the error
+        // eslint-disable-next-line no-console
+        console.log(`[machine-restore] auto-connect-success port=${savedMachine}`);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`[machine-restore] auto-connect-failed reason=${reason}`);
       }
     })();
   }, [applyMachinePort, serialPortSetting, setStatusMessage]);

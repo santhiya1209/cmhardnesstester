@@ -4,6 +4,7 @@ import {
   type MachineState,
 } from '../lib/services/hardness-machine-serial.service';
 import {
+  ApplyObjectiveBrightnessSchema,
   ConnectMachineSchema,
   SendTurretSchema,
   SetMachineControlSchema,
@@ -63,6 +64,23 @@ export async function startIndent(_req: Request, res: Response): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ ok: false, error: 'IndentFailed', message });
+  }
+}
+
+export async function applyObjectiveBrightness(req: Request, res: Response): Promise<void> {
+  const parsed = ApplyObjectiveBrightnessSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const state = await hardnessMachineSerialService.applyObjectiveBrightness(
+      parsed.data.objective
+    );
+    res.json({ ok: true, state });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, error: 'ApplyBrightnessFailed', message });
   }
 }
 

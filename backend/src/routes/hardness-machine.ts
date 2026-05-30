@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  applyObjectiveBrightness,
   confirmObjectivePhysical,
   connectMachine,
   disconnectMachine,
@@ -20,5 +21,6 @@ router.post('/set', setMachineControlValue);
 router.post('/indent', startIndent);
 router.post('/turret', sendTurret);
 router.post('/objective/confirm-physical', confirmObjectivePhysical);
+router.post('/objective/apply-brightness', applyObjectiveBrightness);
 
 export default router;

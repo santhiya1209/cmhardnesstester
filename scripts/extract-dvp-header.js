@@ -5,21 +5,20 @@
  * that page, strip Doxygen markup, and write the recovered header so we
  * can use it as the authoritative source for native bindings.
  *
- * Output: backend/native/hardness-addon/include/dvpcamera.recovered.h
+ * Output: native/hardness-addon/include/dvpcamera.recovered.h
  */
 
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
-const Database = require(
-  path.join(__dirname, '..', 'backend', 'node_modules', 'better-sqlite3')
+const initSqlJs = require(
+  path.join(__dirname, '..', 'backend', 'node_modules', 'sql.js')
 );
 
 const QCH = 'C:\\Program Files (x86)\\Do3Think\\BasedCam3 x64\\dvp.qch';
 const OUT = path.join(
   __dirname,
   '..',
-  'backend',
   'native',
   'hardness-addon',
   'include',
@@ -73,22 +72,32 @@ function htmlToCSource(html) {
   return out.join('\n');
 }
 
-function main() {
-  const db = new Database(QCH, { readonly: true, fileMustExist: true });
-  const row = db
-    .prepare(
-      `SELECT d.Data AS data
-       FROM FileNameTable f
-       JOIN FileDataTable d ON f.FileId = d.Id
-       WHERE f.Name LIKE '%dvpcamera_8h_source.html'
-       LIMIT 1`
-    )
-    .get();
-  if (!row) {
+async function main() {
+  if (!fs.existsSync(QCH)) {
+    console.error(`QCH file not found: ${QCH}`);
+    process.exit(1);
+  }
+  const SQL = await initSqlJs();
+  const buf = fs.readFileSync(QCH);
+  const db = new SQL.Database(buf);
+
+  const stmt = db.prepare(
+    `SELECT d.Data AS data
+     FROM FileNameTable f
+     JOIN FileDataTable d ON f.FileId = d.Id
+     WHERE f.Name LIKE '%dvpcamera_8h_source.html'
+     LIMIT 1`
+  );
+  const hasRow = stmt.step();
+  if (!hasRow) {
     console.error('dvpcamera_8h_source.html not found in qch');
     process.exit(2);
   }
-  const html = tryDecompress(row.data);
+  const row = stmt.getAsObject();
+  stmt.reset();
+  db.close();
+
+  const html = tryDecompress(row['data']);
   if (!html) {
     console.error('decompress failed');
     process.exit(3);
@@ -98,4 +107,4 @@ function main() {
   console.log(`Wrote ${OUT} (${c.length} bytes, ${c.split('\n').length} lines)`);
 }
 
-main();
+main().catch((err) => { console.error(err); process.exit(1); });

@@ -17,6 +17,7 @@ import {
 } from '@/contexts/MachineStateContext';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { useMachineConnection } from '@/hooks/useMachineConnection';
+import { useMicrometerAutoRestore } from '@/hooks/useMicrometerAutoRestore';
 import { measureVickersAuto } from '@/api/system';
 import { useCameraLifecycle } from '@/features/camera/useCameraLifecycle';
 import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRestore';
@@ -208,6 +209,7 @@ function App() {
   // auto-connect from persisted settings) lives in useMachineConnection so
   // App is not in the business of orchestrating serial reconnects.
   const { currentMachinePort, applyMachinePort } = useMachineConnection();
+  useMicrometerAutoRestore();
 
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
@@ -1284,15 +1286,17 @@ function App() {
             const stale = displayedFrame?.error ?? 'no-displayed-image (stale-frame)';
             setUnavailableMsg(`Auto Measure rejected: ${stale}. Please use manual measure.`);
             setStatusMessage(`System Status: Auto Measure rejected: ${stale}`);
-            if (callSource !== 'after-impress') {
-              clearAutoMeasureOverlay('auto-measure-failed');
-            }
+            clearAutoMeasureOverlay(
+              callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
+            );
             if (isFreshCapture) setAutoMeasureStatus('failed');
             // liveObjectiveForNative is declared further down — this branch
             // fires before it's computed (no displayed image), so log it as
             // 'unknown'.
             if (callSource === 'after-impress') {
               logAfterImpressDetectionFailed(stale);
+              // eslint-disable-next-line no-console
+              console.log('[auto-measure-overlay] cleared reason=after-impress-detection-failed');
             }
           }
           return false;
@@ -1311,18 +1315,22 @@ function App() {
           if (!preview) {
             setStatusMessage('System Status: Auto Measure rejected: invalid-detection-frame');
             setUnavailableMsg('Auto Measure rejected: invalid-detection-frame. Please retry.');
-            if (callSource !== 'after-impress') {
-              clearAutoMeasureOverlay('auto-measure-failed');
-            }
+            clearAutoMeasureOverlay(
+              callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
+            );
             if (isFreshCapture) setAutoMeasureStatus('failed');
           }
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed('invalid-detection-frame');
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure-overlay] cleared reason=after-impress-detection-failed');
           }
           return false;
         }
 
         if (callSource === 'after-impress') {
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure] detection-start source=after-impress');
         }
 
         if (isFreshCapture) {
@@ -1370,13 +1378,15 @@ function App() {
           if (!preview) {
             setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
             setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
-            if (callSource !== 'after-impress') {
-              clearAutoMeasureOverlay('auto-measure-failed');
-            }
+            clearAutoMeasureOverlay(
+              callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
+            );
             if (isFreshCapture) setAutoMeasureStatus('failed');
           }
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed(reason);
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure-overlay] cleared reason=after-impress-detection-failed');
           }
           return false;
         }
@@ -1405,9 +1415,9 @@ function App() {
           // Surface the actual reason in the toast instead of the generic
           // "Auto detection not reliable" line so the operator sees WHY.
           setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
-          if (callSource !== 'after-impress') {
-            clearAutoMeasureOverlay('auto-measure-failed');
-          }
+          clearAutoMeasureOverlay(
+            callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
+          );
           // eslint-disable-next-line no-console
           console.warn(
             `[measurement-commit-blocked] method=Auto reason=detection-rejected detail="${reason}"`
@@ -1416,6 +1426,10 @@ function App() {
           console.warn('[auto-measure-blocked] reason=detection-failed');
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed(reason);
+            // eslint-disable-next-line no-console
+            console.log(`[auto-measure] detection-failed source=after-impress reason=${reason}`);
+            // eslint-disable-next-line no-console
+            console.log('[auto-measure-overlay] cleared reason=after-impress-detection-failed');
           }
           return false;
         }
@@ -1456,6 +1470,8 @@ function App() {
           frameId: capturedFrameIdForRun,
         };
         if (callSource === 'after-impress' && result.ok) {
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure] detection-success corners=4');
         }
         if (sessionIdForRun !== autoMeasureSessionIdRef.current) {
           if (callSource === 'after-impress') {
@@ -1481,6 +1497,8 @@ function App() {
           }
         }
         if (callSource === 'after-impress') {
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure-overlay] shown source=after-impress');
         }
         if (!preview && callSource === 'auto-click') {
           // nativeCorners → displayCorners scale map. The camera preview
@@ -1572,6 +1590,8 @@ function App() {
         );
         if (callSource === 'after-impress') {
           if (committed) {
+            // eslint-disable-next-line no-console
+            console.log('[measurement-save] source=after-impress');
           }
         }
         return committed;
@@ -1586,15 +1606,14 @@ function App() {
           setStatusMessage('System Status: Auto Measure preview detection failed');
         } else {
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
-          // For explicit user Auto Measure, ensure no stale state resurrects
-          // after a thrown detection error. After-impress keeps the current
-          // overlay state untouched per the impress completion contract.
-          if (callSource !== 'after-impress') {
-            clearAutoMeasureOverlay('auto-measure-failed');
-          }
+          clearAutoMeasureOverlay(
+            callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
+          );
         }
         if (callSource === 'after-impress') {
           logAfterImpressDetectionFailed(err instanceof Error ? err.message : String(err));
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure-overlay] cleared reason=after-impress-detection-failed');
         }
         return false;
       } finally {

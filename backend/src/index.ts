@@ -3,17 +3,9 @@ import express, { type Express } from 'express';
 import cors from 'cors';
 import { env, isProd } from './lib/env';
 import { errorHandler } from './lib/http';
-import { mutateDatabase } from './lib/db';
-import { getDb } from './lib/sqlite';
+import { initializeSqlite, deleteAllMeasurements } from './lib/sqlite';
 import apiRouter from './routes';
 import { hardnessMachineSerialService } from './lib/services/hardness-machine-serial.service';
-
-async function clearMeasurementsOnStartup(): Promise<void> {
-  await mutateDatabase((database) => ({
-    database: { ...database, measurements: [] },
-    result: undefined,
-  }));
-}
 
 export function createApp(): Express {
   const app = express();
@@ -44,21 +36,36 @@ export interface StartResult {
   port: number;
 }
 
-export function start(): Promise<StartResult> {
-  return new Promise((resolve, reject) => {
-    // Force DB open before anything else so the startup logs
-    // ([db-path], [db-kind], [db-open], [db-table] *) print before the HTTP
-    // server announces. Also surfaces migration output ([db-migrate]).
-    getDb();
-    Promise.all([clearMeasurementsOnStartup(), hardnessMachineSerialService.ready()])
-      .then(() => {
-        const app = createApp();
-        const server = app.listen(env.PORT, () => {
-          console.log(`[backend] listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
-          resolve({ app, server, port: env.PORT });
-        });
-      })
-      .catch(reject);
+export async function start(): Promise<StartResult> {
+  await initializeSqlite();
+
+  // Startup safety: clear any measurement rows that survived an unclean exit
+  // (e.g. process kill, power loss). Primary cleanup runs in Electron's
+  // window-all-closed handler via HTTP; this is the secondary safety net.
+  try {
+    const deleted = deleteAllMeasurements();
+    if (deleted === 0) {
+      // eslint-disable-next-line no-console
+      console.log('[measurement-session-clear][startup-empty] rows=0');
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`[measurement-session-clear][success] deleted=${deleted} reason=startup-safety`);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[measurement-session-clear][skip] reason=startup-clear-failed detail=${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  await hardnessMachineSerialService.ready();
+  const app = createApp();
+  return new Promise<StartResult>((resolve, reject) => {
+    const server = app.listen(env.PORT, () => {
+      console.log(`[backend] listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
+      resolve({ app, server, port: env.PORT });
+    });
+    server.on('error', reject);
   });
 }
 

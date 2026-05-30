@@ -7,10 +7,10 @@
         "src/serial.cpp"
       ],
       "include_dirs": [
-        "<!@(node -p \"require('../../backend/native/hardness-addon/node_modules/node-addon-api').include\")"
+        "<!@(node -p \"require('node-addon-api').include\")"
       ],
       "dependencies": [
-        "<!(node -p \"require('../../backend/native/hardness-addon/node_modules/node-addon-api').gyp\")"
+        "<!(node -p \"require('node-addon-api').gyp\")"
       ],
       "defines": [
         "NAPI_DISABLE_CPP_EXCEPTIONS",

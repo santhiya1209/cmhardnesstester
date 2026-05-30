@@ -69,3 +69,11 @@ export const SendTurretSchema = z.object({
   direction: z.enum(['left', 'front', 'right']),
 });
 export type SendTurretInput = z.infer<typeof SendTurretSchema>;
+
+// The renderer's authoritative objective drives this. Any non-empty string is
+// accepted — the service decides: 10X/40X apply their saved brightness, every
+// other value (IND / center) leaves the current lightness untouched.
+export const ApplyObjectiveBrightnessSchema = z.object({
+  objective: z.string().min(1),
+});
+export type ApplyObjectiveBrightnessInput = z.infer<typeof ApplyObjectiveBrightnessSchema>;

@@ -135,6 +135,7 @@ export type IpcInvokeChannel =
   | 'machine:set-lightness'
   | 'machine:set-load-time'
   | 'machine:set-hardness-level'
+  | 'machine:apply-objective-brightness'
   | 'machine:start-indent'
   | 'machine:move-turret';
 
@@ -208,6 +209,10 @@ export type IpcInvokeMap = {
   'machine:set-lightness': { request: { value: string | number }; response: MachineApiResponse };
   'machine:set-load-time': { request: { value: string | number }; response: MachineApiResponse };
   'machine:set-hardness-level': { request: { value: string | number }; response: MachineApiResponse };
+  'machine:apply-objective-brightness': {
+    request: { objective: string };
+    response: MachineApiResponse;
+  };
   'machine:start-indent': { request: void; response: MachineApiResponse };
   'machine:move-turret': { request: { direction: TurretDirection }; response: MachineApiResponse };
 };
@@ -240,6 +245,7 @@ export interface MachineControlApi {
   setLightness(value: string | number): Promise<MachineApiResponse>;
   setLoadTime(value: string | number): Promise<MachineApiResponse>;
   setHardnessLevel(value: string | number): Promise<MachineApiResponse>;
+  applyObjectiveBrightness(objective: string): Promise<MachineApiResponse>;
   setValue(key: MachineControlKey, value: string | number): Promise<MachineApiResponse>;
   startIndent(): Promise<MachineApiResponse>;
   moveTurret(direction: TurretDirection): Promise<MachineApiResponse>;

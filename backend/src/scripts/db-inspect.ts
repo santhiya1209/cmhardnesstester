@@ -1,13 +1,14 @@
 import fs from 'node:fs';
-import { getDb, getDatabaseFilePath } from '../lib/sqlite';
+import { initializeSqlite, getDb, getDatabaseFilePath } from '../lib/sqlite';
 
-function main(): void {
+async function main(): Promise<void> {
+  await initializeSqlite();
+
   const filePath = getDatabaseFilePath();
   // eslint-disable-next-line no-console
   console.log(`DB path:    ${filePath}`);
 
   if (!fs.existsSync(filePath)) {
-    // Opening will create it; let getDb handle migration/seed.
     // eslint-disable-next-line no-console
     console.log('DB file:    (does not exist yet — opening will create it)');
   } else {
@@ -19,7 +20,7 @@ function main(): void {
       fs.closeSync(fd);
     }
     const expected = Buffer.concat([Buffer.from('SQLite format 3'), Buffer.from([0])]);
-    const header = buf.toString('utf8', 0, 15); // printable portion only
+    const header = buf.toString('utf8', 0, 15);
     // eslint-disable-next-line no-console
     console.log(`DB header:  "${header}" (+0x00)`);
     // eslint-disable-next-line no-console
@@ -39,4 +40,8 @@ function main(): void {
   }
 }
 
-main();
+main().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error(err);
+  process.exit(1);
+});

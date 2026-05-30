@@ -8,7 +8,7 @@ import { tokens } from '@/theme/theme';
 import { useMicrometerReading } from '@/hooks/useMicrometerReading';
 import { useStatusMessage } from '@/contexts/StatusMessageContext';
 import type { MachineState } from '@/types/machine';
-import { useMachineSnapshot } from '@/contexts/MachineStateContext';
+import { useMachineSelector } from '@/contexts/MachineStateContext';
 
 const BAR_SX: SxProps<Theme> = {
   display: 'flex',
@@ -196,12 +196,14 @@ function StatusBarImpl({
   autoMeasureStatus,
 }: Props) {
   const message = useStatusMessage();
-  // Consume the shared machine-state store directly so a machine update
-  // re-renders StatusBar independently, without re-rendering App.
-  const machineState = useMachineSnapshot();
-  const machineConnected = machineState?.connected ?? false;
-  const machinePort = machineState?.port?.trim() || '-';
-  const machineStatus = getMachineStatusLabel(machineState);
+  // Subscribe only to the machine slices StatusBar renders so it re-renders
+  // independently of App AND only when one of these derived values actually
+  // changes — not on every unrelated machine field update. getMachineStatusLabel
+  // collapses several fields into one status string, so the status subscription
+  // fires only when the label flips.
+  const machineConnected = useMachineSelector((s) => s?.connected ?? false);
+  const machinePort = useMachineSelector((s) => s?.port?.trim() || '-');
+  const machineStatus = useMachineSelector(getMachineStatusLabel);
 
   useEffect(() => {
   }, [machineConnected, machinePort, machineStatus]);

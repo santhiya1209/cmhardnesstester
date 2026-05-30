@@ -34,6 +34,7 @@ const ALLOWED_INVOKE = new Set([
   'machine:set-lightness',
   'machine:set-load-time',
   'machine:set-hardness-level',
+  'machine:apply-objective-brightness',
   'machine:start-indent',
   'machine:move-turret',
   'app:exit',
@@ -106,6 +107,8 @@ contextBridge.exposeInMainWorld('machineControl', {
   setLightness: (value) => ipcRenderer.invoke('machine:set-lightness', { value }),
   setLoadTime: (value) => ipcRenderer.invoke('machine:set-load-time', { value }),
   setHardnessLevel: (value) => ipcRenderer.invoke('machine:set-hardness-level', { value }),
+  applyObjectiveBrightness: (objective) =>
+    ipcRenderer.invoke('machine:apply-objective-brightness', { objective }),
   setValue: (key, value) => {
     switch (key) {
       case 'objective':

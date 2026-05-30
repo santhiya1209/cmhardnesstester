@@ -356,7 +356,7 @@ class CameraService {
     // to app.asar.unpacked/ at package time. Node's require() resolves the
     // asar virtual path to the unpacked file automatically, so the same
     // __dirname-relative path works for both dev and packaged modes.
-    return path.join(__dirname, '..', 'backend', 'native', 'hardness-addon', ADDON_RELATIVE);
+    return path.join(__dirname, '..', 'native', 'hardness-addon', ADDON_RELATIVE);
   }
 
   _tryLoad() {

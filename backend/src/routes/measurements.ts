@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  clearAllMeasurements,
   createMeasurement,
   deleteMeasurement,
   getMeasurementById,
@@ -11,6 +12,9 @@ import { IdParamsSchema } from '../zod/common.schema';
 import { CreateMeasurementSchema, UpdateMeasurementSchema } from '../zod/measurements.schema';
 
 const router = Router();
+
+// Session-clear: DELETE /api/measurements (no :id) — must be before /:id route
+router.delete('/', clearAllMeasurements);
 
 router.get('/', getMeasurements);
 router.post('/', validate(CreateMeasurementSchema), createMeasurement);

@@ -417,12 +417,18 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     // Save is disabled while the camera is offline; guard defensively too.
     // We never persist values the SDK hasn't confirmed.
     if (!liveAvailable) {
+      // eslint-disable-next-line no-console
+      console.log(`[camera-settings-persist][apply-skip] reason=camera-not-open key=gain value=${analogGain}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-settings-persist][apply-skip] reason=camera-not-open key=exposure value=${exposureMs}`);
       setLiveApplyError('Camera is not connected — open the camera before saving.');
       return;
     }
     setLiveApplyError(null);
     // eslint-disable-next-line no-console
-    console.log(`[camera-settings-apply] requesting gain=${analogGain} exposureMs=${exposureMs}`);
+    console.log(`[camera-settings-persist][apply-ready] key=gain value=${analogGain}`);
+    // eslint-disable-next-line no-console
+    console.log(`[camera-settings-persist][apply-ready] key=exposure value=${exposureMs}`);
     try {
       // Apply to the real camera SDK FIRST. Persist only the values the SDK
       // confirms, and only if BOTH applies succeed — never persist fake or
@@ -462,23 +468,25 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
         return;
       }
       // eslint-disable-next-line no-console
-      console.log(
-        `[camera-settings-verify] confirmed gain=${confirmedGain} exposureMs=${confirmedExposureMs}`
-      );
+      console.log(`[camera-settings-persist][verify] key=gain value=${confirmedGain}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-settings-persist][verify] key=exposure value=${confirmedExposureMs}`);
       // Reconcile the UI + device-applied baseline to the SDK-confirmed values.
       setAnalogGain(confirmedGain);
       setExposureMs(confirmedExposureMs);
       appliedGainRef.current = confirmedGain;
       appliedExposureMsRef.current = confirmedExposureMs;
       // Persist the SDK-confirmed values to SQLite.
+      // eslint-disable-next-line no-console
+      console.log(`[camera-settings-save] gain=${confirmedGain} exposure=${confirmedExposureMs}`);
       await saveCameraSetting({
         id: data?.id,
         values: { analogGain: confirmedGain, exposureTimeMs: confirmedExposureMs },
       });
       // eslint-disable-next-line no-console
-      console.log(
-        `[camera-settings-save] persisted gain=${confirmedGain} exposureMs=${confirmedExposureMs}`
-      );
+      console.log(`[camera-settings-persist][save] key=gain value=${confirmedGain}`);
+      // eslint-disable-next-line no-console
+      console.log(`[camera-settings-persist][save] key=exposure value=${confirmedExposureMs}`);
       onStatusChange?.('Camera settings saved and applied.');
       onClose();
     } catch (err) {

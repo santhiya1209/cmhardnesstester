@@ -12,18 +12,19 @@
     "db:inspect": "tsx src/scripts/db-inspect.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.5.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.21.1",
     "serialport": "^13.0.0",
+    "sql.js": "^1.14.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
+    "@electron/rebuild": "^3.7.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
+    "@types/sql.js": "^1.4.11",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }

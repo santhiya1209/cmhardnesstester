@@ -156,7 +156,12 @@ export function useAfterImpressFlow({
     afterImpressAutoMeasureRunIdRef.current = runId;
 
     try {
-      suppressAutoMeasurePreviewRef.current = false;
+      // Preserve the overlay window for up to 12 s so objective-change side
+      // effects can't clear the freshly-committed overlay mid-display. The
+      // suppress ref is intentionally NOT reset here; it stays true (set by
+      // the caller) until line 223 just before the actual runner call, so a
+      // concurrently-open Settings dialog cannot fire a preview detection on
+      // the needle/retracting-indenter frame during the settle delay.
       preserveAfterImpressOverlay(12000);
 
       const objective = (activeObjectiveRef.current ?? '')
@@ -310,8 +315,47 @@ export function useAfterImpressFlow({
         turretAfterImpressEnabled &&
         measureAfterImpressEnabled &&
         (!currentObjective || currentObjective !== targetObjective);
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[after-impress] start turretAfterImpress=${turretAfterImpressEnabled} measureAfterImpress=${measureAfterImpressEnabled}`
+      );
+
       if (!measureAfterImpressEnabled) {
+        // Turret-only path: the machine will rotate the turret (because
+        // turretAfterImpress was encoded in the indent command by the backend)
+        // but we must NOT run detection and must NOT let any stale yellow
+        // overlay survive. Explicitly clear the overlay, reset the preserve
+        // timer so a previous after-impress window can't block future clears,
+        // and arm the suppress ref so a concurrently-open Settings dialog
+        // preview won't repaint lines during the rotation.
+        if (turretAfterImpressEnabled) {
+          // eslint-disable-next-line no-console
+          console.log(`[after-impress] turret-start objective=${targetObjective}`);
+        }
+        impressInProgressRef.current = false;
+        clearAutoMeasureOverlay('turret-only-after-impress');
+        suppressAutoMeasurePreviewRef.current = true;
+        afterImpressOverlayPreserveUntilRef.current = 0;
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-overlay] cleared reason=measure-disabled');
+        // eslint-disable-next-line no-console
+        console.log('[after-impress] measure-skipped reason=measureAfterImpress-disabled');
+        return;
       }
+
+      // measureAfterImpress is ON — arm strict overlay ownership BEFORE entering
+      // the detection flow. This must happen whether the turret is also moving
+      // (shouldWaitForTurretAfterImpress) or not so that:
+      //  a) any stale committed/preview overlay from before impress is gone, and
+      //  b) the Settings dialog's 70ms preview timer cannot fire on the needle
+      //     frame during the settle delay and paint a bad large-cross overlay.
+      suppressAutoMeasurePreviewRef.current = true;
+      afterImpressOverlayPreserveUntilRef.current = 0;
+      clearAutoMeasureOverlay('before-measure-after-impress');
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-overlay] cleared reason=before-measure-after-impress');
+
       // When the machine is about to rotate the turret after impress, defer
       // detection until the L*OK confirmation arrives. The other effect that
       // watches confirmedObjectiveFromMachine + lastObjectiveRx clears
@@ -319,6 +363,8 @@ export function useAfterImpressFlow({
       // detection. Without this gate, auto-measure would fire on the next
       // available camera frame mid-rotation and detect on a moving image.
       if (shouldWaitForTurretAfterImpress) {
+        // eslint-disable-next-line no-console
+        console.log(`[after-impress] turret-start objective=${targetObjective}`);
         pendingTurretAfterImpressRef.current = {
           armedAt: completedAt,
           measureAfterImpress: measureAfterImpressEnabled,
@@ -343,8 +389,9 @@ export function useAfterImpressFlow({
         }, 10000);
         return;
       }
-      if (turretAfterImpressEnabled && measureAfterImpressEnabled) {
-      }
+
+      // eslint-disable-next-line no-console
+      console.log('[after-impress] measure-start');
       void runAutoMeasureAfterImpress();
       return;
     }
@@ -382,6 +429,10 @@ export function useAfterImpressFlow({
       window.clearTimeout(turretAfterImpressWatchdogRef.current);
       turretAfterImpressWatchdogRef.current = null;
     }
+    // eslint-disable-next-line no-console
+    console.log('[after-impress] turret-complete');
+    // eslint-disable-next-line no-console
+    console.log('[after-impress] measure-start');
     void runAutoMeasureAfterImpress();
   }, [machineLastObjectiveRx, runAutoMeasureAfterImpress]);
 

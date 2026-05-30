@@ -156,6 +156,8 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
     try {
       const trimmedPort = comPort.trim();
       const persistedPort = trimmedPort.length > 0 ? trimmedPort : null;
+      // eslint-disable-next-line no-console
+      console.log(`[micrometer-port-save] port=${persistedPort ?? '(none)'} enabled=${enabled}`);
       await saveMicrometerConfig({
         id: data?.id,
         values: {

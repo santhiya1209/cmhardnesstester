@@ -4,13 +4,15 @@
   "version": "0.1.0",
   "private": true,
   "description": "Electron + React 19 + Node.js Vickers measurement software",
+  "author": "Chennai Metco",
   "main": "electron/main.js",
   "scripts": {
-    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../backend/native/hardness-addon && npm install && cd ../../.. && npm run rebuild-native",
-    "rebuild-addon": "electron-rebuild -f -w hardness-addon -m backend/native/hardness-addon",
-    "rebuild-serialport": "electron-rebuild -f -w serialport && electron-rebuild -f -w serialport -m backend",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../native/hardness-addon && npm install && cd ../serial-addon && npm install && cd ../.. && npm run rebuild-native",
+    "rebuild-addon": "electron-rebuild -f -w hardness-addon -m native/hardness-addon",
+    "rebuild-serialport": "electron-rebuild -f -w serialport && electron-rebuild -f -w serialport -m backend && electron-rebuild -f -w serialport -m native/serial-addon",
     "rebuild-serial-addon": "cd native/serial-addon && node ../../node_modules/node-gyp/bin/node-gyp.js rebuild",
     "rebuild-native": "npm run rebuild-serialport && npm run rebuild-addon && npm run rebuild-serial-addon",
+    "rebuild:native:electron": "npm run rebuild-native",
     "predev": "node scripts/free-dev-ports.js",
     "dev": "concurrently -k -n BE,FE,EL \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
     "dev:backend": "dotenv -e .env -e backend/.env -- npm run dev --prefix backend",
@@ -41,11 +43,11 @@
     "electron": "^33.2.1",
     "electron-builder": "^26.8.1",
     "electron-devtools-installer": "^4.0.0",
-    "electron-is-dev": "^2.0.0",
     "wait-on": "^8.0.1"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
+    "electron-is-dev": "^2.0.0",
     "serialport": "^13.0.0"
   }
 }

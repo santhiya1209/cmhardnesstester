@@ -416,6 +416,19 @@ function registerIpc() {
   ipcMain.handle('machine:set-load-time', setMachineValue('loadTime'));
   ipcMain.handle('machine:set-hardness-level', setMachineValue('hardnessLevel'));
 
+  ipcMain.handle('machine:apply-objective-brightness', async (_e, payload) => {
+    startMachineEventBridge();
+    const objective =
+      payload && typeof payload.objective === 'string' ? payload.objective.trim() : '';
+    if (!objective) {
+      throw new Error('objective is required');
+    }
+    return machineBackendRequest('/api/machine/objective/apply-brightness', {
+      method: 'POST',
+      body: { objective },
+    });
+  });
+
   ipcMain.handle('machine:start-indent', async () => {
     startMachineEventBridge();
     return machineBackendRequest('/api/machine/indent', { method: 'POST', body: {} });

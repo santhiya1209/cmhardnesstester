@@ -1,0 +1,19 @@
+{
+  "name": "serial-addon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native N-API addon: serial port communication for the hardness machine.",
+  "main": "build/Release/serial.node",
+  "gypfile": true,
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp rebuild --target=33.2.1 --arch=x64 --dist-url=https://electronjs.org/headers"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^10.2.0"
+  }
+}
