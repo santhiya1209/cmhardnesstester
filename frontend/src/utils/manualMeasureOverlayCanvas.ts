@@ -35,6 +35,11 @@ type DrawArgs = {
   hoverGuide: ManualGuideLineKey | null;
   dragGuide: ManualGuideLineKey | null;
   /**
+   * Keyboard-selected guide line. Renders in white (vs. yellow) and thicker
+   * than hover/drag so the operator can see which line the arrow keys control.
+   */
+  selectedGuide?: ManualGuideLineKey | null;
+  /**
    * Base stroke width in CSS px for the yellow guide lines. Hover/drag lines
    * render at strokeWidth + 0.5 to preserve the existing affordance. Defaults
    * to 2 (legacy "normal").
@@ -274,12 +279,15 @@ export function hitTestManualGuideLine(
   return nearest.distance <= HIT_DISTANCE ? nearest.key : null;
 }
 
+const YELLOW_SELECTED = '#FFFFFF'; // white — clearly distinct from normal yellow
+
 export function drawManualMeasureOverlay({
   active,
   canvas,
   dragGuide,
   guides,
   hoverGuide,
+  selectedGuide,
   imageSize,
   wrap,
   strokeWidth,
@@ -313,14 +321,20 @@ export function drawManualMeasureOverlay({
     return;
   }
 
-  ctx.strokeStyle = YELLOW;
   ctx.lineCap = 'butt';
   ctx.setLineDash([]);
 
   const baseWidth = typeof strokeWidth === 'number' && strokeWidth > 0 ? strokeWidth : DEFAULT_LINE_WIDTH;
   const activeWidth = baseWidth + 0.5;
-  const lineWidth = (key: ManualGuideLineKey) =>
-    key === hoverGuide || key === dragGuide ? activeWidth : baseWidth;
+  const selectedWidth = baseWidth + 2;
+
+  const lineWidth = (key: ManualGuideLineKey) => {
+    if (key === selectedGuide) return selectedWidth;
+    if (key === hoverGuide || key === dragGuide) return activeWidth;
+    return baseWidth;
+  };
+  const lineColor = (key: ManualGuideLineKey) =>
+    key === selectedGuide ? YELLOW_SELECTED : YELLOW;
 
   if (lineLayout === 'two-diagonals') {
     // 10X simplified Auto Measure: draw only the D1 + D2 corner-to-corner
@@ -331,6 +345,7 @@ export function drawManualMeasureOverlay({
     const midY = (displayGuides.topY + displayGuides.bottomY) * 0.5;
 
     const d1Width = Math.max(lineWidth('left'), lineWidth('right'));
+    ctx.strokeStyle = lineColor('left');
     ctx.beginPath();
     ctx.lineWidth = d1Width;
     ctx.moveTo(displayGuides.leftX, midY);
@@ -338,6 +353,7 @@ export function drawManualMeasureOverlay({
     ctx.stroke();
 
     const d2Width = Math.max(lineWidth('top'), lineWidth('bottom'));
+    ctx.strokeStyle = lineColor('top');
     ctx.beginPath();
     ctx.lineWidth = d2Width;
     ctx.moveTo(midX, displayGuides.topY);
@@ -347,25 +363,31 @@ export function drawManualMeasureOverlay({
   }
 
   // Four full-extent solid yellow guides framing the indentation —
-  // matches the reference industrial Vickers overlay.
+  // matches the reference industrial Vickers overlay. Selected line
+  // renders in white + thicker so the operator knows which line the
+  // keyboard arrow keys will move.
+  ctx.strokeStyle = lineColor('left');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('left');
   ctx.moveTo(displayGuides.leftX, 0);
   ctx.lineTo(displayGuides.leftX, height);
   ctx.stroke();
 
+  ctx.strokeStyle = lineColor('right');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('right');
   ctx.moveTo(displayGuides.rightX, 0);
   ctx.lineTo(displayGuides.rightX, height);
   ctx.stroke();
 
+  ctx.strokeStyle = lineColor('top');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('top');
   ctx.moveTo(0, displayGuides.topY);
   ctx.lineTo(width, displayGuides.topY);
   ctx.stroke();
 
+  ctx.strokeStyle = lineColor('bottom');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('bottom');
   ctx.moveTo(0, displayGuides.bottomY);

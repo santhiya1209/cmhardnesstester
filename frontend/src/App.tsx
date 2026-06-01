@@ -109,6 +109,7 @@ import { useTurretMotionGate } from '@/features/machine/useTurretMotionGate';
 import { useObjectiveSyncGate } from '@/features/machine/useObjectiveSyncGate';
 import { useManualMeasureSave } from '@/features/measurement/useManualMeasureSave';
 import { useAutoAdjustedSave } from '@/features/measurement/useAutoAdjustedSave';
+import { useAutoMeasureKeyboardAdjust } from '@/hooks/useAutoMeasureKeyboardAdjust';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { MachineState } from '@/types/machine';
@@ -179,7 +180,7 @@ function App() {
   // Latest TestRecord drives the live target HV band used to color HV values
   // across the app (table, top HV display, report). Records are pre-sorted by
   // updatedAt descending in useTestRecords.
-  const { data: testRecordsList } = useTestRecords();
+  const { data: testRecordsList, refetch: refetchTestRecords } = useTestRecords();
   const latestTestRecord = testRecordsList[0] ?? null;
   const targetMinHv =
     typeof latestTestRecord?.targetMinHv === 'number' &&
@@ -191,6 +192,16 @@ function App() {
     Number.isFinite(latestTestRecord.targetMaxHv)
       ? latestTestRecord.targetMaxHv
       : null;
+  // When the Sample Info (testRecords) dialog closes, refetch so targetMinHv /
+  // targetMaxHv update immediately without requiring an app restart.
+  const prevDialogRef = useRef<typeof activeDialog>(activeDialog);
+  useEffect(() => {
+    const prev = prevDialogRef.current;
+    prevDialogRef.current = activeDialog;
+    if (prev === 'testRecords' && activeDialog !== 'testRecords') {
+      void refetchTestRecords();
+    }
+  }, [activeDialog, refetchTestRecords]);
   // Mirror to a ref so async save closures always see the latest value without
   // re-creating callbacks every time the config toggles.
   const micrometerEnabledRef = useRef(micrometerEnabled);
@@ -1825,6 +1836,33 @@ function App() {
     []
   );
 
+  // Shared selection state: both mouse click and keyboard Tab write this.
+  // Passed into the keyboard hook (for Tab cycling) and down to AutoMeasureOverlay
+  // (for white/thicker visual highlight) and the mouse-click handler below.
+  const [autoMeasureSelectedLine, setAutoMeasureSelectedLine] = useState<
+    'top' | 'right' | 'bottom' | 'left' | null
+  >(null);
+
+  // Keyboard-based fine adjustment. Active only when the camera is open, no
+  // dialog is open, and the pointer tool is selected.
+  useAutoMeasureKeyboardAdjust({
+    selectedLine: autoMeasureSelectedLine,
+    setSelectedLine: setAutoMeasureSelectedLine,
+    committedAutoMeasureOverlay,
+    setCommittedAutoMeasureOverlay,
+    onAdjusted: handleAutoMeasureAdjusted,
+    isActive: cameraOpen && activeDialog === null && activeTool === 'pointer',
+  });
+
+  // Called when the operator clicks a yellow line with the mouse. Sets the
+  // shared selectedLine so keyboard arrows immediately control that line.
+  const handleAutoMeasureLineSelected = useCallback(
+    (line: 'top' | 'right' | 'bottom' | 'left') => {
+      setAutoMeasureSelectedLine(line);
+    },
+    []
+  );
+
   const openCameraSettingsPanel = useCallback(() => {
     setActiveDialog('camera');
   }, []);
@@ -2026,6 +2064,8 @@ function App() {
           objectiveRefreshKey={objectiveRefreshKey}
           onManualMeasurementUpdated={handleManualMeasurementUpdated}
           onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
+          onAutoMeasureLineSelected={handleAutoMeasureLineSelected}
+          autoMeasureSelectedLine={autoMeasureSelectedLine}
           magnifierEnabled={magnifierEnabled}
           onClearShapeKind={overlay.clearByKind}
           lineStrokeWidth={lineThickness.strokeWidth}

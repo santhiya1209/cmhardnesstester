@@ -32,6 +32,8 @@ type Props = {
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: AutoMeasureCorners) => void;
+  onAutoMeasureLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left') => void;
+  autoMeasureSelectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
   magnifierEnabled: boolean;
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
   lineStrokeWidth?: number;
@@ -56,6 +58,8 @@ function LeftPanelImpl(
     objectiveRefreshKey,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
+    onAutoMeasureLineSelected,
+    autoMeasureSelectedLine,
     magnifierEnabled,
     onClearShapeKind,
     lineStrokeWidth,
@@ -84,6 +88,8 @@ function LeftPanelImpl(
         objectiveRefreshKey={objectiveRefreshKey}
         onManualMeasurementUpdated={onManualMeasurementUpdated}
         onAutoMeasureAdjusted={onAutoMeasureAdjusted}
+        onAutoMeasureLineSelected={onAutoMeasureLineSelected}
+        autoMeasureSelectedLine={autoMeasureSelectedLine}
         magnifierEnabled={magnifierEnabled}
         onClearShapeKind={onClearShapeKind}
         lineStrokeWidth={lineStrokeWidth}

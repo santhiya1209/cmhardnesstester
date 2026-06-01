@@ -242,7 +242,6 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  // Shared teardown — called after the measurement clear (or after its timeout).
   const doClose = () => {
     if (backendServer) {
       backendServer.close();
@@ -253,33 +252,9 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   };
 
-  // The embedded backend is still accepting connections at this point.
-  // Clear all measurement rows before closing the server so the next session
-  // starts with an empty table. Race against a 3 s timeout so a hung request
-  // never prevents the app from exiting.
-  const backendBaseUrl =
-    process.env.MACHINE_BACKEND_URL ||
-    `http://localhost:${process.env.PORT || 4000}`;
-
-  logStartup('[measurement-session-clear][start] reason=app-close');
-
-  const clearRequest = fetch(`${backendBaseUrl}/api/measurements`, { method: 'DELETE' })
-    .then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    })
-    .then((data) => {
-      logStartup(`[measurement-session-clear][success] deleted=${data && data.deleted != null ? data.deleted : 0}`);
-    })
-    .catch((err) => {
-      logStartup(`[measurement-session-clear][skip] reason=${err && err.message ? err.message : String(err)}`);
-    });
-
-  const clearTimeout = new Promise((resolve) => setTimeout(resolve, 3000));
-
-  Promise.race([clearRequest, clearTimeout]).finally(() => {
-    doClose();
-  });
+  logStartup('[db-persist][shutdown] preserve-existing=true');
+  logStartup('[db-clear][skip] reason=automatic-clear-disabled');
+  doClose();
 });
 
 app.on('before-quit', () => {

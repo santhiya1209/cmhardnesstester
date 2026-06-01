@@ -101,6 +101,8 @@ type Props = {
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
+  onAutoMeasureLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left') => void;
+  autoMeasureSelectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
   magnifierEnabled: boolean;
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
   lineStrokeWidth?: number;
@@ -171,6 +173,8 @@ function CameraWindowImpl(
     objectiveRefreshKey,
     onManualMeasurementUpdated,
     onAutoMeasureAdjusted,
+    onAutoMeasureLineSelected,
+    autoMeasureSelectedLine,
     magnifierEnabled,
     onClearShapeKind,
     lineStrokeWidth,
@@ -731,11 +735,13 @@ function CameraWindowImpl(
           interactive={activeTool === 'pointer'}
           source={autoMeasureGraphicsSource}
           onAdjusted={onAutoMeasureAdjusted}
+          onLineSelected={onAutoMeasureLineSelected}
           strokeWidth={lineStrokeWidth}
           activeObjective={manualMeasureObjective}
           clearNonce={autoMeasureClearNonce}
           cameraOpen={cameraOpen}
           onOverlayDrawn={handleOverlayDrawn}
+          selectedLine={autoMeasureSelectedLine}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}

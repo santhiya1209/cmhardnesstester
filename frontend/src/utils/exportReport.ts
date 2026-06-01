@@ -720,11 +720,12 @@ function buildDetailedDataTable(
     children: headers.map((h, i) => makeCell(h, widths[i], { bold: true, shaded: true })),
   });
   const dataRows = rows.map((r) => {
-    // docx TextRun.color wants a bare hex string with no '#'. Strip it.
-    const hardnessColor = getHardnessColor(r.hardnessNumeric, targetMinHv, targetMaxHv).color.replace(
-      /^#/,
-      ''
-    );
+    // docx TextRun.color wants a bare hex string with no '#'.
+    // When mode is 'default' (no targets set), omit the color so the cell
+    // inherits the document's default text color instead of going dark-blue.
+    const hvColorResult = getHardnessColor(r.hardnessNumeric, targetMinHv, targetMaxHv);
+    const hardnessColor =
+      hvColorResult.mode !== 'default' ? hvColorResult.color.replace(/^#/, '') : undefined;
     return new TableRow({
       children: [
         makeCell(r.index, widths[0]),

@@ -38,25 +38,9 @@ export interface StartResult {
 
 export async function start(): Promise<StartResult> {
   await initializeSqlite();
-
-  // Startup safety: clear any measurement rows that survived an unclean exit
-  // (e.g. process kill, power loss). Primary cleanup runs in Electron's
-  // window-all-closed handler via HTTP; this is the secondary safety net.
-  try {
-    const deleted = deleteAllMeasurements();
-    if (deleted === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[measurement-session-clear][startup-empty] rows=0');
-    } else {
-      // eslint-disable-next-line no-console
-      console.log(`[measurement-session-clear][success] deleted=${deleted} reason=startup-safety`);
-    }
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[measurement-session-clear][skip] reason=startup-clear-failed detail=${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+  const cleared = deleteAllMeasurements();
+  // eslint-disable-next-line no-console
+  console.log(`[startup] measurements cleared on open count=${cleared}`);
 
   await hardnessMachineSerialService.ready();
   const app = createApp();

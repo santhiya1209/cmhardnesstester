@@ -60,6 +60,13 @@ type Props = {
    *  carrying their stable key. Lets the album capture wait for the final
    *  refined overlay deterministically instead of a blind rAF delay. */
   onOverlayDrawn?: (cornersKey: string) => void;
+  /** Keyboard-selected guide line (from useAutoMeasureKeyboardAdjust).
+   *  Renders that line in white + thicker so the operator can see which
+   *  line the arrow keys will move. */
+  selectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
+  /** Called when the user clicks a line or corner so the parent can sync
+   *  the keyboard selection to the mouse-clicked element. */
+  onLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left') => void;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -136,6 +143,8 @@ function AutoMeasureOverlayImpl({
   clearNonce = 0,
   cameraOpen = true,
   onOverlayDrawn,
+  selectedLine = null,
+  onLineSelected,
 }: Props) {
   useRenderCount('AutoMeasureOverlay');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -278,9 +287,10 @@ function AutoMeasureOverlayImpl({
       const imageSizeKey = imageSize ? `${imageSize.width}x${imageSize.height}` : 'none';
       const hoverKey = hover ? hover.line : 'none';
       const dragKey = dragRef.current ? dragRef.current.line : 'none';
+      const selectedKey = selectedLine ?? 'none';
       const overlayObjectiveKey = (graphics?.objective ?? '').trim().toUpperCase() || 'unknown';
       const activeObjectiveKey = (activeObjective ?? '').trim().toUpperCase() || 'unknown';
-      const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}|${overlayObjectiveKey}|${activeObjectiveKey}`;
+      const drawKey = `${targetW}x${targetH}@${dpr}|${imageSizeKey}|${cornersKey(corners)}|${hoverKey}|${dragKey}|${selectedKey}|${overlayObjectiveKey}|${activeObjectiveKey}`;
 
       if (!sizeChanged && lastDrawKeyRef.current === drawKey) {
         return;
@@ -330,6 +340,7 @@ function AutoMeasureOverlayImpl({
         guides,
         hoverGuide: hoverHandle,
         dragGuide: dragHandle,
+        selectedGuide: selectedLine,
         strokeWidth,
         lineLayout: 'four-guides',
       });
@@ -340,7 +351,7 @@ function AutoMeasureOverlayImpl({
         onOverlayDrawn?.(cornersKey(corners));
       }
     });
-  }, [corners, imageSize, source, hover, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen, onOverlayDrawn]);
+  }, [corners, imageSize, source, hover, selectedLine, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen, onOverlayDrawn]);
 
   // Latest `draw` reference for the ResizeObserver callback. The observer
   // is installed once with `[]` deps; without this ref it would either
@@ -585,9 +596,14 @@ function AutoMeasureOverlayImpl({
         startCorners: cloneCorners(corners),
         startPointerImage,
       };
+      // Sync mouse-click selection to the shared selectedLine state so the
+      // operator can immediately use keyboard arrows on the clicked line.
+      onLineSelected?.(hit.line);
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-edit] selected=${hit.line}-line source=mouse`);
       draw();
     },
-    [corners, draw, getDisplayPoint, hitTest, toImagePoint]
+    [corners, draw, getDisplayPoint, hitTest, onLineSelected, toImagePoint]
   );
 
   const endDrag = useCallback(
@@ -602,6 +618,22 @@ function AutoMeasureOverlayImpl({
       draw();
       const finalCorners = localCorners;
       if (finalCorners) {
+        // Log total drag delta (image pixels from start to release).
+        const startPt = drag.startCorners[drag.line];
+        const endPt = finalCorners[drag.line];
+        const totalDx = endPt.x - startPt.x;
+        const totalDy = endPt.y - startPt.y;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-mouse] element=${drag.line}-line deltaX=${totalDx.toFixed(1)} deltaY=${totalDy.toFixed(1)}`
+        );
+        const d1Px = finalCorners.right.x - finalCorners.left.x;
+        const d2Px = finalCorners.bottom.y - finalCorners.top.y;
+        const davgPx = (d1Px + d2Px) / 2;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-recalculate] D1=${d1Px.toFixed(1)}px D2=${d2Px.toFixed(1)}px Davg=${davgPx.toFixed(1)}px HV=pending(debounce)`
+        );
         onAdjusted?.(finalCorners);
       }
     },

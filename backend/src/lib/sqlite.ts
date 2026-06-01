@@ -74,48 +74,6 @@ export function getDatabaseFilePath(): string {
   return path.join(resolveDatabaseDirectory(), env.DB_FILENAME);
 }
 
-// ─── SQLite magic-byte check (used for JSON→SQLite migration detection) ───────
-
-// SQLite file header: "SQLite format 3\0" — the 16th byte is 0x00 (null), NOT
-// a space (0x20). The original string literal had a trailing space which caused
-// the magic-byte check to always fail, making isSqliteFile() return false for
-// every valid SQLite file. That caused every app restart to rename the live DB
-// to a backup and create a new empty database, wiping all saved data.
-const SQLITE_MAGIC_BYTES = Buffer.from('SQLite format 3\0', 'binary');
-
-function isSqliteFile(filePath: string): boolean {
-  if (!fs.existsSync(filePath)) return false;
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const buf = Buffer.alloc(16);
-    fs.readSync(fd, buf, 0, 16, 0);
-    return buf.equals(SQLITE_MAGIC_BYTES);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function backupAndMigrateJsonIfPresent(filePath: string): { migrated: boolean; backupPath?: string } {
-  if (!fs.existsSync(filePath)) return { migrated: false };
-  if (isSqliteFile(filePath)) return { migrated: false };
-
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  if (!raw.trim()) {
-    fs.unlinkSync(filePath);
-    return { migrated: false };
-  }
-
-  const backupPath = path.join(path.dirname(filePath), 'hardness-tester.backup.json');
-  const finalBackup = fs.existsSync(backupPath)
-    ? path.join(
-        path.dirname(filePath),
-        `hardness-tester.backup.${Date.now()}.json`
-      )
-    : backupPath;
-  fs.renameSync(filePath, finalBackup);
-  return { migrated: true, backupPath: finalBackup };
-}
-
 // ─── Compatibility layer: sql.js wrapped to match better-sqlite3's API ────────
 
 export interface PreparedStatement {
@@ -266,44 +224,6 @@ function createSchema(db: DbHandle): void {
   }
 }
 
-function seedFromBackup(db: DbHandle, backupPath: string): void {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(backupPath, 'utf-8'));
-  } catch (err) {
-    console.warn(
-      `[db-migrate] backup file is not valid JSON (${(err as Error).message}); starting with empty DB`
-    );
-    return;
-  }
-  if (!parsed || typeof parsed !== 'object') return;
-  const root = parsed as Record<string, unknown>;
-
-  let totalRows = 0;
-  const insertByTable = new Map<string, PreparedStatement>();
-  for (const collection of COLLECTION_NAMES) {
-    const rows = root[collection];
-    if (!Array.isArray(rows)) continue;
-    const table = COLLECTION_TO_TABLE[collection];
-    let stmt = insertByTable.get(table);
-    if (!stmt) {
-      stmt = db.prepare(`INSERT OR REPLACE INTO ${table} (id, json) VALUES (@id, @json)`);
-      insertByTable.set(table, stmt);
-    }
-    const insertMany = db.transaction((items: unknown[]) => {
-      for (const item of items) {
-        if (!item || typeof item !== 'object') continue;
-        const id = (item as { id?: unknown }).id;
-        if (typeof id !== 'string' || id.length === 0) continue;
-        stmt!.run({ id, json: JSON.stringify(item) });
-        totalRows++;
-      }
-    });
-    insertMany(rows);
-  }
-  console.log(`[db-migrate] seeded ${totalRows} rows from JSON backup`);
-}
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -316,18 +236,14 @@ export async function initializeSqlite(): Promise<void> {
   const filePath = getDatabaseFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
-  const migration = backupAndMigrateJsonIfPresent(filePath);
-
   const SQL = await initSqlJs();
 
   let db: SqlJsDatabase;
   if (fs.existsSync(filePath)) {
     const buffer = fs.readFileSync(filePath);
     db = new SQL.Database(buffer);
-    console.log(`[db-open] loaded from ${filePath}`);
   } else {
     db = new SQL.Database();
-    console.log(`[db-open] created new database at ${filePath}`);
   }
 
   rawDb = db;
@@ -336,8 +252,16 @@ export async function initializeSqlite(): Promise<void> {
 
   createSchema(cachedHandle);
 
-  if (migration.migrated && migration.backupPath) {
-    seedFromBackup(cachedHandle, migration.backupPath);
+  const integrityRows = cachedHandle.prepare('PRAGMA integrity_check').all() as { integrity_check: string }[];
+  const integrityOk = integrityRows.length === 1 && integrityRows[0]?.integrity_check === 'ok';
+
+  console.log(`[db-path] active=${filePath}`);
+  console.log('[db-open] success=true');
+  console.log(`[db-integrity] ok=${integrityOk}`);
+  console.log('[db-backup-disabled] reason=single-db-policy');
+
+  if (!integrityOk) {
+    console.warn(`[db-integrity] details: ${JSON.stringify(integrityRows)}`);
   }
 
   persistToDisk();
