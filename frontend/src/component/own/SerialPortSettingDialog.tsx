@@ -30,7 +30,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onStatusChange?: (message: string) => void;
-  // Current in-memory machine COM port. Lives in App state â€” never read from
+  // Current in-memory machine COM port. Lives in App state - never read from
   // or written to the database. `null` means "no current selection".
   currentMachinePort: string | null;
   // Callback that disconnects the previous port (if any) and connects the
@@ -55,8 +55,8 @@ const SECTION_TITLE_SX = { color: tokens.status.success, fontWeight: 600, mb: 1 
 const ROW_LABEL_SX = { minWidth: 90 };
 
 function renderPortLabel(port: SerialPortInfo): string {
-  if (port.friendlyName) return `${port.path} â€” ${port.friendlyName}`;
-  if (port.manufacturer) return `${port.path} â€” ${port.manufacturer}`;
+  if (port.friendlyName) return `${port.path} - ${port.friendlyName}`;
+  if (port.manufacturer) return `${port.path} - ${port.manufacturer}`;
   return port.path;
 }
 
@@ -94,7 +94,7 @@ const DevicePortSelect = memo(function DevicePortSelect({
           <em>(none)</em>
         </MenuItem>
         {savedMissing ? (
-          <MenuItem value={value}>{`${value} â€” not detected`}</MenuItem>
+          <MenuItem value={value}>{`${value} - not detected`}</MenuItem>
         ) : null}
         {availablePorts.map((port) => (
           <MenuItem key={port.path} value={port.path}>

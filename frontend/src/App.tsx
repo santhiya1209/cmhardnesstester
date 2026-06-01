@@ -16,8 +16,8 @@ import {
   useMachineStoreApi,
 } from '@/contexts/MachineStateContext';
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
-import { useMachineConnection } from '@/hooks/useMachineConnection';
-import { useMicrometerAutoRestore } from '@/hooks/useMicrometerAutoRestore';
+import { useMachineConnection } from '@/features/machine/useMachineConnection';
+import { useMicrometerAutoRestore } from '@/features/machine/useMicrometerAutoRestore';
 import { measureVickersAuto } from '@/api/system';
 import { useCameraLifecycle } from '@/features/camera/useCameraLifecycle';
 import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRestore';

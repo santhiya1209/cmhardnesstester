@@ -22,7 +22,7 @@ import {
   Objective10xIcon,
   Objective40xIcon,
 } from '@/component/ui/ObjectiveIcons';
-import { useMachineSnapshot, useMachineError } from '@/contexts/MachineStateContext';
+import { useMachineSelector, useMachineError } from '@/contexts/MachineStateContext';
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
@@ -321,30 +321,6 @@ function normalizeObjectiveOption(value: string | null | undefined): string | nu
   return OBJECTIVE_OPTIONS.includes(key) ? key : null;
 }
 
-function machineToForm(state: MachineState | null, activeObjective?: string | null): FormState {
-  if (!state) {
-    return {
-      ...DEFAULT_FORM_STATE,
-      // No real objective source → explicit unselected ('') rather than a
-      // silent fallback to IND. activeObjective is the only objective source.
-      objective: normalizeObjectiveOption(activeObjective) ?? '',
-    };
-  }
-  // The dropdown and turret cards reflect only committed objective sources:
-  // App activeObjective first, then a machine-confirmed SSE field. When neither
-  // is known we show an explicit unselected state ('') — never a silent IND.
-  return {
-    force: String(state.force),
-    lightness: String(state.lightness),
-    loadTime: String(state.loadTime),
-    objective:
-      normalizeObjectiveOption(activeObjective) ??
-      normalizeObjectiveOption(state.confirmedObjectiveFromMachine) ??
-      '',
-    hardnessLevel: state.hardnessLevel,
-  };
-}
-
 function indentLabel(status: IndentStatus): string {
   switch (status) {
     case 'idle':
@@ -497,15 +473,52 @@ function MachineControlTabImpl({
   onObjectiveChangeIntent,
 }: MachineControlTabProps = {}) {
   useRenderCount('MachineControlTab');
-  const machineState = useMachineSnapshot();
+  // Narrow selectors — MachineControlTab re-renders only when the fields it
+  // actually displays change, not on every accepted machine push.
+  const machineConnected = useMachineSelector(s => s?.connected ?? false);
+  const machineIndentStatus = useMachineSelector<IndentStatus>(s => s?.indentStatus ?? 'idle');
+  const machineLastError = useMachineSelector(s => s?.lastError ?? null);
+  const machineSyncStatus = useMachineSelector(s => s?.syncStatus);
+  const machineConfirmedObjective = useMachineSelector(s => s?.confirmedObjectiveFromMachine ?? null);
+  const machineRawObjective = useMachineSelector(s => s?.objective ?? null);
+  const machineForce = useMachineSelector(s => s?.force);
+  const machineLightness = useMachineSelector(s => s?.lightness);
+  const machineLoadTime = useMachineSelector(s => s?.loadTime);
+  const machineHardnessLevel = useMachineSelector(s => s?.hardnessLevel);
+  // True when a full machine state snapshot exists (force/lightness/etc. are
+  // available). False on first render before the first SSE push arrives.
+  const hasMachineState = useMachineSelector(s => s !== null);
   const streamError = useMachineError();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
   const { move: moveTurret, busy: turretBusy, error: turretError } = useTurret();
 
   const formState = useMemo(
-    () => machineToForm(machineState, activeObjective),
-    [machineState, activeObjective]
+    () =>
+      hasMachineState
+        ? {
+            force: String(machineForce ?? DEFAULT_FORM_STATE.force),
+            lightness: String(machineLightness ?? DEFAULT_FORM_STATE.lightness),
+            loadTime: String(machineLoadTime ?? DEFAULT_FORM_STATE.loadTime),
+            objective:
+              normalizeObjectiveOption(activeObjective) ??
+              normalizeObjectiveOption(machineConfirmedObjective) ??
+              '',
+            hardnessLevel: String(machineHardnessLevel ?? DEFAULT_FORM_STATE.hardnessLevel),
+          }
+        : {
+            ...DEFAULT_FORM_STATE,
+            objective: normalizeObjectiveOption(activeObjective) ?? '',
+          },
+    [
+      hasMachineState,
+      machineForce,
+      machineLightness,
+      machineLoadTime,
+      machineHardnessLevel,
+      machineConfirmedObjective,
+      activeObjective,
+    ]
   );
   const bottomHvDisplay = hvDisplay.trim() ? hvDisplay : 'N/A';
   const bottomHvTypeDisplay = useMemo(() => {
@@ -688,7 +701,7 @@ function MachineControlTabImpl({
     message: string;
   }>({ open: false, status: 'running', message: '' });
   const impressAutoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastIndentStatusRef = useRef<IndentStatus>(machineState?.indentStatus ?? 'idle');
+  const lastIndentStatusRef = useRef<IndentStatus>(machineIndentStatus);
 
   const closeImpressPopup = useCallback(() => {
     if (impressAutoCloseTimerRef.current !== null) {
@@ -729,8 +742,8 @@ function MachineControlTabImpl({
     formState.force,
     formState.loadTime,
     formState.objective,
-    machineState?.confirmedObjectiveFromMachine,
-    machineState?.objective,
+    machineConfirmedObjective,
+    machineRawObjective,
     startIndent,
   ]);
 
@@ -738,7 +751,7 @@ function MachineControlTabImpl({
   // status only — no optimistic "done" on click.
   useEffect(() => {
     const prev = lastIndentStatusRef.current;
-    const next: IndentStatus = machineState?.indentStatus ?? 'idle';
+    const next = machineIndentStatus;
     if (prev === next) return;
     lastIndentStatusRef.current = next;
     if (!impressPopup.open) return;
@@ -756,7 +769,7 @@ function MachineControlTabImpl({
       return;
     }
     if (next === 'error') {
-      const reason = machineState?.lastError ?? 'machine reported error';
+      const reason = machineLastError ?? 'machine reported error';
       console.error(`[impress] error: ${reason}`);
       setImpressPopup({
         open: true,
@@ -771,7 +784,7 @@ function MachineControlTabImpl({
         setImpressPopup((current) => ({ ...current, open: false }));
       }, 4000);
     }
-  }, [impressPopup.open, impressPopup.status, machineState?.indentStatus, machineState?.lastError]);
+  }, [impressPopup.open, impressPopup.status, machineIndentStatus, machineLastError]);
 
   const handleTurretClick = useCallback(
     (direction: TurretDirection) => () => {
@@ -808,8 +821,8 @@ function MachineControlTabImpl({
     [commitObjectiveResult, moveTurret, onCenterCommit, onObjectiveChangeIntent, onTurretIntent]
   );
 
-  const connected = machineState?.connected ?? false;
-  const indentStatus: IndentStatus = machineState?.indentStatus ?? 'idle';
+  const connected = machineConnected;
+  const indentStatus: IndentStatus = machineIndentStatus;
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
   const isBusy = setBusy || indentBusy || turretBusy;
 
@@ -819,13 +832,13 @@ function MachineControlTabImpl({
   // not keep the red banner visible. Backend lastError remains authoritative.
   const recovered =
     !!connected &&
-    !machineState?.lastError &&
-    (machineState?.syncStatus === 'synced' || machineState?.syncStatus === undefined);
+    !machineLastError &&
+    (machineSyncStatus === 'synced' || machineSyncStatus === undefined);
   const errorMessage = useMemo(() => {
-    if (machineState?.lastError) return machineState.lastError;
+    if (machineLastError) return machineLastError;
     if (recovered) return null;
     return indentError ?? turretError ?? setError ?? streamError ?? null;
-  }, [indentError, machineState?.lastError, recovered, setError, streamError, turretError]);
+  }, [indentError, machineLastError, recovered, setError, streamError, turretError]);
 
   return (
     <Box sx={ROOT_SX}>

@@ -863,13 +863,25 @@ class HardnessMachineSerialService extends EventEmitter {
             this.pendingAckField === 'objective'
               ? frame.objective ?? frame.slot
               : frame.slot;
+          const matched = expectedTurretEcho || expectedObjectiveEcho;
           // eslint-disable-next-line no-console
           console.log(
-            `[machine-ack-match] field=${this.pendingAckField} expected=${this.pendingAckExpectedValue ?? ''} received=${received} matched=${expectedTurretEcho || expectedObjectiveEcho}`
+            `[machine-ack-match] field=${this.pendingAckField} expected=${this.pendingAckExpectedValue ?? ''} received=${received} matched=${matched}`
           );
+          if (!matched) {
+            // Objective echo arrived while a different ACK is pending — log and keep waiting.
+            // eslint-disable-next-line no-console
+            console.log(
+              `[machine-ack-unrelated] pendingField=${this.pendingAckField} received=${rxFrame.ascii.replace(/[\r\n]+$/, '')} action=continue-wait`
+            );
+          }
         }
         this.setState(patch, 'machine');
         if (expectedTurretEcho || expectedObjectiveEcho) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[machine-objective-ack-match] value=${frame.objective ?? frame.slot} received=${rxFrame.ascii.replace(/[\r\n]+$/, '')} matched=true`
+          );
           this.pendingAckResolution = 'state-echo';
           this.emit('ack');
         }
@@ -946,6 +958,12 @@ class HardnessMachineSerialService extends EventEmitter {
           this.schedulePersist();
         }
         if (expectedEcho) {
+          if (frame.key === 'lightness') {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[machine-lightness-ack-match] expected=${this.pendingAckExpectedValue != null ? (lightnessFrameForValue(this.pendingAckExpectedValue) ?? this.pendingAckExpectedValue) : ''} received=${lightnessFrameForValue(frame.value) ?? frame.value} matched=true`
+            );
+          }
           this.pendingAckResolution = 'state-echo';
           this.emit('ack');
         }
@@ -1481,6 +1499,15 @@ class HardnessMachineSerialService extends EventEmitter {
         },
         confirmedByMachine ? 'machine' : 'pc'
       );
+      // Apply saved brightness only after turret ACK is confirmed (L1OK/L10K received),
+      // not from the frontend watcher which fires on state-batch before turret is done.
+      if (expectedObjective) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[machine-objective-brightness] apply-after-objective-confirmed objective=${expectedObjective}`
+        );
+        await this.applyObjectiveBrightness(expectedObjective);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console

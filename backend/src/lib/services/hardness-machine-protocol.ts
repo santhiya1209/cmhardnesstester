@@ -11,14 +11,14 @@
 //                   or an AV-state batch, or a bare OK — all accepted as ACK.
 //                   The earlier "UC08\r"/"C08" pair was inferred but proved silent
 //                   on the real machine; do not reintroduce it.
-//   objective 10X -> TX "UL1\r",  machine RX echo/status "L1OK"
-//   objective IND -> TX "UL2\r",  machine RX echo/status "L2OK"
-//   objective 40X -> TX "UL3\r",  machine RX echo/status "L3OK"
+//   objective 10X -> TX "UL1\r",  machine RX echo/status "L1OK" (also L10K on some firmware)
+//   objective IND -> TX "UL2\r",  machine RX echo/status "L2OK" (also L20K on some firmware)
+//   objective 40X -> TX "UL3\r",  machine RX echo/status "L3OK" (also L30K on some firmware)
 //   lightness 5   -> TX "UK0005\r", machine RX echo/status "K0005"
 //   load time 5   -> TX "UT05\r", machine RX echo/status "T05"
 //   indent        -> TX "UV{scale}{force*1000:D7}{loadTime:D6}{P|X}\r",
 //                    machine completion "FINISH"
-//   turret slot n -> TX "ULn\r",  machine RX echo/status "LnOK"
+//   turret slot n -> TX "ULn\r",  machine RX echo/status "LnOK" or "Ln0K" (firmware-dependent)
 //
 // Do not add speculative bytes. Keep commands verified=false until either the
 // DLL, protocol manual, or a direction-labelled serial capture confirms them.
@@ -145,9 +145,9 @@ const FORCE_VALUE_BY_SCALE_CODE: Record<string, string> = Object.fromEntries(
 );
 
 // Current connected tester mapping confirmed from machine notes:
-//   UL1 -> 10X (reply L1OK)
-//   UL2 -> IND (reply L2OK) — indenter slot, not an objective lens
-//   UL3 -> 40X (reply L3OK)
+//   UL1 -> 10X (reply L1OK, or L10K on some firmware variants)
+//   UL2 -> IND (reply L2OK, or L20K) — indenter slot, not an objective lens
+//   UL3 -> 40X (reply L3OK, or L30K on some firmware variants)
 // The DLL confirms UL<n>\r as the turret TX shape; objective-per-turret is
 // machine configuration. Earlier code mapped 40X to UL2 — that was wrong and
 // has been replaced with the values above.
@@ -355,8 +355,9 @@ export function buildSetObjectiveCommand(value: string | number): FrameOrNull {
 
 /**
  * Map an objective value (e.g. '40X') to the machine echo frame that confirms
- * it (e.g. 'L3OK'), or null for an unmapped value. Used for ack-match logging
- * so the expected RX is shown in the same form the machine actually sends.
+ * it (e.g. 'L3OK'), or null for an unmapped value. Used for ack-match logging.
+ * Both L<n>OK and L<n>0K are accepted by the parser; this returns the L<n>OK
+ * form which matches the confirmed real machine firmware.
  */
 export function objectiveFrameForValue(value: string | number): string | null {
   const code = OBJECTIVE_TURRET_CODE_BY_VALUE[String(value).toUpperCase().trim()];
@@ -474,7 +475,8 @@ function classifyFrame(payload: Buffer, text: string): ParsedMachineFrame {
       : { kind: 'unknown', raw: payload };
   }
 
-  const objectiveMatch = /^L(\d)OK$/.exec(text);
+  // Accept both L<n>OK (confirmed real machine firmware) and L<n>0K (PLC-doc variant).
+  const objectiveMatch = /^L(\d)(?:OK|0K)$/.exec(text);
   if (objectiveMatch) {
     const slot = objectiveMatch[1];
     const direction = getTurretDirectionForSlot(slot);
