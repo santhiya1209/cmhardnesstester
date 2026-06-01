@@ -741,6 +741,10 @@ function App() {
       });
       const { d1Px, d2Px, center } = validation;
       if (!validation.ok) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-validate] success=false reason=${validation.reason} cornersValid=false d1Valid=${d1Px > 0} d2Valid=${d2Px > 0} overlayValid=false`
+        );
         logAutoMeasurePhase('auto-measure-reject', {
           objective: objectiveForCalibration,
           smoothing: snapshot.settings.smoothing,
@@ -755,6 +759,11 @@ function App() {
         setStatusMessage(`System Status: Auto Measure rejected: ${validation.reason}`);
         return false;
       }
+      // Geometry passed — overlay validity is still pending until after paint.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-validate] cornersValid=true linesValid=true d1Valid=${d1Px > 0} d2Valid=${d2Px > 0} overlayValid=pending`
+      );
 
       // Duplicate-measurement guard. Repeat clicks on the same indentation
       // compare stable rounded geometry against the row fingerprint before
@@ -897,6 +906,10 @@ function App() {
         }
         return { ...graphics, corners: { ...graphics.corners } };
       });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-overlay-commit] corners=4 lines=4 objective=${objectiveForCalibration ?? 'unknown'} source=${source}`
+      );
       if (source === 'after-impress') {
       }
       setPreviewAutoMeasureOverlay(null);
@@ -942,15 +955,38 @@ function App() {
 
 
       await waitForOverlayPaint();
+      // Overlay visibility gate — applies to EVERY source, not just after-impress.
+      // setCommittedAutoMeasureOverlay was called above, but useOverlayLifecycle
+      // has several render guards (turretMoving, objectiveChangeInProgress,
+      // autoMeasureSessionActive, frameId mismatch) that can silently suppress
+      // display even when the committed overlay is non-null. Without this check
+      // a measurement row is saved with "success" status but no visible lines.
+      if (!displayedAutoMeasureGraphicsRef.current) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-validate] success=false reason=overlay-not-visible source=${source}`
+        );
+        // eslint-disable-next-line no-console
+        console.log(`[measurement-save] source=auto-measure allowed=false reason=invalid-overlay`);
+        if (source === 'after-impress') {
+          logAfterImpressDetectionFailed('overlay-not-ready');
+        }
+        setAutoMeasureStatus('failed');
+        setStatusMessage('System Status: Auto Measure rejected: overlay not visible after render');
+        setUnavailableMsg('Auto Measure overlay failed to render. Please retry.');
+        clearAutoMeasureOverlay(
+          source === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-overlay-not-visible'
+        );
+        return false;
+      }
       if (source === 'after-impress') {
         preserveAfterImpressOverlay(5000);
-        if (!displayedAutoMeasureGraphicsRef.current) {
-          logAfterImpressDetectionFailed('overlay-not-ready');
-          setAutoMeasureStatus('failed');
-          setStatusMessage('System Status: Auto Measure rejected: overlay not ready');
-          return false;
-        }
       }
+      // Overlay is confirmed visible — log render success.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-overlay-render] visible=true lines=4 objective=${objectiveForCalibration ?? 'unknown'}`
+      );
       // Deterministic finalize: capture ONLY after the overlay canvas has
       // painted these exact final corners — never a preview/stale/blank scrape.
       const finalCornersKey = autoMeasureCornersKey(graphics.corners);
@@ -1000,6 +1036,8 @@ function App() {
       };
       if (isNewAutoMeasurement) {
       }
+      // eslint-disable-next-line no-console
+      console.log(`[measurement-save] source=auto-measure allowed=true isNew=${isNewAutoMeasurement}`);
       let saved;
       try {
         saved = await saveManualMeasurement({
@@ -1343,6 +1381,13 @@ function App() {
           // eslint-disable-next-line no-console
           console.log('[auto-measure] detection-start source=after-impress');
         }
+
+        // Log the frame dimensions used for detection so coordinate-space
+        // mismatches can be spotted in the console.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-coords] imageWidth=${displayedFrame.width} imageHeight=${displayedFrame.height} objective=${objectiveForCalibration ?? 'unknown'} source=${displayedFrame.source}`
+        );
 
         if (isFreshCapture) {
           committedAutoMeasureFrameRef.current = cloneCapturedFrame(displayedFrame);

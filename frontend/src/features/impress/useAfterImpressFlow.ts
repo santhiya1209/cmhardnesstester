@@ -322,25 +322,49 @@ export function useAfterImpressFlow({
       );
 
       if (!measureAfterImpressEnabled) {
-        // Turret-only path: the machine will rotate the turret (because
-        // turretAfterImpress was encoded in the indent command by the backend)
-        // but we must NOT run detection and must NOT let any stale yellow
-        // overlay survive. Explicitly clear the overlay, reset the preserve
-        // timer so a previous after-impress window can't block future clears,
-        // and arm the suppress ref so a concurrently-open Settings dialog
-        // preview won't repaint lines during the rotation.
+        // Measure-disabled path: clear any stale overlay, release the frozen
+        // camera frame (if a previous Auto Measure click had frozen it), and
+        // resume the live stream immediately. No detection is run.
         if (turretAfterImpressEnabled) {
           // eslint-disable-next-line no-console
           console.log(`[after-impress] turret-start objective=${targetObjective}`);
         }
-        impressInProgressRef.current = false;
-        clearAutoMeasureOverlay('turret-only-after-impress');
-        suppressAutoMeasurePreviewRef.current = true;
-        afterImpressOverlayPreserveUntilRef.current = 0;
         // eslint-disable-next-line no-console
-        console.log('[auto-measure-overlay] cleared reason=measure-disabled');
+        console.log('[after-impress] complete measureAfterImpress=false');
+        impressInProgressRef.current = false;
+        clearAutoMeasureOverlay('after-impress-measure-disabled');
+        suppressAutoMeasurePreviewRef.current = false;
+        afterImpressOverlayPreserveUntilRef.current = 0;
+        setAutoMeasureStatus('idle');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-overlay] action=clear reason=measure-after-impress-disabled');
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-session] action=end reason=measure-after-impress-disabled');
         // eslint-disable-next-line no-console
         console.log('[after-impress] measure-skipped reason=measureAfterImpress-disabled');
+
+        // Release frozen camera frame and resume live stream.
+        // If a previous Auto Measure call froze the camera, the freeze canvas
+        // is still overlaying the live canvas. Unfreeze here so the operator
+        // sees the live image again without having to close/reopen the camera.
+        const camera = cameraRef.current;
+        if (camera) {
+          camera.unfreezeCamera('after-impress-measure-disabled');
+          // eslint-disable-next-line no-console
+          console.log('[camera-after-impress] action=resume-live cameraOpen=true streaming=true');
+          void camera.waitForFreshFrame(1500).then((fresh) => {
+            if (fresh) {
+              // eslint-disable-next-line no-console
+              console.log('[camera-paint] resumed=true reason=after-impress-measure-disabled');
+            } else {
+              // eslint-disable-next-line no-console
+              console.warn('[camera-after-impress] resume-failed reason=fresh-frame-timeout');
+            }
+          });
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn('[camera-after-impress] resume-failed reason=camera-ref-missing');
+        }
         return;
       }
 
@@ -404,6 +428,7 @@ export function useAfterImpressFlow({
   }, [
     activeObjectiveRef,
     autoMeasurementIdRef,
+    cameraRef,
     clearActiveMeasurement,
     clearAutoMeasureOverlay,
     latestAutoMeasurePreviewSettingsRef,
@@ -411,6 +436,7 @@ export function useAfterImpressFlow({
     machineIndentStatus,
     runAutoMeasureAfterImpress,
     setAutoMeasureClearNonce,
+    setAutoMeasureStatus,
     setManualMeasureResetKey,
   ]);
 

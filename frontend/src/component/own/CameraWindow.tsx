@@ -141,6 +141,7 @@ export type CameraWindowHandle = {
   clearLiveCanvas: (reason?: string) => void;
   clearLiveImage: (reason?: string) => void;
   waitForFreshFrame: (timeoutMs?: number) => Promise<boolean>;
+  unfreezeCamera: (reason?: string) => void;
 };
 
 const ZOOM_MIN = 0.5;
@@ -492,11 +493,15 @@ function CameraWindowImpl(
     const prev = turretMovingPrevRef.current;
     turretMovingPrevRef.current = turretMoving;
     if (turretMoving && !prev) {
-      const live = canvasRef.current;
-      if (live) {
-        const ctx = live.getContext('2d');
-        if (ctx) ctx.clearRect(0, 0, live.width, live.height);
-      }
+      // Do NOT clear the live canvas — keep the last painted frame visible so
+      // the operator sees the previous image instead of blank black during
+      // physical turret rotation. The overlay render gate (useOverlayLifecycle)
+      // already hides yellow lines; the live image should remain.
+      // eslint-disable-next-line no-console
+      console.log('[camera-canvas] action=preserve-last-frame reason=turret-moving');
+      // Unfreeze the Auto Measure freeze canvas. The frozen capture held a
+      // frame for detection; clearing it here is safe because the overlay
+      // lifcycle gate already suppresses the yellow lines.
       const snap = freezeCanvasRef.current;
       if (snap) {
         const snapCtx = snap.getContext('2d');
@@ -504,7 +509,9 @@ function CameraWindowImpl(
       }
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
-      liveCanvasClearedAtRef.current = Date.now();
+      // Bump epoch so in-flight frames from before the turret move are dropped
+      // from the decode/paint queue. New post-move frames paint normally on top
+      // of whatever is currently visible on the canvas.
       bumpFrameEpochOnCanvasClear();
       return;
     }
@@ -513,7 +520,8 @@ function CameraWindowImpl(
       void waitForFreshCameraFrame(2500).then((fresh) => {
         if (cancelled) return;
         if (fresh) {
-        } else {
+          // eslint-disable-next-line no-console
+          console.log('[camera-paint] resumed=true reason=turret-complete');
         }
       });
       return () => {
@@ -532,6 +540,28 @@ function CameraWindowImpl(
     setImageSize(null);
     clearLiveCanvas(reason);
   }, [clearLiveCanvas]);
+
+  const unfreezeCamera = useCallback((reason: string = 'unfreeze') => {
+    if (!frozen) return;
+    const snap = freezeCanvasRef.current;
+    const live = canvasRef.current;
+    if (snap) {
+      const ctx = snap.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
+    }
+    imageSourceRef.current = 'live-camera';
+    const full = getLatestFullFrame();
+    const measurementSize =
+      full && full.width > 0 && full.height > 0
+        ? { width: full.width, height: full.height }
+        : live && live.width > 0 && live.height > 0
+          ? { width: live.width, height: live.height }
+          : null;
+    setImageSize((current) => keepImageSizeIfSame(current, measurementSize));
+    setFrozen(false);
+    // eslint-disable-next-line no-console
+    console.log(`[camera-after-impress] action=unfreeze reason=${reason}`);
+  }, [frozen]);
 
   const waitForFreshFrame = useCallback(async (timeoutMs = 1500) => {
     const fresh = await waitForFreshCameraFrame(timeoutMs);
@@ -555,8 +585,12 @@ function CameraWindowImpl(
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
     }
-    clearLiveCanvas();
-  }, [objectiveRefreshKey, clearLiveCanvas, frozen, manualMeasureObjective]);
+    // Do NOT clear the live canvas on objective refresh — preserve the last
+    // painted frame so the camera does not go blank during objective change.
+    // The epoch bump in the turretMoving effect already dropped stale frames.
+    // eslint-disable-next-line no-console
+    console.log('[camera-canvas] action=preserve-last-frame reason=objective-refresh');
+  }, [objectiveRefreshKey, frozen, manualMeasureObjective]);
 
   useImperativeHandle(
     ref,
@@ -573,6 +607,7 @@ function CameraWindowImpl(
       clearLiveCanvas,
       clearLiveImage,
       waitForFreshFrame,
+      unfreezeCamera,
     }),
     [
       toggleFreeze,
@@ -587,6 +622,7 @@ function CameraWindowImpl(
       clearLiveCanvas,
       clearLiveImage,
       waitForFreshFrame,
+      unfreezeCamera,
     ]
   );
 

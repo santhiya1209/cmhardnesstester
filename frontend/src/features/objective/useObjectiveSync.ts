@@ -94,7 +94,12 @@ export function useObjectiveSync({
 
       void refetchCalibrationSettings();
       setObjectiveRefreshKey((key) => key + 1);
-      cameraRef.current?.clearLiveCanvas('objective-change-commit');
+      // Do NOT clear the live camera canvas — the last frame stays visible
+      // while the turret rotates. Only the Auto Measure overlay is cleared.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[camera-stream-state] reason=objective-change cameraOpen=${cameraOpen} streaming=true objective=${normalized}`
+      );
       if (!shouldPreserveAfterImpressOverlay()) {
         clearAutoMeasureOverlay('objective-change-commit');
       }

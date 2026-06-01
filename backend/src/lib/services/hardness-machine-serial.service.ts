@@ -6,6 +6,7 @@ import {
   buildStartIndentCommand,
   buildTurretCommand,
   getCommandVerification,
+  getObjectiveForTurretSlot,
   getTurretCommandKey,
   getTurretSlotForDirection,
   isCommandVerified,
@@ -718,6 +719,15 @@ class HardnessMachineSerialService extends EventEmitter {
           this.pendingAckField !== null &&
           String(this.pendingAckField).startsWith('turret') &&
           frame.turretSlot !== undefined;
+        // Some machines send an AV-status batch with objective info but WITHOUT
+        // the explicit L<n> turret-slot marker (e.g. AV08T05K0005 vs
+        // AV08T05K0005L1OK). Without this extra check, a pending turretLeft/Right
+        // command would never resolve via state-batch — causing a 5s ACK timeout
+        // even though the machine clearly reported the objective change.
+        const expectedObjectiveFromTurretBatch =
+          this.pendingAckField !== null &&
+          String(this.pendingAckField).startsWith('turret') &&
+          frame.values.objective !== undefined;
         const fullPatch: Partial<MachineState> = {
           ...patch,
           turretPosition: frame.turretDirection ?? this.state.turretPosition,
@@ -779,14 +789,17 @@ class HardnessMachineSerialService extends EventEmitter {
         if (this.pendingAckField !== null) {
           const received = expectedTurretEcho
             ? frame.turretSlot
-            : frame.values[this.pendingAckField as MachineControlKey];
+            : expectedObjectiveFromTurretBatch
+              ? frame.values.objective
+              : frame.values[this.pendingAckField as MachineControlKey];
+          const matched = expectedEcho || expectedTurretEcho || expectedObjectiveFromTurretBatch;
           // eslint-disable-next-line no-console
           console.log(
-            `[machine-ack-match] field=${this.pendingAckField} expected=${this.pendingAckExpectedValue ?? ''} received=${received ?? ''} matched=${expectedEcho || expectedTurretEcho}`
+            `[machine-ack-match] field=${this.pendingAckField} expected=${this.pendingAckExpectedValue ?? ''} received=${received ?? ''} matched=${matched}`
           );
         }
         this.setState(fullPatch, 'machine');
-        if (expectedEcho || expectedTurretEcho) {
+        if (expectedEcho || expectedTurretEcho || expectedObjectiveFromTurretBatch) {
           this.pendingAckResolution = 'state-echo';
           this.emit('ack');
         }
@@ -824,11 +837,13 @@ class HardnessMachineSerialService extends EventEmitter {
           patch.lastObjectiveRx = rxAscii;
           patch.confirmedObjectiveFromMachine = frame.objective;
           // eslint-disable-next-line no-console
-          console.log(`[machine-objective-rx] raw=${rxAscii}`);
+          console.log(`[machine-objective-rx] raw=${rxAscii} parsed=L${frame.slot}OK→${frame.objective}`);
           // eslint-disable-next-line no-console
           console.log(
             `[machine-objective-ack] objective=${frame.objective} ok=true reason=L${frame.slot}OK`
           );
+          // eslint-disable-next-line no-console
+          console.log(`[objective-active] objective=${frame.objective} source=ack`);
           // eslint-disable-next-line no-console
           console.log(`[machine-objective-state-update] confirmedObjective=${frame.objective}`);
           // eslint-disable-next-line no-console
@@ -1109,9 +1124,13 @@ class HardnessMachineSerialService extends EventEmitter {
         reject(new Error(message));
       };
       const timer = setTimeout(() => {
+        const lastRx = this.state.lastRxFrame?.ascii.replace(/[\r\n]+$/, '').trim() ?? 'none';
+        const txObjective = String(field).startsWith('turret')
+          ? (getObjectiveForTurretSlot(String(expectedValue ?? '')) ?? '')
+          : '';
         // eslint-disable-next-line no-console
         console.error(
-          `[machine-ack-timeout] id=${commandId} field=${field} expected=${this.formatAckFrame(field, expectedValue)}`
+          `[machine-ack-timeout] id=${commandId} field=${field}${txObjective ? ` objective=${txObjective}` : ''} expected=${this.formatAckFrame(field, expectedValue)} lastReceived=${lastRx}`
         );
         cleanup();
         reject(new Error('ack timeout'));
@@ -1130,6 +1149,18 @@ class HardnessMachineSerialService extends EventEmitter {
     frame: Buffer,
     opts: { awaitAck?: boolean; expectedValue?: string | number; timeoutMs?: number } = {}
   ): Promise<void> {
+    const pending = this.pendingAckField;
+    if (pending) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-command-queue] pending=${pending} new=${field} action=queued`
+      );
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-command-queue] pending=none new=${field} action=send-now`
+      );
+    }
     const run = () => this.transmitNow(field, frame, opts);
     const queued = this.txQueue.then(run, run);
     this.txQueue = queued.catch(() => undefined);
@@ -1158,12 +1189,15 @@ class HardnessMachineSerialService extends EventEmitter {
         `[machine-objective-tx] objective=${opts.expectedValue ?? ''} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
       );
     } else if (String(field).startsWith('turret')) {
-      // The turret buttons also emit UL<n> on the wire (left=UL1=10X,
-      // right=UL3=40X). Log them under the same tag so the TX is visible
-      // whichever control the operator used.
-      const codeAscii = frame.toString('ascii').replace(/\r$/, '');
+      // Turret buttons emit UL<n>\r on the wire (left=UL1=10X, right=UL3=40X).
+      // Log under the same tag so the TX is visible whichever control the
+      // operator used. Map slot back to objective name for human readability.
+      const slot = opts.expectedValue !== undefined ? String(opts.expectedValue) : '';
+      const txObjective = slot ? (getObjectiveForTurretSlot(slot) ?? `slot=${slot}`) : field;
       // eslint-disable-next-line no-console
-      console.log(`[machine-objective-tx] command=${codeAscii}`);
+      console.log(
+        `[machine-objective-tx] objective=${txObjective} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
+      );
     }
 
     // Pre-arm ack listener BEFORE the write completes — some machines reply
@@ -1349,9 +1383,11 @@ class HardnessMachineSerialService extends EventEmitter {
     const saved = this.objectiveBrightnessMap[normalized];
     if (!Number.isInteger(saved)) return this.getState();
     // eslint-disable-next-line no-console
-    console.log(`[objective-brightness] objective=${normalized} brightness=${saved} source=restore`);
+    console.log(`[objective-brightness] objective=${normalized} brightness=${saved} source=objective-ack`);
     if (!this.state.connected) return this.getState();
     if (Number(this.state.lightness) === saved) return this.getState();
+    // eslint-disable-next-line no-console
+    console.log(`[brightness-apply] objective=${normalized} brightness=${saved}`);
     try {
       await this.setControlValue('lightness', saved);
     } catch (err) {
@@ -1384,6 +1420,24 @@ class HardnessMachineSerialService extends EventEmitter {
 
     const commandKey = getTurretCommandKey(direction);
     const slot = getTurretSlotForDirection(direction);
+    const expectedObjective = getObjectiveForTurretSlot(slot);
+
+    // Silent-accept guard: some machines do not echo UL<n>\r when the turret
+    // is already at slot <n>. If we know the machine has already confirmed the
+    // same objective, skip the TX so the operator doesn't wait 5s for a reply
+    // that will never come. Brightness is still applied by the caller.
+    if (
+      expectedObjective &&
+      this.state.turretPosition === direction &&
+      this.state.confirmedObjectiveFromMachine === expectedObjective
+    ) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[machine-turret-skip] direction=${direction} slot=${slot} objective=${expectedObjective} reason=already-at-position`
+      );
+      return this.getState();
+    }
+
     const verified = isCommandVerified(commandKey);
     const frame = verified ? buildTurretCommand(direction) : null;
 
