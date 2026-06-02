@@ -32,6 +32,14 @@ export type CameraFrameMeta = {
   sentAt?: number;
   /** Frames dropped by native/main before this latest frame was sent. */
   droppedBeforeSend?: number;
+  /** Latency diagnostics (additive, may be absent on older main/native):
+   *  SDK dvpGetFrame blocking time in ms — present only once the native addon
+   *  surfaces it in meta (deferred C++ change). Absent → renderer logs n/a. */
+  sdkGetFrameMs?: number;
+  /** Last-applied camera exposure (ms) / gain, stamped by main for the
+   *  effective-FPS diagnostic line. Absent → renderer logs n/a. */
+  exposureMs?: number;
+  gain?: number;
 };
 
 export type CameraDevice = { index: number; name: string };

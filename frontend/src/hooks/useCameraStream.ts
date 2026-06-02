@@ -38,6 +38,15 @@ let pendingPaint: {
   epoch: number;
   frameId: number;
   grabTs: number;
+  // Latency diagnostics carried alongside the paint so the rAF blit can emit a
+  // full per-frame breakdown. All additive; -1 means "unknown → log n/a".
+  decodeMs: number;
+  ipcMs: number;
+  mainAgeMs: number;
+  sdkMs: number;
+  exposureMs: number;
+  gain: number;
+  paintMsgAt: number;
 } | null = null;
 let rafScheduled = false;
 let latestFullFrame: {
@@ -55,6 +64,95 @@ export function getLatestFullFrame() {
   return latestFullFrame;
 }
 
+/* ----------------------- camera latency diagnostics ----------------------- */
+// Additive instrumentation only — never alters frame flow or the
+// latest-frame-only drop policy. The renderer is the single aggregation point:
+// it sees grabTs/capturedAt/sentAt via meta, gets decodeMs echoed from the
+// worker, and measures paint locally. Per-frame breakdown is sampled at ~1Hz
+// (avoids 30fps log spam); a rolling summary is emitted every 5s. staleDrops /
+// supersededDrops are cumulative session totals.
+let perfStaleDrops = 0;
+let perfSupersededDrops = 0;
+// Timings for the frame currently handed to the worker (single in-flight).
+let perfInFlightIpcMs = -1;
+let perfInFlightMainAgeMs = -1;
+let perfInFlightSdkMs = -1;
+let perfInFlightExposureMs = -1;
+let perfInFlightGain = -1;
+// 5s rolling accumulators (averaged in the summary line).
+let perfWindowStartAt = 0;
+let perfPaintCount = 0;
+let perfSumSdk = 0, perfCntSdk = 0;
+let perfSumIpc = 0, perfCntIpc = 0;
+let perfSumDecode = 0, perfCntDecode = 0;
+let perfSumPaint = 0, perfCntPaint = 0;
+let perfMaxFrameAge = 0;
+let perfLastSampleLineAt = 0;
+let perfLastFpsPaintAt = 0;
+
+function perfNum(v: number): string {
+  return v >= 0 ? String(Math.round(v * 100) / 100) : 'n/a';
+}
+
+// Called once per frame that actually completes the pipeline (after the rAF
+// putImageData). Updates the rolling window and emits the throttled per-frame
+// breakdown + the 5s summary.
+function perfAccumulate(sample: {
+  sdkMs: number;
+  mainAgeMs: number;
+  ipcMs: number;
+  decodeMs: number;
+  paintDelayMs: number;
+  frameAgeMs: number;
+  exposureMs: number;
+  gain: number;
+}) {
+  const now = Date.now();
+  if (perfWindowStartAt === 0) perfWindowStartAt = now;
+  perfPaintCount += 1;
+  if (sample.sdkMs >= 0) { perfSumSdk += sample.sdkMs; perfCntSdk += 1; }
+  if (sample.ipcMs >= 0) { perfSumIpc += sample.ipcMs; perfCntIpc += 1; }
+  if (sample.decodeMs >= 0) { perfSumDecode += sample.decodeMs; perfCntDecode += 1; }
+  if (sample.paintDelayMs >= 0) { perfSumPaint += sample.paintDelayMs; perfCntPaint += 1; }
+  if (sample.frameAgeMs > perfMaxFrameAge) perfMaxFrameAge = sample.frameAgeMs;
+
+  const fps =
+    perfLastFpsPaintAt > 0 && now > perfLastFpsPaintAt ? 1000 / (now - perfLastFpsPaintAt) : 0;
+  perfLastFpsPaintAt = now;
+
+  if (now - perfLastSampleLineAt >= 1000) {
+    perfLastSampleLineAt = now;
+    /* eslint-disable no-console */
+    console.log(`[camera-perf] sdkGetFrameMs=${perfNum(sample.sdkMs)}`);
+    console.log(`[camera-perf] mainFrameAgeMs=${perfNum(sample.mainAgeMs)}`);
+    console.log(`[camera-perf] ipcTransferMs=${perfNum(sample.ipcMs)}`);
+    console.log(`[camera-perf] workerDecodeMs=${perfNum(sample.decodeMs)}`);
+    console.log(`[camera-perf] paintDelayMs=${perfNum(sample.paintDelayMs)}`);
+    console.log(`[camera-perf] staleDrops=${perfStaleDrops} supersededDrops=${perfSupersededDrops}`);
+    console.log(
+      `[camera-perf] fps=${fps.toFixed(1)} exposureMs=${perfNum(sample.exposureMs)} gain=${perfNum(sample.gain)}`
+    );
+    /* eslint-enable no-console */
+  }
+
+  const windowMs = now - perfWindowStartAt;
+  if (windowMs >= 5000) {
+    const avg = (sum: number, cnt: number) => (cnt > 0 ? (sum / cnt).toFixed(2) : 'n/a');
+    const summaryFps = (perfPaintCount / (windowMs / 1000)).toFixed(1);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[camera-perf-summary] sdkAvg=${avg(perfSumSdk, perfCntSdk)} ipcAvg=${avg(perfSumIpc, perfCntIpc)} decodeAvg=${avg(perfSumDecode, perfCntDecode)} paintAvg=${avg(perfSumPaint, perfCntPaint)} fps=${summaryFps} staleDrops=${perfStaleDrops} supersededDrops=${perfSupersededDrops} maxFrameAge=${Math.round(perfMaxFrameAge)}`
+    );
+    perfWindowStartAt = now;
+    perfPaintCount = 0;
+    perfSumSdk = perfCntSdk = 0;
+    perfSumIpc = perfCntIpc = 0;
+    perfSumDecode = perfCntDecode = 0;
+    perfSumPaint = perfCntPaint = 0;
+    perfMaxFrameAge = 0;
+  }
+}
+
 function getWorker(): Worker {
   if (!sharedWorker) sharedWorker = new CameraStreamWorker();
   return sharedWorker;
@@ -66,7 +164,15 @@ function installMainThreadPaintHandler() {
   const worker = getWorker();
   worker.addEventListener(
     'message',
-    (e: MessageEvent<{ type: string; imageData?: ImageData; epoch?: number; frameId?: number }>) => {
+    (
+      e: MessageEvent<{
+        type: string;
+        imageData?: ImageData;
+        epoch?: number;
+        frameId?: number;
+        decodeMs?: number;
+      }>
+    ) => {
       if (!e.data || e.data.type !== 'paint' || !e.data.imageData) return;
       const paintEpoch = typeof e.data.epoch === 'number' ? e.data.epoch : 0;
       const echoedRaw = (e.data as { frameId?: unknown }).frameId;
@@ -75,6 +181,9 @@ function installMainThreadPaintHandler() {
       const resolvedFrameId =
         echoedFrameId > 0 ? echoedFrameId : inFlightFrameId;
       if (paintEpoch < frameEpoch) {
+        // Decoded frame belongs to a superseded session (objective change /
+        // canvas clear bumped the epoch) — dropped, not painted.
+        perfSupersededDrops += 1;
         decoderBusy = false;
         if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
         flushPendingFrame();
@@ -82,16 +191,27 @@ function installMainThreadPaintHandler() {
       }
       const ageAtStash = inFlightGrabTs > 0 ? Date.now() - inFlightGrabTs : 0;
       if (ageAtStash > STALE_AGE_MS) {
+        perfStaleDrops += 1;
         decoderBusy = false;
         if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
         flushPendingFrame();
         return;
       }
+      const decodeMs = typeof e.data.decodeMs === 'number' ? e.data.decodeMs : -1;
       pendingPaint = {
         imageData: e.data.imageData,
         epoch: paintEpoch,
         frameId: resolvedFrameId,
         grabTs: inFlightGrabTs,
+        // Snapshot the in-flight per-frame timings BEFORE flushPendingFrame()
+        // below posts the next frame and overwrites perfInFlight*.
+        decodeMs,
+        ipcMs: perfInFlightIpcMs,
+        mainAgeMs: perfInFlightMainAgeMs,
+        sdkMs: perfInFlightSdkMs,
+        exposureMs: perfInFlightExposureMs,
+        gain: perfInFlightGain,
+        paintMsgAt: Date.now(),
       };
       decoderBusy = false;
       inFlightDecodeStartedAt = 0;
@@ -111,11 +231,13 @@ function schedulePaintRaf() {
     pendingPaint = null;
     if (!p) return;
     if (staleFramesBeforeTs > 0 && p.grabTs > 0 && p.grabTs < staleFramesBeforeTs) {
+      perfStaleDrops += 1;
       return;
     }
     if (p.grabTs > 0) {
       const ageAtPaint = Date.now() - p.grabTs;
       if (ageAtPaint > STALE_AGE_MS) {
+        perfStaleDrops += 1;
         return;
       }
     }
@@ -132,6 +254,17 @@ function schedulePaintRaf() {
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
+    // This frame completed the full pipeline — record its latency breakdown.
+    perfAccumulate({
+      sdkMs: p.sdkMs,
+      mainAgeMs: p.mainAgeMs,
+      ipcMs: p.ipcMs,
+      decodeMs: p.decodeMs,
+      paintDelayMs: p.paintMsgAt > 0 ? Math.max(0, lastPaintAt - p.paintMsgAt) : -1,
+      frameAgeMs: p.grabTs > 0 ? Math.max(0, lastPaintAt - p.grabTs) : 0,
+      exposureMs: p.exposureMs,
+      gain: p.gain,
+    });
   });
 }
 
@@ -149,6 +282,7 @@ function subscribeIpcOnce() {
     const grabTs = meta.grabTs ?? meta.capturedAt ?? 0;
     const frameTs = grabTs || meta.capturedAt || 0;
     if (staleFramesBeforeTs > 0 && frameTs > 0 && frameTs < staleFramesBeforeTs) {
+      perfStaleDrops += 1;
       ackCameraFrame(frameId);
       return;
     }
@@ -165,6 +299,7 @@ function subscribeIpcOnce() {
     if (grabTs > 0) {
       const ageMs = receivedAt - grabTs;
       if (ageMs > STALE_AGE_MS) {
+        perfStaleDrops += 1;
         ackCameraFrame(frameId);
         return;
       }
@@ -183,25 +318,30 @@ function subscribeIpcOnce() {
     }
     if (decoderBusy) {
       if (pendingFrame) {
+        // The previously-queued newest-pending frame is being replaced by an
+        // even newer one — it never reaches the decoder. That's a superseded
+        // drop (latest-frame-only policy working as intended).
+        perfSupersededDrops += 1;
         ackCameraFrame(pendingFrame.frameId);
       }
       pendingFrame = { meta, body, frameId, receivedAt };
       return;
     }
-    postFrameToWorker(meta, body, frameId);
+    postFrameToWorker(meta, body, frameId, receivedAt);
   });
 }
 
 function flushPendingFrame() {
   if (!pendingFrame || decoderBusy) return;
-  const { meta, body, frameId } = pendingFrame;
+  const { meta, body, frameId, receivedAt } = pendingFrame;
   pendingFrame = null;
   const grabTs = meta.grabTs ?? meta.capturedAt ?? 0;
   if (grabTs > 0 && Date.now() - grabTs > STALE_AGE_MS) {
+    perfStaleDrops += 1;
     if (frameId > 0) ackCameraFrame(frameId);
     return;
   }
-  postFrameToWorker(meta, body, frameId);
+  postFrameToWorker(meta, body, frameId, receivedAt);
 }
 
 export function resetCameraSession() {
@@ -223,7 +363,12 @@ function toArrayBuffer(body: ArrayBufferLike): ArrayBuffer {
   return u8.slice().buffer as ArrayBuffer;
 }
 
-function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId: number) {
+function postFrameToWorker(
+  meta: CameraFrameMeta,
+  body: ArrayBufferLike,
+  frameId: number,
+  receivedAt: number
+) {
   const worker = getWorker();
   const ab = toArrayBuffer(body);
   decoderBusy = true;
@@ -231,6 +376,26 @@ function postFrameToWorker(meta: CameraFrameMeta, body: ArrayBufferLike, frameId
   inFlightGrabTs = meta.grabTs ?? inFlightCapturedAt;
   inFlightFrameId = frameId;
   inFlightDecodeStartedAt = Date.now();
+  // Latency diagnostics for the frame entering the decoder. ipcTransferMs and
+  // mainFrameAgeMs are derived from main-stamped meta timestamps (same machine
+  // clock, dev + packaged). sdk/exposure/gain are present only if main/native
+  // stamped them; -1 → the perf logger prints n/a.
+  perfInFlightIpcMs =
+    typeof meta.sentAt === 'number' && meta.sentAt > 0 && receivedAt > 0
+      ? Math.max(0, receivedAt - meta.sentAt)
+      : -1;
+  perfInFlightMainAgeMs =
+    typeof meta.capturedAt === 'number' &&
+    typeof meta.grabTs === 'number' &&
+    meta.capturedAt > 0 &&
+    meta.grabTs > 0
+      ? Math.max(0, meta.capturedAt - meta.grabTs)
+      : -1;
+  perfInFlightSdkMs =
+    typeof meta.sdkGetFrameMs === 'number' && meta.sdkGetFrameMs >= 0 ? meta.sdkGetFrameMs : -1;
+  perfInFlightExposureMs =
+    typeof meta.exposureMs === 'number' && meta.exposureMs >= 0 ? meta.exposureMs : -1;
+  perfInFlightGain = typeof meta.gain === 'number' && meta.gain >= 0 ? meta.gain : -1;
   worker.postMessage(
     {
       type: 'frame',

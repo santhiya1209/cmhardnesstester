@@ -119,6 +119,12 @@ class CameraService {
     this._lastRingWriteLogAt = 0;
     this._lastRingDropLogAt = 0;
     this._lastFrameTransferLogAt = 0;
+    // Latency diagnostics: last-applied exposure (ms) / gain, stamped onto each
+    // frame's meta so the renderer's effective-FPS line is truthful. Null until
+    // the operator (or auto-exposure FPS control) sets a value.
+    this._lastExposureMs = null;
+    this._lastGain = null;
+    this._cameraEnvLogged = false;
   }
 
   attach(webContents) {
@@ -242,10 +248,14 @@ class CameraService {
     }
   }
   setExposure(valueMs) {
+    const ms = Number(valueMs);
+    if (Number.isFinite(ms) && ms >= 0) this._lastExposureMs = ms;
     this._markFrameBoundary('exposure-change');
     return this._call('cameraSetExposure', { valueMs });
   }
   setGain(value) {
+    const g = Number(value);
+    if (Number.isFinite(g) && g >= 0) this._lastGain = g;
     this._markFrameBoundary('gain-change');
     return this._call('cameraSetGain', { value });
   }
@@ -349,6 +359,39 @@ class CameraService {
   /* ------------------------------------------------------------------ */
   /* Internals                                                           */
   /* ------------------------------------------------------------------ */
+
+  // Packaged-build environment + driver diagnostics. Emitted once on the first
+  // streamed frame (when the addon, DLLs and USB device are all confirmed
+  // live). The dev-vs-EXE comparison hinges on these: packaged=true on the
+  // second laptop with dllExists=false would localize the delay to a
+  // missing/!shipped driver DLL rather than the software pipeline.
+  _logCameraEnvOnce(meta) {
+    if (this._cameraEnvLogged) return;
+    this._cameraEnvLogged = true;
+    const isPackaged = Boolean(app && app.isPackaged);
+    const dllDir = isPackaged
+      ? path.join(process.resourcesPath, 'DVP2 x64')
+      : (process.env.DO3THINK_SDK_DIR || 'C:\\Program Files (x86)\\Do3think\\DVP2 x64');
+    const dllPath = path.join(dllDir, 'DVPCamera64.dll');
+    let dllExists = false;
+    try {
+      dllExists = fs.existsSync(dllPath);
+    } catch {
+      dllExists = false;
+    }
+    const s = this.lastStatus || {};
+    const usbInfo =
+      meta && meta.width && meta.height
+        ? `${meta.width}x${meta.height} pixelFormat=${meta.pixelFormat || 'unknown'} bits=${meta.bits || 'unknown'} sdkLoaded=${!!s.sdkLoaded} open=${!!s.open} streaming=${!!s.streaming}`
+        : 'n/a';
+    /* eslint-disable no-console */
+    console.log(
+      `[camera-env] packaged=${isPackaged} electron=${process.versions.electron} platform=${process.platform} arch=${process.arch}`
+    );
+    console.log(`[camera-env] cameraDllPath=${dllPath} dllExists=${dllExists}`);
+    console.log(`[camera-env] usbDeviceInfo=${usbInfo}`);
+    /* eslint-enable no-console */
+  }
 
   _addonPath() {
     // The .node binary now lives inside app.asar in the packaged build, with
@@ -633,6 +676,17 @@ class CameraService {
       frameId,
       capturedAt,
     };
+    // Latency diagnostics (additive): stamp last-applied exposure/gain so the
+    // renderer's effective-FPS line is truthful, and pass through the native
+    // SDK grab time if the addon surfaces it (meta.getFrameMs / .sdkGetFrameMs;
+    // absent until the deferred native change ships → renderer logs n/a).
+    if (this._lastExposureMs !== null) safeMeta.exposureMs = this._lastExposureMs;
+    if (this._lastGain !== null) safeMeta.gain = this._lastGain;
+    const nativeGrabMs = meta && (meta.sdkGetFrameMs ?? meta.getFrameMs);
+    if (Number.isFinite(Number(nativeGrabMs))) {
+      safeMeta.sdkGetFrameMs = Number(nativeGrabMs);
+    }
+    this._logCameraEnvOnce(safeMeta);
     const grabTs = Number(safeMeta.grabTs || safeMeta.capturedAt || 0);
     if (this._dropFramesBeforeTs > 0 && grabTs > 0 && grabTs < this._dropFramesBeforeTs) {
       this._droppedSinceLastFrame += 1;

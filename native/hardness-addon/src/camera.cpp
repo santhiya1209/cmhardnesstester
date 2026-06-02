@@ -68,6 +68,10 @@ struct State {
     uint64_t              timestamp = 0;
     uint64_t              seq = 0;
     uint64_t              grabTs = 0;
+    // Diagnostics only: blocking time of the dvpGetFrame call that produced
+    // this frame (ms). Carried through the slot so DispatchLatest can stamp it
+    // onto the frame meta. Does not affect capture/buffering/drop logic.
+    double                sdkGetFrameMs = 0.0;
     uint64_t              generation = 0;
     bool                  hasFrame = false;
   };
@@ -560,6 +564,8 @@ void StreamLoop() {
       s.latestSlot.timestamp = frame.uTimestamp;
       s.latestSlot.seq = frame.uFrameID;
       s.latestSlot.grabTs = grabTs;
+      // getFrameMs = blocking time of the dvpGetFrame call above (diagnostics).
+      s.latestSlot.sdkGetFrameMs = getFrameMs;
       s.latestSlot.generation = s.streamGeneration.load(std::memory_order_acquire);
       s.latestSlot.hasFrame = true;
     }
@@ -640,6 +646,7 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
   int width = 0, height = 0, bits = 8;
   const char* pixelFormat = "raw";
   uint64_t timestamp = 0, seq = 0, grabTs = 0, generation = 0;
+  double sdkGetFrameMs = 0.0;
   bool valid = false;
   {
     std::lock_guard<std::mutex> lk(st.latestSlot.mu);
@@ -654,6 +661,7 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
       timestamp = st.latestSlot.timestamp;
       seq = st.latestSlot.seq;
       grabTs = st.latestSlot.grabTs;
+      sdkGetFrameMs = st.latestSlot.sdkGetFrameMs;
       generation = st.latestSlot.generation;
       st.latestSlot.hasFrame = false;
       valid = true;
@@ -719,6 +727,7 @@ void DispatchLatest(Napi::Env env, Napi::Function fn) {
   meta.Set("seq", Napi::Number::New(env, static_cast<double>(seq)));
   meta.Set("frameId", Napi::Number::New(env, static_cast<double>(seq)));
   meta.Set("grabTs", Napi::Number::New(env, static_cast<double>(grabTs)));
+  meta.Set("sdkGetFrameMs", Napi::Number::New(env, sdkGetFrameMs));
   meta.Set("bytes", Napi::Number::New(env, static_cast<double>(bytes.size())));
   meta.Set("generation", Napi::Number::New(env, static_cast<double>(generation)));
 

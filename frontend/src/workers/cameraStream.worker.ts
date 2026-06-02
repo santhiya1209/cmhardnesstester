@@ -394,6 +394,10 @@ function decode(
 let resolutionLogged = false;
 function paint(frame: FrameMsg) {
   const previewScale = frame.previewScale ?? 1;
+  // Latency diagnostics: measure ONLY the raw decode/convert cost here and
+  // echo it back in the paint message so the renderer can attribute pipeline
+  // delay to the worker stage vs. IPC/grab/paint. Additive — no behavior change.
+  const decodeT0 = performance.now();
   const img = decode(
     frame.buffer,
     frame.width,
@@ -402,6 +406,7 @@ function paint(frame: FrameMsg) {
     frame.bits,
     previewScale
   );
+  const decodeMs = performance.now() - decodeT0;
   if (!resolutionLogged) {
     resolutionLogged = true;
     // eslint-disable-next-line no-console
@@ -425,6 +430,7 @@ function paint(frame: FrameMsg) {
       epoch: frame.epoch ?? 0,
       seq: frame.seq ?? 0,
       frameId,
+      decodeMs,
     },
     [img.data.buffer]
   );

@@ -424,6 +424,75 @@ class HardnessMachineSerialService extends EventEmitter {
     })();
   }
 
+  /**
+   * Force the objective to 40X on every connect, ignoring the saved/last
+   * objective. Sends UL3\r once and waits for the machine ACK (L3OK or OK);
+   * only after a confirmed ACK is 40X marked machine-confirmed so the renderer
+   * commits it. Runs even when the machine is already at 40X — a fresh UL3\r
+   * re-confirms the slot (same re-send semantics as a user click). Right turret
+   * slot = 3 = 40X = UL3\r. Fire-and-forget: failures are logged, never thrown.
+   */
+  private initStartupObjective(): void {
+    void (async () => {
+      try {
+        if (!this.state.connected) return;
+        const direction: TurretDirection = 'right'; // slot 3 → 40X → UL3\r
+        const commandKey = getTurretCommandKey(direction);
+        const slot = getTurretSlotForDirection(direction);
+        const frame = buildTurretCommand(direction);
+        if (!frame) {
+          // eslint-disable-next-line no-console
+          console.warn('[startup-objective-init] refused: UL3 command not built');
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[startup-objective-init] default=40X commandRequired=true command=${JSON.stringify(frame.toString('ascii'))}`
+        );
+        this.updateTelemetry({
+          lastTxAt: new Date().toISOString(),
+          lastTxCommand: `turret=${direction} slot=${slot}`,
+          syncStatus: 'pending',
+          syncMessage: 'TX startup objective=40X',
+        });
+        await this.transmit(commandKey, frame, {
+          awaitAck: true,
+          expectedValue: slot,
+          reason: 'startup-default',
+        });
+        this.pendingAckResolution = null;
+        const ack =
+          (this.state.lastRxFrame?.ascii ?? '').replace(/[\r\n]+$/, '').trim().toUpperCase() || 'OK';
+        // eslint-disable-next-line no-console
+        console.log(`[machine-objective-rx] objective=40X ack=${ack}`);
+        // ACK confirmed → mark 40X machine-confirmed so the renderer's
+        // confirmed-RX path commits it. Set explicitly because a bare OK reply
+        // carries no slot to decode (only L3OK does), so we cannot rely on the
+        // frame handler having recorded the objective.
+        this.setState(
+          {
+            objective: '40X',
+            confirmedObjectiveFromMachine: '40X',
+            lastObjectiveRx: ack,
+            lastObjectivePhysicalCheck: 'unknown',
+            lastError: undefined,
+            syncStatus: 'synced',
+            syncMessage: 'startup objective=40X',
+          },
+          'machine'
+        );
+        // eslint-disable-next-line no-console
+        console.log('[startup-objective-confirmed] objective=40X');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          '[startup-objective-init] failed:',
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    })();
+  }
+
   /** Public hook so the backend bootstrap can wait for SQLite restore. */
   async ready(): Promise<void> {
     await this.loadPersistedSettings();
@@ -645,6 +714,10 @@ class HardnessMachineSerialService extends EventEmitter {
       },
       'system'
     );
+    // Every connect forces the objective back to 40X (UL3\r), ignoring the
+    // saved/last objective. Queued before the lightness/load-time replay so the
+    // turret command goes out first. Fire-and-forget — non-fatal for connect.
+    this.initStartupObjective();
     // After the port is open, push the persisted lightness/load-time values
     // to the machine so its physical display matches the UI on every cold
     // start. Fire-and-forget — failures are non-fatal for the connect call.
@@ -1165,7 +1238,12 @@ class HardnessMachineSerialService extends EventEmitter {
   private async transmit(
     field: MachineCommandKey,
     frame: Buffer,
-    opts: { awaitAck?: boolean; expectedValue?: string | number; timeoutMs?: number } = {}
+    opts: {
+      awaitAck?: boolean;
+      expectedValue?: string | number;
+      timeoutMs?: number;
+      reason?: string;
+    } = {}
   ): Promise<void> {
     const pending = this.pendingAckField;
     if (pending) {
@@ -1188,7 +1266,12 @@ class HardnessMachineSerialService extends EventEmitter {
   private async transmitNow(
     field: MachineCommandKey,
     frame: Buffer,
-    opts: { awaitAck?: boolean; expectedValue?: string | number; timeoutMs?: number } = {}
+    opts: {
+      awaitAck?: boolean;
+      expectedValue?: string | number;
+      timeoutMs?: number;
+      reason?: string;
+    } = {}
   ): Promise<void> {
     if (!this.port || !this.state.connected) {
       throw new Error('machine not connected');
@@ -1198,13 +1281,16 @@ class HardnessMachineSerialService extends EventEmitter {
     // eslint-disable-next-line no-console
     console.log(`[machine-tx] field=${field} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`);
 
+    // Only present for backend-initiated sends (e.g. startup-default); user
+    // clicks pass no reason so their objective-tx log line is unchanged.
+    const reasonSuffix = opts.reason ? ` reason=${opts.reason}` : '';
     if (field === 'objective') {
       // Stash on telemetry so the UI can correlate TX vs RX for the diagnostic.
       const codeAscii = frame.toString('ascii').replace(/\r$/, '');
       this.updateTelemetry({ lastObjectiveTx: codeAscii });
       // eslint-disable-next-line no-console
       console.log(
-        `[machine-objective-tx] objective=${opts.expectedValue ?? ''} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
+        `[machine-objective-tx] objective=${opts.expectedValue ?? ''} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}${reasonSuffix}`
       );
     } else if (String(field).startsWith('turret')) {
       // Turret buttons emit UL<n>\r on the wire (left=UL1=10X, right=UL3=40X).
@@ -1214,7 +1300,7 @@ class HardnessMachineSerialService extends EventEmitter {
       const txObjective = slot ? (getObjectiveForTurretSlot(slot) ?? `slot=${slot}`) : field;
       // eslint-disable-next-line no-console
       console.log(
-        `[machine-objective-tx] objective=${txObjective} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}`
+        `[machine-objective-tx] objective=${txObjective} command=${JSON.stringify(frame.toString('ascii'))} hex=${frame.toString('hex')}${reasonSuffix}`
       );
     }
 
@@ -1440,20 +1526,24 @@ class HardnessMachineSerialService extends EventEmitter {
     const slot = getTurretSlotForDirection(direction);
     const expectedObjective = getObjectiveForTurretSlot(slot);
 
-    // Silent-accept guard: some machines do not echo UL<n>\r when the turret
-    // is already at slot <n>. If we know the machine has already confirmed the
-    // same objective, skip the TX so the operator doesn't wait 5s for a reply
-    // that will never come. Brightness is still applied by the caller.
-    if (
-      expectedObjective &&
+    // User-initiated turret/objective click: ALWAYS transmit UL<n>\r, even when
+    // the turret is already at this slot. The machine re-executes the command
+    // and re-emits its sound/ACK on every press, which the operator expects.
+    // The prior silent-accept guard returned early here when the objective was
+    // unchanged, so a repeat click on the active objective sent nothing (no
+    // sound). It is removed: sendTurret is reached only from POST
+    // /machine/turret, so every call is a user click. ACK handling below is
+    // unchanged — the normal transmit({ awaitAck }) path (and its timeout) runs
+    // on every press exactly as for a fresh objective change.
+    const sameAsCurrent =
+      !!expectedObjective &&
       this.state.turretPosition === direction &&
-      this.state.confirmedObjectiveFromMachine === expectedObjective
-    ) {
+      this.state.confirmedObjectiveFromMachine === expectedObjective;
+    if (expectedObjective) {
       // eslint-disable-next-line no-console
       console.log(
-        `[machine-turret-skip] direction=${direction} slot=${slot} objective=${expectedObjective} reason=already-at-position`
+        `[machine-objective-click] objective=${expectedObjective} sameAsCurrent=${sameAsCurrent} forceSend=true`
       );
-      return this.getState();
     }
 
     const verified = isCommandVerified(commandKey);
