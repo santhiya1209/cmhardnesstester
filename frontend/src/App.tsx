@@ -396,6 +396,7 @@ function App() {
     setPreviewAutoMeasureOverlay,
     autoMeasureClearNonce,
     setAutoMeasureClearNonce,
+    autoMeasureSessionActive,
     setAutoMeasureSessionActive,
     autoMeasureCapturedFrameId,
     setAutoMeasureCapturedFrameId,
@@ -522,6 +523,8 @@ function App() {
       setManualMeasureResetKey((current) => current + 1);
       setActiveTool('pointer');
       setCalibrationMeasureMode('auto', 'auto-measure-click');
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-auto-click] detectionStarted=true`);
       const camera = cameraRef.current;
       if (!camera) {
         setStatusMessage('System Status: Calibration Auto Measure: camera unavailable');
@@ -596,6 +599,8 @@ function App() {
       }
       if (liveObjectiveForNative === '10X' && hasValidAutoMeasureCorners(result)) {
       }
+      // eslint-disable-next-line no-console
+      console.log(`[calibration-auto-success] pixelX=${result.d1Pixels.toFixed(2)} pixelY=${result.d2Pixels.toFixed(2)}`);
       return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
     },
     [autoMeasureSettings, setActiveTool, setCalibrationMeasureMode]
@@ -637,6 +642,15 @@ function App() {
       if (source === 'toolbar') {
       }
 
+      // TEMP DEBUG: snapshot every overlay source at the instant Calibration
+      // opens, BEFORE the clear runs, so the actual rendered source of any
+      // lingering yellow lines is visible in the console.
+      const graphicsObjects =
+        (committedAutoMeasureOverlay ? 1 : 0) + (previewAutoMeasureOverlay ? 1 : 0);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-open-debug] committedAutoMeasureOverlay=${!!committedAutoMeasureOverlay} autoMeasureSessionActive=${autoMeasureSessionActive} calibrationOverlay=${calibrationMeasureModeRef.current !== 'none'} graphicsObjects=${graphicsObjects}`
+      );
 
       if (activeTool === 'measureLength') {
         overlay.clearByKind('length');
@@ -652,16 +666,38 @@ function App() {
 
       calibrationManualModeRef.current = false;
       setCalibrationMeasureMode('none', 'calibration-open');
+      // 1) Null the React overlay state (committed + preview + session) so the
+      //    render gate stops emitting the yellow Auto Measure graphics.
+      clearAutoMeasureOverlay('calibration-open');
+      // 2) Force an imperative canvas clearRect via the clear nonce. React
+      //    state-null alone is NOT enough: a requestAnimationFrame queued by
+      //    the just-completed Auto Measure draw can repaint stale yellow lines
+      //    AFTER the state cleared. Bumping the nonce drives
+      //    AutoMeasureOverlay.forceClearCanvas synchronously, exactly like the
+      //    proven Clear Graphics path does.
+      setAutoMeasureClearNonce((n) => n + 1);
+      // 3) Reset the manual-measure overlay too, so no overlay source survives
+      //    into calibration regardless of which tool was active.
+      setManualMeasureResetKey((k) => k + 1);
       setActiveTool('pointer');
       setActiveDialog('calibration');
+      // eslint-disable-next-line no-console
+      console.log('[calibration-open] imageVisible=true overlayVisible=false');
     },
     [
       activeTool,
+      autoMeasureSessionActive,
+      calibrationManualModeRef,
+      clearAutoMeasureOverlay,
+      committedAutoMeasureOverlay,
       magnifierEnabled,
       overlay.clearByKind,
+      previewAutoMeasureOverlay,
       resetManualMeasure,
       setActiveTool,
+      setAutoMeasureClearNonce,
       setCalibrationMeasureMode,
+      setManualMeasureResetKey,
     ]
   );
 
@@ -1845,6 +1881,7 @@ function App() {
     activeObjectiveRef,
     autoMeasurementIdRef,
     calibrationManualModeRef,
+    calibrationMeasureModeRef,
     committedFingerprintsRef,
     manualMeasurementIdRef,
     activeMeasurementMethodRef,

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import type { CalibrationMeasureMode } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { CameraWindowHandle } from '@/component/own/CameraWindow';
 import type { CalibrationSettings } from '@/types/calibrationSettings';
 import type { Calibration } from '@/types/calibration';
@@ -49,6 +50,7 @@ export type UseAutoAdjustedSaveArgs = {
   activeObjectiveRef: React.MutableRefObject<string | null>;
   autoMeasurementIdRef: React.MutableRefObject<string | null>;
   calibrationManualModeRef: React.MutableRefObject<boolean>;
+  calibrationMeasureModeRef: React.MutableRefObject<CalibrationMeasureMode>;
   committedFingerprintsRef: React.MutableRefObject<CommittedAutoMeasureFingerprint[]>;
   // Refs written
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
@@ -84,6 +86,7 @@ export function useAutoAdjustedSave({
   activeObjectiveRef,
   autoMeasurementIdRef,
   calibrationManualModeRef,
+  calibrationMeasureModeRef,
   committedFingerprintsRef,
   manualMeasurementIdRef,
   activeMeasurementMethodRef,
@@ -132,6 +135,24 @@ export function useAutoAdjustedSave({
           newCorners.bottom.y - newCorners.top.y
         );
         setLatestManualPixels({ d1Px, d2Px });
+        if (adjustSaveTimerRef.current !== null) {
+          window.clearTimeout(adjustSaveTimerRef.current);
+          adjustSaveTimerRef.current = null;
+        }
+        return;
+      }
+
+      // Calibration auto mode: guide lines from the auto-measure detection are
+      // shown on the camera. Dragging them must update Pixel X/Y in the
+      // calibration panel live without creating a measurement row.
+      // Pixel X = distance between left/right vertical guides; Pixel Y =
+      // distance between top/bottom horizontal guides.
+      if (calibrationMeasureModeRef.current === 'auto') {
+        const d1Px = Math.abs(newCorners.right.x - newCorners.left.x);
+        const d2Px = Math.abs(newCorners.bottom.y - newCorners.top.y);
+        setLatestManualPixels({ d1Px, d2Px });
+        // eslint-disable-next-line no-console
+        console.log(`[calibration-line-drag] pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`);
         if (adjustSaveTimerRef.current !== null) {
           window.clearTimeout(adjustSaveTimerRef.current);
           adjustSaveTimerRef.current = null;
@@ -331,6 +352,7 @@ export function useAutoAdjustedSave({
       activeObjectiveRef,
       autoMeasurementIdRef,
       calibrationManualModeRef,
+      calibrationMeasureModeRef,
       calibrationSettings,
       calibrationSettingsList,
       calibrations,
