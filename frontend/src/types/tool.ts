@@ -5,6 +5,13 @@ export type ToolId =
   | 'measureAngle'
   | 'magnifier';
 
+// Shared, purely-visual selection state for the measurement mode. Set inside
+// the single toolbar dispatch handler so the top toolbar and the Machine
+// Control Auto/Manual cards highlight from one source of truth. It does NOT
+// drive any measurement logic — Auto Measure stays a one-shot, Manual stays an
+// activeTool mode.
+export type MeasureSelection = 'auto' | 'manual' | null;
+
 export type ToolbarActionId =
   // configuration shortcuts exposed in the toolbar
   | 'config:calibration'

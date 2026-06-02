@@ -53,7 +53,7 @@ import { useMenuActions } from '@/features/shell/useMenuActions';
 import { useToolDispatchContext } from '@/features/shell/useToolDispatchContext';
 import { useSetStatusMessage } from '@/contexts/StatusMessageContext';
 import { useDialog } from '@/contexts/DialogContext';
-import { TOOL_ACTION_TO_TOOL, type ToolbarActionId } from '@/types/tool';
+import { TOOL_ACTION_TO_TOOL, type ToolbarActionId, type MeasureSelection } from '@/types/tool';
 import type {
   AutoMeasureCorners,
   AutoMeasureGraphics,
@@ -293,6 +293,11 @@ function App() {
   // alongside Manual Measure for precision diamond-tip placement, and turns
   // off when the user switches to Pointer/Auto Measure (see handleToolbarSelect).
   const [magnifierEnabled, setMagnifierEnabled] = useState(false);
+  // Single visual source of truth for the Auto/Manual measure highlight shared
+  // by the top toolbar and the Machine Control cards. Written only inside
+  // handleToolbarSelect (the one path both surfaces dispatch through) and kept
+  // consistent with activeTool below. Purely presentational.
+  const [selectedMeasureMode, setSelectedMeasureMode] = useState<MeasureSelection>(null);
   // Strict lifecycle gate. Yellow Auto Measure overlay must never be visible
   // when the camera is not actively streaming — even if a stale graphics
   // state lingers in React. Flipped true only after a successful openDevice
@@ -881,6 +886,10 @@ function App() {
             objective: graphics.objective ?? matchedEntry.objective,
           };
           setCommittedAutoMeasureOverlay(restoredGraphics);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-overlay-commit] success=true hasGeometry=${!!restoredGraphics.corners} frameId=${restoredGraphics.frameId ?? 'n/a'} objective=${restoredGraphics.objective ?? 'unknown'}`
+          );
           autoMeasurementIdRef.current = matchedEntry.rowId;
           previewMeasurementRef.current = {
             d1Pixels: matchedEntry.d1Px,
@@ -892,12 +901,26 @@ function App() {
             autoMeasurePreviewSnapshotRef.current = null;
             preserveAfterImpressOverlay(5000);
             await waitForOverlayPaint();
-            if (!displayedAutoMeasureGraphicsRef.current) {
+            // Confirm THIS run's restored geometry is the overlay on screen
+            // before claiming success (see the main commit path for rationale).
+            const restoredKey = autoMeasureCornersKey(restoredGraphics.corners);
+            let shown = displayedAutoMeasureGraphicsRef.current;
+            let visible = !!shown && autoMeasureCornersKey(shown.corners) === restoredKey;
+            if (!visible) {
+              await waitForOverlayPaint();
+              shown = displayedAutoMeasureGraphicsRef.current;
+              visible = !!shown && autoMeasureCornersKey(shown.corners) === restoredKey;
+            }
+            if (!visible) {
+              // eslint-disable-next-line no-console
+              console.log(`[auto-overlay-render] visible=false reason=${shown ? 'frame-mismatch' : 'cleared'}`);
               logAfterImpressDetectionFailed('overlay-not-ready');
               setAutoMeasureStatus('failed');
               setStatusMessage('System Status: Auto Measure rejected: overlay not ready');
               return false;
             }
+            // eslint-disable-next-line no-console
+            console.log(`[auto-overlay-render] visible=true reason=ok`);
             setAutoMeasureStatus('success');
             setStatusMessage('System Status: Auto Measure complete');
             return true;
@@ -942,6 +965,11 @@ function App() {
         }
         return { ...graphics, corners: { ...graphics.corners } };
       });
+      const committedHasGeometry = !!graphics.corners;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-overlay-commit] success=true hasGeometry=${committedHasGeometry} frameId=${graphics.frameId ?? 'n/a'} objective=${graphics.objective ?? 'unknown'}`
+      );
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-overlay-commit] corners=4 lines=4 objective=${objectiveForCalibration ?? 'unknown'} source=${source}`
@@ -994,10 +1022,38 @@ function App() {
       // Overlay visibility gate — applies to EVERY source, not just after-impress.
       // setCommittedAutoMeasureOverlay was called above, but useOverlayLifecycle
       // has several render guards (turretMoving, objectiveChangeInProgress,
-      // autoMeasureSessionActive, frameId mismatch) that can silently suppress
-      // display even when the committed overlay is non-null. Without this check
-      // a measurement row is saved with "success" status but no visible lines.
-      if (!displayedAutoMeasureGraphicsRef.current) {
+      // autoMeasureSessionActive, objective/frameId mismatch) that can silently
+      // suppress display even when the committed overlay is non-null. Without
+      // this check a row is saved with "success" status but no visible lines.
+      //
+      // The check confirms the overlay actually displaying carries THIS run's
+      // geometry (matching corners) — a non-null ref left over from a prior run
+      // (stale passive-effect timing) must NOT be mistaken for the new lines.
+      // One extra paint cycle covers the case where React hadn't yet flushed the
+      // commit + ref-sync effect by the time the first waitForOverlayPaint ran.
+      const committedCornersKey = autoMeasureCornersKey(graphics.corners);
+      const overlayShowsThisRun = () => {
+        const shown = displayedAutoMeasureGraphicsRef.current;
+        return !!shown && autoMeasureCornersKey(shown.corners) === committedCornersKey;
+      };
+      let overlayVisible = overlayShowsThisRun();
+      if (!overlayVisible) {
+        await waitForOverlayPaint();
+        overlayVisible = overlayShowsThisRun();
+      }
+      if (!overlayVisible) {
+        const shown = displayedAutoMeasureGraphicsRef.current;
+        const liveObjectiveNow = (activeObjectiveRef.current ?? '').trim().toUpperCase();
+        const overlayObjectiveNow = (graphics.objective ?? '').trim().toUpperCase();
+        const reason = !graphics.corners
+          ? 'no-geometry'
+          : !shown
+            ? 'cleared'
+            : overlayObjectiveNow && liveObjectiveNow && overlayObjectiveNow !== liveObjectiveNow
+              ? 'objective-mismatch'
+              : 'frame-mismatch';
+        // eslint-disable-next-line no-console
+        console.log(`[auto-overlay-render] visible=false reason=${reason}`);
         // eslint-disable-next-line no-console
         console.log(
           `[auto-measure-validate] success=false reason=overlay-not-visible source=${source}`
@@ -1018,7 +1074,9 @@ function App() {
       if (source === 'after-impress') {
         preserveAfterImpressOverlay(5000);
       }
-      // Overlay is confirmed visible — log render success.
+      // Overlay is confirmed visible with this run's geometry — log render success.
+      // eslint-disable-next-line no-console
+      console.log(`[auto-overlay-render] visible=true reason=ok`);
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-overlay-render] visible=true lines=4 objective=${objectiveForCalibration ?? 'unknown'}`
@@ -2059,6 +2117,18 @@ function App() {
         setMagnifierEnabled(false);
       }
 
+      // Shared Auto/Manual highlight (toolbar underline + Machine Control card).
+      // Auto and Manual select themselves; switching to any other measurement
+      // mode (pointer/length/angle) clears the highlight. Non-tool actions
+      // (file/config/etc.) leave it untouched.
+      if (action === 'tools:autoMeasure') {
+        setSelectedMeasureMode('auto');
+      } else if (action === 'tools:manualMeasure') {
+        setSelectedMeasureMode('manual');
+      } else if (mappedTool) {
+        setSelectedMeasureMode(null);
+      }
+
       dispatchToolbarAction(action, buildSharedCtx());
       persistToolbarAction(action);
     },
@@ -2074,6 +2144,16 @@ function App() {
       setActiveTool,
     ]
   );
+
+  // Keep the Manual highlight consistent when Manual mode is exited outside the
+  // toolbar handler (calibration, length-switch, etc. call setActiveTool
+  // directly). activeTool remains the authority for Manual; this only clears a
+  // stale 'manual' highlight.
+  useEffect(() => {
+    if (selectedMeasureMode === 'manual' && activeTool !== 'manualMeasure') {
+      setSelectedMeasureMode(null);
+    }
+  }, [activeTool, selectedMeasureMode]);
 
 
   useEffect(() => {
@@ -2129,7 +2209,11 @@ function App() {
   return (
     <Box sx={ROOT_SX}>
       <MenuBar onSelect={handleMenuSelect} />
-      <Toolbar onSelect={handleToolbarSelect} cameraOpen={cameraOpen} />
+      <Toolbar
+        onSelect={handleToolbarSelect}
+        cameraOpen={cameraOpen}
+        selectedMeasureMode={selectedMeasureMode}
+      />
 
       <Box sx={WORKSPACE_SX}>
         <LeftPanel
@@ -2172,6 +2256,8 @@ function App() {
           onCenterCommit={handleCenterCommit}
           onTurretIntent={handleTurretIntentClick}
           onObjectiveChangeIntent={handleObjectiveChangeIntent}
+          onToolbarAction={handleToolbarSelect}
+          selectedMeasureMode={selectedMeasureMode}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={handleCloseTrimMeasure}
           onTrimAdjust={handleTrimAdjust}

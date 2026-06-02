@@ -53,7 +53,9 @@ export function useAutoMeasureSessionLifecycle({
 }: UseAutoMeasureSessionLifecycleArgs): UseAutoMeasureSessionLifecycle {
   // Clears Auto Measure overlay/session state without touching committed row
   // fingerprints. Duplicate suppression must survive overlay clears.
-  const clearAutoMeasureOverlay = useCallback((_reason: string) => {
+  const clearAutoMeasureOverlay = useCallback((reason: string) => {
+    // eslint-disable-next-line no-console
+    console.log(`[auto-overlay-clear] reason=${reason}`);
     setCommittedAutoMeasureOverlay((prev) => {
       if (!prev) {
       }

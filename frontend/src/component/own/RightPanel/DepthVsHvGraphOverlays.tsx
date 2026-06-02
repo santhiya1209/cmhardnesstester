@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import {
+  formatChdDepth,
   formatDistance,
   formatHv,
   type ChdIntersection,
@@ -55,7 +56,8 @@ export function renderChdReference(
   chdIntersection: ChdIntersection | null,
   plot: OverlayPlot,
   colors: OverlayColors,
-  layout: GraphLayout
+  layout: GraphLayout,
+  chdInMicrons: boolean
 ): ReactNode {
   if (chdTargetHv === null || !Number.isFinite(chdTargetHv)) return null;
 
@@ -64,17 +66,39 @@ export function renderChdReference(
   const x = chdIntersection ? plot.sx(chdIntersection.distanceUm) : null;
   const labelY = Math.max(pad.top + 14, y - 8);
 
+  // Two-line annotation near the crossing point. The white halo (paint-order
+  // stroke) keeps the red text legible over gridlines and the curve.
+  const labelW = 100;
+  const overflowsRight = x !== null && x + 10 + labelW > size.w - pad.right;
+  const labelX = x !== null ? (overflowsRight ? x - 10 : x + 10) : 0;
+  const labelLine1Y = Math.min(y + 20, size.h - pad.bottom - 24);
+
   return (
     <g pointerEvents="none">
       <line x1={pad.left} x2={size.w - pad.right} y1={y} y2={y} stroke={colors.reference} strokeWidth={2} strokeDasharray="8 6" />
       <text x={size.w - pad.right - 10} y={labelY} fontSize={14} fontWeight={700} fill={colors.reference} textAnchor="end">{`${formatHv(chdTargetHv)} HV`}</text>
-      {x !== null ? (
+      {x !== null && chdIntersection ? (
         <>
           <line x1={x} x2={x} y1={y} y2={size.h - pad.bottom} stroke={colors.reference} strokeWidth={2} strokeDasharray="8 6" />
           <circle cx={x} cy={y} r={5} fill={colors.paper} stroke={colors.reference} strokeWidth={2} />
-          <text x={x + 8} y={size.h - pad.bottom - 10} fontSize={14} fontWeight={700} fill={colors.reference}>CHD</text>
+          <text
+            x={labelX}
+            y={labelLine1Y}
+            fontSize={13}
+            fontWeight={700}
+            fill={colors.reference}
+            stroke={colors.paper}
+            strokeWidth={3}
+            paintOrder="stroke"
+            textAnchor={overflowsRight ? 'end' : 'start'}
+          >
+            <tspan x={labelX} dy={0}>{`CHD = ${formatChdDepth(chdIntersection, chdInMicrons)}`}</tspan>
+            <tspan x={labelX} dy={16}>{`HV = ${formatHv(chdTargetHv)}`}</tspan>
+          </text>
         </>
-      ) : null}
+      ) : (
+        <text x={size.w - pad.right - 10} y={labelY + 18} fontSize={13} fontWeight={700} fill={colors.reference} textAnchor="end">CHD: Not found</text>
+      )}
     </g>
   );
 }

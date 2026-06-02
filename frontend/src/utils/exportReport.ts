@@ -28,6 +28,7 @@ import {
   buildMinorTicks,
   buildSmoothPath,
   findChdIntersection,
+  formatChdDepth,
   formatHv,
 } from '@/component/own/RightPanel/DepthVsHvGraph.utils';
 
@@ -413,10 +414,22 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
       `<text x="${plotRight - 10}" y="${labelY}" font-size="14" font-weight="700" fill="${DEPTH_COLORS.reference}" text-anchor="end">${formatHv(chdTargetHv)} HV</text>`;
     if (chdIntersection) {
       const ix = sx(chdIntersection.distanceUm);
+      const labelW = 100;
+      const overflowsRight = ix + 10 + labelW > plotRight;
+      const lx = overflowsRight ? ix - 10 : ix + 10;
+      const anchor = overflowsRight ? 'end' : 'start';
+      const labelLine1Y = Math.min(refY + 20, plotBottom - 24);
+      // Report X axis is always µm here, so the CHD depth is shown in µm.
       chdOverlay +=
         `<line x1="${ix}" x2="${ix}" y1="${refY}" y2="${plotBottom}" stroke="${DEPTH_COLORS.reference}" stroke-width="2" stroke-dasharray="8 6"/>` +
         `<circle cx="${ix}" cy="${refY}" r="5" fill="${DEPTH_COLORS.paper}" stroke="${DEPTH_COLORS.reference}" stroke-width="2"/>` +
-        `<text x="${ix + 8}" y="${plotBottom - 10}" font-size="14" font-weight="700" fill="${DEPTH_COLORS.reference}">CHD</text>`;
+        `<text x="${lx}" y="${labelLine1Y}" font-size="13" font-weight="700" fill="${DEPTH_COLORS.reference}" stroke="${DEPTH_COLORS.paper}" stroke-width="3" paint-order="stroke" text-anchor="${anchor}">` +
+        `<tspan x="${lx}" dy="0">CHD = ${formatChdDepth(chdIntersection, true)}</tspan>` +
+        `<tspan x="${lx}" dy="16">HV = ${formatHv(chdTargetHv)}</tspan>` +
+        `</text>`;
+    } else {
+      chdOverlay +=
+        `<text x="${plotRight - 10}" y="${labelY + 18}" font-size="13" font-weight="700" fill="${DEPTH_COLORS.reference}" text-anchor="end">CHD: Not found</text>`;
     }
   }
 

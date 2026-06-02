@@ -15,8 +15,9 @@ import Slider from '@mui/material/Slider';
 import { alpha, type SxProps, type Theme } from '@mui/material/styles';
 import Brightness5Icon from '@mui/icons-material/Brightness5';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
-import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
 import GpsFixedIcon from '@mui/icons-material/GpsFixed';
+import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
+import TouchAppIcon from '@mui/icons-material/TouchApp';
 import {
   IndentCenterIcon,
   Objective10xIcon,
@@ -27,6 +28,7 @@ import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
+import type { ToolbarActionId, MeasureSelection } from '@/types/tool';
 import { useRenderCount } from '@/utils/renderStats';
 
 type ObjectiveCommitSource = 'ack';
@@ -58,9 +60,17 @@ type MachineControlTabProps = {
    * RX confirms.
    */
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
+  /**
+   * Same dispatch path the top toolbar uses. The Auto/Manual Measure cards call
+   * this with 'tools:autoMeasure' / 'tools:manualMeasure' so they share the
+   * exact handler and source of truth — no duplicated measure logic here.
+   */
+  onToolbarAction?: (action: ToolbarActionId) => void;
+  /** Shared Auto/Manual highlight state (also drives the toolbar underline). */
+  selectedMeasureMode?: MeasureSelection;
 };
 
-const FORCE_OPTIONS = ['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
+const FORCE_OPTIONS =['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
 // Real machine turret slots (per machine notes):
 //   UL1 -> 10X, UL2 -> IND (indenter), UL3 -> 40X.
 // Other zoom values exist in the calibration table for legacy reasons but the
@@ -102,50 +112,75 @@ const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
   flexDirection: 'column',
 };
-// Unified Machine-Control panel: one bordered container, two grid rows
-// (2 cols / 3 cols), zero gap between cells, internal 1px separators only.
+// Machine-Control panel: two rows of three equal rounded cards (Row 1 =
+// Impress / Auto Measure / Manual Measure, Row 2 = 10X / Center / 40X), each a
+// separate raised card with a soft shadow and gap-based spacing.
 const CONTROL_CONTAINER_SX: SxProps<Theme> = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 1.5,
+  px: 1.5,
+  pt: 1.5,
+  pb: 1.5,
   borderBottom: 1,
   borderColor: 'divider',
   bgcolor: 'background.paper',
 };
-const TOP_ROW_SX: SxProps<Theme> = {
+const CARD_ROW_SX: SxProps<Theme> = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  borderBottom: 1,
-  borderColor: 'divider',
+  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+  gap: 1.5,
 };
-function topCardSx(opts: { interactive: boolean; accentColor: 'info' | 'primary'; cellIndex: number }): SxProps<Theme> {
+
+type MeasureAccent = 'blue' | 'green';
+
+// Row 1 cards. Impress + Auto Measure use the blue (info) accent, Manual
+// Measure uses green (success). `active` shows the blue/green underline +
+// tinted background (synced with the toolbar highlight via selectedMeasureMode).
+function measureCardSx(opts: { accent: MeasureAccent; active: boolean }): SxProps<Theme> {
   return (theme) => {
-    const accent = opts.accentColor === 'info' ? theme.palette.info : theme.palette.primary;
-    const base = {
+    const accent = opts.accent === 'green' ? theme.palette.success.main : theme.palette.info.main;
+    return {
+      position: 'relative',
       display: 'flex',
-      flexDirection: 'column' as const,
+      flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 0.5,
       minHeight: 88,
       px: 1,
       py: 1.25,
-      borderRadius: 0,
-      borderLeft: opts.cellIndex > 0 ? 1 : 0,
-      borderColor: 'divider',
-      bgcolor: 'background.paper',
-      color: accent.main,
-      textTransform: 'none' as const,
-      transition: theme.transitions.create(['background-color'], { duration: 180 }),
+      borderRadius: 2,
+      border: 1,
+      borderColor: opts.active ? accent : 'divider',
+      bgcolor: opts.active ? alpha(accent, 0.08) : 'background.paper',
+      color: accent,
+      textTransform: 'none',
+      boxShadow: '0 1px 2px rgba(15, 42, 71, 0.05)',
+      transition: theme.transitions.create(['background-color', 'border-color', 'box-shadow'], {
+        duration: 180,
+      }),
+      '&::after': {
+        content: '""',
+        position: 'absolute',
+        left: 12,
+        right: 12,
+        bottom: 4,
+        height: 3,
+        borderRadius: 2,
+        backgroundColor: opts.active ? accent : 'transparent',
+        transition: 'background-color 180ms ease',
+      },
+      '&:hover': {
+        bgcolor: opts.active ? alpha(accent, 0.1) : alpha(accent, 0.05),
+        boxShadow: '0 2px 6px rgba(15, 42, 71, 0.08)',
+        '&::after': { backgroundColor: accent },
+      },
       '&.Mui-disabled': {
         color: 'text.disabled',
         bgcolor: 'background.paper',
-      },
-    };
-    if (!opts.interactive) {
-      return { ...base, cursor: 'default' };
-    }
-    return {
-      ...base,
-      '&:hover': {
-        bgcolor: alpha(accent.main, 0.05),
+        boxShadow: 'none',
+        '&::after': { backgroundColor: 'transparent' },
       },
     };
   };
@@ -158,10 +193,6 @@ const TOP_CARD_LABEL_SX: SxProps<Theme> = {
 };
 const TOP_CARD_ICON_SX: SxProps<Theme> = {
   fontSize: 30,
-};
-const OBJECTIVE_ROW_SX: SxProps<Theme> = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
 };
 const TURRET_ICON_ROW_SX: SxProps<Theme> = {
   display: 'flex',
@@ -182,7 +213,7 @@ const TURRET_OBJECTIVE_ICON_SX: SxProps<Theme> = {
 
 type TurretVariant = '10X' | 'CENTER' | '40X';
 
-function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number): SxProps<Theme> {
+function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
   return (theme) => {
     const accent =
       variant === '10X'
@@ -204,13 +235,16 @@ function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      borderRadius: 0,
-      borderLeft: cellIndex > 0 ? 1 : 0,
-      borderColor: 'divider',
+      borderRadius: 2,
+      border: 1,
+      borderColor: active ? accent : 'divider',
       bgcolor: active ? activeBackground : 'background.paper',
       color: 'text.primary',
       textTransform: 'none',
-      transition: theme.transitions.create(['background-color'], { duration: 180 }),
+      boxShadow: '0 1px 2px rgba(15, 42, 71, 0.05)',
+      transition: theme.transitions.create(['background-color', 'border-color', 'box-shadow'], {
+        duration: 180,
+      }),
       // Bottom accent strip: yellow for 10X, blue for 40X, neutral for Center.
       '&::after': {
         content: '""',
@@ -226,11 +260,13 @@ function turretCardSx(variant: TurretVariant, active: boolean, cellIndex: number
       },
       '&:hover': {
         bgcolor: active ? activeBackground : alpha(accent, 0.06),
+        boxShadow: '0 2px 6px rgba(15, 42, 71, 0.08)',
         '&::after': { opacity: 1, backgroundColor: accent },
       },
       '&.Mui-disabled': {
         bgcolor: 'background.paper',
         color: 'text.disabled',
+        boxShadow: 'none',
         '&::after': { backgroundColor: 'transparent', opacity: 0 },
       },
     };
@@ -471,6 +507,8 @@ function MachineControlTabImpl({
   onCenterCommit,
   onTurretIntent,
   onObjectiveChangeIntent,
+  onToolbarAction,
+  selectedMeasureMode = null,
 }: MachineControlTabProps = {}) {
   useRenderCount('MachineControlTab');
   // Narrow selectors — MachineControlTab re-renders only when the fields it
@@ -821,6 +859,15 @@ function MachineControlTabImpl({
     [commitObjectiveResult, moveTurret, onCenterCommit, onObjectiveChangeIntent, onTurretIntent]
   );
 
+  // Auto/Manual Measure cards: dispatch through the exact same toolbar path so
+  // there is one handler and one source of truth (no duplicated measure logic).
+  const handleAutoMeasureCardClick = useCallback(() => {
+    onToolbarAction?.('tools:autoMeasure');
+  }, [onToolbarAction]);
+  const handleManualMeasureCardClick = useCallback(() => {
+    onToolbarAction?.('tools:manualMeasure');
+  }, [onToolbarAction]);
+
   const connected = machineConnected;
   const indentStatus: IndentStatus = machineIndentStatus;
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
@@ -843,10 +890,10 @@ function MachineControlTabImpl({
   return (
     <Box sx={ROOT_SX}>
       <Box sx={CONTROL_CONTAINER_SX}>
-        <Box sx={TOP_ROW_SX}>
+        <Box sx={CARD_ROW_SX}>
           <Button
             variant="text"
-            sx={topCardSx({ interactive: true, accentColor: 'info', cellIndex: 0 })}
+            sx={measureCardSx({ accent: 'blue', active: false })}
             disabled={!connected || isIndentInFlight || isBusy || impressPopup.open}
             onClick={handleIndentClick}
             aria-label={indentLabel(indentStatus)}
@@ -856,24 +903,36 @@ function MachineControlTabImpl({
               {indentLabel(indentStatus)}
             </Typography>
           </Button>
-          {/* Turret card: passive status surface showing the current objective.
-              The turret-rotation action lives in the 10X / Center / 40X cards
-              below. */}
-          <Box
-            sx={topCardSx({ interactive: false, accentColor: 'primary', cellIndex: 1 })}
-            aria-label={`Turret position ${formState.objective}`}
-          >
-            <RadioButtonCheckedIcon sx={TOP_CARD_ICON_SX} />
-            <Typography component="span" sx={TOP_CARD_LABEL_SX}>
-              Turret
-            </Typography>
-          </Box>
-        </Box>
-
-        <Box sx={OBJECTIVE_ROW_SX}>
           <Button
             variant="text"
-            sx={turretCardSx('10X', formState.objective === '10X', 0)}
+            sx={measureCardSx({ accent: 'blue', active: selectedMeasureMode === 'auto' })}
+            onClick={handleAutoMeasureCardClick}
+            aria-label="Auto Measure"
+            aria-pressed={selectedMeasureMode === 'auto'}
+          >
+            <CenterFocusStrongIcon sx={TOP_CARD_ICON_SX} />
+            <Typography component="span" sx={TOP_CARD_LABEL_SX}>
+              Auto Measure
+            </Typography>
+          </Button>
+          <Button
+            variant="text"
+            sx={measureCardSx({ accent: 'green', active: selectedMeasureMode === 'manual' })}
+            onClick={handleManualMeasureCardClick}
+            aria-label="Manual Measure"
+            aria-pressed={selectedMeasureMode === 'manual'}
+          >
+            <TouchAppIcon sx={TOP_CARD_ICON_SX} />
+            <Typography component="span" sx={TOP_CARD_LABEL_SX}>
+              Manual Measure
+            </Typography>
+          </Button>
+        </Box>
+
+        <Box sx={CARD_ROW_SX}>
+          <Button
+            variant="text"
+            sx={turretCardSx('10X', formState.objective === '10X')}
             disabled={!connected || isBusy}
             onClick={handleTurretClick('left')}
             aria-label="Turret 10X"
@@ -888,7 +947,7 @@ function MachineControlTabImpl({
           </Button>
           <Button
             variant="text"
-            sx={turretCardSx('CENTER', formState.objective === 'IND', 1)}
+            sx={turretCardSx('CENTER', formState.objective === 'IND')}
             disabled={!connected || isBusy}
             onClick={handleTurretClick('front')}
             aria-label="Turret Center"
@@ -903,7 +962,7 @@ function MachineControlTabImpl({
           </Button>
           <Button
             variant="text"
-            sx={turretCardSx('40X', formState.objective === '40X', 2)}
+            sx={turretCardSx('40X', formState.objective === '40X')}
             disabled={!connected || isBusy}
             onClick={handleTurretClick('right')}
             aria-label="Turret 40X"

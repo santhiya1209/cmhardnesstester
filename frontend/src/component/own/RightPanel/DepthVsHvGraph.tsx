@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
@@ -157,8 +157,33 @@ function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
   );
   void genericYCrossing;
 
+  // CHD intersection diagnostics. Only meaningful for depth-vs-HV; deduped so
+  // the same outcome doesn't spam the console on unrelated re-renders.
+  const lastChdLogRef = useRef<string | null>(null);
   useEffect(() => {
-  }, [chdIntersection, isDepthVsHv, plot, points, xKey, yKey]);
+    if (!isDepthVsHv) return;
+    let line: string;
+    if (chdIntersection) {
+      const micron = xKey === 'depthUm';
+      const depthVal = micron
+        ? Math.round(chdIntersection.distanceUm)
+        : Number(chdIntersection.depthMm.toFixed(2));
+      const unit = micron ? 'um' : 'mm';
+      line = `[chd-intersection] found=true depth=${depthVal}${unit} hv=${chdIntersection.hv} betweenRows=${chdIntersection.segmentStart.index}-${chdIntersection.segmentEnd.index}`;
+    } else {
+      const reason =
+        chdTargetHv === null || !Number.isFinite(chdTargetHv)
+          ? 'missing-reference'
+          : legacyPoints.length < 2
+            ? 'insufficient-points'
+            : 'no-crossing';
+      line = `[chd-intersection] found=false reason=${reason}`;
+    }
+    if (line === lastChdLogRef.current) return;
+    lastChdLogRef.current = line;
+    // eslint-disable-next-line no-console
+    console.log(line);
+  }, [chdIntersection, chdTargetHv, isDepthVsHv, legacyPoints.length, xKey]);
 
   if (!plot) {
     return (
@@ -207,7 +232,7 @@ function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
         <text x={24} y={PAD.top + (plotBottom - PAD.top) / 2} fontSize={15} fontWeight={700} fill={colors.label} textAnchor="middle" transform={`rotate(-90 24 ${PAD.top + (plotBottom - PAD.top) / 2})`}>{yLabel}</text>
         {legacyPoints.length >= 2 ? <path d={plot.linePath} fill="none" stroke={colors.curve} strokeWidth={3} strokeLinejoin="round" strokeLinecap="round" /> : null}
         {isDepthVsHv
-          ? renderChdReference(chdTargetHv, chdIntersection, plot, colors, { size: SIZE, pad: PAD })
+          ? renderChdReference(chdTargetHv, chdIntersection, plot, colors, { size: SIZE, pad: PAD }, xKey === 'depthUm')
           : null}
         {legacyPoints.map((point, index) => (
           <circle key={`${point.id}-${point.index}`} cx={plot.sx(point.distanceUm)} cy={plot.sy(point.hv)} r={POINT_RADIUS} fill={index === hoverIndex ? colors.curve : colors.pointFill} stroke={colors.curve} strokeWidth={2} />

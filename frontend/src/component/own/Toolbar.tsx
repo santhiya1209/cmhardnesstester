@@ -8,7 +8,7 @@ import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { tokens } from '@/theme/theme';
-import type { ToolbarActionId } from '@/types/tool';
+import type { ToolbarActionId, MeasureSelection } from '@/types/tool';
 
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import SaveIcon from '@mui/icons-material/Save';
@@ -111,16 +111,37 @@ const ICON_BUTTON_SX: SxProps<Theme> = {
   '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.12)' },
 };
 
+// Active measurement tool: light-blue tint + a blue underline strip so the
+// selected tool reads clearly against the navy bar (synced with the Machine
+// Control card highlight).
+const ICON_BUTTON_ACTIVE_SX: SxProps<Theme> = {
+  ...(ICON_BUTTON_SX as object),
+  bgcolor: 'rgba(14, 165, 233, 0.20)',
+  '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.28)' },
+  '&::after': {
+    content: '""',
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 2,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: tokens.accentSecondary.base,
+  },
+};
+
 type ToolbarButtonProps = {
   item: ToolbarItemDef;
   onSelect: (action: ToolbarActionId) => void;
   cameraState?: 'open' | 'closed';
+  active?: boolean;
 };
 
 const ToolbarButton = memo(function ToolbarButton({
   item,
   onSelect,
   cameraState,
+  active = false,
 }: ToolbarButtonProps) {
   const Icon = item.icon;
   const isCameraToggle = cameraState !== undefined;
@@ -155,7 +176,8 @@ const ToolbarButton = memo(function ToolbarButton({
         size="small"
         onClick={handleClick}
         aria-label={item.label}
-        sx={ICON_BUTTON_SX}
+        aria-pressed={active}
+        sx={active ? ICON_BUTTON_ACTIVE_SX : ICON_BUTTON_SX}
       >
         <Icon fontSize="small" />
       </IconButton>
@@ -221,9 +243,10 @@ const LineThicknessMenuButton = memo(function LineThicknessMenuButton({
 type Props = {
   onSelect: (action: ToolbarActionId) => void;
   cameraOpen: boolean;
+  selectedMeasureMode?: MeasureSelection;
 };
 
-function ToolbarImpl({ onSelect, cameraOpen }: Props) {
+function ToolbarImpl({ onSelect, cameraOpen, selectedMeasureMode = null }: Props) {
   const cameraState = cameraOpen ? 'open' : 'closed';
   const cameraItem = cameraOpen ? CLOSE_CAMERA_ITEM : OPEN_CAMERA_ITEM;
 
@@ -232,6 +255,9 @@ function ToolbarImpl({ onSelect, cameraOpen }: Props) {
       {TOOLBAR_ITEMS.map((item) => {
         const isCameraSlot = item.action === 'device:openCamera';
         const resolvedItem = isCameraSlot ? cameraItem : item;
+        const active =
+          (item.action === 'tools:autoMeasure' && selectedMeasureMode === 'auto') ||
+          (item.action === 'tools:manualMeasure' && selectedMeasureMode === 'manual');
 
         return (
           <Fragment key={item.action}>
@@ -239,6 +265,7 @@ function ToolbarImpl({ onSelect, cameraOpen }: Props) {
               item={resolvedItem}
               onSelect={onSelect}
               cameraState={isCameraSlot ? cameraState : undefined}
+              active={active}
             />
             {resolvedItem.groupEnd && <Box sx={SPACER_SX} />}
           </Fragment>

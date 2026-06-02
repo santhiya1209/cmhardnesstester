@@ -8,7 +8,7 @@ import { usePatternPrograms } from '@/hooks/queries/usePatternPrograms';
 import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
-import type { ToolId, ToolbarActionId } from '@/types/tool';
+import type { ToolId, ToolbarActionId, MeasureSelection } from '@/types/tool';
 import { tokens } from '@/theme/theme';
 import { useRenderCount } from '@/utils/renderStats';
 
@@ -97,6 +97,7 @@ type TabContentProps = {
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
   onToolbarAction?: (action: ToolbarActionId) => void;
   activeTool?: ToolId;
+  selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
@@ -118,6 +119,8 @@ function renderTab(
     onCenterCommit,
     onTurretIntent,
     onObjectiveChangeIntent,
+    onToolbarAction,
+    selectedMeasureMode,
     targetMinHv,
     targetMaxHv,
   }: TabContentProps
@@ -134,6 +137,8 @@ function renderTab(
           onCenterCommit={onCenterCommit}
           onTurretIntent={onTurretIntent}
           onObjectiveChangeIntent={onObjectiveChangeIntent}
+          onToolbarAction={onToolbarAction}
+          selectedMeasureMode={selectedMeasureMode}
         />
       );
     case 1: return <XYZPlatformTab />;
@@ -191,6 +196,7 @@ type Props = {
   onObjectiveChangeIntent?: (target: '10X' | '40X') => void;
   onToolbarAction?: (action: ToolbarActionId) => void;
   activeTool?: ToolId;
+  selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
@@ -223,6 +229,7 @@ function RightPanelImpl({
   onObjectiveChangeIntent,
   onToolbarAction,
   activeTool,
+  selectedMeasureMode,
   cameraReady,
   trimMeasureOpen,
   onCloseTrimMeasure,
@@ -307,6 +314,7 @@ function RightPanelImpl({
             onObjectiveChangeIntent,
             onToolbarAction,
             activeTool,
+            selectedMeasureMode,
             cameraReady,
             targetMinHv,
             targetMaxHv,

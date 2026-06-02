@@ -82,6 +82,15 @@ export function formatHv(value: number): string {
   return value >= 1000 ? Math.round(value).toLocaleString('en-IN') : value.toFixed(2);
 }
 
+// Format a CHD intersection depth for the on-graph label. Microns (rounded
+// integer) when the X axis is Depth(µm); millimetres (2 dp, e.g. "0.42 mm")
+// when the X axis is Depth(mm) — matching the axis the user is viewing.
+export function formatChdDepth(intersection: ChdIntersection, micron: boolean): string {
+  return micron
+    ? `${Math.round(intersection.distanceUm)} µm`
+    : `${intersection.depthMm.toFixed(2)} mm`;
+}
+
 function readFiniteNumber(...values: unknown[]): number | null {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
