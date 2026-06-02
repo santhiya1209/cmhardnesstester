@@ -132,6 +132,11 @@ function renderTab(
           hvDisplay={measurementDisplay.hvDisplay}
           hvTypeValue={measurementDisplay.hvType}
           hardnessValue={measurementDisplay.hardnessValue}
+          hardnessQualified={measurementDisplay.qualified}
+          measurementTimestamp={measurementDisplay.timestamp}
+          convertDisabled={measurementDisplay.convertDisabled}
+          convertOptions={measurementDisplay.convertOptions}
+          onConvertTypeChange={measurementDisplay.onConvertTypeChange}
           activeObjective={activeObjective}
           onObjectiveChange={onObjectiveChange}
           onCenterCommit={onCenterCommit}
@@ -256,12 +261,21 @@ function RightPanelImpl({
     hvDisplay: '',
     hvType: 'HV',
     hardnessValue: 'N/A',
+    qualified: null,
+    timestamp: null,
+    convertDisabled: false,
+    convertOptions: [],
+    onConvertTypeChange: () => {},
   });
   const handleMeasurementDisplayValuesChange = useCallback((next: MeasurementDisplayValues) => {
     setMeasurementDisplay((current) =>
       current.hvDisplay === next.hvDisplay &&
       current.hvType === next.hvType &&
-      current.hardnessValue === next.hardnessValue
+      current.hardnessValue === next.hardnessValue &&
+      current.qualified === next.qualified &&
+      current.timestamp === next.timestamp &&
+      current.convertDisabled === next.convertDisabled &&
+      current.onConvertTypeChange === next.onConvertTypeChange
         ? current
         : next
     );

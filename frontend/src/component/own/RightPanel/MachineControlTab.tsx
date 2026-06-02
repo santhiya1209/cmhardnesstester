@@ -18,6 +18,10 @@ import Brightness7Icon from '@mui/icons-material/Brightness7';
 import GpsFixedIcon from '@mui/icons-material/GpsFixed';
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
 import TouchAppIcon from '@mui/icons-material/TouchApp';
+import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
+import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
+import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
+import RemoveCircleOutlinedIcon from '@mui/icons-material/RemoveCircleOutlined';
 import {
   IndentCenterIcon,
   Objective10xIcon,
@@ -68,6 +72,19 @@ type MachineControlTabProps = {
   onToolbarAction?: (action: ToolbarActionId) => void;
   /** Shared Auto/Manual highlight state (also drives the toolbar underline). */
   selectedMeasureMode?: MeasureSelection;
+  // Bottom HV/HARDNESS card data — all forwarded read-only from the summary row
+  // (MeasurementsWorkspace), reusing its existing displayedMeasurement +
+  // convert state. No new source of truth here.
+  /** qualified field of the displayed measurement ('YES' | 'NO' | null). */
+  hardnessQualified?: string | null;
+  /** Timestamp of the displayed measurement. */
+  measurementTimestamp?: string | null;
+  /** Disables the HARDNESS card's convert dropdown (mirrors the summary row). */
+  convertDisabled?: boolean;
+  /** Convert-type options for the HARDNESS card dropdown. */
+  convertOptions?: readonly string[];
+  /** Same convert handler the top row uses — keeps both dropdowns in sync. */
+  onConvertTypeChange?: (value: string) => void;
 };
 
 const FORCE_OPTIONS =['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
@@ -108,9 +125,15 @@ const DEFAULT_FORM_STATE: FormState = {
 
 const ROOT_SX: SxProps<Theme> = {
   flex: 1,
+  // minHeight:0 lets this flex child shrink below its content height inside the
+  // (overflow-hidden) right panel, so the overflowY scroll below engages
+  // instead of the content being clipped at small window heights. overflowX is
+  // pinned hidden so a vertical scrollbar never triggers a horizontal one.
   minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
+  overflowY: 'auto',
+  overflowX: 'hidden',
 };
 // Machine-Control panel: two rows of three equal rounded cards (Row 1 =
 // Impress / Auto Measure / Manual Measure, Row 2 = 10X / Center / 40X), each a
@@ -293,64 +316,105 @@ const SETTING_LABEL_SX: SxProps<Theme> = {
   fontWeight: 500,
   color: 'text.secondary',
 };
+// Bottom HV/HARDNESS KPI cards: two equal white cards, thin border, rounded
+// corners, a colored top accent strip (blue / green), a large value, and a
+// footer (divider line + status/timestamp). No shadow.
 const HV_BOTTOM_SECTION_SX: SxProps<Theme> = {
   width: '100%',
   px: 1.5,
   pt: 1,
   pb: 1.25,
 };
-const HV_BOTTOM_ROW_SX: SxProps<Theme> = {
-  width: '100%',
+const HV_CARDS_GRID_SX: SxProps<Theme> = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gridTemplateColumns: '1fr 1fr',
+  gap: 1.5,
+  alignItems: 'stretch',
+};
+const KPI_CARD_SX: SxProps<Theme> = {
+  position: 'relative',
+  overflow: 'hidden',
+  display: 'flex',
+  flexDirection: 'column',
   border: 1,
   borderColor: 'divider',
-  borderRadius: 1,
+  borderRadius: 2,
   bgcolor: 'background.paper',
 };
-const hvItemSx = (cellIndex: number): SxProps<Theme> => ({
+const kpiStripSx = (accent: string): SxProps<Theme> => ({
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  height: 4,
+  bgcolor: accent,
+});
+const KPI_BODY_SX: SxProps<Theme> = {
   display: 'flex',
   flexDirection: 'column',
   gap: 0.5,
-  minWidth: 0,
   px: 1.5,
-  py: 1.25,
-  borderLeft: cellIndex > 0 ? 1 : 0,
-  borderColor: 'divider',
-});
-const HV_LABEL_SX: SxProps<Theme> = {
-  fontSize: 11,
-  fontWeight: 500,
-  letterSpacing: 0.4,
-  textTransform: 'uppercase',
-  color: 'text.secondary',
-  lineHeight: 1,
+  pt: 1.75,
+  pb: 1.25,
 };
-const HV_VALUE_SX: SxProps<Theme> = {
+const kpiLabelSx = (accent: string): SxProps<Theme> => ({
+  fontSize: 12,
+  fontWeight: 700,
+  letterSpacing: 0.5,
+  textTransform: 'uppercase',
+  lineHeight: 1,
+  color: accent,
+});
+const KPI_VALUE_ROW_SX: SxProps<Theme> = {
   display: 'flex',
   alignItems: 'baseline',
-  gap: 0.5,
+  gap: 0.75,
   minWidth: 0,
 };
-const HV_VALUE_TEXT_SX: SxProps<Theme> = {
-  fontSize: 20,
-  fontWeight: 600,
-  lineHeight: 1.1,
+const KPI_VALUE_SX: SxProps<Theme> = {
+  fontSize: 32,
+  fontWeight: 700,
+  lineHeight: 1.05,
   color: 'text.primary',
   fontVariantNumeric: 'tabular-nums',
-  // overflow: 'hidden',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
   textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
 };
-const HV_UNIT_TEXT_SX: SxProps<Theme> = {
-  fontSize: 11,
-  fontWeight: 500,
+const KPI_UNIT_SX: SxProps<Theme> = {
+  fontSize: 14,
+  fontWeight: 600,
   color: 'text.secondary',
-  letterSpacing: 0.3,
-  textTransform: 'uppercase',
   whiteSpace: 'nowrap',
 };
+const KPI_CONVERT_SELECT_SX: SxProps<Theme> = {
+  mt: 0.5,
+  '& .MuiSelect-select': { py: 0.5, fontSize: 13, fontWeight: 600 },
+};
+const KPI_FOOTER_SX: SxProps<Theme> = {
+  mt: 'auto',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 1,
+  px: 1.5,
+  py: 0.75,
+  borderTop: 1,
+  borderColor: 'divider',
+};
+const KPI_FOOTER_LEFT_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 };
+const KPI_FOOTER_LABEL_SX: SxProps<Theme> = { fontSize: 11, fontWeight: 500, color: 'text.secondary', whiteSpace: 'nowrap' };
+const KPI_FOOTER_TIME_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary', whiteSpace: 'nowrap' };
 const ALERT_SX: SxProps<Theme> = { mx: 1.5, mb: 1.5 };
+
+function formatMeasurementTimestamp(value: string | null | undefined): string {
+  if (!value) {
+    return '—';
+  }
+  return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(
+    new Date(value)
+  );
+}
 
 function normalizeObjectiveOption(value: string | null | undefined): string | null {
   const key = String(value ?? '').trim().toUpperCase();
@@ -472,36 +536,15 @@ function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessCo
 }
 const LightnessControl = memo(LightnessControlImpl);
 
-type HvReadoutProps = {
-  label: string;
-  value: string;
-  unit: string;
-  cellIndex: number;
-};
-
-function HvReadout({ label, value, unit, cellIndex }: HvReadoutProps) {
-  const showUnit = value !== 'N/A' && unit.length > 0;
-  return (
-    <Box sx={hvItemSx(cellIndex)}>
-      <Typography sx={HV_LABEL_SX}>{label}</Typography>
-      <Box sx={HV_VALUE_SX} title={`${value}${showUnit ? ` ${unit}` : ''}`}>
-        <Typography component="span" sx={HV_VALUE_TEXT_SX}>
-          {value}
-        </Typography>
-        {showUnit ? (
-          <Typography component="span" sx={HV_UNIT_TEXT_SX}>
-            {unit}
-          </Typography>
-        ) : null}
-      </Box>
-    </Box>
-  );
-}
-
 function MachineControlTabImpl({
   hvDisplay = '',
   hvTypeValue = null,
   hardnessValue = 'N/A',
+  hardnessQualified = null,
+  measurementTimestamp = null,
+  convertDisabled = false,
+  convertOptions = [],
+  onConvertTypeChange,
   activeObjective = null,
   onObjectiveChange,
   onCenterCommit,
@@ -564,6 +607,18 @@ function MachineControlTabImpl({
     return trimmed ? trimmed : 'HV';
   }, [hvTypeValue]);
   const bottomHardnessDisplay = hardnessValue.trim() ? hardnessValue : 'N/A';
+  // Ensure the current convert type is always a valid Select option.
+  const bottomConvertOptions = convertOptions.includes(bottomHvTypeDisplay)
+    ? convertOptions
+    : [bottomHvTypeDisplay, ...convertOptions];
+  const bottomTimestamp = formatMeasurementTimestamp(measurementTimestamp);
+  const hardnessStatus =
+    hardnessQualified === 'YES'
+      ? { Icon: CheckCircleOutlinedIcon, label: 'Qualified: YES', color: 'success.main' as const }
+      : hardnessQualified === 'NO'
+        ? { Icon: CancelOutlinedIcon, label: 'Qualified: NO', color: 'error.main' as const }
+        : { Icon: RemoveCircleOutlinedIcon, label: 'Qualified: —', color: 'text.secondary' as const };
+  const HardnessStatusIcon = hardnessStatus.Icon;
 
   const lastObjectiveSyncLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1046,9 +1101,74 @@ function MachineControlTabImpl({
       </Box>
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
-        <Box sx={HV_BOTTOM_ROW_SX}>
-          <HvReadout label="HV" value={bottomHvDisplay} unit="HV" cellIndex={0} />
-          <HvReadout label="Hardness" value={bottomHardnessDisplay} unit={bottomHvTypeDisplay} cellIndex={1} />
+        <Box sx={HV_CARDS_GRID_SX}>
+          {/* HV card */}
+          <Box sx={KPI_CARD_SX}>
+            <Box sx={kpiStripSx('info.main')} />
+            <Box sx={KPI_BODY_SX}>
+              <Typography sx={kpiLabelSx('info.main')}>HV</Typography>
+              <Box sx={KPI_VALUE_ROW_SX} title={bottomHvDisplay}>
+                <Typography component="span" sx={KPI_VALUE_SX}>
+                  {bottomHvDisplay}
+                </Typography>
+                <Typography component="span" sx={KPI_UNIT_SX}>
+                  HV
+                </Typography>
+              </Box>
+            </Box>
+            <Box sx={KPI_FOOTER_SX}>
+              <Box sx={KPI_FOOTER_LEFT_SX}>
+                <AccessTimeOutlinedIcon sx={{ fontSize: 15, color: 'text.secondary' }} />
+                <Typography sx={KPI_FOOTER_LABEL_SX}>Last Measurement</Typography>
+              </Box>
+              <Typography sx={KPI_FOOTER_TIME_SX}>{bottomTimestamp}</Typography>
+            </Box>
+          </Box>
+
+          {/* HARDNESS card */}
+          <Box sx={KPI_CARD_SX}>
+            <Box sx={kpiStripSx('success.main')} />
+            <Box sx={KPI_BODY_SX}>
+              <Typography sx={kpiLabelSx('success.main')}>HARDNESS</Typography>
+              <Box sx={KPI_VALUE_ROW_SX} title={`${bottomHardnessDisplay} ${bottomHvTypeDisplay}`}>
+                <Typography component="span" sx={KPI_VALUE_SX}>
+                  {bottomHardnessDisplay}
+                </Typography>
+                <Typography component="span" sx={KPI_UNIT_SX}>
+                  {bottomHvTypeDisplay}
+                </Typography>
+              </Box>
+              <FormControl size="small" sx={KPI_CONVERT_SELECT_SX}>
+                <Select
+                  value={bottomHvTypeDisplay}
+                  disabled={convertDisabled}
+                  displayEmpty
+                  renderValue={(value) => {
+                    const v = (value as string | undefined) ?? '';
+                    return bottomConvertOptions.includes(v) ? v : 'HV';
+                  }}
+                  onChange={(event: SelectChangeEvent<string>) => {
+                    onConvertTypeChange?.(event.target.value);
+                  }}
+                >
+                  {bottomConvertOptions.map((option) => (
+                    <MenuItem key={option} value={option}>
+                      {option}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Box>
+            <Box sx={KPI_FOOTER_SX}>
+              <Box sx={KPI_FOOTER_LEFT_SX}>
+                <HardnessStatusIcon sx={{ fontSize: 15, color: hardnessStatus.color }} />
+                <Typography sx={{ ...(KPI_FOOTER_LABEL_SX as object), color: hardnessStatus.color, fontWeight: 600 }}>
+                  {hardnessStatus.label}
+                </Typography>
+              </Box>
+              <Typography sx={KPI_FOOTER_TIME_SX}>{bottomTimestamp}</Typography>
+            </Box>
+          </Box>
         </Box>
       </Box>
 

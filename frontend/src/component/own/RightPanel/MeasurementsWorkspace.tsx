@@ -96,6 +96,15 @@ export type MeasurementDisplayValues = {
   hvDisplay: string;
   hvType: string;
   hardnessValue: string;
+  // Forwarded (read-only) for the bottom Machine Control HV/HARDNESS cards.
+  // These reuse the same displayedMeasurement + convert state — no new source
+  // of truth. onConvertTypeChange is the SAME handler the top row uses, so the
+  // bottom card's dropdown stays in sync with the top one.
+  qualified: string | null;
+  timestamp: string | null;
+  convertDisabled: boolean;
+  convertOptions: readonly string[];
+  onConvertTypeChange: (value: string) => void;
 };
 
 function formatNumber(value: number | null | undefined): string {
@@ -178,14 +187,6 @@ function MeasurementsWorkspaceImpl({
     return display;
   }, [displayedMeasurement, convertType]);
 
-  useEffect(() => {
-    onDisplayValuesChange?.({
-      hvDisplay: displayedHvText,
-      hvType: displayedHvType,
-      hardnessValue: displayConvertValue,
-    });
-  }, [displayConvertValue, displayedHvText, displayedHvType, onDisplayValuesChange]);
-
   // Sync the dropdown to whichever row is being shown so switching selection
   // reflects that row's saved convertType. Empty/legacy rows show 'HV'.
   useEffect(() => {
@@ -263,6 +264,37 @@ function MeasurementsWorkspaceImpl({
     },
     [displayedMeasurement, refetch]
   );
+
+  // Stable string-typed wrapper so the forwarded bottom-card dropdown can call
+  // the exact same convert handler the top row uses (single source of truth).
+  const handleConvertTypeChangeValue = useCallback(
+    (value: string) => {
+      void handleConvertTypeChange(value as (typeof CONVERT_TYPE_OPTIONS)[number]);
+    },
+    [handleConvertTypeChange]
+  );
+
+  useEffect(() => {
+    onDisplayValuesChange?.({
+      hvDisplay: displayedHvText,
+      hvType: displayedHvType,
+      hardnessValue: displayConvertValue,
+      qualified: displayedMeasurement?.qualified ?? null,
+      timestamp: displayedMeasurement?.timestamp ?? null,
+      convertDisabled: busy,
+      convertOptions: CONVERT_TYPE_OPTIONS,
+      onConvertTypeChange: handleConvertTypeChangeValue,
+    });
+  }, [
+    displayConvertValue,
+    displayedHvText,
+    displayedHvType,
+    displayedMeasurement?.qualified,
+    displayedMeasurement?.timestamp,
+    busy,
+    handleConvertTypeChangeValue,
+    onDisplayValuesChange,
+  ]);
 
   useEffect(() => {
     if (selectedMeasurementId && !selectedMeasurement) {
