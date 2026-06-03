@@ -269,13 +269,10 @@ function drawLengthShape(
     ctx.stroke();
   }
 
-  const { imagePx, um, label } = getLengthDisplayInfo(len, opts.imageScale, opts.umPerPixel);
+  const { imagePx, label } = getLengthDisplayInfo(len, opts.imageScale, opts.umPerPixel);
   const logKey = `${source}|${imagePx.toFixed(2)}|${opts.umPerPixel ?? 'null'}|${label}`;
   if (lengthDisplayLogKeys.get(source) !== logKey) {
     lengthDisplayLogKeys.set(source, logKey);
-    if (um !== null) {
-    } else {
-    }
   }
   const midX = (a.x + b.x) / 2;
   const midY = (a.y + b.y) / 2;
@@ -687,13 +684,7 @@ function ImageOverlayImpl({
   }, [shapes, crossLineVisible, imageSize, resizeTick, umPerPixel, paintTick]);
 
   useEffect(() => {
-    if (activeTool === 'measureLength') {
-    }
-    if (activeTool === 'measureAngle') {
-    }
     if (draftRef.current) {
-      if (draftRef.current.kind === 'length') {
-      }
       draftRef.current = null;
       hoverDisplayRef.current = null;
       hoverImageRef.current = null;
@@ -953,8 +944,6 @@ function ImageOverlayImpl({
     (e: React.MouseEvent) => {
       if (!draftRef.current) return;
       e.preventDefault();
-      if (draftRef.current.kind === 'length') {
-      }
       draftRef.current = null;
       hoverDisplayRef.current = null;
       hoverImageRef.current = null;
@@ -966,8 +955,6 @@ function ImageOverlayImpl({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (draftRef.current?.kind === 'length') {
-      }
       draftRef.current = null;
       hoverDisplayRef.current = null;
       hoverImageRef.current = null;

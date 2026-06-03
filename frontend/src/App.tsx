@@ -542,8 +542,6 @@ function App() {
     async (objective: string): Promise<{ d1Px: number; d2Px: number } | null> => {
       // Mutually-exclusive calibration overlay: clear any manual state
       // before kicking off auto detection so the two never coexist.
-      if (calibrationMeasureModeRef.current === 'manual') {
-      }
       calibrationManualModeRef.current = false;
       setManualMeasureResetKey((current) => current + 1);
       setActiveTool('pointer');
@@ -620,10 +618,6 @@ function App() {
       // gate allows the verification overlay to paint.
       setAutoMeasureSessionActive(true);
       setCommittedAutoMeasureOverlay(graphicsFromAutoMeasureResult(result, objective));
-      {
-      }
-      if (liveObjectiveForNative === '10X' && hasValidAutoMeasureCorners(result)) {
-      }
       // eslint-disable-next-line no-console
       console.log(`[calibration-auto-success] pixelX=${result.d1Pixels.toFixed(2)} pixelY=${result.d2Pixels.toFixed(2)}`);
       return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
@@ -666,10 +660,7 @@ function App() {
   const handleUpdateShape = overlay.updateShape;
 
   const openCalibrationPanel = useCallback(
-    (source: 'menu' | 'toolbar' | 'snackbar' = 'menu') => {
-      if (source === 'toolbar') {
-      }
-
+    (_source: 'menu' | 'toolbar' | 'snackbar' = 'menu') => {
       // TEMP DEBUG: snapshot every overlay source at the instant Calibration
       // opens, BEFORE the clear runs, so the actual rendered source of any
       // lingering yellow lines is visible in the console.
@@ -870,15 +861,11 @@ function App() {
         targetObjective: objectiveForCalibration,
       });
       const candidateHv = conversion.ok ? finiteOrNull(conversion.value.hv) : fingerprint.hv;
-      if (conversion.ok) {
-      }
 
       const shouldCheckDuplicate = source === 'auto-click' || source === 'after-impress';
       if (shouldCheckDuplicate) {
         const existing = committedFingerprintsRef.current;
         let matchedEntry: typeof existing[number] | null = null;
-        if (existing.length === 0) {
-        }
         for (const entry of existing) {
           const sameObjective = entry.objective === fingerprintObjective;
           const d1Delta = Math.abs(entry.d1Px - fingerprint.d1Px);
@@ -984,8 +971,6 @@ function App() {
         if (!forceOverlayRefresh && prev && graphicsAlmostEqual(prev, graphics)) {
           return prev;
         }
-        if (source === 'auto-click' || source === 'after-impress') {
-        }
         return { ...graphics, corners: { ...graphics.corners } };
       });
       const committedHasGeometry = !!graphics.corners;
@@ -997,8 +982,6 @@ function App() {
       console.log(
         `[auto-measure-overlay-commit] graphics=${committedHasGeometry} lines=4 objective=${objectiveForCalibration ?? 'unknown'} source=${source}`
       );
-      if (source === 'after-impress') {
-      }
       setPreviewAutoMeasureOverlay(null);
       autoMeasurePreviewSnapshotRef.current = null;
       previewMeasurementRef.current = null;
@@ -1012,8 +995,6 @@ function App() {
         autoMeasurementIdRef.current ?? undefined;
       if (saveRowId === undefined) {
         saveRowId = getActiveMeasurementId();
-        if (saveRowId) {
-        }
       }
       // Depth is captured ONLY when creating a new auto-measure row. On
       // re-detection of an existing row we must keep the originally saved
@@ -1023,8 +1004,6 @@ function App() {
       const depthCapture: DepthSavePayload | null = isNewAutoMeasurement
         ? await buildNewRowDepthPayload(micrometerEnabledRef.current)
         : null;
-      if (isNewAutoMeasurement && depthCapture) {
-      }
 
 
       const values = conversion.value;
@@ -1179,8 +1158,6 @@ function App() {
         timestamp,
         imageDataUrl,
       };
-      if (isNewAutoMeasurement) {
-      }
       // eslint-disable-next-line no-console
       console.log(`[measurement-save] source=auto-measure allowed=true isNew=${isNewAutoMeasurement}`);
       let saved;
@@ -1189,11 +1166,6 @@ function App() {
           id: saveRowId,
           values: autoRowPayload,
         });
-        if (source === 'after-impress') {
-        }
-        if (isNewAutoMeasurement && depthCapture) {
-        } else if (!isNewAutoMeasurement) {
-        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[measurement-row-save-error] method=Auto', err);
@@ -1258,10 +1230,6 @@ function App() {
       }
       await refetchMeasurements();
 
-      if (source === 'settings-save') {
-      } else {
-      }
-
       setStatusMessage(
         saved.hv
           ? `System Status: Auto measurement added: HV ${saved.hv}`
@@ -1315,11 +1283,7 @@ function App() {
         // attempt. The new overlay will be set only if detection succeeds.
         // Keep committed row fingerprints alive so repeat clicks compare
         // against every current row, even while the overlay is being refreshed.
-        setCommittedAutoMeasureOverlay((prev) => {
-          if (!prev) {
-          }
-          return null;
-        });
+        setCommittedAutoMeasureOverlay(() => null);
         setPreviewAutoMeasureOverlay(null);
         autoMeasurePreviewSnapshotRef.current = null;
         autoMeasurementIdRef.current = null;
@@ -1346,8 +1310,6 @@ function App() {
       if (isFreshCapture) {
         setAutoMeasureStatus('detecting');
         setCameraStatus('frozen');
-      }
-      if (callSource === 'settings-preview') {
       }
       if (!preview) {
         setStatusMessage('System Status: Auto Measure running');
@@ -1419,11 +1381,7 @@ function App() {
           settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
         let displayedFrame;
         if (isFreshCapture) {
-          if (callSource === 'after-impress') {
-          }
           displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
-          if (callSource === 'after-impress') {
-          }
         } else {
           displayedFrame = committedAutoMeasureFrameRef.current;
           if (!displayedFrame && callSource === 'settings-preview') {
@@ -1473,8 +1431,6 @@ function App() {
           if (preview) {
             // Keep last valid overlay; surface only via status (no log spam).
             return false;
-          }
-          if (callSource === 'auto-click') {
           }
           {
             const stale = displayedFrame?.error ?? 'no-displayed-image (stale-frame)';
@@ -1806,8 +1762,6 @@ function App() {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[auto-measure] failed:', err);
-        if (!preview && callSource === 'auto-click') {
-        }
         if (preview) {
           // Preview-time exception: keep overlay, just log + status.
           setStatusMessage('System Status: Auto Measure preview detection failed');

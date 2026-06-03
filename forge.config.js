@@ -3,6 +3,9 @@ module.exports = {
     name: 'VickersMeasurementSoftware',
     executableName: 'VickersMeasurementSoftware',
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
+    // Windows EXE icon (electron-packager appends `.ico`). Same source the
+    // BrowserWindow (electron/main.js resolveAppIcon) and NSIS installer use.
+    icon: 'build/icon',
     asar: true,
     extraResource: [
       'drivers/opencv',
@@ -57,6 +60,14 @@ module.exports = {
         allowToChangeInstallationDirectory: true,
         perMachine: false,
         shortcutName: 'Vickers Measurement Software',
+        // App icon used for desktop + Start menu shortcuts.
+        win: { icon: 'build/icon.ico' },
+        // Installer/uninstaller + setup header icons.
+        nsis: {
+          installerIcon: 'build/icon.ico',
+          uninstallerIcon: 'build/icon.ico',
+          installerHeaderIcon: 'build/icon.ico',
+        },
       },
     },
     { name: '@electron-forge/maker-zip', platforms: ['darwin'] },
