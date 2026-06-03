@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
+import type { CalibrationMeasureMode } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { ManualGuideLineKey } from '@/types/manualMeasure';
 
 const LINE_ORDER: ManualGuideLineKey[] = ['top', 'right', 'bottom', 'left'];
@@ -39,6 +40,10 @@ type Args = {
   onAdjusted: (corners: AutoMeasureCorners) => void;
   // Gate: false when a dialog is open, camera is closed, or tool is not pointer.
   isActive: boolean;
+  // When provided and === 'auto', the overlay is the Calibration panel's
+  // detected lines: emit calibration telemetry alongside the normal logs. The
+  // movement engine itself is unchanged — calibration reuses it as-is.
+  calibrationMeasureModeRef?: React.MutableRefObject<CalibrationMeasureMode>;
 };
 
 // Keyboard-based fine adjustment of the committed Auto Measure overlay.
@@ -53,6 +58,7 @@ export function useAutoMeasureKeyboardAdjust({
   setCommittedAutoMeasureOverlay,
   onAdjusted,
   isActive,
+  calibrationMeasureModeRef,
 }: Args): void {
   // Live refs — updated synchronously in render so the stable event listener
   // always reads the current value without being recreated on state changes.
@@ -119,6 +125,10 @@ export function useAutoMeasureKeyboardAdjust({
         }
         // eslint-disable-next-line no-console
         console.log(`[auto-measure-edit] selected=${next}-line source=keyboard`);
+        if (calibrationMeasureModeRef?.current === 'auto') {
+          // eslint-disable-next-line no-console
+          console.log(`[calibration-line-select] line=${next}`);
+        }
         setSelectedLine(next);
         return;
       }
@@ -155,6 +165,13 @@ export function useAutoMeasureKeyboardAdjust({
           `[auto-measure-recalculate] D1=${d1Px.toFixed(1)}px D2=${d2Px.toFixed(1)}px Davg=${davgPx.toFixed(1)}px HV=pending(debounce)`
         );
 
+        if (calibrationMeasureModeRef?.current === 'auto') {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[calibration-line-keyboard] line=${line} key=${key} step=${step} pixelX=${Math.abs(d1Px).toFixed(2)} pixelY=${Math.abs(d2Px).toFixed(2)}`
+          );
+        }
+
         setCommittedAutoMeasureOverlay({ ...overlay, corners: next });
         onAdjustedRef.current(next);
         return;
@@ -188,7 +205,7 @@ export function useAutoMeasureKeyboardAdjust({
         return;
       }
     },
-    [setCommittedAutoMeasureOverlay, setSelectedLine]
+    [calibrationMeasureModeRef, setCommittedAutoMeasureOverlay, setSelectedLine]
   );
 
   useEffect(() => {

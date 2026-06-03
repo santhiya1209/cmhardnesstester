@@ -49,6 +49,7 @@ export type UseAutoAdjustedSaveArgs = {
   // Refs read
   activeObjectiveRef: React.MutableRefObject<string | null>;
   autoMeasurementIdRef: React.MutableRefObject<string | null>;
+  autoMeasureSelectedLineRef: React.MutableRefObject<'top' | 'right' | 'bottom' | 'left' | null>;
   calibrationManualModeRef: React.MutableRefObject<boolean>;
   calibrationMeasureModeRef: React.MutableRefObject<CalibrationMeasureMode>;
   committedFingerprintsRef: React.MutableRefObject<CommittedAutoMeasureFingerprint[]>;
@@ -85,6 +86,7 @@ export function useAutoAdjustedSave({
   displayedAutoMeasureGraphicsRef,
   activeObjectiveRef,
   autoMeasurementIdRef,
+  autoMeasureSelectedLineRef,
   calibrationManualModeRef,
   calibrationMeasureModeRef,
   committedFingerprintsRef,
@@ -152,7 +154,9 @@ export function useAutoAdjustedSave({
         const d2Px = Math.abs(newCorners.bottom.y - newCorners.top.y);
         setLatestManualPixels({ d1Px, d2Px });
         // eslint-disable-next-line no-console
-        console.log(`[calibration-line-drag] pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`);
+        console.log(
+          `[calibration-line-drag] line=${autoMeasureSelectedLineRef.current ?? 'unknown'} pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`
+        );
         if (adjustSaveTimerRef.current !== null) {
           window.clearTimeout(adjustSaveTimerRef.current);
           adjustSaveTimerRef.current = null;
@@ -351,6 +355,7 @@ export function useAutoAdjustedSave({
       activeMeasurementMethodRef,
       activeObjectiveRef,
       autoMeasurementIdRef,
+      autoMeasureSelectedLineRef,
       calibrationManualModeRef,
       calibrationMeasureModeRef,
       calibrationSettings,

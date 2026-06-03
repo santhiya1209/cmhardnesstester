@@ -87,6 +87,8 @@ export function useObjectiveSyncGate({
     if (shouldPreserveAfterImpressOverlay()) {
       return;
     }
+    // eslint-disable-next-line no-console
+    console.log(`[auto-measure-overlay-cleared] reason=objective-sync-gate objective=${String(activeObjective).trim().toUpperCase()}`);
     // Objective changed — drop any visible Auto Measure lines, end the
     // current session (so async results from the old objective can't paint),
     // and arm the suppression ref so a settings-preview detection cannot

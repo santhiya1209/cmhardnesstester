@@ -28,10 +28,21 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+// Readiness signals the after-impress detection gate polls before running.
+// All three are owned by App (camera-open state, the authoritative
+// activeObjective, and the per-objective calibration lookup) and read through
+// a stable callback so the hook never re-subscribes on their changes.
+export type AfterImpressReadiness = {
+  cameraOpen: boolean;
+  activeObjective: string | null;
+  calibrationReady: boolean;
+};
+
 export type UseAfterImpressFlowArgs = {
   machineIndentStatus: IndentStatus | null;
   machineLastObjectiveRx: string | null;
   cameraRef: React.RefObject<CameraWindowHandle | null>;
+  getAfterImpressReadiness: () => AfterImpressReadiness;
 
   // App-owned auto-measure session refs read/written by the flow
   activeObjectiveRef: React.MutableRefObject<string | null>;
@@ -84,6 +95,7 @@ export function useAfterImpressFlow({
   machineIndentStatus,
   machineLastObjectiveRx,
   cameraRef,
+  getAfterImpressReadiness,
   activeObjectiveRef,
   autoMeasureInFlightRef,
   runAutoMeasureRef,
@@ -101,6 +113,9 @@ export function useAfterImpressFlow({
 }: UseAfterImpressFlowArgs): UseAfterImpressFlowResult {
   const impressInProgressRef = useRef(false);
   const lastSeenIndentStatusRef = useRef<IndentStatus>('idle');
+  // Counts impress runs since app open so the first impress can be flagged in
+  // the log trail — that is the click the readiness gate exists to protect.
+  const impressRunCountRef = useRef(0);
   // Set when an impress completes WITH turretAfterImpress=true. The next
   // confirmed-objective RX (L1OK / L2OK / objective state-update) clears
   // this and, when measureAfterImpress is also true, triggers detection
@@ -164,18 +179,50 @@ export function useAfterImpressFlow({
       // the needle/retracting-indenter frame during the settle delay.
       preserveAfterImpressOverlay(12000);
 
-      const objective = (activeObjectiveRef.current ?? '')
-        .trim()
-        .toUpperCase();
-      if (!objective) {
-        // [objective-null-blocked] activeObjective is the only authoritative
-        // source. Without it we must NOT silently assume 10X-style settle
-        // timing — block the after-impress flow instead.
-        // eslint-disable-next-line no-console
-        console.warn('[objective-null-blocked] reason=after-impress action=auto-measure-not-run');
-        markAfterImpressFailed('objective-unknown');
-        return false;
+      // Readiness gate. On the FIRST impress after a fresh startup the objective
+      // sync, the per-objective calibration fetch, or the camera's first stable
+      // frame may not have landed yet — later impresses "just work" only because
+      // those prerequisites are already warm. Poll briefly for all of them
+      // instead of bailing the moment one is missing.
+      const GATE_TIMEOUT_MS = 4000;
+      const GATE_POLL_MS = 150;
+      const gateStart = Date.now();
+      let objective = '';
+      let lastWaitReason = '';
+      for (;;) {
+        if (runId !== afterImpressAutoMeasureRunIdRef.current) {
+          markAfterImpressFailed('superseded');
+          return false;
+        }
+        const readiness = getAfterImpressReadiness();
+        objective = (readiness.activeObjective ?? '').trim().toUpperCase();
+        const cameraReady = readiness.cameraOpen && cameraRef.current != null;
+        const missing = !cameraReady
+          ? 'camera-not-open'
+          : !objective
+            ? 'objective-null'
+            : !readiness.calibrationReady
+              ? 'calibration-missing'
+              : null;
+        if (!missing) break;
+        if (Date.now() - gateStart >= GATE_TIMEOUT_MS) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[after-impress-detection-gate] cameraOpen=${readiness.cameraOpen} activeObjective=${objective || 'null'} calibrationReady=${readiness.calibrationReady} freshFrameReady=false`
+          );
+          // eslint-disable-next-line no-console
+          console.warn(`[after-impress-detection-skip] reason=${missing}`);
+          markAfterImpressFailed(missing);
+          return false;
+        }
+        if (missing !== lastWaitReason) {
+          lastWaitReason = missing;
+          // eslint-disable-next-line no-console
+          console.log(`[after-impress-detection-wait] reason=${missing}`);
+        }
+        await delay(GATE_POLL_MS);
       }
+
       const settleMs = objective === '40X' ? 600 : 350;
       await delay(settleMs);
 
@@ -190,6 +237,12 @@ export function useAfterImpressFlow({
         // eslint-disable-next-line no-console
         console.warn('[camera-fresh-frame] reason=after-impress result=timeout');
       }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[after-impress-detection-gate] cameraOpen=true activeObjective=${objective} calibrationReady=true freshFrameReady=${firstFresh}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[after-impress-detection-start] objective=${objective}`);
 
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         if (runId !== afterImpressAutoMeasureRunIdRef.current) {
@@ -231,6 +284,8 @@ export function useAfterImpressFlow({
         const overlayReady = displayedAutoMeasureGraphicsRef.current !== null;
         if (finished && overlayReady) {
           preserveAfterImpressOverlay(5000);
+          // eslint-disable-next-line no-console
+          console.log('[after-impress-detection-success] lines=4 overlayVisible=true');
           return true;
         }
 
@@ -253,6 +308,7 @@ export function useAfterImpressFlow({
     autoMeasureInFlightRef,
     cameraRef,
     displayedAutoMeasureGraphicsRef,
+    getAfterImpressReadiness,
     latestAutoMeasurePreviewSettingsRef,
     preserveAfterImpressOverlay,
     runAutoMeasureRef,
@@ -273,6 +329,9 @@ export function useAfterImpressFlow({
     const enteringRun =
       (next === 'started' || next === 'running') && prev !== 'started' && prev !== 'running';
     if (enteringRun) {
+      impressRunCountRef.current += 1;
+      // eslint-disable-next-line no-console
+      console.log(`[impress-click] firstAfterStartup=${impressRunCountRef.current === 1}`);
       impressInProgressRef.current = true;
       clearActiveMeasurement('impress-start');
       clearAutoMeasureOverlay('impress-start');
@@ -288,6 +347,8 @@ export function useAfterImpressFlow({
     // silently skipped on fast hardware paths.
     if (next === 'completed') {
       const completedAt = Date.now();
+      // eslint-disable-next-line no-console
+      console.log('[impress-complete] success=true');
       autoMeasurementIdRef.current = null;
       clearActiveMeasurement('impress-done');
       // Read from the synchronously-updated ref (latestAutoMeasurePreviewSettingsRef)
@@ -302,13 +363,12 @@ export function useAfterImpressFlow({
         .trim()
         .toUpperCase();
       if (measureAfterImpressEnabled && !currentObjective) {
-        // [objective-null-blocked] Without a confirmed activeObjective we must
-        // not arm turret-after-impress or continue the detection flow on an
-        // assumed magnification. activeObjective is the only objective source.
+        // First impress after startup: the objective sync may not have landed
+        // yet. Do NOT hard-bail (that was the first-click failure) — the
+        // readiness gate in runAutoMeasureAfterImpress, or the
+        // turret-after-impress wait below, polls until the objective arrives.
         // eslint-disable-next-line no-console
-        console.warn('[objective-null-blocked] reason=impress-complete action=auto-measure-not-run');
-        impressInProgressRef.current = false;
-        return;
+        console.log('[after-impress-detection-wait] reason=objective-null-at-impress-complete');
       }
       const targetObjective = latestSettings.objectiveForMeasure.trim().toUpperCase();
       const shouldWaitForTurretAfterImpress =

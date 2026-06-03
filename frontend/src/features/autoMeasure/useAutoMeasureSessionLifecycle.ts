@@ -56,6 +56,8 @@ export function useAutoMeasureSessionLifecycle({
   const clearAutoMeasureOverlay = useCallback((reason: string) => {
     // eslint-disable-next-line no-console
     console.log(`[auto-overlay-clear] reason=${reason}`);
+    // eslint-disable-next-line no-console
+    console.log(`[auto-measure-overlay-cleared] reason=${reason}`);
     setCommittedAutoMeasureOverlay((prev) => {
       if (!prev) {
       }

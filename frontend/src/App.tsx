@@ -303,6 +303,9 @@ function App() {
   // state lingers in React. Flipped true only after a successful openDevice
   // reply, flipped false at closeDevice.
   const [cameraOpen, setCameraOpen] = useState(false);
+  // Counts manual Auto Measure clicks since app open so the first click — the
+  // one the startup overlay race affects — is flagged in the log trail.
+  const autoMeasureClickCountRef = useRef(0);
   // `turretMoving` gates overlay rendering during the click → ACK window.
   // The yellow Auto Measure / Manual Measure / Calibration overlays must
   // disappear the instant a turret or objective button is pressed, BEFORE
@@ -347,6 +350,22 @@ function App() {
   useEffect(() => {
     activeObjectiveRef.current = activeObjective;
   }, [activeObjective]);
+
+  // Refs mirroring the after-impress readiness signals so useAfterImpressFlow's
+  // detection gate can poll them without re-subscribing. cameraOpenRef is
+  // synced here; calibrationReadyRef is synced after umPerPixelForActiveObjective
+  // is resolved below. getAfterImpressReadiness is a stable reader over both.
+  const cameraOpenRef = useRef(false);
+  cameraOpenRef.current = cameraOpen;
+  const calibrationReadyRef = useRef(false);
+  const getAfterImpressReadiness = useCallback(
+    () => ({
+      cameraOpen: cameraOpenRef.current,
+      activeObjective: activeObjectiveRef.current,
+      calibrationReady: calibrationReadyRef.current,
+    }),
+    []
+  );
 
   // Strict session-based Auto Measure gating.
   // - sessionId: bumps every time the user opens a fresh Auto Measure session
@@ -444,6 +463,7 @@ function App() {
     machineIndentStatus,
     machineLastObjectiveRx,
     cameraRef,
+    getAfterImpressReadiness,
     activeObjectiveRef,
     autoMeasureInFlightRef,
     runAutoMeasureRef,
@@ -639,6 +659,9 @@ function App() {
     machineForce,
     machineHardnessLevel,
   });
+  // A non-null um/px for the active objective means its calibration is loaded —
+  // the after-impress readiness gate (above) reads this through calibrationReadyRef.
+  calibrationReadyRef.current = umPerPixelForActiveObjective != null;
 
   const handleUpdateShape = overlay.updateShape;
 
@@ -972,7 +995,7 @@ function App() {
       );
       // eslint-disable-next-line no-console
       console.log(
-        `[auto-measure-overlay-commit] corners=4 lines=4 objective=${objectiveForCalibration ?? 'unknown'} source=${source}`
+        `[auto-measure-overlay-commit] graphics=${committedHasGeometry} lines=4 objective=${objectiveForCalibration ?? 'unknown'} source=${source}`
       );
       if (source === 'after-impress') {
       }
@@ -1073,6 +1096,16 @@ function App() {
       }
       if (source === 'after-impress') {
         preserveAfterImpressOverlay(5000);
+      } else {
+        // Protect THIS run's freshly-committed overlay from a startup-time
+        // settle (objective re-sync via useObjectiveSyncGate, or a turret RX
+        // via useTurretMotionGate — both honor this preserve flag) that fires
+        // in the brief commit→save window. Without it, the first Auto Measure
+        // after a cold start saved the row but lost its yellow lines to that
+        // race. The objective/turret render gates still block any
+        // cross-objective stale paint, and the window expires fast so a later
+        // deliberate objective change clears normally.
+        preserveAfterImpressOverlay(1500);
       }
       // Overlay is confirmed visible with this run's geometry — log render success.
       // eslint-disable-next-line no-console
@@ -1099,6 +1132,24 @@ function App() {
         // eslint-disable-next-line no-console
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
       }
+      // Truthful canvas-paint signal: captureFinalizedThumbnail only resolves
+      // once the overlay canvas actually painted THIS run's final corners, so
+      // a missing thumbnail means the yellow lines never reached the screen
+      // even though the App-side render gate (displayedAutoMeasureGraphicsRef)
+      // matched. Surface it rather than silently saving a "success" with no
+      // visible overlay.
+      const overlayImageReady = !!imageDataUrl;
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-overlay-visible] visible=true imageReady=${overlayImageReady}`);
+      if (!overlayImageReady) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[auto-measure-overlay-visible] visible=true imageReady=false reason=canvas-not-painted source=${source}`
+        );
+      }
+      // eslint-disable-next-line no-console
+      console.log('[auto-measure-save-gate] overlayCommitted=true overlayVisible=true');
+
       const autoRowPayload = {
         d1: values.d1Um,
         d2: values.d2Um,
@@ -1623,6 +1674,12 @@ function App() {
           // eslint-disable-next-line no-console
           console.log('[auto-measure] detection-success corners=4');
         }
+        if (!preview && (callSource === 'auto-click' || callSource === 'after-impress')) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[auto-measure-detection-success] lines=4 d1=${result.d1Pixels.toFixed(1)} d2=${result.d2Pixels.toFixed(1)}`
+          );
+        }
         if (sessionIdForRun !== autoMeasureSessionIdRef.current) {
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed('session-mismatch');
@@ -1923,6 +1980,9 @@ function App() {
   });
 
   const handleAutoMeasure = useCallback(() => {
+    autoMeasureClickCountRef.current += 1;
+    // eslint-disable-next-line no-console
+    console.log(`[auto-measure-click] firstAfterStartup=${autoMeasureClickCountRef.current === 1}`);
     if (activeTool === 'manualMeasure') {
       setActiveTool('pointer');
       resetManualMeasure();
@@ -1931,6 +1991,11 @@ function App() {
     runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
   }, [activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
 
+  // Mirror of the selected guide line as a ref so the (async/debounced) adjust
+  // handler can name the line being moved in calibration logs without
+  // re-subscribing on every selection change. Synced from state below.
+  const autoMeasureSelectedLineRef = useRef<'top' | 'right' | 'bottom' | 'left' | null>(null);
+
   const { handleAutoMeasureAdjusted } = useAutoAdjustedSave({
     previewAutoMeasureOverlay,
     setPreviewAutoMeasureOverlay,
@@ -1938,6 +2003,7 @@ function App() {
     displayedAutoMeasureGraphicsRef,
     activeObjectiveRef,
     autoMeasurementIdRef,
+    autoMeasureSelectedLineRef,
     calibrationManualModeRef,
     calibrationMeasureModeRef,
     committedFingerprintsRef,
@@ -1982,16 +2048,25 @@ function App() {
   const [autoMeasureSelectedLine, setAutoMeasureSelectedLine] = useState<
     'top' | 'right' | 'bottom' | 'left' | null
   >(null);
+  autoMeasureSelectedLineRef.current = autoMeasureSelectedLine;
 
-  // Keyboard-based fine adjustment. Active only when the camera is open, no
-  // dialog is open, and the pointer tool is selected.
+  // Keyboard-based fine adjustment. Active when the camera is open and the
+  // pointer tool is selected, with no dialog open OR the Calibration panel open
+  // in auto-measure mode — the calibration overlay reuses this same engine so
+  // its detected lines move identically to normal Auto Measure.
   useAutoMeasureKeyboardAdjust({
     selectedLine: autoMeasureSelectedLine,
     setSelectedLine: setAutoMeasureSelectedLine,
     committedAutoMeasureOverlay,
     setCommittedAutoMeasureOverlay,
     onAdjusted: handleAutoMeasureAdjusted,
-    isActive: cameraOpen && activeDialog === null && activeTool === 'pointer',
+    isActive:
+      cameraOpen &&
+      activeTool === 'pointer' &&
+      (activeDialog === null ||
+        (activeDialog === 'calibration' &&
+          calibrationMeasureModeRef.current === 'auto')),
+    calibrationMeasureModeRef,
   });
 
   // Called when the operator clicks a yellow line with the mouse. Sets the
@@ -1999,8 +2074,12 @@ function App() {
   const handleAutoMeasureLineSelected = useCallback(
     (line: 'top' | 'right' | 'bottom' | 'left') => {
       setAutoMeasureSelectedLine(line);
+      if (calibrationMeasureModeRef.current === 'auto') {
+        // eslint-disable-next-line no-console
+        console.log(`[calibration-line-select] line=${line}`);
+      }
     },
-    []
+    [calibrationMeasureModeRef]
   );
 
   const openCameraSettingsPanel = useCallback(() => {
