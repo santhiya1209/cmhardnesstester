@@ -16,16 +16,15 @@ import { getHardnessColor } from '@/utils/hardnessColor';
 
 const COLUMNS = [
   '#',
-  'Hardness',
-  'Objective',
-  'Method',
-  'Hardness Type',
-  'Qualified',
   'D1(um)',
   'D2(um)',
   'Davg(um)',
+  'Hardness',
+  'Objective',
+  'HvType',
   'Convert Type',
   'Convert Value',
+  'Qualified',
   'Depth',
 ] as const;
 
@@ -363,6 +362,9 @@ function MeasurementsTableImpl({
                   onClick={() => onSelect(measurement.id)}
                 >
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{format3(d1Um)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{format3(d2Um)}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{format3(davgUm)}</TableCell>
                   <TableCell
                     sx={{
                       ...(BODY_CELL_SX as object),
@@ -373,14 +375,10 @@ function MeasurementsTableImpl({
                     {formatHardness(measurement.hv)}
                   </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{measurement.method}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{qualified}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{format3(d1Um)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{format3(d2Um)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{format3(davgUm)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{qualified}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>
                     <DepthCell
                       measurement={measurement}
