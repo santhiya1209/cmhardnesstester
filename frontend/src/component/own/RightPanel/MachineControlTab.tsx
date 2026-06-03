@@ -170,9 +170,12 @@ function measureCardSx(opts: { accent: MeasureAccent; active: boolean }): SxProp
       alignItems: 'center',
       justifyContent: 'center',
       gap: 0.5,
-      minHeight: 88,
+      // Compact industrial sizing: ~74px (was 88) frees vertical space for the
+      // KPI cards and reduces scrolling on small laptops. Colors/active
+      // highlight/behavior unchanged.
+      minHeight: 74,
       px: 1,
-      py: 1.25,
+      py: 1,
       borderRadius: 2,
       border: 1,
       borderColor: opts.active ? accent : 'divider',
@@ -215,7 +218,7 @@ const TOP_CARD_LABEL_SX: SxProps<Theme> = {
   lineHeight: 1,
 };
 const TOP_CARD_ICON_SX: SxProps<Theme> = {
-  fontSize: 30,
+  fontSize: 24,
 };
 const TURRET_ICON_ROW_SX: SxProps<Theme> = {
   display: 'flex',
@@ -227,10 +230,10 @@ const TURRET_CARD_LABEL_SX: SxProps<Theme> = {
   fontWeight: 700,
   letterSpacing: 0.4,
   lineHeight: 1,
-  mt: 0.75,
+  mt: 0.5,
 };
 const TURRET_OBJECTIVE_ICON_SX: SxProps<Theme> = {
-  fontSize: 28,
+  fontSize: 24,
   color: 'inherit',
 };
 
@@ -250,10 +253,11 @@ function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
       position: 'relative',
       width: '100%',
       minWidth: 0,
-      minHeight: 92,
+      // Match the row-1 cards' compact height (~74px, was 92).
+      minHeight: 74,
       px: 1,
       pt: 1,
-      pb: 1.5,
+      pb: 1.25,
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
@@ -350,12 +354,15 @@ const kpiStripSx = (accent: string): SxProps<Theme> => ({
   bgcolor: accent,
 });
 const KPI_BODY_SX: SxProps<Theme> = {
+  // Compact KPI body: tighter vertical padding + gaps shave ~25-30% off the
+  // card height so more controls fit on small laptops. Horizontal padding,
+  // colors, accent strip, dropdown, values and bindings are unchanged.
   display: 'flex',
   flexDirection: 'column',
-  gap: 0.5,
+  gap: 0.25,
   px: 1.5,
-  pt: 1.75,
-  pb: 1.25,
+  pt: 1.25,
+  pb: 1,
 };
 const kpiLabelSx = (accent: string): SxProps<Theme> => ({
   fontSize: 12,
@@ -372,7 +379,7 @@ const KPI_VALUE_ROW_SX: SxProps<Theme> = {
   minWidth: 0,
 };
 const KPI_VALUE_SX: SxProps<Theme> = {
-  fontSize: 32,
+  fontSize: 28,
   fontWeight: 700,
   lineHeight: 1.05,
   color: 'text.primary',
@@ -382,14 +389,14 @@ const KPI_VALUE_SX: SxProps<Theme> = {
   textOverflow: 'ellipsis',
 };
 const KPI_UNIT_SX: SxProps<Theme> = {
-  fontSize: 14,
+  fontSize: 13,
   fontWeight: 600,
   color: 'text.secondary',
   whiteSpace: 'nowrap',
 };
 const KPI_CONVERT_SELECT_SX: SxProps<Theme> = {
-  mt: 0.5,
-  '& .MuiSelect-select': { py: 0.5, fontSize: 13, fontWeight: 600 },
+  mt: 0.25,
+  '& .MuiSelect-select': { py: 0.25, fontSize: 13, fontWeight: 600 },
 };
 const KPI_FOOTER_SX: SxProps<Theme> = {
   mt: 'auto',
@@ -398,7 +405,7 @@ const KPI_FOOTER_SX: SxProps<Theme> = {
   justifyContent: 'space-between',
   gap: 1,
   px: 1.5,
-  py: 0.75,
+  py: 0.5,
   borderTop: 1,
   borderColor: 'divider',
 };
