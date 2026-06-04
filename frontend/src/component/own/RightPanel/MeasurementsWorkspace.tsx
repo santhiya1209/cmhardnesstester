@@ -15,9 +15,7 @@ import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
 import { updateMeasurement } from '@/api/measurement';
 import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
-import MicrometerDisplay from '@/component/own/MicrometerDisplay';
 import ExportReportDialog from '@/component/own/ExportReportDialog';
-import HvSummaryRow from './HvSummaryRow';
 import { convertVickers, type ConvertTargetType } from '@/utils/hardnessConvert';
 import { getHardnessColor } from '@/utils/hardnessColor';
 
@@ -38,10 +36,6 @@ const CONVERT_TYPE_OPTIONS = [
   'HR45T',
 ] as const;
 
-const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 0.75, display: 'flex', flexDirection: 'column', gap: 0.75 };
-const SUMMARY_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' };
-const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const MICROMETER_FIELD_SX: SxProps<Theme> = { width: 130 };
 const ACTION_ROW_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'repeat(4, 1fr)',
@@ -96,6 +90,10 @@ export type MeasurementDisplayValues = {
   hvDisplay: string;
   hvType: string;
   hardnessValue: string;
+  // Resolved color for the bottom HV/Hardness value text: red when the row's HV
+  // is within [targetMin, targetMax], blue when outside, 'inherit' when no valid
+  // target is set (display normally). Derived from getHardnessColor.
+  hvTargetColor: string;
   // Forwarded (read-only) for the bottom Machine Control HV/HARDNESS cards.
   // These reuse the same displayedMeasurement + convert state — no new source
   // of truth. onConvertTypeChange is the SAME handler the top row uses, so the
@@ -159,6 +157,19 @@ function MeasurementsWorkspaceImpl({
   const displayedHvType = CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV';
   const mutationError = error ?? deleteError ?? convertSyncError;
   const busy = loading || deleting;
+
+  // Target-band color for the displayed HV (red in-range / blue out-of-range /
+  // 'inherit' when no valid target). Forwarded to the bottom Machine Control
+  // HV/Hardness cards via onDisplayValuesChange.
+  const hvTargetColor = useMemo(
+    () =>
+      getHardnessColor(
+        typeof displayedMeasurement?.hv === 'number' ? displayedMeasurement.hv : null,
+        targetMinHv,
+        targetMaxHv
+      ).color,
+    [displayedMeasurement, targetMinHv, targetMaxHv]
+  );
 
   // Single source of truth for the convert-value box. Computed live from the
   // currently selected dropdown type + the displayed row's HV so the box
@@ -279,6 +290,7 @@ function MeasurementsWorkspaceImpl({
       hvDisplay: displayedHvText,
       hvType: displayedHvType,
       hardnessValue: displayConvertValue,
+      hvTargetColor,
       qualified: displayedMeasurement?.qualified ?? null,
       timestamp: displayedMeasurement?.timestamp ?? null,
       convertDisabled: busy,
@@ -289,6 +301,7 @@ function MeasurementsWorkspaceImpl({
     displayConvertValue,
     displayedHvText,
     displayedHvType,
+    hvTargetColor,
     displayedMeasurement?.qualified,
     displayedMeasurement?.timestamp,
     busy,
@@ -387,37 +400,6 @@ function MeasurementsWorkspaceImpl({
 
   return (
     <>
-      <Box sx={SECTION_SX}>
-        <Box sx={SUMMARY_ROW_SX}>
-          <HvSummaryRow
-            hvDisplay={displayedHvText}
-            hvType={displayedHvType}
-            hardnessDisplay={displayConvertValue}
-            hvTypeOptions={CONVERT_TYPE_OPTIONS}
-            disabled={busy}
-            hvColor={
-              getHardnessColor(
-                typeof displayedMeasurement?.hv === 'number' ? displayedMeasurement.hv : null,
-                targetMinHv,
-                targetMaxHv
-              ).color
-            }
-            onHvTypeChange={(value) =>
-              void handleConvertTypeChange(value as (typeof CONVERT_TYPE_OPTIONS)[number])
-            }
-          />
-          {(() => {
-            // Render-time fallback: if an HV value is showing but the
-            // dropdown state somehow isn't one of the known options (race
-            // during refetch, legacy row, etc.), force 'HV' so the box is
-            // never visually blank next to a populated HV value.
-            return null;
-          })()}
-          <Typography sx={LABEL_SX}>Micrometer</Typography>
-          <MicrometerDisplay sx={MICROMETER_FIELD_SX} enabled={micrometerEnabled} />
-        </Box>
-      </Box>
-
       {mutationError ? (
         <Alert severity="error" sx={ALERT_SX}>
           {mutationError}

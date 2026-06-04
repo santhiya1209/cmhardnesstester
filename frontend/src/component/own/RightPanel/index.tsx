@@ -99,6 +99,7 @@ type TabContentProps = {
   activeTool?: ToolId;
   selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
+  micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
 };
@@ -121,6 +122,7 @@ function renderTab(
     onObjectiveChangeIntent,
     onToolbarAction,
     selectedMeasureMode,
+    micrometerEnabled,
     targetMinHv,
     targetMaxHv,
   }: TabContentProps
@@ -132,6 +134,7 @@ function renderTab(
           hvDisplay={measurementDisplay.hvDisplay}
           hvTypeValue={measurementDisplay.hvType}
           hardnessValue={measurementDisplay.hardnessValue}
+          hvTargetColor={measurementDisplay.hvTargetColor}
           hardnessQualified={measurementDisplay.qualified}
           measurementTimestamp={measurementDisplay.timestamp}
           convertDisabled={measurementDisplay.convertDisabled}
@@ -144,6 +147,7 @@ function renderTab(
           onObjectiveChangeIntent={onObjectiveChangeIntent}
           onToolbarAction={onToolbarAction}
           selectedMeasureMode={selectedMeasureMode}
+          micrometerEnabled={micrometerEnabled}
         />
       );
     case 1: return <XYZPlatformTab />;
@@ -261,6 +265,7 @@ function RightPanelImpl({
     hvDisplay: '',
     hvType: 'HV',
     hardnessValue: 'N/A',
+    hvTargetColor: 'inherit',
     qualified: null,
     timestamp: null,
     convertDisabled: false,
@@ -272,6 +277,7 @@ function RightPanelImpl({
       current.hvDisplay === next.hvDisplay &&
       current.hvType === next.hvType &&
       current.hardnessValue === next.hardnessValue &&
+      current.hvTargetColor === next.hvTargetColor &&
       current.qualified === next.qualified &&
       current.timestamp === next.timestamp &&
       current.convertDisabled === next.convertDisabled &&
@@ -330,6 +336,7 @@ function RightPanelImpl({
             activeTool,
             selectedMeasureMode,
             cameraReady,
+            micrometerEnabled,
             targetMinHv,
             targetMaxHv,
           })}

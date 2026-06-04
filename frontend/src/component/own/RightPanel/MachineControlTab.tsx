@@ -27,6 +27,7 @@ import {
   Objective10xIcon,
   Objective40xIcon,
 } from '@/component/ui/ObjectiveIcons';
+import MicrometerDisplay from '@/component/own/MicrometerDisplay';
 import { useMachineSelector, useMachineError } from '@/contexts/MachineStateContext';
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
@@ -41,6 +42,13 @@ type MachineControlTabProps = {
   hvDisplay?: string;
   hvTypeValue?: string | null;
   hardnessValue?: string;
+  /**
+   * Resolved color for the bottom HV/Hardness value text: red when the displayed
+   * HV is within the operator's target band, blue when outside, 'inherit' when no
+   * valid target is set (value shows normally). Computed in MeasurementsWorkspace
+   * via getHardnessColor and forwarded read-only — no target logic here.
+   */
+  hvTargetColor?: string;
   activeObjective?: string | null;
   /** Called after a real objective commit source is available. */
   onObjectiveChange?: (objective: '10X' | '40X', source: ObjectiveCommitSource) => void;
@@ -85,6 +93,8 @@ type MachineControlTabProps = {
   convertOptions?: readonly string[];
   /** Same convert handler the top row uses — keeps both dropdowns in sync. */
   onConvertTypeChange?: (value: string) => void;
+  /** Drives the read-only Micrometer field's enabled/Manual-Mode display. */
+  micrometerEnabled?: boolean;
 };
 
 const FORCE_OPTIONS =['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
@@ -547,6 +557,7 @@ function MachineControlTabImpl({
   hvDisplay = '',
   hvTypeValue = null,
   hardnessValue = 'N/A',
+  hvTargetColor = 'inherit',
   hardnessQualified = null,
   measurementTimestamp = null,
   convertDisabled = false,
@@ -559,6 +570,7 @@ function MachineControlTabImpl({
   onObjectiveChangeIntent,
   onToolbarAction,
   selectedMeasureMode = null,
+  micrometerEnabled = true,
 }: MachineControlTabProps = {}) {
   useRenderCount('MachineControlTab');
   // Narrow selectors — MachineControlTab re-renders only when the fields it
@@ -614,6 +626,16 @@ function MachineControlTabImpl({
     return trimmed ? trimmed : 'HV';
   }, [hvTypeValue]);
   const bottomHardnessDisplay = hardnessValue.trim() ? hardnessValue : 'N/A';
+  // Apply the forwarded target-band color (red in-range / blue out-of-range) to
+  // the KPI value text; 'inherit' falls back to the normal text color so the
+  // value displays normally when no target is set.
+  const kpiValueSx = useMemo<SxProps<Theme>>(
+    () =>
+      hvTargetColor && hvTargetColor !== 'inherit'
+        ? { ...(KPI_VALUE_SX as object), color: hvTargetColor }
+        : KPI_VALUE_SX,
+    [hvTargetColor]
+  );
   // Ensure the current convert type is always a valid Select option.
   const bottomConvertOptions = convertOptions.includes(bottomHvTypeDisplay)
     ? convertOptions
@@ -1103,8 +1125,8 @@ function MachineControlTabImpl({
             ))}
           </Select>
         </FormControl>
-        <Box />
-        <Box />
+        <Typography sx={SETTING_LABEL_SX}>Micrometer</Typography>
+        <MicrometerDisplay enabled={micrometerEnabled} />
       </Box>
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
@@ -1115,7 +1137,7 @@ function MachineControlTabImpl({
             <Box sx={KPI_BODY_SX}>
               <Typography sx={kpiLabelSx('info.main')}>HV</Typography>
               <Box sx={KPI_VALUE_ROW_SX} title={bottomHvDisplay}>
-                <Typography component="span" sx={KPI_VALUE_SX}>
+                <Typography component="span" sx={kpiValueSx}>
                   {bottomHvDisplay}
                 </Typography>
                 <Typography component="span" sx={KPI_UNIT_SX}>
@@ -1138,7 +1160,7 @@ function MachineControlTabImpl({
             <Box sx={KPI_BODY_SX}>
               <Typography sx={kpiLabelSx('success.main')}>HARDNESS</Typography>
               <Box sx={KPI_VALUE_ROW_SX} title={`${bottomHardnessDisplay} ${bottomHvTypeDisplay}`}>
-                <Typography component="span" sx={KPI_VALUE_SX}>
+                <Typography component="span" sx={kpiValueSx}>
                   {bottomHardnessDisplay}
                 </Typography>
                 <Typography component="span" sx={KPI_UNIT_SX}>
