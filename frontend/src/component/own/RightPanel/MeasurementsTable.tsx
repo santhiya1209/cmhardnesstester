@@ -10,7 +10,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
-import { tokens } from '@/theme/theme';
+import { radii, tokens } from '@/theme/theme';
 import { formatMicrometerValue } from '@/utils/formatMicrometerValue';
 import { getHardnessColor } from '@/utils/hardnessColor';
 
@@ -37,29 +37,58 @@ const TABLE_WRAP_SX: SxProps<Theme> = {
   borderColor: 'divider',
   bgcolor: 'background.paper',
 };
-// The global theme sets `.MuiTableHead-root .MuiTableCell-head` to navy on
-// white â€” to override industrial-light headers here, sx must beat that
-// specificity. `&.MuiTableCell-head` raises this rule to (0,2,1) which
-// outranks the theme's (0,2,0) descendant selector.
+// Dark navy header with white text. The global theme styles
+// `.MuiTableHead-root .MuiTableCell-head` (0,2,0); `&.MuiTableCell-head`
+// raises this to (0,2,1) so it wins.
 const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
   '&.MuiTableCell-head': {
     fontSize: 11,
     fontWeight: 600,
     letterSpacing: 0.3,
     textTransform: 'none',
-    color: tokens.accent.base,
-    backgroundColor: '#F1F4F9',
+    color: tokens.text.onInverse,
+    backgroundColor: tokens.accent.base,
     py: 0.75,
     px: 1,
     whiteSpace: 'nowrap',
     cursor: 'default',
-    borderBottom: `1px solid ${tokens.border.default}`,
-  },
-  '&.MuiTableCell-head:hover': {
-    backgroundColor: '#E8EDF4',
+    borderBottom: 'none',
   },
 };
+// Zebra striping (very light blue on even rows), light sky-blue selected row
+// with a small blue left indicator, and thin row separators.
+const ZEBRA_EVEN_BG = '#F4F8FD';
+const SELECTED_ROW_BG = tokens.accentSecondary.soft;
+const SELECTED_ROW_INDICATOR = tokens.accentSecondary.base;
 const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.5, px: 1 };
+const QUALIFIED_PILL_BASE_SX: SxProps<Theme> = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  height: 20,
+  px: 1,
+  borderRadius: radii.pill,
+  fontSize: 11,
+  fontWeight: 600,
+  lineHeight: 1,
+};
+const QUALIFIED_YES_SX: SxProps<Theme> = {
+  ...(QUALIFIED_PILL_BASE_SX as object),
+  color: tokens.status.success,
+  backgroundColor: '#E3F3EE',
+};
+const QUALIFIED_NO_SX: SxProps<Theme> = {
+  ...(QUALIFIED_PILL_BASE_SX as object),
+  color: tokens.status.error,
+  backgroundColor: '#FBE9E9',
+};
+const OBJECTIVE_CELL_SX: SxProps<Theme> = { display: 'inline-flex', alignItems: 'center', gap: 0.75 };
+const objectiveDot = (color: string): SxProps<Theme> => ({
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  bgcolor: color,
+  flexShrink: 0,
+});
 const EMPTY_CELL_SX: SxProps<Theme> = { border: 0, py: 6, px: 1 };
 const EMPTY_STATE_SX: SxProps<Theme> = {
   display: 'flex',
@@ -73,13 +102,22 @@ const EMPTY_TEXT_SX: SxProps<Theme> = {
   fontSize: 13,
   color: 'text.secondary',
 };
-const SELECTED_ROW_SX: SxProps<Theme> = {
+const BODY_ROW_SX: SxProps<Theme> = {
   cursor: 'pointer',
-  '&.Mui-selected': {
-    bgcolor: 'action.selected',
+  // Thin separators between rows.
+  '& > .MuiTableCell-root': {
+    borderBottom: `1px solid ${tokens.border.subtle}`,
   },
-  '&.Mui-selected:hover': {
-    bgcolor: 'action.selected',
+  // Zebra: odd rows white, even rows very light blue.
+  '&:nth-of-type(odd)': { backgroundColor: tokens.surface.raised },
+  '&:nth-of-type(even)': { backgroundColor: ZEBRA_EVEN_BG },
+  '&:hover': { backgroundColor: 'action.hover' },
+  // Selected: light sky-blue background (beats zebra via the extra class
+  // specificity) with a small blue left indicator on the first cell.
+  '&.Mui-selected': { backgroundColor: SELECTED_ROW_BG },
+  '&.Mui-selected:hover': { backgroundColor: SELECTED_ROW_BG },
+  '&.Mui-selected > .MuiTableCell-root:first-of-type': {
+    boxShadow: `inset 3px 0 0 0 ${SELECTED_ROW_INDICATOR}`,
   },
 };
 
@@ -230,6 +268,15 @@ function formatDepth(value: number | null | undefined): string {
     : formatMicrometerValue(value);
 }
 
+// Objective indicator dot: 10X => orange, 40X => blue, anything else (IND,
+// legacy values) => no dot.
+function objectiveDotColor(objective: string | null | undefined): string | null {
+  const key = String(objective ?? '').trim().toUpperCase();
+  if (key === '10X') return tokens.status.warning;
+  if (key === '40X') return tokens.accentSecondary.base;
+  return null;
+}
+
 function MeasurementsTableImpl({
   measurements,
   loading,
@@ -293,7 +340,7 @@ function MeasurementsTableImpl({
   return (
     <TableContainer sx={TABLE_WRAP_SX}>
       <Table size="small" stickyHeader>
-        <TableHead sx={{ '&.MuiTableHead-root': { backgroundColor: '#F1F4F9' } }}>
+        <TableHead sx={{ '&.MuiTableHead-root': { backgroundColor: tokens.accent.base } }}>
           <TableRow>
             {COLUMNS.map((column) => (
               <TableCell key={column} sx={TABLE_HEAD_CELL_SX}>
@@ -353,12 +400,29 @@ function MeasurementsTableImpl({
                     ? '--'
                     : `N/A ${convertType}`;
 
+              const isSelected = measurement.id === selectedMeasurementId;
+              const hardnessTargetColor = getHardnessColor(
+                measurement.hv,
+                targetMinHv,
+                targetMaxHv
+              ).color;
+              // Target band color (red in-range / blue out-of-range) takes
+              // priority; with no target set, the selected row's hardness shows
+              // blue as the active indicator, otherwise inherits normal text.
+              const hardnessColor =
+                hardnessTargetColor !== 'inherit'
+                  ? hardnessTargetColor
+                  : isSelected
+                    ? tokens.accentSecondary.base
+                    : 'inherit';
+              const dotColor = objectiveDotColor(measurement.objective);
+
               return (
                 <TableRow
                   key={measurement.id}
                   hover
-                  selected={measurement.id === selectedMeasurementId}
-                  sx={SELECTED_ROW_SX}
+                  selected={isSelected}
+                  sx={BODY_ROW_SX}
                   onClick={() => onSelect(measurement.id)}
                 >
                   <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
@@ -368,17 +432,26 @@ function MeasurementsTableImpl({
                   <TableCell
                     sx={{
                       ...(BODY_CELL_SX as object),
-                      color: getHardnessColor(measurement.hv, targetMinHv, targetMaxHv).color,
+                      color: hardnessColor,
                       fontWeight: 600,
                     }}
                   >
                     {formatHardness(measurement.hv)}
                   </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{measurement.objective ?? '-'}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>
+                    <Box component="span" sx={OBJECTIVE_CELL_SX}>
+                      {dotColor ? <Box component="span" sx={objectiveDot(dotColor)} /> : null}
+                      <span>{measurement.objective ?? '-'}</span>
+                    </Box>
+                  </TableCell>
                   <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{qualified}</TableCell>
+                  <TableCell sx={BODY_CELL_SX}>
+                    <Box component="span" sx={qualified === 'YES' ? QUALIFIED_YES_SX : QUALIFIED_NO_SX}>
+                      {qualified}
+                    </Box>
+                  </TableCell>
                   <TableCell sx={BODY_CELL_SX}>
                     <DepthCell
                       measurement={measurement}
