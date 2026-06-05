@@ -30,6 +30,7 @@ import type {
   TurretDirection,
 } from './machine';
 import type {
+  FocusMode,
   XyzCommandResult,
   XyzDirection,
   XyzStageState,
@@ -156,6 +157,9 @@ export type IpcInvokeChannel =
   | 'xyz-platform:stop-z'
   | 'xyz-platform:lock-z'
   | 'xyz-platform:unlock-z'
+  | 'xyz-platform:lock-xy'
+  | 'xyz-platform:unlock-xy'
+  | 'xyz-platform:set-focus-mode'
   | 'xyz-platform:set-xy-speed'
   | 'xyz-platform:set-z-speed'
   | 'xyz-platform:get-position'
@@ -257,6 +261,9 @@ export type IpcInvokeMap = {
   'xyz-platform:stop-z': { request: void; response: XyzCommandResult };
   'xyz-platform:lock-z': { request: void; response: XyzCommandResult };
   'xyz-platform:unlock-z': { request: void; response: XyzCommandResult };
+  'xyz-platform:lock-xy': { request: void; response: XyzCommandResult };
+  'xyz-platform:unlock-xy': { request: void; response: XyzCommandResult };
+  'xyz-platform:set-focus-mode': { request: { mode: FocusMode }; response: XyzCommandResult };
   'xyz-platform:set-xy-speed': { request: { speed: XySpeed }; response: XyzCommandResult };
   'xyz-platform:set-z-speed': { request: { speed: ZSpeed }; response: XyzCommandResult };
   'xyz-platform:get-position': { request: void; response: XyzCommandResult };
@@ -310,6 +317,9 @@ export interface XyzPlatformApi {
   stopZ(): Promise<XyzCommandResult>;
   lockZ(): Promise<XyzCommandResult>;
   unlockZ(): Promise<XyzCommandResult>;
+  lockXy(): Promise<XyzCommandResult>;
+  unlockXy(): Promise<XyzCommandResult>;
+  setFocusMode(mode: FocusMode): Promise<XyzCommandResult>;
   setXySpeed(speed: XySpeed): Promise<XyzCommandResult>;
   setZSpeed(speed: ZSpeed): Promise<XyzCommandResult>;
   getPosition(): Promise<XyzCommandResult>;

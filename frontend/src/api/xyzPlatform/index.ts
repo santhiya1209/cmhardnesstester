@@ -3,6 +3,7 @@ import type {
   XYZPlatformStatePayload,
 } from '@/types/xyzPlatformState';
 import type {
+  FocusMode,
   XyzCommandResult,
   XyzDirection,
   XyzStageState,
@@ -48,6 +49,15 @@ export const xyzLockZ = (): Promise<XyzCommandResult> =>
 
 export const xyzUnlockZ = (): Promise<XyzCommandResult> =>
   bridge()?.unlockZ() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+export const xyzLockXy = (): Promise<XyzCommandResult> =>
+  bridge()?.lockXy() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+export const xyzUnlockXy = (): Promise<XyzCommandResult> =>
+  bridge()?.unlockXy() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+export const xyzSetFocusMode = (mode: FocusMode): Promise<XyzCommandResult> =>
+  bridge()?.setFocusMode(mode) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
 export const xyzSetXySpeed = (speed: XySpeed): Promise<XyzCommandResult> =>
   bridge()?.setXySpeed(speed) ?? Promise.resolve(BRIDGE_UNAVAILABLE);

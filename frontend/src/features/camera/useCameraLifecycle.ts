@@ -5,7 +5,7 @@ import type {
   AutoMeasureStatusState,
   CameraStatusState,
 } from '@/component/own/StatusBar';
-import { resetCameraSession } from '@/hooks/useCameraStream';
+import { resetCameraSession } from '@/hooks/cameraStreamManager';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type {
   AutoMeasureDetectionSnapshot,

@@ -13,7 +13,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import { useCameraSetting } from '@/hooks/queries/useCameraSetting';
 import { useSaveCameraSetting } from '@/hooks/mutations/useSaveCameraSetting';
 import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
-import { dropPendingCameraFrames } from '@/hooks/useCameraStream';
+import { dropPendingCameraFrames } from '@/hooks/cameraStreamManager';
 import {
   ANALOG_GAIN_MAX,
   ANALOG_GAIN_MIN,

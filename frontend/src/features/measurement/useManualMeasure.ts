@@ -8,7 +8,7 @@ import type {
   Measurement,
   MeasurementSavePayload,
 } from '@/types/measurement';
-import { getLastPaintedFrameId } from '@/hooks/useCameraStream';
+import { getLastPaintedFrameId } from '@/hooks/cameraStreamManager';
 import {
   calculateManualDiagonalsFromPixels,
   calculateVickersFromPixels,
@@ -26,7 +26,7 @@ type SaveMeasurementInput = {
   values: MeasurementSavePayload;
 };
 
-export type UseManualMeasureSaveArgs = {
+export type UseManualMeasureArgs = {
   activeObjectiveRef: React.MutableRefObject<string | null>;
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
   calibrationManualModeRef: React.MutableRefObject<boolean>;
@@ -48,7 +48,7 @@ export type UseManualMeasureSaveArgs = {
   refetchMeasurements: () => Promise<unknown> | unknown;
 };
 
-export function useManualMeasureSave({
+export function useManualMeasure({
   activeObjectiveRef,
   manualMeasurementIdRef,
   calibrationManualModeRef,
@@ -68,7 +68,7 @@ export function useManualMeasureSave({
   setActiveMeasurement,
   saveManualMeasurement,
   refetchMeasurements,
-}: UseManualMeasureSaveArgs) {
+}: UseManualMeasureArgs) {
   const handleManualMeasurementUpdated = useCallback(
     (result: ManualMeasureDragResult) => {
       void (async () => {

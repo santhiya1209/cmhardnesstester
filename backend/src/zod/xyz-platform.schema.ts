@@ -45,3 +45,8 @@ export type SetXySpeedInput = z.infer<typeof SetXySpeedSchema>;
 
 export const SetZSpeedSchema = z.object({ speed: ZSpeedSchema });
 export type SetZSpeedInput = z.infer<typeof SetZSpeedSchema>;
+
+export const FocusModeSchema = z.enum(['manual', 'cFocus', 'fFocus']);
+
+export const SetFocusModeSchema = z.object({ mode: FocusModeSchema });
+export type SetFocusModeInput = z.infer<typeof SetFocusModeSchema>;

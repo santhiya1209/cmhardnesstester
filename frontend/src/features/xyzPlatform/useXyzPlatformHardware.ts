@@ -2,17 +2,21 @@ import { useCallback, useState } from 'react';
 import {
   xyzGetPosition,
   xyzLocateCenter,
+  xyzLockXy,
   xyzLockZ,
   xyzMoveStage,
   xyzMoveToCenter,
   xyzMoveZ,
+  xyzSetFocusMode,
   xyzSetXySpeed,
   xyzSetZSpeed,
   xyzStopStage,
   xyzStopZ,
+  xyzUnlockXy,
   xyzUnlockZ,
 } from '@/api/xyzPlatform';
 import type {
+  FocusMode,
   XyzCommandResult,
   XyzDirection,
   XySpeed,
@@ -59,6 +63,9 @@ export function useXyzPlatformHardware() {
   const stopZ = useCallback(() => run(() => xyzStopZ()), [run]);
   const lockZ = useCallback(() => run(() => xyzLockZ()), [run]);
   const unlockZ = useCallback(() => run(() => xyzUnlockZ()), [run]);
+  const lockXy = useCallback(() => run(() => xyzLockXy()), [run]);
+  const unlockXy = useCallback(() => run(() => xyzUnlockXy()), [run]);
+  const setFocusMode = useCallback((mode: FocusMode) => run(() => xyzSetFocusMode(mode)), [run]);
   const setXySpeed = useCallback((speed: XySpeed) => run(() => xyzSetXySpeed(speed)), [run]);
   const setZSpeed = useCallback((speed: ZSpeed) => run(() => xyzSetZSpeed(speed)), [run]);
   const getPosition = useCallback(() => run(() => xyzGetPosition()), [run]);
@@ -74,6 +81,9 @@ export function useXyzPlatformHardware() {
     stopZ,
     lockZ,
     unlockZ,
+    lockXy,
+    unlockXy,
+    setFocusMode,
     setXySpeed,
     setZSpeed,
     getPosition,

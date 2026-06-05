@@ -13,7 +13,7 @@ import {
   getLatestFullFrame,
   useCameraStream,
   waitForFreshCameraFrame,
-} from '@/hooks/useCameraStream';
+} from '@/hooks/cameraStreamManager';
 import { tokens } from '@/theme/theme';
 import { useRenderCount } from '@/utils/renderStats';
 import ImageOverlay from '@/component/own/ImageOverlay';
@@ -101,8 +101,9 @@ type Props = {
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
-  onAutoMeasureLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left') => void;
+  onAutoMeasureLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left' | null) => void;
   autoMeasureSelectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
+  autoMeasureKeyboardActive?: boolean;
   magnifierEnabled: boolean;
   onClearShapeKind?: (kind: OverlayShape['kind']) => void;
   lineStrokeWidth?: number;
@@ -173,6 +174,7 @@ function CameraWindowImpl(
     onAutoMeasureAdjusted,
     onAutoMeasureLineSelected,
     autoMeasureSelectedLine,
+    autoMeasureKeyboardActive,
     magnifierEnabled,
     onClearShapeKind,
     lineStrokeWidth,
@@ -760,6 +762,7 @@ function CameraWindowImpl(
           cameraOpen={cameraOpen}
           onOverlayDrawn={handleOverlayDrawn}
           selectedLine={autoMeasureSelectedLine}
+          keyboardActive={autoMeasureKeyboardActive}
         />
         <ManualMeasureOverlay
           active={activeTool === 'manualMeasure'}

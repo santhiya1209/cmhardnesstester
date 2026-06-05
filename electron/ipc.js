@@ -193,6 +193,7 @@ const XYZ_DIRECTIONS = new Set([
 const XYZ_Z_DIRECTIONS = new Set(['up', 'down']);
 const XYZ_XY_SPEEDS = new Set(['slow', 'mid', 'fast']);
 const XYZ_Z_SPEEDS = new Set(['ultra', 'fast', 'slow']);
+const XYZ_FOCUS_MODES = new Set(['manual', 'cFocus', 'fFocus']);
 
 function validateXyzMovePayload(payload) {
   const direction = payload && typeof payload.direction === 'string' ? payload.direction : '';
@@ -552,33 +553,68 @@ function registerIpc() {
   ipcMain.handle('xyz-platform:move-stage', async (_e, payload) => {
     startXyzPlatformEventBridge();
     const body = validateXyzMovePayload(payload);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] move-stage requested direction=${body.direction} speed=${body.speed}`);
     return machineBackendRequest('/api/xyz-platform/move-stage', { method: 'POST', body });
   });
 
   ipcMain.handle('xyz-platform:stop-stage', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] stop-stage requested');
     return machineBackendRequest('/api/xyz-platform/stop-stage', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:move-z', async (_e, payload) => {
     startXyzPlatformEventBridge();
     const body = validateXyzZMovePayload(payload);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] move-z requested direction=${body.direction} speed=${body.speed}`);
     return machineBackendRequest('/api/xyz-platform/move-z', { method: 'POST', body });
   });
 
   ipcMain.handle('xyz-platform:stop-z', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] stop-z requested');
     return machineBackendRequest('/api/xyz-platform/stop-z', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:lock-z', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] lock-z requested');
     return machineBackendRequest('/api/xyz-platform/lock-z', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:unlock-z', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] unlock-z requested');
     return machineBackendRequest('/api/xyz-platform/unlock-z', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:lock-xy', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] lock-xy requested');
+    return machineBackendRequest('/api/xyz-platform/lock-xy', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:unlock-xy', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] unlock-xy requested');
+    return machineBackendRequest('/api/xyz-platform/unlock-xy', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:set-focus-mode', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const mode = payload && typeof payload.mode === 'string' ? payload.mode : '';
+    if (!XYZ_FOCUS_MODES.has(mode)) throw new Error('invalid xyz focus mode');
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] set-focus-mode requested mode=${mode}`);
+    return machineBackendRequest('/api/xyz-platform/set-focus-mode', { method: 'POST', body: { mode } });
   });
 
   ipcMain.handle('xyz-platform:set-xy-speed', async (_e, payload) => {

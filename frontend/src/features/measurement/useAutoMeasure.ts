@@ -12,7 +12,7 @@ import type {
   Measurement,
   MeasurementSavePayload,
 } from '@/types/measurement';
-import { getLastPaintedFrameId } from '@/hooks/useCameraStream';
+import { getLastPaintedFrameId } from '@/hooks/cameraStreamManager';
 import {
   buildAutoMeasureFingerprintKey,
   cloneAutoMeasureGraphics,
@@ -36,7 +36,7 @@ type SaveMeasurementInput = {
   values: MeasurementSavePayload;
 };
 
-export type UseAutoAdjustedSaveArgs = {
+export type UseAutoMeasureArgs = {
   previewAutoMeasureOverlay: AutoMeasureGraphics | null;
   setPreviewAutoMeasureOverlay: React.Dispatch<
     React.SetStateAction<AutoMeasureGraphics | null>
@@ -68,7 +68,7 @@ export type UseAutoAdjustedSaveArgs = {
   refetchMeasurements: () => Promise<unknown> | unknown;
 };
 
-export function useAutoAdjustedSave({
+export function useAutoMeasure({
   previewAutoMeasureOverlay,
   setPreviewAutoMeasureOverlay,
   setCommittedAutoMeasureOverlay,
@@ -94,7 +94,7 @@ export function useAutoAdjustedSave({
   setActiveMeasurement,
   saveManualMeasurement,
   refetchMeasurements,
-}: UseAutoAdjustedSaveArgs) {
+}: UseAutoMeasureArgs) {
   const adjustSaveTimerRef = useRef<number | null>(null);
   const lastAdjustedCornersRef = useRef<AutoMeasureCorners | null>(null);
 

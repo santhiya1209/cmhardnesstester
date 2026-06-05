@@ -8,6 +8,7 @@ import {
   ConnectStageSchema,
   MoveStageSchema,
   MoveZSchema,
+  SetFocusModeSchema,
   SetXySpeedSchema,
   SetZSpeedSchema,
 } from '../zod/xyz-platform.schema';
@@ -76,6 +77,23 @@ export async function lockZ(_req: Request, res: Response): Promise<void> {
 
 export async function unlockZ(_req: Request, res: Response): Promise<void> {
   sendResult(res, await xyzPlatformSerialService.unlockZ());
+}
+
+export async function lockXy(_req: Request, res: Response): Promise<void> {
+  sendResult(res, await xyzPlatformSerialService.lockXy());
+}
+
+export async function unlockXy(_req: Request, res: Response): Promise<void> {
+  sendResult(res, await xyzPlatformSerialService.unlockXy());
+}
+
+export async function setFocusMode(req: Request, res: Response): Promise<void> {
+  const parsed = SetFocusModeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.setFocusMode(parsed.data.mode));
 }
 
 export async function setXySpeed(req: Request, res: Response): Promise<void> {

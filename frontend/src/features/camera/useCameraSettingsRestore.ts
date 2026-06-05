@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { getCameraSetting } from '@/api/camera';
-import { dropPendingCameraFrames } from '@/hooks/useCameraStream';
+import { dropPendingCameraFrames } from '@/hooks/cameraStreamManager';
 
 export interface UseCameraSettingsRestoreInput {
   refetchCameraSetting: () => Promise<void> | void;

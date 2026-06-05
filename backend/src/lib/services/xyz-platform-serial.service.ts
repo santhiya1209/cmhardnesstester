@@ -60,6 +60,8 @@ const TX_TIMEOUT_MS = 5000;
 
 export type XyzSerialMode = 'separate' | 'shared' | 'unknown';
 
+export type FocusMode = 'manual' | 'cFocus' | 'fFocus';
+
 export interface XyzStageState {
   connected: boolean;
   port: string | null;
@@ -69,6 +71,7 @@ export interface XyzStageState {
   zSpeed: ZSpeed;
   xyLocked: boolean;
   zLocked: boolean;
+  focusMode: FocusMode;
   moving: boolean;
   lastAction: string;
   lastError?: string;
@@ -99,6 +102,7 @@ const DEFAULT_STATE: XyzStageState = {
   zSpeed: 'fast',
   xyLocked: false,
   zLocked: false,
+  focusMode: 'manual',
   moving: false,
   lastAction: 'XYZ stage idle.',
   updatedAt: new Date().toISOString(),
@@ -345,7 +349,7 @@ class XyzPlatformSerialService extends EventEmitter {
         this.pendingTimer = null;
         this.pendingCommandId = null;
         // eslint-disable-next-line no-console
-        console.error(`[xyz-ack-timeout] commandId=${commandId} command=${JSON.stringify(ascii)} timeoutMs=${TX_TIMEOUT_MS}`);
+        console.error(`[xyz-timeout] commandId=${commandId} command=${JSON.stringify(ascii)} timeoutMs=${TX_TIMEOUT_MS} no response within timeout`);
         reject(new Error('XYZ_STAGE_ACK_TIMEOUT'));
       }, TX_TIMEOUT_MS);
     });
@@ -381,6 +385,8 @@ class XyzPlatformSerialService extends EventEmitter {
     priority = false
   ): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-service] commandId=${commandId} key=${key} requested`);
 
     const route = this.resolveSerialRoute();
     // eslint-disable-next-line no-console
@@ -431,6 +437,8 @@ class XyzPlatformSerialService extends EventEmitter {
     try {
       const position = await queue.enqueue(() => this.transmitNow(commandId, frame), { priority });
       this.setState({ lastAction, lastError: undefined });
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-status] commandId=${commandId} key=${key} confirmed`);
       return position
         ? { ok: true, position, rx: this.state.lastRx, commandId }
         : { ok: true, rx: this.state.lastRx, commandId };
@@ -438,15 +446,53 @@ class XyzPlatformSerialService extends EventEmitter {
       const error = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error(`[xyz-error] commandId=${commandId} error=${error}`);
+      // eslint-disable-next-line no-console
+      console.error(`[xyz-status] commandId=${commandId} key=${key} failed: ${error}`);
       this.setState({ lastError: error });
       return { ok: false, error, commandId };
     }
   }
 
+  /**
+   * Apply a SOFTWARE-only state change (XY interlock, focus mode). These are
+   * not serial commands — there is no controller to acknowledge them — so they
+   * resolve immediately and honestly. No bytes touch the wire, nothing is faked
+   * as a hardware reply. The service still owns the state and broadcasts it, so
+   * the renderer renders it from the `state` event like every other field.
+   */
+  private softwareCommand(patch: Partial<XyzStageState>, lastAction: string, label: string): XyzCommandResult {
+    const commandId = this.nextCommandId();
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-service] commandId=${commandId} ${label} (software interlock)`);
+    this.setState({ ...patch, lastAction, lastError: undefined });
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-status] commandId=${commandId} ${label} confirmed`);
+    return { ok: true, commandId };
+  }
+
   // --- Public command surface (mirrors window.xyzPlatform.*) -----------------
 
   moveStage(direction: XyzDirection, speed: XySpeed): Promise<XyzCommandResult> {
+    if (this.state.xyLocked) {
+      return Promise.resolve({ ok: false, error: 'XYZ_STAGE_XY_LOCKED', commandId: this.nextCommandId() });
+    }
     return this.runCommand('moveStage', () => buildMoveStageCommand(direction, speed), `Move ${direction}.`);
+  }
+
+  // XY interlock — software guard that gates moveStage server-side. No serial TX.
+  lockXy(): Promise<XyzCommandResult> {
+    return Promise.resolve(this.softwareCommand({ xyLocked: true }, 'X/Y platform locked.', 'xy-lock'));
+  }
+
+  unlockXy(): Promise<XyzCommandResult> {
+    return Promise.resolve(this.softwareCommand({ xyLocked: false }, 'X/Y platform unlocked.', 'xy-unlock'));
+  }
+
+  // Focus mode — software state only (no focus command exists in the protocol).
+  setFocusMode(focusMode: FocusMode): Promise<XyzCommandResult> {
+    return Promise.resolve(
+      this.softwareCommand({ focusMode }, `Focus mode ${focusMode}.`, `focus-${focusMode}`)
+    );
   }
 
   stopStage(): Promise<XyzCommandResult> {

@@ -5,15 +5,18 @@ import {
   getStagePosition,
   getStageState,
   locateStageCenter,
+  lockXy,
   lockZ,
   moveStage,
   moveStageToCenter,
   moveZ,
+  setFocusMode,
   setXySpeed,
   setZSpeed,
   stopStage,
   stopZ,
   streamStageEvents,
+  unlockXy,
   unlockZ,
 } from '../controllers/xyz-platform';
 
@@ -31,6 +34,9 @@ router.post('/move-z', moveZ);
 router.post('/stop-z', stopZ);
 router.post('/lock-z', lockZ);
 router.post('/unlock-z', unlockZ);
+router.post('/lock-xy', lockXy);
+router.post('/unlock-xy', unlockXy);
+router.post('/set-focus-mode', setFocusMode);
 router.post('/set-xy-speed', setXySpeed);
 router.post('/set-z-speed', setZSpeed);
 router.get('/position', getStagePosition);

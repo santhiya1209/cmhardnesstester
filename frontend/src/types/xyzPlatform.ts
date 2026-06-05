@@ -1,7 +1,7 @@
 
-import type { XySpeed, ZSpeed } from './xyzPlatformState';
+import type { FocusMode, XySpeed, ZSpeed } from './xyzPlatformState';
 
-export type { XySpeed, ZSpeed };
+export type { FocusMode, XySpeed, ZSpeed };
 
 export type XyzDirection =
   | 'left'
@@ -38,6 +38,7 @@ export interface XyzStageState {
   zSpeed: ZSpeed;
   xyLocked: boolean;
   zLocked: boolean;
+  focusMode: FocusMode;
   moving: boolean;
   lastAction: string;
   lastError?: string;

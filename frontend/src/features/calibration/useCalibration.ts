@@ -10,7 +10,7 @@ import type {
 } from '@/types/calibration';
 import type { CalibrationSettings } from '@/types/calibrationSettings';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
-import { getLastPaintedFrameId } from '@/hooks/useCameraStream';
+import { getLastPaintedFrameId } from '@/hooks/cameraStreamManager';
 import {
   findCalibrationForObjective,
   normalizeObjectiveName,
@@ -27,7 +27,7 @@ type SaveMeasurementInput = {
   values: MeasurementSavePayload;
 };
 
-export type UseCalibrationRowSaveArgs = {
+export type UseCalibrationArgs = {
   activeObjectiveRef: React.MutableRefObject<string | null>;
   calibrationMeasureModeRef: React.MutableRefObject<'none' | 'auto' | 'manual'>;
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
@@ -55,7 +55,7 @@ export type CalibrationRowSaveArgs = {
   payload: CalibrationSavePayload;
 };
 
-export function useCalibrationRowSave({
+export function useCalibration({
   activeObjectiveRef,
   calibrationMeasureModeRef,
   manualMeasurementIdRef,
@@ -72,7 +72,7 @@ export function useCalibrationRowSave({
   setActiveMeasurement,
   saveManualMeasurement,
   refetchMeasurements,
-}: UseCalibrationRowSaveArgs) {
+}: UseCalibrationArgs) {
   const handleCalibrationAutoCreateRow = useCallback(
     async ({
       payload,

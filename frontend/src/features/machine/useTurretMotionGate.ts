@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { getLastPaintedFrameId } from '@/hooks/useCameraStream';
+import { getLastPaintedFrameId } from '@/hooks/cameraStreamManager';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { CameraStatusState } from '@/component/own/StatusBar';
 

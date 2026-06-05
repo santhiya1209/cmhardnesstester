@@ -52,13 +52,14 @@ type Props = {
    *  carrying their stable key. Lets the album capture wait for the final
    *  refined overlay deterministically instead of a blind rAF delay. */
   onOverlayDrawn?: (cornersKey: string) => void;
-  /** Keyboard-selected guide line (from useAutoMeasureKeyboardAdjust).
-   *  Renders that line in white + thicker so the operator can see which
-   *  line the arrow keys will move. */
+  /** Selected guide line, rendered white + thicker. Driven by mouse click
+   *  and keyboard (Tab/arrows) editing handled inside this overlay. */
   selectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
-  /** Called when the user clicks a line or corner so the parent can sync
-   *  the keyboard selection to the mouse-clicked element. */
-  onLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left') => void;
+  /** Called when a line is selected (mouse or keyboard); null clears it. */
+  onLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left' | null) => void;
+  /** When true, Tab/Arrow/Enter/Escape edit the selected guide line. The
+   *  parent owns the gate (camera open, pointer tool, no blocking dialog). */
+  keyboardActive?: boolean;
 };
 
 const ROOT_SX: SxProps<Theme> = {
@@ -132,6 +133,7 @@ function AutoMeasureOverlayImpl({
   onOverlayDrawn,
   selectedLine = null,
   onLineSelected,
+  keyboardActive = false,
 }: Props) {
   useRenderCount('AutoMeasureOverlay');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -143,6 +145,17 @@ function AutoMeasureOverlayImpl({
   const [localCorners, setLocalCorners] = useState<AutoMeasureCorners | null>(null);
   const localCornersRef = useRef<AutoMeasureCorners | null>(null);
   const [hover, setHover] = useState<{ kind: DragKind; line: LineKey } | null>(null);
+
+  const selectedLineRef = useRef(selectedLine);
+  const keyboardActiveRef = useRef(keyboardActive);
+  const onAdjustedRef = useRef(onAdjusted);
+  const onLineSelectedRef = useRef(onLineSelected);
+  const cornersKbRef = useRef<AutoMeasureCorners | null>(null);
+  const applyLineDeltaKbRef = useRef<
+    ((line: LineKey, dx: number, dy: number, base: AutoMeasureCorners) => AutoMeasureCorners) | null
+  >(null);
+  const originalCornersRef = useRef<AutoMeasureCorners | null>(null);
+  const prevGraphicsForKbRef = useRef<AutoMeasureGraphics | null>(null);
 
   const writeCorners = useCallback((c: AutoMeasureCorners | null) => {
     localCornersRef.current = c;
@@ -231,6 +244,17 @@ function AutoMeasureOverlayImpl({
     if (graphics !== null) return;
     forceClearCanvas('graphics-null');
   }, [graphics, forceClearCanvas]);
+
+  useEffect(() => {
+    const prev = prevGraphicsForKbRef.current;
+    prevGraphicsForKbRef.current = graphics;
+    if (graphics && !prev) {
+      originalCornersRef.current = cloneCorners(graphics.corners);
+    } else if (!graphics) {
+      originalCornersRef.current = null;
+      onLineSelectedRef.current?.(null);
+    }
+  }, [graphics]);
 
   const draw = useCallback(() => {
     if (frameRef.current !== null) return;
@@ -331,6 +355,91 @@ function AutoMeasureOverlayImpl({
   useEffect(() => {
     draw();
   }, [draw]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!keyboardActiveRef.current) return;
+      const cs = cornersKbRef.current;
+      if (!cs) return;
+      const tag = (document.activeElement as HTMLElement | null)?.tagName?.toLowerCase() ?? '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      const { key, shiftKey, ctrlKey } = event;
+
+      if (key === 'Tab') {
+        event.preventDefault();
+        const current = selectedLineRef.current;
+        let next: LineKey;
+        if (current == null) {
+          next = shiftKey ? CORNER_KEYS[CORNER_KEYS.length - 1] : CORNER_KEYS[0];
+        } else {
+          const idx = CORNER_KEYS.indexOf(current);
+          const nextIdx = shiftKey
+            ? (idx - 1 + CORNER_KEYS.length) % CORNER_KEYS.length
+            : (idx + 1) % CORNER_KEYS.length;
+          next = CORNER_KEYS[nextIdx];
+        }
+        // eslint-disable-next-line no-console
+        console.log(`[auto-measure-edit] selected=${next}-line source=keyboard`);
+        onLineSelectedRef.current?.(next);
+        return;
+      }
+
+      const line = selectedLineRef.current;
+      if (!line) return;
+
+      if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight') {
+        event.preventDefault();
+        const step = ctrlKey ? 10 : shiftKey ? 5 : 1;
+        let dx = 0;
+        let dy = 0;
+        if (key === 'ArrowUp') dy = -step;
+        else if (key === 'ArrowDown') dy = step;
+        else if (key === 'ArrowLeft') dx = -step;
+        else dx = step;
+
+        const apply = applyLineDeltaKbRef.current;
+        if (!apply) return;
+        const next = apply(line, dx, dy, cs);
+        const d1Px = next.right.x - next.left.x;
+        const d2Px = next.bottom.y - next.top.y;
+        const davgPx = (d1Px + d2Px) / 2;
+        // eslint-disable-next-line no-console
+        console.log(`[auto-measure-key] key=${key} element=${line}-line deltaX=${dx} deltaY=${dy}`);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[auto-measure-recalculate] D1=${d1Px.toFixed(1)}px D2=${d2Px.toFixed(1)}px Davg=${davgPx.toFixed(1)}px HV=pending(debounce)`
+        );
+        writeCorners(next);
+        onAdjustedRef.current?.(next);
+        return;
+      }
+
+      if (key === 'Enter') {
+        event.preventDefault();
+        onAdjustedRef.current?.(cs);
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-confirm] source=keyboard');
+        onLineSelectedRef.current?.(null);
+        return;
+      }
+
+      if (key === 'Escape') {
+        event.preventDefault();
+        const original = originalCornersRef.current;
+        if (original) {
+          writeCorners(original);
+          onAdjustedRef.current?.(original);
+        }
+        // eslint-disable-next-line no-console
+        console.log('[auto-measure-cancel] restored=originalDetectedGeometry');
+        onLineSelectedRef.current?.(null);
+        return;
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [writeCorners]);
 
   const getDisplayPoint = useCallback((event: React.PointerEvent<HTMLDivElement>): Point => {
     const rect = wrapRef.current?.getBoundingClientRect();
@@ -464,6 +573,13 @@ function AutoMeasureOverlayImpl({
     },
     [imageSize]
   );
+
+  selectedLineRef.current = selectedLine;
+  keyboardActiveRef.current = keyboardActive;
+  onAdjustedRef.current = onAdjusted;
+  onLineSelectedRef.current = onLineSelected;
+  cornersKbRef.current = corners;
+  applyLineDeltaKbRef.current = applyLineDelta;
 
   const handlePointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {

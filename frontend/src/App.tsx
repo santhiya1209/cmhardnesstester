@@ -44,7 +44,7 @@ import { useActiveTool } from '@/hooks/useActiveTool';
 import {
   getLastPaintEpoch,
   getLastPaintedFrameId,
-} from '@/hooks/useCameraStream';
+} from '@/hooks/cameraStreamManager';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
 import { useRenderCount } from '@/utils/renderStats';
@@ -103,13 +103,12 @@ import {
   waitForOverlayPaint,
   type DepthSavePayload,
 } from '@/features/measurement/measurementRowHelpers';
-import { useCalibrationRowSave } from '@/features/calibration/useCalibrationRowSave';
+import { useCalibration } from '@/features/calibration/useCalibration';
 import { useUmPerPixelForObjective } from '@/features/calibration/useUmPerPixelForObjective';
 import { useTurretMotionGate } from '@/features/machine/useTurretMotionGate';
-import { useObjectiveSyncGate } from '@/features/machine/useObjectiveSyncGate';
-import { useManualMeasureSave } from '@/features/measurement/useManualMeasureSave';
-import { useAutoAdjustedSave } from '@/features/measurement/useAutoAdjustedSave';
-import { useAutoMeasureKeyboardAdjust } from '@/hooks/useAutoMeasureKeyboardAdjust';
+import { useObjectiveSyncGate } from '@/features/autoMeasure/useObjectiveSyncGate';
+import { useManualMeasure } from '@/features/measurement/useManualMeasure';
+import { useAutoMeasure } from '@/features/measurement/useAutoMeasure';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { MachineState } from '@/types/machine';
@@ -498,7 +497,7 @@ function App() {
     [autoMeasureSettings, setActiveTool, setCalibrationMeasureMode]
   );
 
-  const { handleCalibrationAutoCreateRow } = useCalibrationRowSave({
+  const { handleCalibrationAutoCreateRow } = useCalibration({
     activeObjectiveRef,
     calibrationMeasureModeRef,
     manualMeasurementIdRef,
@@ -576,7 +575,7 @@ function App() {
       setCalibrationMeasureMode,
       setManualMeasureResetKey,
     ]
-  );  const { handleManualMeasurementUpdated } = useManualMeasureSave({
+  );  const { handleManualMeasurementUpdated } = useManualMeasure({
     activeObjectiveRef,
     manualMeasurementIdRef,
     calibrationManualModeRef,
@@ -1627,7 +1626,7 @@ function App() {
 
   const autoMeasureSelectedLineRef = useRef<'top' | 'right' | 'bottom' | 'left' | null>(null);
 
-  const { handleAutoMeasureAdjusted } = useAutoAdjustedSave({
+  const { handleAutoMeasureAdjusted } = useAutoMeasure({
     previewAutoMeasureOverlay,
     setPreviewAutoMeasureOverlay,
     setCommittedAutoMeasureOverlay,
@@ -1675,25 +1674,17 @@ function App() {
   >(null);
   autoMeasureSelectedLineRef.current = autoMeasureSelectedLine;
 
-  useAutoMeasureKeyboardAdjust({
-    selectedLine: autoMeasureSelectedLine,
-    setSelectedLine: setAutoMeasureSelectedLine,
-    committedAutoMeasureOverlay,
-    setCommittedAutoMeasureOverlay,
-    onAdjusted: handleAutoMeasureAdjusted,
-    isActive:
-      cameraOpen &&
-      activeTool === 'pointer' &&
-      (activeDialog === null ||
-        (activeDialog === 'calibration' &&
-          calibrationMeasureModeRef.current === 'auto')),
-    calibrationMeasureModeRef,
-  });
+  const autoMeasureKeyboardActive =
+    cameraOpen &&
+    activeTool === 'pointer' &&
+    (activeDialog === null ||
+      (activeDialog === 'calibration' &&
+        calibrationMeasureModeRef.current === 'auto'));
 
   const handleAutoMeasureLineSelected = useCallback(
-    (line: 'top' | 'right' | 'bottom' | 'left') => {
+    (line: 'top' | 'right' | 'bottom' | 'left' | null) => {
       setAutoMeasureSelectedLine(line);
-      if (calibrationMeasureModeRef.current === 'auto') {
+      if (line && calibrationMeasureModeRef.current === 'auto') {
         // eslint-disable-next-line no-console
         console.log(`[calibration-line-select] line=${line}`);
       }
@@ -1905,6 +1896,7 @@ function App() {
           onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
           onAutoMeasureLineSelected={handleAutoMeasureLineSelected}
           autoMeasureSelectedLine={autoMeasureSelectedLine}
+          autoMeasureKeyboardActive={autoMeasureKeyboardActive}
           magnifierEnabled={magnifierEnabled}
           onClearShapeKind={overlay.clearByKind}
           lineStrokeWidth={lineThickness.strokeWidth}
