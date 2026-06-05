@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mockup — Chennai Metco Report</title>
+<style>
+  :root{
+    --navy:#123B6D; --blue:#1E88E5; --green:#2E7D32; --orange:#F57C00;
+    --ink:#1F2937; --ink2:#475569; --muted:#6B7280;
+    --line:#D8DEE7; --soft:#EAF1FB; --zebra:#F4F7FB;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#E5E9F0;
+    font-family:"Segoe UI Variable Text","Segoe UI",system-ui,Arial,sans-serif;color:var(--ink);
+    padding:28px;}
+  .note{font-size:11px;color:var(--muted);max-width:1040px;margin:0 auto 16px;}
+  .page{
+    width:1040px;margin:0 auto 26px;background:#fff;border:1px solid var(--line);
+    box-shadow:0 10px 30px rgba(18,59,109,.15);padding:0 0 46px;position:relative;min-height:720px;
+  }
+
+  /* banner */
+  .banner{background:linear-gradient(135deg,var(--navy) 0%,#0E2E55 100%);color:#fff;
+    display:flex;align-items:center;gap:18px;padding:20px 30px;}
+  .logo{width:54px;height:54px;border:2px solid rgba(255,255,255,.85);border-radius:8px;
+    display:grid;place-items:center;font-weight:800;font-size:18px;letter-spacing:1px;}
+  .banner .t1{font-size:20px;font-weight:700;letter-spacing:1.5px;}
+  .banner .t2{font-size:12.5px;font-weight:600;opacity:.85;letter-spacing:2px;margin-top:2px;}
+  .banner .meta{margin-left:auto;text-align:right;font-size:11.5px;line-height:1.6;opacity:.92;}
+  .banner .meta b{font-weight:700;}
+
+  .wrap{padding:0 30px;}
+  h2.sec{font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--navy);
+    margin:24px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--navy);}
+
+  /* sample info grid */
+  .info{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;}
+  .info .kv{display:flex;border-right:1px solid var(--line);border-bottom:1px solid var(--line);}
+  .info .kv .k{background:var(--soft);color:var(--navy);font-weight:600;font-size:11.5px;
+    padding:9px 11px;width:46%;border-right:1px solid var(--line);}
+  .info .kv .v{padding:9px 11px;font-size:12.5px;color:var(--ink);flex:1;}
+
+  /* result summary cards */
+  .cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;}
+  .stat{border:1px solid var(--line);border-top:3px solid var(--blue);border-radius:8px;padding:14px 12px;text-align:center;background:#fff;}
+  .stat .lbl{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:600;}
+  .stat .num{font-size:26px;font-weight:700;color:var(--navy);margin-top:6px;font-variant-numeric:tabular-nums;}
+  .stat .u{font-size:11px;color:var(--muted);}
+  .verdict{border:1px solid var(--green);border-top:3px solid var(--green);background:#EAF5EC;border-radius:8px;
+    display:grid;place-items:center;text-align:center;}
+  .verdict .num{font-size:24px;font-weight:800;color:var(--green);letter-spacing:2px;}
+  .verdict .lbl{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:#3a7a3f;font-weight:600;}
+
+  /* data table */
+  table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums;}
+  thead th{background:var(--navy);color:#fff;font-weight:600;font-size:11.5px;letter-spacing:.4px;
+    padding:9px 8px;text-align:center;border:1px solid #0E2E55;}
+  tbody td{padding:7px 8px;text-align:center;border:1px solid var(--line);color:var(--ink2);}
+  tbody tr:nth-child(even){background:var(--zebra);}
+  tbody td.hv{font-weight:700;color:var(--green);}
+  tbody td.no{color:var(--orange);font-weight:600;}
+  tbody td.yes{color:var(--green);font-weight:600;}
+
+  /* image grid */
+  .imgs{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .imgcard{border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .imgcap{background:var(--navy);color:#fff;display:flex;justify-content:space-between;
+    padding:7px 12px;font-size:12px;font-weight:600;}
+  .imgcap .hv{color:#9FE2AC;}
+  .imgbox{height:200px;background:repeating-linear-gradient(45deg,#eef2f7,#eef2f7 12px,#e6ecf3 12px,#e6ecf3 24px);
+    display:grid;place-items:center;color:#9aa7b8;font-size:12px;position:relative;}
+  .imgbox::after{content:"";position:absolute;left:30%;top:40%;width:40%;height:20%;
+    border:2px solid var(--orange);transform:rotate(8deg);} /* indent overlay box */
+  .imgmetrics{display:flex;justify-content:space-around;padding:9px 0;font-size:12px;border-top:1px solid var(--line);}
+  .imgmetrics b{color:var(--navy);}
+
+  /* stat dashboard */
+  .stats6{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .scard{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:8px;padding:16px;background:#fff;}
+  .scard .lbl{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);font-weight:600;}
+  .scard .num{font-size:28px;font-weight:700;color:var(--navy);margin-top:6px;}
+
+  /* footer */
+  .ftr{position:absolute;left:0;right:0;bottom:0;border-top:1px solid var(--line);
+    display:flex;justify-content:space-between;padding:12px 30px;font-size:11px;color:var(--muted);}
+  .ftr b{color:var(--navy);font-weight:600;}
+</style>
+</head>
+<body>
+  <div class="note">MOCKUP · This is how the generated Word/.docx report will look (rendered as HTML for preview). 4 pages shown: Summary → Images → CHD Profile → Statistics.</div>
+
+  <!-- PAGE 1 -->
+  <div class="page">
+    <div class="banner">
+      <div class="logo">CM</div>
+      <div>
+        <div class="t1">CHENNAI METCO</div>
+        <div class="t2">VICKERS HARDNESS TEST REPORT</div>
+      </div>
+      <div class="meta">
+        <div><b>Report ID:</b> CM-2026-0417</div>
+        <div><b>Date:</b> 2026/06/04</div>
+        <div><b>Time:</b> 14:38</div>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <h2 class="sec">Sample Information</h2>
+      <div class="info">
+        <div class="kv"><div class="k">Customer</div><div class="v">Chennai Metco QA Lab</div></div>
+        <div class="kv"><div class="k">Operator</div><div class="v">R. Santhiya</div></div>
+        <div class="kv"><div class="k">Objective</div><div class="v">40X</div></div>
+        <div class="kv"><div class="k">Sample Name</div><div class="v">Crankshaft journal A</div></div>
+        <div class="kv"><div class="k">Reviewer</div><div class="v">K. Murugan</div></div>
+        <div class="kv"><div class="k">Load</div><div class="v">0.5 kgf</div></div>
+        <div class="kv"><div class="k">Sample No.</div><div class="v">CS-2026-0417</div></div>
+        <div class="kv"><div class="k">Machine</div><div class="v">CM-Vickers-01</div></div>
+        <div class="kv"><div class="k">Load Time</div><div class="v">10 s</div></div>
+        <div class="kv"><div class="k">Material</div><div class="v">16MnCr5</div></div>
+        <div class="kv"><div class="k">Method</div><div class="v">HV0.5</div></div>
+        <div class="kv"><div class="k">Standard</div><div class="v">ASTM E384</div></div>
+      </div>
+
+      <h2 class="sec">Result Summary</h2>
+      <div class="cards">
+        <div class="stat"><div class="lbl">Average</div><div class="num">560.4</div><div class="u">HV</div></div>
+        <div class="stat"><div class="lbl">Minimum</div><div class="num">548.1</div><div class="u">HV</div></div>
+        <div class="stat"><div class="lbl">Maximum</div><div class="num">571.9</div><div class="u">HV</div></div>
+        <div class="stat"><div class="lbl">Measurements</div><div class="num">24</div><div class="u">points</div></div>
+        <div class="verdict"><div><div class="num">PASS</div><div class="lbl">540–580 HV</div></div></div>
+      </div>
+
+      <h2 class="sec">Measurement Data</h2>
+      <table>
+        <thead><tr>
+          <th>#</th><th>D1 (µm)</th><th>D2 (µm)</th><th>Davg (µm)</th><th>HV</th>
+          <th>Objective</th><th>Qualified</th><th>Depth (mm)</th>
+        </tr></thead>
+        <tbody>
+          <tr><td>1</td><td>40.82</td><td>40.71</td><td>40.77</td><td class="hv">557.2</td><td>40X</td><td class="yes">YES</td><td>0.10</td></tr>
+          <tr><td>2</td><td>40.55</td><td>40.60</td><td>40.58</td><td class="hv">562.4</td><td>40X</td><td class="yes">YES</td><td>0.20</td></tr>
+          <tr><td>3</td><td>41.10</td><td>41.02</td><td>41.06</td><td class="hv">548.1</td><td>40X</td><td class="yes">YES</td><td>0.30</td></tr>
+          <tr><td>4</td><td>40.31</td><td>40.40</td><td>40.36</td><td class="hv">571.9</td><td>40X</td><td class="yes">YES</td><td>0.40</td></tr>
+          <tr><td>5</td><td>40.68</td><td>40.59</td><td>40.64</td><td class="hv">560.3</td><td>40X</td><td class="yes">YES</td><td>0.50</td></tr>
+          <tr><td>6</td><td>42.05</td><td>42.12</td><td>42.09</td><td class="hv" style="color:var(--orange)">521.0</td><td>40X</td><td class="no">NO</td><td>0.60</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="ftr"><span>Generated by <b>Chennai Metco Vickers Measurement Software</b></span><span>Page 1 of 4 · 2026-06-04 14:38:11</span></div>
+  </div>
+
+  <!-- PAGE 2 — IMAGES -->
+  <div class="page">
+    <div class="wrap">
+      <h2 class="sec" style="margin-top:26px;">Measurement Images</h2>
+      <div class="imgs">
+        <div class="imgcard">
+          <div class="imgcap"><span>Measurement #5 · 40X</span><span class="hv">HV 560.39</span></div>
+          <div class="imgbox">indent image + overlay lines</div>
+          <div class="imgmetrics"><span>D1 <b>40.68</b></span><span>D2 <b>40.59</b></span><span>Davg <b>40.64</b></span></div>
+        </div>
+        <div class="imgcard">
+          <div class="imgcap"><span>Measurement #6 · 40X</span><span class="hv">HV 521.00</span></div>
+          <div class="imgbox">indent image + overlay lines</div>
+          <div class="imgmetrics"><span>D1 <b>42.05</b></span><span>D2 <b>42.12</b></span><span>Davg <b>42.09</b></span></div>
+        </div>
+        <div class="imgcard">
+          <div class="imgcap"><span>Measurement #7 · 40X</span><span class="hv">HV 558.10</span></div>
+          <div class="imgbox">indent image + overlay lines</div>
+          <div class="imgmetrics"><span>D1 <b>40.74</b></span><span>D2 <b>40.69</b></span><span>Davg <b>40.71</b></span></div>
+        </div>
+        <div class="imgcard">
+          <div class="imgcap"><span>Measurement #8 · 40X</span><span class="hv">HV 565.20</span></div>
+          <div class="imgbox">indent image + overlay lines</div>
+          <div class="imgmetrics"><span>D1 <b>40.45</b></span><span>D2 <b>40.50</b></span><span>Davg <b>40.47</b></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="ftr"><span>Generated by <b>Chennai Metco Vickers Measurement Software</b></span><span>Page 2 of 4 · 2026-06-04 14:38:11</span></div>
+  </div>
+
+  <!-- PAGE 3 — CHD -->
+  <div class="page">
+    <div class="wrap">
+      <h2 class="sec" style="margin-top:26px;">Case Hardness Profile</h2>
+      <svg viewBox="0 0 980 440" width="100%" style="border:1px solid var(--line);border-radius:8px;background:#fff;">
+        <text x="490" y="30" text-anchor="middle" font-size="19" font-weight="700" fill="#123B6D">Case Hardness Profile</text>
+        <text x="490" y="50" text-anchor="middle" font-size="11" fill="#6B7280">Distance from surface vs. Vickers hardness</text>
+        <!-- grid -->
+        <g stroke="#E6ECF3" stroke-width="1">
+          <line x1="90" y1="90" x2="930" y2="90"/><line x1="90" y1="150" x2="930" y2="150"/>
+          <line x1="90" y1="210" x2="930" y2="210"/><line x1="90" y1="270" x2="930" y2="270"/>
+          <line x1="90" y1="330" x2="930" y2="330"/>
+        </g>
+        <rect x="90" y="80" width="840" height="290" fill="none" stroke="#1F2937" stroke-width="1.4"/>
+        <!-- axes labels -->
+        <text x="510" y="415" text-anchor="middle" font-size="13" font-weight="700" fill="#1F2937">Depth (mm)</text>
+        <text x="30" y="225" text-anchor="middle" font-size="13" font-weight="700" fill="#1F2937" transform="rotate(-90 30 225)">Hardness (HV)</text>
+        <!-- CHD reference line (orange) -->
+        <line x1="90" y1="240" x2="930" y2="240" stroke="#F57C00" stroke-width="2" stroke-dasharray="8 6"/>
+        <text x="922" y="232" text-anchor="end" font-size="12" font-weight="700" fill="#F57C00">550 HV</text>
+        <!-- CHD drop line -->
+        <line x1="560" y1="240" x2="560" y2="370" stroke="#F57C00" stroke-width="2" stroke-dasharray="8 6"/>
+        <circle cx="560" cy="240" r="5" fill="#fff" stroke="#F57C00" stroke-width="2"/>
+        <text x="572" y="262" font-size="12.5" font-weight="700" fill="#F57C00">CHD = 0.42 mm</text>
+        <!-- curve (blue) -->
+        <path d="M110,120 C220,130 320,150 420,190 S620,300 760,330 880,348 910,352"
+              fill="none" stroke="#1E88E5" stroke-width="3" stroke-linecap="round"/>
+        <g fill="#fff" stroke="#1E88E5" stroke-width="2">
+          <circle cx="110" cy="120" r="4.5"/><circle cx="300" cy="146" r="4.5"/>
+          <circle cx="420" cy="190" r="4.5"/><circle cx="560" cy="240" r="4.5"/>
+          <circle cx="700" cy="305" r="4.5"/><circle cx="860" cy="345" r="4.5"/>
+        </g>
+        <!-- stats box -->
+        <rect x="640" y="95" width="270" height="92" fill="#EAF1FB" stroke="#123B6D" stroke-width="1" rx="4"/>
+        <text x="656" y="118" font-size="12" font-weight="700" fill="#123B6D">CHD Statistics</text>
+        <text x="656" y="138" font-size="11.5" fill="#1F2937">Reference: 550 HV</text>
+        <text x="656" y="156" font-size="11.5" fill="#1F2937">Effective depth: 0.42 mm</text>
+        <text x="656" y="174" font-size="11.5" fill="#1F2937">Surface HV: 565.2 · Core HV: 352.0</text>
+      </svg>
+    </div>
+    <div class="ftr"><span>Generated by <b>Chennai Metco Vickers Measurement Software</b></span><span>Page 3 of 4 · 2026-06-04 14:38:11</span></div>
+  </div>
+
+  <!-- PAGE 4 — STATISTICS -->
+  <div class="page">
+    <div class="wrap">
+      <h2 class="sec" style="margin-top:26px;">Statistics</h2>
+      <div class="stats6">
+        <div class="scard"><div class="lbl">Mean</div><div class="num">560.4</div></div>
+        <div class="scard"><div class="lbl">Median</div><div class="num">560.3</div></div>
+        <div class="scard"><div class="lbl">Std Deviation</div><div class="num">7.9</div></div>
+        <div class="scard"><div class="lbl">Minimum</div><div class="num">548.1</div></div>
+        <div class="scard"><div class="lbl">Maximum</div><div class="num">571.9</div></div>
+        <div class="scard"><div class="lbl">Range</div><div class="num">23.8</div></div>
+      </div>
+    </div>
+    <div class="ftr"><span>Generated by <b>Chennai Metco Vickers Measurement Software</b></span><span>Page 4 of 4 · 2026-06-04 14:38:11</span></div>
+  </div>
+</body>
+</html>

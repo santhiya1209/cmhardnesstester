@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mockup — Export Report Dialog</title>
+<style>
+  :root{
+    --navy:#123B6D;        /* primary   */
+    --blue:#1E88E5;        /* secondary */
+    --green:#2E7D32;       /* success   */
+    --orange:#F57C00;      /* warning   */
+    --ink:#1F2937;
+    --ink2:#4B5563;
+    --muted:#6B7280;
+    --line:#E5E9EF;
+    --line2:#D0D7DE;
+    --soft:#EAF1FB;
+    --bg:#EDF1F6;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; display:grid; place-items:center;
+    background:var(--bg);
+    font-family:"Segoe UI Variable Text","Segoe UI",system-ui,Arial,sans-serif;
+    color:var(--ink); padding:32px;
+  }
+  .note{position:fixed;top:10px;left:12px;font-size:11px;color:var(--muted);}
+
+  /* ---- dialog shell ---- */
+  .dialog{
+    width:920px; background:#fff; border-radius:8px; overflow:hidden;
+    box-shadow:0 24px 60px rgba(18,59,109,.28), 0 4px 12px rgba(0,0,0,.10);
+    border:1px solid var(--line2);
+  }
+  .head{
+    background:linear-gradient(135deg,var(--navy) 0%, #0E2E55 100%);
+    color:#fff; padding:18px 22px; position:relative;
+  }
+  .head .bar{position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--blue);}
+  .head h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.4px;}
+  .head p{margin:2px 0 0;font-size:12px;opacity:.78;font-weight:500;}
+  .head .x{position:absolute;right:16px;top:16px;color:#fff;opacity:.7;font-size:18px;cursor:default;}
+
+  .body{display:grid;grid-template-columns:1.35fr 1fr;}
+  .left{padding:20px 22px;border-right:1px solid var(--line);}
+  .right{padding:20px 22px;background:#FAFBFD;}
+
+  .sect{font-size:10.5px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;
+        color:var(--navy);margin:0 0 10px;display:flex;align-items:center;gap:8px;}
+  .sect::after{content:"";flex:1;height:1px;background:var(--line);}
+  .sect.mt{margin-top:20px;}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .field label{display:block;font-size:11px;color:var(--ink2);margin:0 0 3px;font-weight:500;}
+  .field input{
+    width:100%;height:34px;border:1px solid var(--line2);border-radius:5px;
+    padding:0 10px;font-size:13px;color:var(--ink);background:#fff;
+    font-family:inherit;
+  }
+  .field input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(30,136,229,.15);}
+  .field input::placeholder{color:#B6BFCC;}
+
+  /* ---- template cards ---- */
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .card{
+    position:relative;border:1.5px solid var(--line2);border-radius:8px;padding:12px 12px 12px 14px;
+    cursor:pointer;background:#fff;transition:.15s;overflow:hidden;
+  }
+  .card .edge{position:absolute;left:0;top:0;bottom:0;width:4px;background:transparent;transition:.15s;}
+  .card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(18,59,109,.12);border-color:var(--blue);}
+  .card:hover .edge{background:var(--blue);}
+  .card .ttl{font-size:13px;font-weight:600;color:var(--ink);margin:0 0 3px;}
+  .card .sub{font-size:11px;color:var(--muted);line-height:1.35;}
+  .card .chip{position:absolute;right:10px;top:10px;width:18px;height:18px;border-radius:50%;
+    border:1.5px solid var(--line2);display:grid;place-items:center;color:#fff;font-size:11px;}
+  .card.active{border-color:var(--navy);background:var(--soft);}
+  .card.active .edge{background:var(--navy);}
+  .card.active .chip{background:var(--navy);border-color:var(--navy);}
+  .card.active .ttl{color:var(--navy);}
+
+  /* ---- right column ---- */
+  .preview{
+    border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden;
+    box-shadow:0 1px 2px rgba(0,0,0,.03);
+  }
+  .preview .ph{background:var(--navy);color:#fff;font-size:11px;font-weight:600;
+    letter-spacing:.6px;text-transform:uppercase;padding:9px 14px;}
+  .prow{display:flex;justify-content:space-between;align-items:center;
+    padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;}
+  .prow:last-child{border-bottom:0;}
+  .prow .k{color:var(--ink2);}
+  .prow .v{font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;}
+  .prow .v.yes{color:var(--green);}
+
+  .seg{display:flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden;margin-top:8px;}
+  .seg button{flex:1;border:0;background:#fff;padding:9px 0;font-size:12.5px;font-weight:600;
+    color:var(--ink2);cursor:pointer;font-family:inherit;border-right:1px solid var(--line2);}
+  .seg button:last-child{border-right:0;}
+  .seg button.on{background:var(--navy);color:#fff;}
+  .hint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4;}
+
+  .chd{margin-top:14px;}
+  .chd label{display:block;font-size:11px;color:var(--ink2);margin-bottom:3px;font-weight:500;}
+  .chd input{width:120px;height:32px;border:1px solid var(--line2);border-radius:5px;padding:0 10px;font-size:13px;}
+
+  /* ---- footer actions ---- */
+  .foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid var(--line);background:#fff;}
+  .btn{height:38px;padding:0 18px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid var(--line2);background:#fff;color:var(--ink2);}
+  .btn.primary{border:0;background:linear-gradient(135deg,var(--navy),#0E2E55);color:#fff;padding:0 22px;
+    box-shadow:0 3px 10px rgba(18,59,109,.30);}
+  .btn.primary:hover{filter:brightness(1.08);}
+</style>
+</head>
+<body>
+  <div class="note">MOCKUP · not wired · Export Report dialog · palette #123B6D / #1E88E5 / #2E7D32 / #F57C00</div>
+  <div class="dialog">
+    <div class="head">
+      <span class="bar"></span>
+      <h1>EXPORT REPORT</h1>
+      <p>Professional Report Generator</p>
+      <span class="x">✕</span>
+    </div>
+
+    <div class="body">
+      <!-- LEFT -->
+      <div class="left">
+        <h2 class="sect">Report Information</h2>
+        <div class="grid2">
+          <div class="field"><label>Sample Name</label><input value="Crankshaft journal A" /></div>
+          <div class="field"><label>Sample Number</label><input value="CS-2026-0417" /></div>
+          <div class="field"><label>Inspection Company</label><input value="Chennai Metco QA Lab" /></div>
+          <div class="field"><label>Operator</label><input value="R. Santhiya" /></div>
+          <div class="field"><label>Reviewer</label><input value="K. Murugan" /></div>
+          <div class="field"><label>Machine Name</label><input placeholder="e.g. CM-Vickers-01" /></div>
+          <div class="field"><label>Material</label><input placeholder="e.g. EN8 / 16MnCr5" /></div>
+        </div>
+
+        <h2 class="sect mt">Acceptance Criteria</h2>
+        <div class="grid2">
+          <div class="field"><label>Minimum HV</label><input value="540" /></div>
+          <div class="field"><label>Maximum HV</label><input value="580" /></div>
+        </div>
+
+        <h2 class="sect mt">Report Templates</h2>
+        <div class="cards">
+          <div class="card active">
+            <span class="edge"></span><span class="chip">✓</span>
+            <div class="ttl">Measurement Summary</div>
+            <div class="sub">Data table only</div>
+          </div>
+          <div class="card">
+            <span class="edge"></span><span class="chip"></span>
+            <div class="ttl">With Images</div>
+            <div class="sub">Data + image thumbnails + overlays</div>
+          </div>
+          <div class="card">
+            <span class="edge"></span><span class="chip"></span>
+            <div class="ttl">Case Hardness</div>
+            <div class="sub">Data + graph + CHD calculation</div>
+          </div>
+          <div class="card">
+            <span class="edge"></span><span class="chip"></span>
+            <div class="ttl">Complete Laboratory</div>
+            <div class="sub">Full industrial report package</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT -->
+      <div class="right">
+        <h2 class="sect">Live Preview</h2>
+        <div class="preview">
+          <div class="ph">Output Summary</div>
+          <div class="prow"><span class="k">Pages</span><span class="v">1</span></div>
+          <div class="prow"><span class="k">Measurements</span><span class="v">24</span></div>
+          <div class="prow"><span class="k">Images</span><span class="v">6</span></div>
+          <div class="prow"><span class="k">Graph Included</span><span class="v">No</span></div>
+        </div>
+
+        <h2 class="sect mt">Output Format</h2>
+        <div class="seg">
+          <button class="on">Word</button>
+          <button>Excel</button>
+          <button>CSV</button>
+        </div>
+        <p class="hint">Word generates the styled laboratory document (open in Word → Save&nbsp;as&nbsp;PDF). Excel and CSV export the data table only.</p>
+
+        <div class="chd">
+          <label>CHD Reference (HV) — Case Hardness templates</label>
+          <input value="550" disabled style="opacity:.5" />
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <button class="btn">Cancel</button>
+      <button class="btn primary">Generate Report ▸</button>
+    </div>
+  </div>
+</body>
+</html>

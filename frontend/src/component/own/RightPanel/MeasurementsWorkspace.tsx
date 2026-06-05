@@ -84,6 +84,8 @@ type Props = {
   micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
+  chdTargetInput: string;
+  onChdTargetInputChange: (value: string) => void;
 };
 
 export type MeasurementDisplayValues = {
@@ -125,6 +127,8 @@ function MeasurementsWorkspaceImpl({
   micrometerEnabled,
   targetMinHv,
   targetMaxHv,
+  chdTargetInput,
+  onChdTargetInputChange,
 }: Props) {
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
@@ -473,6 +477,8 @@ function MeasurementsWorkspaceImpl({
         cameraImageDataUrl={(displayedMeasurement?.imageDataUrl ?? null) || null}
         targetMinHv={targetMinHv}
         targetMaxHv={targetMaxHv}
+        chdTargetInput={chdTargetInput}
+        onChdTargetInputChange={onChdTargetInputChange}
       />
 
       <Stack direction="row" sx={STATUS_ROW_SX}>

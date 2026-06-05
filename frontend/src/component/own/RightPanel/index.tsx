@@ -102,6 +102,8 @@ type TabContentProps = {
   micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
+  chdTargetInput: string;
+  onChdTargetInputChange: (value: string) => void;
 };
 
 function renderTab(
@@ -125,6 +127,8 @@ function renderTab(
     micrometerEnabled,
     targetMinHv,
     targetMaxHv,
+    chdTargetInput,
+    onChdTargetInputChange,
   }: TabContentProps
 ) {
   switch (tab) {
@@ -185,6 +189,8 @@ function renderTab(
           albumItemCount={albumItems.length}
           onAlbumChanged={refetchAlbumItems}
           measurements={measurements}
+          chdTargetInput={chdTargetInput}
+          onChdTargetInputChange={onChdTargetInputChange}
         />
       );
     default: return null;
@@ -251,6 +257,10 @@ function RightPanelImpl({
 }: Props) {
   useRenderCount('RightPanel');
   const [tab, setTab] = useState(0);
+  // CHD target hardness — single source of truth shared by the Depth Image tab
+  // and the Export Report dialog so the value (and the exported graph) never
+  // drift. Lives here (not inside DepthImageTab) so it survives tab switches.
+  const [chdTargetInput, setChdTargetInput] = useState('550');
   const {
     data: patternPrograms,
     error: patternProgramsError,
@@ -304,6 +314,8 @@ function RightPanelImpl({
             micrometerEnabled={micrometerEnabled}
             targetMinHv={targetMinHv}
             targetMaxHv={targetMaxHv}
+            chdTargetInput={chdTargetInput}
+            onChdTargetInputChange={setChdTargetInput}
           />
 
           <Tabs
@@ -339,6 +351,8 @@ function RightPanelImpl({
             micrometerEnabled,
             targetMinHv,
             targetMaxHv,
+            chdTargetInput,
+            onChdTargetInputChange: setChdTargetInput,
           })}
 
           <TrimMeasurePanel

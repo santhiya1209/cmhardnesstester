@@ -82,15 +82,24 @@ type Props = {
   albumItemCount: number;
   onAlbumChanged: () => Promise<void>;
   measurements: Measurement[];
+  // CHD target hardness (raw input string) — owned by RightPanel so it is the
+  // single source of truth shared with the Export Report dialog.
+  chdTargetInput: string;
+  onChdTargetInputChange: (value: string) => void;
 };
 
-function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Props) {
+function DepthImageTabImpl({
+  albumItemCount,
+  onAlbumChanged,
+  measurements,
+  chdTargetInput,
+  onChdTargetInputChange,
+}: Props) {
   const { data, error: loadError, loading, refetch } = useDepthImageSettings();
   const { error: saveError, saveDepthImageSetting, saving } = useSaveDepthImageSetting();
   const { addAlbumItem, creating: creatingAlbumItem, error: createAlbumError } = useCreateAlbumItem();
   const [hardnessImage, setHardnessImage] = useState(false);
   const [saveImageError, setSaveImageError] = useState<string | null>(null);
-  const [chdTargetInput, setChdTargetInput] = useState('550');
   const [xAxisKey, setXAxisKey] = useState<XAxisKey>(() =>
     readPersistedAxis(LS_X_KEY, X_AXIS_KEYS, DEFAULT_X_AXIS)
   );
@@ -280,7 +289,7 @@ function DepthImageTabImpl({ albumItemCount, onAlbumChanged, measurements }: Pro
           type="number"
           value={chdTargetInput}
           disabled={isBusy}
-          onChange={(event) => setChdTargetInput(event.target.value)}
+          onChange={(event) => onChdTargetInputChange(event.target.value)}
           sx={CHD_FIELD_SX}
           slotProps={{ htmlInput: { min: 1, step: 1 } }}
         />
