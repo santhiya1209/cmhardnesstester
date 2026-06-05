@@ -9,10 +9,7 @@ export type UseUmPerPixelForObjectiveArgs = {
   calibrationSettings: CalibrationSettings | null;
   calibrationSettingsList: CalibrationSettings[];
   calibrations: Calibration[];
-  // Read imperatively so this does not re-render on unrelated machine fields.
   machineStore: { getSnapshot: () => MachineState | null };
-  // Deps only: re-run resolution when force/hardnessLevel change (they feed
-  // resolveManualCalibration via the machine snapshot).
   machineForce: string | number | null;
   machineHardnessLevel: string | null;
 };
@@ -34,10 +31,6 @@ export function useUmPerPixelForObjective({
   return useMemo<number | null>(() => {
     const targetObjective = (activeObjective && activeObjective.trim()) || null;
     if (!targetObjective) return null;
-    // resolveManualCalibration reads machineState.objective (overridden here),
-    // .force and .hardnessLevel only. Read the latest snapshot imperatively and
-    // re-run when force/hardnessLevel change — so this no longer re-renders App
-    // on unrelated machine fields.
     const snap = machineStore.getSnapshot();
     const calibration = resolveManualCalibration({
       calibrationSettings,

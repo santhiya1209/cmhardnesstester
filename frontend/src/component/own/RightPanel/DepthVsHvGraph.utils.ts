@@ -17,8 +17,6 @@ type MeasurementGraphRow = Measurement & {
   measurementNumber?: unknown;
 };
 
-// Axis keys exposed in the UI. Keep these stable — they're persisted in
-// localStorage and shown in the X/Y selects in the Depth Image tab.
 export const X_AXIS_KEYS = [
   'depthUm',
   'depthMm',
@@ -82,9 +80,6 @@ export function formatHv(value: number): string {
   return value >= 1000 ? Math.round(value).toLocaleString('en-IN') : value.toFixed(2);
 }
 
-// Format a CHD intersection depth for the on-graph label. Microns (rounded
-// integer) when the X axis is Depth(µm); millimetres (2 dp, e.g. "0.42 mm")
-// when the X axis is Depth(mm) — matching the axis the user is viewing.
 export function formatChdDepth(intersection: ChdIntersection, micron: boolean): string {
   return micron
     ? `${Math.round(intersection.distanceUm)} µm`
@@ -130,8 +125,6 @@ function readDepthMm(row: MeasurementGraphRow): number | null {
   return um === null ? null : um / UM_PER_MM;
 }
 
-// Resolve a generic axis value from a row. Returns null when the row doesn't
-// carry the requested field (or it isn't a positive finite number).
 function readAxisValue(
   row: MeasurementGraphRow,
   key: AxisKey,
@@ -154,7 +147,6 @@ function readAxisValue(
         row.unit === 'um' ? row.average : null
       );
     case 'measurementIndex':
-      // 1-based row number (matches the table's # column).
       return sourceIndex + 1;
     case 'hv':
       return readFiniteNumber(row.hv, row.hardness, row.hardnessValue);
@@ -163,9 +155,6 @@ function readAxisValue(
   }
 }
 
-// Build generic {x, y} points for any X/Y axis pair. Skips rows where either
-// axis can't be resolved. Sorted by x ascending (so the connecting line goes
-// left→right) and re-indexed for tooltip / overlay use.
 export function buildAxisGraphPoints(
   measurements: Measurement[],
   xKey: XAxisKey,
@@ -177,9 +166,6 @@ export function buildAxisGraphPoints(
     const y = readAxisValue(row, yKey, sourceIndex);
     const xValid = x !== null && Number.isFinite(x);
     const yValid = y !== null && Number.isFinite(y);
-    // X may legitimately be zero (depth=0 surface). Y must additionally be
-    // positive for the HV axis to make physical sense; for non-HV Y values
-    // (depth, diagonals) zero is also valid, so use the same finite check.
     if (!xValid || !yValid) {
       return [];
     }
@@ -252,9 +238,6 @@ export function buildAxis(values: number[], tickCount: number, includeZero: bool
   return { min: axisMin, max: axisMax, ticks };
 }
 
-// Find where the curve crosses a constant Y value. When the graph is in
-// generic-axis mode this powers the CHD reference line — but it's only
-// meaningful when X is depth and Y is HV. Returns null otherwise.
 export function findGenericYCrossing(
   points: AxisGraphPoint[],
   targetY: number | null

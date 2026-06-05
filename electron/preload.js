@@ -37,6 +37,20 @@ const ALLOWED_INVOKE = new Set([
   'machine:apply-objective-brightness',
   'machine:start-indent',
   'machine:move-turret',
+  'xyz-platform:get-state',
+  'xyz-platform:connect',
+  'xyz-platform:disconnect',
+  'xyz-platform:move-stage',
+  'xyz-platform:stop-stage',
+  'xyz-platform:move-z',
+  'xyz-platform:stop-z',
+  'xyz-platform:lock-z',
+  'xyz-platform:unlock-z',
+  'xyz-platform:set-xy-speed',
+  'xyz-platform:set-z-speed',
+  'xyz-platform:get-position',
+  'xyz-platform:move-center',
+  'xyz-platform:locate-center',
   'app:exit',
 ]);
 
@@ -46,6 +60,7 @@ const ALLOWED_EVENTS = new Set([
   'camera:status',
   'micrometer:state',
   'machine:state',
+  'xyz-platform:state',
 ]);
 
 contextBridge.exposeInMainWorld('api', {
@@ -127,4 +142,38 @@ contextBridge.exposeInMainWorld('machineControl', {
   },
   startIndent: () => ipcRenderer.invoke('machine:start-indent'),
   moveTurret: (direction) => ipcRenderer.invoke('machine:move-turret', { direction }),
+});
+
+// XYZ motion-stage bridge — purpose-built typed surface for live stage
+// actuation. Hardware-only: UI-state persistence stays on the HTTP CRUD layer.
+contextBridge.exposeInMainWorld('xyzPlatform', {
+  getState: () => ipcRenderer.invoke('xyz-platform:get-state'),
+  subscribeState: (listener) => {
+    const wrapped = (_event, state) => listener(state);
+    ipcRenderer.on('xyz-platform:state', wrapped);
+    void ipcRenderer
+      .invoke('xyz-platform:get-state')
+      .then((reply) => {
+        if (reply && reply.state) listener(reply.state);
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[xyz-ipc] initial state failed:', err && err.message ? err.message : err);
+      });
+    return () => ipcRenderer.removeListener('xyz-platform:state', wrapped);
+  },
+  connect: (opts) => ipcRenderer.invoke('xyz-platform:connect', opts || {}),
+  disconnect: () => ipcRenderer.invoke('xyz-platform:disconnect'),
+  moveStage: (direction, speed) =>
+    ipcRenderer.invoke('xyz-platform:move-stage', { direction, speed }),
+  stopStage: () => ipcRenderer.invoke('xyz-platform:stop-stage'),
+  moveZ: (direction, speed) => ipcRenderer.invoke('xyz-platform:move-z', { direction, speed }),
+  stopZ: () => ipcRenderer.invoke('xyz-platform:stop-z'),
+  lockZ: () => ipcRenderer.invoke('xyz-platform:lock-z'),
+  unlockZ: () => ipcRenderer.invoke('xyz-platform:unlock-z'),
+  setXySpeed: (speed) => ipcRenderer.invoke('xyz-platform:set-xy-speed', { speed }),
+  setZSpeed: (speed) => ipcRenderer.invoke('xyz-platform:set-z-speed', { speed }),
+  getPosition: () => ipcRenderer.invoke('xyz-platform:get-position'),
+  moveToCenter: () => ipcRenderer.invoke('xyz-platform:move-center'),
+  locateCenter: () => ipcRenderer.invoke('xyz-platform:locate-center'),
 });

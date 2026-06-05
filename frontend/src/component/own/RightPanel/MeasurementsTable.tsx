@@ -37,9 +37,6 @@ const TABLE_WRAP_SX: SxProps<Theme> = {
   borderColor: 'divider',
   bgcolor: 'background.paper',
 };
-// Dark navy header with white text. The global theme styles
-// `.MuiTableHead-root .MuiTableCell-head` (0,2,0); `&.MuiTableCell-head`
-// raises this to (0,2,1) so it wins.
 const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
   '&.MuiTableCell-head': {
     fontSize: 11,
@@ -55,8 +52,6 @@ const TABLE_HEAD_CELL_SX: SxProps<Theme> = {
     borderBottom: 'none',
   },
 };
-// Zebra striping (very light blue on even rows), light sky-blue selected row
-// with a small blue left indicator, and thin row separators.
 const ZEBRA_EVEN_BG = '#F4F8FD';
 const SELECTED_ROW_BG = tokens.accentSecondary.soft;
 const SELECTED_ROW_INDICATOR = tokens.accentSecondary.base;
@@ -104,16 +99,12 @@ const EMPTY_TEXT_SX: SxProps<Theme> = {
 };
 const BODY_ROW_SX: SxProps<Theme> = {
   cursor: 'pointer',
-  // Thin separators between rows.
   '& > .MuiTableCell-root': {
     borderBottom: `1px solid ${tokens.border.subtle}`,
   },
-  // Zebra: odd rows white, even rows very light blue.
   '&:nth-of-type(odd)': { backgroundColor: tokens.surface.raised },
   '&:nth-of-type(even)': { backgroundColor: ZEBRA_EVEN_BG },
   '&:hover': { backgroundColor: 'action.hover' },
-  // Selected: light sky-blue background (beats zebra via the extra class
-  // specificity) with a small blue left indicator on the first cell.
   '&.Mui-selected': { backgroundColor: SELECTED_ROW_BG },
   '&.Mui-selected:hover': { backgroundColor: SELECTED_ROW_BG },
   '&.Mui-selected > .MuiTableCell-root:first-of-type': {
@@ -147,10 +138,6 @@ function DepthCell({
   registerInputRef,
   onFocusSibling,
 }: DepthCellProps) {
-  // Device branch: read the frozen device value (falling back to depthMm for
-  // rows saved before deviceDepthMm existed). Manual branch: read manualDepthMm
-  // (falling back to depthMm). depthMm is always the effective display value
-  // for legacy rows.
   const deviceDisplay =
     typeof measurement.deviceDepthMm === 'number' && Number.isFinite(measurement.deviceDepthMm)
       ? measurement.deviceDepthMm
@@ -164,8 +151,6 @@ function DepthCell({
   const [draft, setDraft] = useState<string>(
     persistedManual === null ? '' : String(persistedManual)
   );
-  // Keep the input in sync when the row's persisted manual value changes from
-  // outside (e.g. a different row was edited and the list refetched).
   useEffect(() => {
     setDraft(persistedManual === null ? '' : String(persistedManual));
   }, [persistedManual]);
@@ -183,7 +168,6 @@ function DepthCell({
     const trimmed = draft.trim();
     const next = trimmed === '' ? null : Number(trimmed);
     if (trimmed !== '' && !Number.isFinite(next)) {
-      // Reject non-numeric input â€” restore last persisted value.
       setDraft(persistedManual === null ? '' : String(persistedManual));
       return false;
     }
@@ -209,8 +193,6 @@ function DepthCell({
           event.preventDefault();
           if (commit()) onFocusSibling?.(measurement.id, 'next');
         } else if (event.key === 'Tab') {
-          // Prevent the browser from tabbing into the next table cell (a
-          // non-input <td>) â€” we move focus to the next Depth input instead.
           event.preventDefault();
           if (commit()) {
             onFocusSibling?.(measurement.id, event.shiftKey ? 'prev' : 'next');
@@ -268,8 +250,6 @@ function formatDepth(value: number | null | undefined): string {
     : formatMicrometerValue(value);
 }
 
-// Objective indicator dot: 10X => orange, 40X => blue, anything else (IND,
-// legacy values) => no dot.
 function objectiveDotColor(objective: string | null | undefined): string | null {
   const key = String(objective ?? '').trim().toUpperCase();
   if (key === '10X') return tokens.status.warning;
@@ -287,8 +267,6 @@ function MeasurementsTableImpl({
   targetMinHv,
   targetMaxHv,
 }: Props) {
-  // Stable ref map + latest-measurements ref so the Enter/Tab handler can
-  // resolve the next row even when the user edits during a refetch.
   const depthInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const measurementsRef = useRef(measurements);
   useEffect(() => {
@@ -330,10 +308,6 @@ function MeasurementsTableImpl({
   useEffect(() => {
     const first = measurements[0];
     if (first) {
-      // Per-column binding so we can prove which raw measurement field each
-      // table cell reads from. If the measurement-row-save-success log shows
-      // d1Um=84.5 but [row-table-bind] column=D1(um) value=- prints, the bug
-      // is in the table mapping; otherwise the row never carried d1Um.
     }
   }, [measurements]);
 
@@ -406,9 +380,6 @@ function MeasurementsTableImpl({
                 targetMinHv,
                 targetMaxHv
               ).color;
-              // Target band color (red in-range / blue out-of-range) takes
-              // priority; with no target set, the selected row's hardness shows
-              // blue as the active indicator, otherwise inherits normal text.
               const hardnessColor =
                 hardnessTargetColor !== 'inherit'
                   ? hardnessTargetColor

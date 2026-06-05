@@ -43,10 +43,6 @@ export type AppDialogsProps = {
   testRecordMeasurementIds: string[];
 };
 
-// Pure dialog/snackbar composition lifted out of App.tsx. Owns NO state and NO
-// business logic — every open flag, callback, and datum arrives through props.
-// JSX, prop names, and inline-callback identities are preserved exactly as they
-// were inline in App so behavior is unchanged.
 function AppDialogs({
   activeDialog,
   closeDialog,
@@ -68,9 +64,6 @@ function AppDialogs({
   measurements,
   testRecordMeasurementIds,
 }: AppDialogsProps) {
-  // Single stable handler for every dialog's onStatusChange. Replaces the
-  // per-dialog inline arrows so all dialogs share one referentially-stable
-  // callback. Status message format is unchanged.
   const handleDialogStatusChange = useCallback(
     (message: string) => setStatusMessage(`System Status: ${message}`),
     [setStatusMessage]

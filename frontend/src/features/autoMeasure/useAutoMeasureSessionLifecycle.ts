@@ -51,8 +51,6 @@ export function useAutoMeasureSessionLifecycle({
   setAutoMeasureSessionId,
   autoMeasureSessionIdRef,
 }: UseAutoMeasureSessionLifecycleArgs): UseAutoMeasureSessionLifecycle {
-  // Clears Auto Measure overlay/session state without touching committed row
-  // fingerprints. Duplicate suppression must survive overlay clears.
   const clearAutoMeasureOverlay = useCallback((reason: string) => {
     // eslint-disable-next-line no-console
     console.log(`[auto-overlay-clear] reason=${reason}`);
@@ -68,13 +66,8 @@ export function useAutoMeasureSessionLifecycle({
     committedAutoMeasureFrameRef.current = null;
     previewMeasurementRef.current = null;
     autoMeasurementIdRef.current = null;
-    // Cancel any pending coalesced trailing detection and mark the settings
-    // dialog closed in the ref the in-flight finally block consults so a
-    // queued preview run does not repaint after we just cleared.
     autoMeasurePendingPreviewRef.current = null;
     autoMeasureSettingsOpenRef.current = false;
-    // End the current Auto Measure session: any in-flight detection callback
-    // that observes the bumped sessionId will refuse to paint.
     setAutoMeasureSessionActive(false);
     setAutoMeasureCapturedFrameId(null);
     setAutoMeasureSessionId((id) => {

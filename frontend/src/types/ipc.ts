@@ -29,6 +29,15 @@ import type {
   MachineState,
   TurretDirection,
 } from './machine';
+import type {
+  XyzCommandResult,
+  XyzDirection,
+  XyzStageState,
+  XyzStageStateResponse,
+  XySpeed,
+  ZDirection,
+  ZSpeed,
+} from './xyzPlatform';
 
 export type DeviceOpenResponse = {
   ok: true;
@@ -137,14 +146,29 @@ export type IpcInvokeChannel =
   | 'machine:set-hardness-level'
   | 'machine:apply-objective-brightness'
   | 'machine:start-indent'
-  | 'machine:move-turret';
+  | 'machine:move-turret'
+  | 'xyz-platform:get-state'
+  | 'xyz-platform:connect'
+  | 'xyz-platform:disconnect'
+  | 'xyz-platform:move-stage'
+  | 'xyz-platform:stop-stage'
+  | 'xyz-platform:move-z'
+  | 'xyz-platform:stop-z'
+  | 'xyz-platform:lock-z'
+  | 'xyz-platform:unlock-z'
+  | 'xyz-platform:set-xy-speed'
+  | 'xyz-platform:set-z-speed'
+  | 'xyz-platform:get-position'
+  | 'xyz-platform:move-center'
+  | 'xyz-platform:locate-center';
 
 export type IpcEventChannel =
   | 'app:status'
   | 'camera:frame'
   | 'camera:status'
   | 'micrometer:state'
-  | 'machine:state';
+  | 'machine:state'
+  | 'xyz-platform:state';
 
 export type IpcInvokeMap = {
   'app:getInfo': { request: void; response: AppInfo };
@@ -215,6 +239,29 @@ export type IpcInvokeMap = {
   };
   'machine:start-indent': { request: void; response: MachineApiResponse };
   'machine:move-turret': { request: { direction: TurretDirection }; response: MachineApiResponse };
+  'xyz-platform:get-state': { request: void; response: XyzStageStateResponse };
+  'xyz-platform:connect': {
+    request: { port: string; baudRate?: number } | void;
+    response: XyzStageStateResponse;
+  };
+  'xyz-platform:disconnect': { request: void; response: XyzStageStateResponse };
+  'xyz-platform:move-stage': {
+    request: { direction: XyzDirection; speed: XySpeed };
+    response: XyzCommandResult;
+  };
+  'xyz-platform:stop-stage': { request: void; response: XyzCommandResult };
+  'xyz-platform:move-z': {
+    request: { direction: ZDirection; speed: ZSpeed };
+    response: XyzCommandResult;
+  };
+  'xyz-platform:stop-z': { request: void; response: XyzCommandResult };
+  'xyz-platform:lock-z': { request: void; response: XyzCommandResult };
+  'xyz-platform:unlock-z': { request: void; response: XyzCommandResult };
+  'xyz-platform:set-xy-speed': { request: { speed: XySpeed }; response: XyzCommandResult };
+  'xyz-platform:set-z-speed': { request: { speed: ZSpeed }; response: XyzCommandResult };
+  'xyz-platform:get-position': { request: void; response: XyzCommandResult };
+  'xyz-platform:move-center': { request: void; response: XyzCommandResult };
+  'xyz-platform:locate-center': { request: void; response: XyzCommandResult };
 };
 
 export type IpcEventPayloadMap = {
@@ -223,6 +270,7 @@ export type IpcEventPayloadMap = {
   'camera:status': [Partial<CameraStatus>];
   'micrometer:state': [MicrometerState];
   'machine:state': [MachineState];
+  'xyz-platform:state': [XyzStageState];
 };
 
 export interface ElectronApi {
@@ -249,4 +297,22 @@ export interface MachineControlApi {
   setValue(key: MachineControlKey, value: string | number): Promise<MachineApiResponse>;
   startIndent(): Promise<MachineApiResponse>;
   moveTurret(direction: TurretDirection): Promise<MachineApiResponse>;
+}
+
+export interface XyzPlatformApi {
+  getState(): Promise<XyzStageStateResponse>;
+  subscribeState(listener: (state: XyzStageState) => void): () => void;
+  connect(opts: { port: string; baudRate?: number }): Promise<XyzStageStateResponse>;
+  disconnect(): Promise<XyzStageStateResponse>;
+  moveStage(direction: XyzDirection, speed: XySpeed): Promise<XyzCommandResult>;
+  stopStage(): Promise<XyzCommandResult>;
+  moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;
+  stopZ(): Promise<XyzCommandResult>;
+  lockZ(): Promise<XyzCommandResult>;
+  unlockZ(): Promise<XyzCommandResult>;
+  setXySpeed(speed: XySpeed): Promise<XyzCommandResult>;
+  setZSpeed(speed: ZSpeed): Promise<XyzCommandResult>;
+  getPosition(): Promise<XyzCommandResult>;
+  moveToCenter(): Promise<XyzCommandResult>;
+  locateCenter(): Promise<XyzCommandResult>;
 }

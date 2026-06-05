@@ -10,7 +10,6 @@ import type {
 } from '@/types/calibrationSettings';
 import { apiClient } from '../_client';
 
-// Calibrations CRUD + bulk ops
 export const getCalibrations = () => apiClient.get<Calibration[]>('/api/calibrations');
 
 export const createCalibration = (payload: CalibrationSavePayload) =>
@@ -27,7 +26,6 @@ export const exportCalibrations = () =>
 export const importCalibrations = (payload: CalibrationImportPayload) =>
   apiClient.post<Calibration[]>('/api/calibrations/import', payload);
 
-// Calibration settings CRUD
 export const getCalibrationSettings = () =>
   apiClient.get<CalibrationSettings[]>('/api/calibration-settings');
 

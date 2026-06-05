@@ -26,7 +26,6 @@ export type ConvertTargetType =
 
 type Table = ReadonlyArray<readonly [hv: number, value: number]>;
 
-// Ascending HV. Values sourced from ASTM E140 Table 1 / Table 6.
 const HBW_TABLE: Table = [
   [85, 85], [100, 100], [115, 115], [130, 130], [150, 150], [170, 170],
   [190, 190], [210, 210], [240, 240], [270, 270], [300, 300], [340, 340],
@@ -41,12 +40,6 @@ const HK_TABLE: Table = [
   [700, 720], [750, 772], [800, 822], [850, 873], [900, 924], [940, 964],
 ];
 
-// HRB/HRF/HR15T/HR30T/HR45T are formally defined by ASTM E140 only up to
-// HV ≈ 240 (soft steels, steel-ball indenter — harder material deforms the
-// ball). Anchors at HV > 240 below are extrapolations capped at each scale's
-// physical maximum (HRB/HRF=100, HR15T=93, HR30T=82, HR45T=72) so high-HV
-// indents render a numeric value instead of N/A. They are NOT certified
-// conversions — calibration reports should use Vickers directly.
 const HRB_TABLE: Table = [
   [85, 41.5], [90, 48.0], [95, 52.0], [100, 56.2], [105, 58.7], [110, 62.3],
   [115, 65.7], [120, 68.5], [125, 71.5], [130, 73.4], [135, 75.0], [140, 76.6],

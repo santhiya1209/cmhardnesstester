@@ -66,8 +66,6 @@ export function renderChdReference(
   const x = chdIntersection ? plot.sx(chdIntersection.distanceUm) : null;
   const labelY = Math.max(pad.top + 14, y - 8);
 
-  // Two-line annotation near the crossing point. The white halo (paint-order
-  // stroke) keeps the red text legible over gridlines and the curve.
   const labelW = 100;
   const overflowsRight = x !== null && x + 10 + labelW > size.w - pad.right;
   const labelX = x !== null ? (overflowsRight ? x - 10 : x + 10) : 0;

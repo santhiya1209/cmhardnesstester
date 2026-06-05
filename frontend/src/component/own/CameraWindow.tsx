@@ -147,9 +147,6 @@ export type CameraWindowHandle = {
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 4;
 const ZOOM_STEP = 1.25;
-// Status-bar X/Y are reported in TRUE image-pixel coordinates (0..width-1,
-// 0..height-1) for the fixed 2592×1944 sensor — independent of zoom, panel
-// size, and CSS scaling. Defaults sit at image center until the first move.
 const DEFAULT_CAMERA_X = 1296;
 const DEFAULT_CAMERA_Y = 972;
 
@@ -493,15 +490,8 @@ function CameraWindowImpl(
     const prev = turretMovingPrevRef.current;
     turretMovingPrevRef.current = turretMoving;
     if (turretMoving && !prev) {
-      // Do NOT clear the live canvas — keep the last painted frame visible so
-      // the operator sees the previous image instead of blank black during
-      // physical turret rotation. The overlay render gate (useOverlayLifecycle)
-      // already hides yellow lines; the live image should remain.
       // eslint-disable-next-line no-console
       console.log('[camera-canvas] action=preserve-last-frame reason=turret-moving');
-      // Unfreeze the Auto Measure freeze canvas. The frozen capture held a
-      // frame for detection; clearing it here is safe because the overlay
-      // lifcycle gate already suppresses the yellow lines.
       const snap = freezeCanvasRef.current;
       if (snap) {
         const snapCtx = snap.getContext('2d');
@@ -509,9 +499,6 @@ function CameraWindowImpl(
       }
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
-      // Bump epoch so in-flight frames from before the turret move are dropped
-      // from the decode/paint queue. New post-move frames paint normally on top
-      // of whatever is currently visible on the canvas.
       bumpFrameEpochOnCanvasClear();
       return;
     }
@@ -585,9 +572,6 @@ function CameraWindowImpl(
       imageSourceRef.current = 'live-camera';
       setFrozen(false);
     }
-    // Do NOT clear the live canvas on objective refresh — preserve the last
-    // painted frame so the camera does not go blank during objective change.
-    // The epoch bump in the turretMoving effect already dropped stale frames.
     // eslint-disable-next-line no-console
     console.log('[camera-canvas] action=preserve-last-frame reason=objective-refresh');
   }, [objectiveRefreshKey, frozen, manualMeasureObjective]);
@@ -691,8 +675,6 @@ function CameraWindowImpl(
       console.log(
         `[camera-coordinate] displayX=${Math.round(displayPoint.x)} displayY=${Math.round(displayPoint.y)} imageX=${Math.round(imagePoint.x)} imageY=${Math.round(imagePoint.y)} canvasWidth=${canvasRef.current?.width ?? 0} canvasHeight=${canvasRef.current?.height ?? 0} imageWidth=${imageSize.width} imageHeight=${imageSize.height}`
       );
-      // TRUE image-pixel coordinates (0..width-1 / 0..height-1). displayToImage
-      // already cancels zoom/panel/CSS scaling; clamp to the valid index range.
       setCursorCoordinate({
         x: Math.max(0, Math.min(imageSize.width - 1, imagePoint.x)),
         y: Math.max(0, Math.min(imageSize.height - 1, imagePoint.y)),

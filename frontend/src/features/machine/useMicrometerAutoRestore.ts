@@ -45,7 +45,6 @@ export function useMicrometerAutoRestore(): void {
       // eslint-disable-next-line no-console
       console.log(`[micrometer-restore] enabled=true port=${comPort}`);
 
-      // Skip if already open (e.g. device:open was faster).
       try {
         const stateReply = await getMicrometerState();
         if (stateReply.ok && stateReply.state.connected) {
@@ -54,10 +53,8 @@ export function useMicrometerAutoRestore(): void {
           return;
         }
       } catch {
-        // State check optional — proceed with open attempt.
       }
 
-      // Verify the port is actually present in the OS before trying to open.
       const listing = await listSerialPorts().catch(() => ({
         ok: false as const,
         ports: [],

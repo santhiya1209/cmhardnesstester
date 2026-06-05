@@ -189,9 +189,6 @@ export function upsertCommittedAutoMeasureFingerprint(
   return next;
 }
 
-// Per-objective Auto Measure defaults. The user's machine-tuned values.
-// These override whatever is currently in the Auto Measure Settings UI
-// when a detection runs, and reset the UI when the objective changes.
 const AUTO_MEASURE_OBJECTIVE_DEFAULTS: Record<string, { smoothing: number; threshold: number }> = {
   '10X': { smoothing: 4, threshold: 44 },
   '40X': { smoothing: 6, threshold: 91 },
@@ -306,7 +303,6 @@ function finitePoint(point: { x: number; y: number }): boolean {
 }
 
 export function logAutoMeasurePhase(_phase: string, _context: AutoMeasureLogContext): void {
-  // no-op (logging stripped)
 }
 
 export function hasValidAutoMeasureCorners(result: VickersAutoMeasureSuccess): boolean {
@@ -627,10 +623,6 @@ export function graphicsFromAutoMeasureResult(
   result: VickersAutoMeasureSuccess,
   objective?: string | null
 ): AutoMeasureGraphics {
-  // All objectives — 10X included — now use the four-guides layout that
-  // 40X has always used. The native addon runs the same 4-edge side-fit +
-  // intersection pipeline for every objective (`twoLineMode` is disabled),
-  // and the frontend renders the same yellow edge/guide overlay.
   const norm = (objective ?? '').trim().toUpperCase();
   const lineLayout: 'four-guides' | 'two-diagonals' = 'four-guides';
   if (norm === '10X') {

@@ -61,36 +61,19 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const busy = loading || saving;
   const errorMessage = loadError ?? saveError ?? liveApplyError;
 
-  // Throttle live-apply: skip new emissions while one is still in flight,
-  // but always re-send the most recent value once the in-flight call settles.
   const gainInFlightRef = useRef(false);
   const gainPendingRef = useRef<number | null>(null);
   const gainLastSentValueRef = useRef<number | null>(null);
   const exposureInFlightRef = useRef(false);
   const exposurePendingRef = useRef<number | null>(null);
-  // True while the user is actively dragging the exposure slider. We skip
-  // reconciling the SDK reply value back into state during a drag, otherwise
-  // the thumb snaps backward to the previously-applied value mid-drag and
-  // the slider feels jittery instead of smooth.
   const exposureDraggingRef = useRef(false);
-  // Throttle drag-time IPC sends to one every ~100ms so the slider stays
-  // smooth even when the SDK is slow. The final commit value is always sent
-  // immediately bypassing the throttle.
   const exposureThrottleTimerRef = useRef<number | null>(null);
   const exposureLastSentValueRef = useRef<number | null>(null);
   const exposureLastSentAtRef = useRef<number>(0);
   const EXPOSURE_DRAG_THROTTLE_MS = 100;
-  // Value currently applied ON THE DEVICE. Distinct from *LastSentValueRef
-  // (which tracks the last value queued through the throttle). A send whose
-  // clamped value equals this is a no-op: applying it would restart the
-  // camera stream (frameId back to 1) for no visual change, so we skip the
-  // native call + the dropPendingCameraFrames boundary entirely. Seeded from
-  // the persisted setting on open and updated on every successful apply.
   const appliedGainRef = useRef<number | null>(null);
   const appliedExposureMsRef = useRef<number | null>(null);
 
-  // Floating-panel drag state. null = use the initial anchored placement;
-  // once the user grabs the header, becomes an explicit (x, y).
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const dragStateRef = useRef<{
     pointerId: number;
@@ -108,8 +91,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     }
   }, [open, refetch, refetchStatus]);
 
-  // Pull SDK exposure/gain ranges whenever the dialog opens against an open
-  // camera. Falls back silently to hardcoded defaults if the SDK is offline.
   useEffect(() => {
     if (!open || !status.open) return;
     let cancelled = false;
@@ -153,9 +134,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    // Seed the device-applied baseline from the persisted setting. On camera
-    // open the backend applies persisted gain/exposure, so device == persisted
-    // here — this lets "open dialog, Save without changing" skip a no-op apply.
     if (data) {
       appliedGainRef.current = data.analogGain ?? null;
       appliedExposureMsRef.current = data.exposureTimeMs ?? null;
@@ -173,19 +151,9 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const sendGain = useCallback(
     async (rawValue: number) => {
       const value = clamp(rawValue, gainRange.min, gainRange.max);
-      // No-op guard: the value is already applied on the device. Skip the
-      // native call + the dropPendingCameraFrames boundary so we don't restart
-      // the stream (frameId → 1) for no visual change.
       if (appliedGainRef.current !== null && value === appliedGainRef.current) {
         return;
       }
-      // Mark the value applied SYNCHRONOUSLY, before the boundary + IPC. The
-      // ref tracks the last requested (clamped) value — not the device reply —
-      // so an identical follow-up request (slider re-emit, Save path, throttle
-      // trailing edge) is skipped even if the device quantizes its reply to a
-      // slightly different number, and concurrent same-value calls can't both
-      // pass the guard before a reply lands. Restored on failure so a genuine
-      // retry isn't blocked.
       const previousAppliedGain = appliedGainRef.current;
       appliedGainRef.current = value;
       // eslint-disable-next-line no-console
@@ -217,13 +185,9 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const sendExposure = useCallback(
     async (rawValueMs: number) => {
       const valueMs = clamp(rawValueMs, exposureRange.min, exposureRange.max);
-      // No-op guard: already applied on the device — skip to avoid a stream
-      // restart (frameId → 1) for no visual change.
       if (appliedExposureMsRef.current !== null && valueMs === appliedExposureMsRef.current) {
         return;
       }
-      // Mark applied SYNCHRONOUSLY before the boundary + IPC (see sendGain for
-      // the rationale). Tracks the requested clamped value, restored on failure.
       const previousAppliedExposure = appliedExposureMsRef.current;
       appliedExposureMsRef.current = valueMs;
       // eslint-disable-next-line no-console
@@ -242,9 +206,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
             Number.isFinite(reply.exposureMs) &&
             !exposureDraggingRef.current
           ) {
-            // Only reconcile to the device-reported value when the user is
-            // not actively dragging. Mid-drag reconciliation causes the
-            // slider thumb to snap backward and feel jittery.
             setExposureMs(reply.exposureMs);
           }
           setLiveApplyError(null);
@@ -262,9 +223,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const applyGainLive = useCallback(
     (value: number) => {
       if (!liveAvailable) return;
-      // MUI Slider's onChange + onChangeCommitted fire with the same value on
-      // a click without drag. Skip if this exact value has already been sent
-      // (or is currently queued) â€” one UI change = one IPC.
       if (
         gainLastSentValueRef.current === value &&
         gainPendingRef.current === null
@@ -299,15 +257,11 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const flushExposureLive = useCallback(
     (valueMs: number) => {
       if (exposureInFlightRef.current) {
-        // MUI Slider's onChange + onChangeCommitted fire with the same value
-        // on a click without drag. If the in-flight IPC already carries this
-        // value, don't queue a redundant follow-up send.
         if (exposureLastSentValueRef.current === valueMs) return;
         exposurePendingRef.current = valueMs;
         return;
       }
       if (exposureLastSentValueRef.current === valueMs) {
-        // Duplicate of last sent â€” don't re-emit.
         return;
       }
       exposureInFlightRef.current = true;
@@ -335,13 +289,9 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const applyExposureLive = useCallback(
     (valueMs: number) => {
       if (!liveAvailable) return;
-      // While the user is dragging, throttle IPC sends to one per
-      // EXPOSURE_DRAG_THROTTLE_MS. The final value is forced through by
-      // handleExposureCommit on pointer release.
       if (exposureDraggingRef.current) {
         const sinceLast = Date.now() - exposureLastSentAtRef.current;
         if (sinceLast < EXPOSURE_DRAG_THROTTLE_MS) {
-          // Coalesce into a trailing-edge send.
           exposurePendingRef.current = valueMs;
           if (exposureThrottleTimerRef.current === null) {
             const wait = EXPOSURE_DRAG_THROTTLE_MS - sinceLast;
@@ -379,8 +329,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   const handleExposureChange = useCallback(
     (_: Event, value: number | number[]) => {
       if (typeof value !== 'number') return;
-      // Mark a drag in progress on the first onChange. onChangeCommitted
-      // clears it. While set, IPC replies do not overwrite the local value.
       exposureDraggingRef.current = true;
       setExposureMs(value);
       applyExposureLive(value);
@@ -392,7 +340,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     (_: unknown, value: number | number[]) => {
       exposureDraggingRef.current = false;
       if (typeof value !== 'number') return;
-      // Cancel any pending throttled send â€” the commit value is authoritative.
       if (exposureThrottleTimerRef.current !== null) {
         window.clearTimeout(exposureThrottleTimerRef.current);
         exposureThrottleTimerRef.current = null;
@@ -403,7 +350,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     [flushExposureLive]
   );
 
-  // Clean up any pending throttle timer on unmount or dialog close.
   useEffect(() => {
     return () => {
       if (exposureThrottleTimerRef.current !== null) {
@@ -414,8 +360,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
   }, []);
 
   const handleSave = useCallback(async () => {
-    // Save is disabled while the camera is offline; guard defensively too.
-    // We never persist values the SDK hasn't confirmed.
     if (!liveAvailable) {
       // eslint-disable-next-line no-console
       console.log(`[camera-settings-persist][apply-skip] reason=camera-not-open key=gain value=${analogGain}`);
@@ -430,9 +374,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
     // eslint-disable-next-line no-console
     console.log(`[camera-settings-persist][apply-ready] key=exposure value=${exposureMs}`);
     try {
-      // Apply to the real camera SDK FIRST. Persist only the values the SDK
-      // confirms, and only if BOTH applies succeed — never persist fake or
-      // unconfirmed values, never fall back to defaults.
       dropPendingCameraFrames('gain-change');
       const gainReply = await window.hardnessCamera.setGain(analogGain);
       if (!gainReply.ok) {
@@ -471,12 +412,10 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       console.log(`[camera-settings-persist][verify] key=gain value=${confirmedGain}`);
       // eslint-disable-next-line no-console
       console.log(`[camera-settings-persist][verify] key=exposure value=${confirmedExposureMs}`);
-      // Reconcile the UI + device-applied baseline to the SDK-confirmed values.
       setAnalogGain(confirmedGain);
       setExposureMs(confirmedExposureMs);
       appliedGainRef.current = confirmedGain;
       appliedExposureMsRef.current = confirmedExposureMs;
-      // Persist the SDK-confirmed values to SQLite.
       // eslint-disable-next-line no-console
       console.log(`[camera-settings-save] gain=${confirmedGain} exposure=${confirmedExposureMs}`);
       await saveCameraSetting({
@@ -498,9 +437,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   const handleCancel = useCallback(() => {
     if (liveAvailable && data) {
-      // Restore persisted values through the guarded senders so that, if the
-      // device is already at those values (user opened but changed nothing),
-      // the no-op guard skips the apply and no stream restart occurs.
       void sendGain(data.analogGain);
       void sendExposure(data.exposureTimeMs);
     }
@@ -509,9 +445,6 @@ function CameraSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
 
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
-    // Don't start a drag if pointerdown originated inside the close button (or
-    // any interactive child). Otherwise setPointerCapture swallows the click
-    // and the X looks dead.
     const target = event.target as HTMLElement | null;
     if (target && target.closest('button')) return;
     const panel = event.currentTarget.parentElement as HTMLElement | null;

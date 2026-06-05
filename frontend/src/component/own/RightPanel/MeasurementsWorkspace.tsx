@@ -92,14 +92,7 @@ export type MeasurementDisplayValues = {
   hvDisplay: string;
   hvType: string;
   hardnessValue: string;
-  // Resolved color for the bottom HV/Hardness value text: red when the row's HV
-  // is within [targetMin, targetMax], blue when outside, 'inherit' when no valid
-  // target is set (display normally). Derived from getHardnessColor.
   hvTargetColor: string;
-  // Forwarded (read-only) for the bottom Machine Control HV/HARDNESS cards.
-  // These reuse the same displayedMeasurement + convert state — no new source
-  // of truth. onConvertTypeChange is the SAME handler the top row uses, so the
-  // bottom card's dropdown stays in sync with the top one.
   qualified: string | null;
   timestamp: string | null;
   convertDisabled: boolean;
@@ -139,8 +132,6 @@ function MeasurementsWorkspaceImpl({
   useEffect(() => {
   }, []);
 
-  // Tracks the most recent measurement we've seen so we can emit the
-  // [hardness-original-set] trace when a fresh Auto/Manual result lands.
   const lastSeenMeasurementIdRef = useRef<string | null>(null);
   useEffect(() => {
     const latest = measurements[0];
@@ -162,9 +153,6 @@ function MeasurementsWorkspaceImpl({
   const mutationError = error ?? deleteError ?? convertSyncError;
   const busy = loading || deleting;
 
-  // Target-band color for the displayed HV (red in-range / blue out-of-range /
-  // 'inherit' when no valid target). Forwarded to the bottom Machine Control
-  // HV/Hardness cards via onDisplayValuesChange.
   const hvTargetColor = useMemo(
     () =>
       getHardnessColor(
@@ -175,11 +163,6 @@ function MeasurementsWorkspaceImpl({
     [displayedMeasurement, targetMinHv, targetMaxHv]
   );
 
-  // Single source of truth for the convert-value box. Computed live from the
-  // currently selected dropdown type + the displayed row's HV so the box
-  // never goes blank between dropdown change and server refetch. Always
-  // resolves to a non-empty string â€” "N/A" when conversion is unsupported
-  // or out of range.
   const displayConvertValue = useMemo<string>(() => {
     const hv =
       typeof displayedMeasurement?.hv === 'number' && Number.isFinite(displayedMeasurement.hv)
@@ -202,17 +185,12 @@ function MeasurementsWorkspaceImpl({
     return display;
   }, [displayedMeasurement, convertType]);
 
-  // Sync the dropdown to whichever row is being shown so switching selection
-  // reflects that row's saved convertType. Empty/legacy rows show 'HV'.
   useEffect(() => {
     const saved = displayedMeasurement?.convertType;
     if (saved && CONVERT_TYPE_OPTIONS.includes(saved as (typeof CONVERT_TYPE_OPTIONS)[number])) {
       setConvertType(saved as (typeof CONVERT_TYPE_OPTIONS)[number]);
     } else {
       setConvertType('HV');
-      // Emitted on every measurement-success path that ends up landing here
-      // (Auto Measure, Manual Measure, calibration auto-row) because none of
-      // those write convertType, so this branch is the auto-default.
       if (displayedMeasurement) {
       }
     }
@@ -225,31 +203,9 @@ function MeasurementsWorkspaceImpl({
       if (!target) {
         return;
       }
-      // Original HV is the row's existing hv â€” it is NEVER overwritten by
-      // the conversion path below. The convertValue is a derived/companion
-      // field stored alongside.
       const originalHv = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
-      // Analytical Vickersâ†’target conversion (see utils/hardnessConvert.ts).
-      // These are widely-used approximations for hardened/soft steel, NOT
-      // ISO 18265 / E140 table-grade values. Returns `null` when the input
-      // HV falls outside the target scale's reasonable range â€” the UI then
-      // renders a dash, which is the correct industrial behaviour (don't
-      // fabricate a number you can't justify).
       const convertValue = convertVickers(originalHv, next as ConvertTargetType);
       try {
-        // IMPORTANT: We must explicitly forward every nullable-with-default
-        // field from the existing row. Reason: the backend's
-        // `UpdateMeasurementSchema` is built via `buildUpdateSchema(...).partial()`,
-        // but the underlying `MeasurementPayloadSchema` declares many fields
-        // as `.nullable().default(null)`. Zod's `.partial()` does NOT strip
-        // the `.default(null)`, so any nullable field absent from the request
-        // body is parsed as `null` (not `undefined`). The service's
-        // `updateEntity` then reads `input.hv === undefined ? current.hv : input.hv`
-        // and stores `null`, wiping the original Vickers value.
-        //
-        // Until the schema is fixed properly (rebuild buildUpdateSchema to
-        // strip defaults), this row passes through every preservable field
-        // so partial updates here are non-destructive.
         await updateMeasurement(target.id, {
           d1: target.d1,
           d2: target.d2,
@@ -280,8 +236,6 @@ function MeasurementsWorkspaceImpl({
     [displayedMeasurement, refetch]
   );
 
-  // Stable string-typed wrapper so the forwarded bottom-card dropdown can call
-  // the exact same convert handler the top row uses (single source of truth).
   const handleConvertTypeChangeValue = useCallback(
     (value: string) => {
       void handleConvertTypeChange(value as (typeof CONVERT_TYPE_OPTIONS)[number]);
@@ -327,11 +281,6 @@ function MeasurementsWorkspaceImpl({
     async (measurementId: string, depthMm: number | null) => {
       const target = measurements.find((m) => m.id === measurementId);
       if (!target) return;
-      // The backend's buildUpdateSchema injects `null` defaults for fields
-      // missing from the PUT body (same trap documented on the convertType
-      // handler above). A naive `{depthMm, depthSource, manualDepthMm}` PUT
-      // therefore wipes convertType/convertValue/hv to null. Pass every
-      // preservable field through so the partial update is non-destructive.
       const convertValue =
         typeof target.convertValue === 'number' ? target.convertValue : null;
       try {

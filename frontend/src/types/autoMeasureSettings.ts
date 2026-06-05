@@ -1,9 +1,6 @@
 export const IMAGE_TYPE_OPTIONS = ['HBW-A', 'HBW-B', 'HBW-C', 'HBW-EX', 'HV-1', 'HV-2', 'HV-3'] as const;
 export const OBJECTIVE_FOR_MEASURE_OPTIONS = ['10X', '40X'] as const;
 
-// Machine-tuned per-objective defaults for the Auto Measure pipeline.
-// Mirrored in App.tsx detection paths so the values stay in lockstep when the
-// active objective changes (machine-confirmed or PC-driven).
 export const AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE: Record<
   '10X' | '40X',
   { smoothing: number; threshold: number }
@@ -28,8 +25,6 @@ export type AutoMeasureSettingsPayload = {
   turretAfterImpress: boolean;
   measureAfterImpress: boolean;
   objectiveForMeasure: ObjectiveForMeasure;
-  // Derived (kept so the existing native bridge / pipeline keeps working without
-  // a wider refactor). UI never edits these directly.
   imageType: ImageType;
   thresholdMode: ThresholdMode;
   manualThreshold: number;
@@ -55,7 +50,6 @@ export const DEFAULT_AUTO_MEASURE_SETTINGS: AutoMeasureSettingsPayload = {
 };
 
 type LegacyAutoMeasureSettings = Partial<AutoMeasureSettingsPayload> & {
-  // tolerated on input only
   erosion?: number;
   dilation?: number;
   factor?: number;

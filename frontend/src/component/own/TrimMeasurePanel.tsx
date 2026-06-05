@@ -25,9 +25,6 @@ const SPEED_DELTA: Record<TrimSpeed, number> = {
 type Props = {
   open: boolean;
   onClose: () => void;
-  // Nudge an existing yellow auto-measure corner by (dx, dy). The parent
-  // owns the auto-measure overlay state and applies the offset to the
-  // corresponding existing line — Trim Measure does NOT draw new lines.
   onAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
 };
 
@@ -78,12 +75,6 @@ const SPEED_BTN_SX: SxProps<Theme> = {
   fontWeight: 600,
 };
 
-// (group, direction) → which existing yellow corner moves and on which axis.
-// Group → corner mapping per spec:
-//   centerTop    → top corner    (vertical axis only)
-//   centerBottom → bottom corner (vertical axis only)
-//   left         → left corner   (horizontal axis only)
-//   right        → right corner  (horizontal axis only)
 function resolveAdjust(
   group: TrimGroup,
   direction: TrimDirection,
@@ -138,7 +129,6 @@ function TrimMeasurePanelImpl({ open, onClose, onAdjust }: Props) {
       </Box>
 
       <Box sx={GRID_SX}>
-        {/* Left group: ← → moves left corner along X */}
         <Stack sx={SIDE_SX}>
           <IconButton
             size="small"
@@ -158,7 +148,6 @@ function TrimMeasurePanelImpl({ open, onClose, onAdjust }: Props) {
           </IconButton>
         </Stack>
 
-        {/* Center: ↑ ↓ [Speed] ↑ ↓ */}
         <Box sx={CENTER_SX}>
           <IconButton
             size="small"
@@ -203,7 +192,6 @@ function TrimMeasurePanelImpl({ open, onClose, onAdjust }: Props) {
           </IconButton>
         </Box>
 
-        {/* Right group: ← → moves right corner along X */}
         <Stack sx={SIDE_SX}>
           <IconButton
             size="small"

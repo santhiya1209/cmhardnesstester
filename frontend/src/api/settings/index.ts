@@ -15,7 +15,6 @@ import type {
 } from '@/types/reportHeaderSetting';
 import { apiClient } from '../_client';
 
-// Auto-measure settings
 export const getAutoMeasureSettings = () =>
   apiClient.get<AutoMeasureSettings[]>('/api/auto-measure-settings');
 
@@ -27,7 +26,6 @@ export const updateAutoMeasureSettings = (
   payload: AutoMeasureSettingsPayload
 ) => apiClient.put<AutoMeasureSettings>(`/api/auto-measure-settings/${id}`, payload);
 
-// Depth-image settings
 export const getDepthImageSettings = () =>
   apiClient.get<DepthImageSetting[]>('/api/depth-image-settings');
 
@@ -37,7 +35,6 @@ export const createDepthImageSetting = (payload: DepthImageSettingPayload) =>
 export const updateDepthImageSetting = (id: string, payload: DepthImageSettingPayload) =>
   apiClient.put<DepthImageSetting>(`/api/depth-image-settings/${id}`, payload);
 
-// Generic settings
 export const getGenericSetting = () =>
   apiClient.get<GenericSetting[]>('/api/generic-setting');
 
@@ -47,7 +44,6 @@ export const createGenericSetting = (payload: GenericSettingPayload) =>
 export const updateGenericSetting = (id: string, payload: GenericSettingPayload) =>
   apiClient.put<GenericSetting>(`/api/generic-setting/${id}`, payload);
 
-// Line-color settings
 export const getLineColorSetting = () =>
   apiClient.get<LineColorSetting[]>('/api/line-color-setting');
 
@@ -57,7 +53,6 @@ export const createLineColorSetting = (payload: LineColorSettingPayload) =>
 export const updateLineColorSetting = (id: string, payload: LineColorSettingPayload) =>
   apiClient.put<LineColorSetting>(`/api/line-color-setting/${id}`, payload);
 
-// Other settings
 export const getOtherSetting = () => apiClient.get<OtherSetting[]>('/api/other-setting');
 
 export const createOtherSetting = (payload: OtherSettingPayload) =>
@@ -66,7 +61,6 @@ export const createOtherSetting = (payload: OtherSettingPayload) =>
 export const updateOtherSetting = (id: string, payload: OtherSettingPayload) =>
   apiClient.put<OtherSetting>(`/api/other-setting/${id}`, payload);
 
-// Report-header settings
 export const getReportHeaderSettings = () =>
   apiClient.get<ReportHeaderSetting[]>('/api/report-header-setting');
 
@@ -78,5 +72,4 @@ export const updateReportHeaderSetting = (
   payload: Partial<ReportHeaderSettingPayload>
 ) => apiClient.put<ReportHeaderSetting>(`/api/report-header-setting/${id}`, payload);
 
-// Factory reset
 export const restoreFactorySettings = () => apiClient.post<void>('/api/factory-reset');

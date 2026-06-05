@@ -45,8 +45,6 @@ const LENGTH_TICK_HALF = 7;
 const LENGTH_ENDPOINT_HIT_RADIUS = 8;
 const ANGLE_POINT_HIT_RADIUS = 9;
 const ANGLE_HANDLE_RADIUS = 3;
-// Halo (dark stroke under the label fill) for readability against the live
-// camera image. Kept thin so the metrology-software look stays sharp.
 const LABEL_HALO_COLOR = 'rgba(0, 0, 0, 0.75)';
 const LABEL_HALO_WIDTH = 3;
 const ANGLE_ARC_MIN_RADIUS = 18;

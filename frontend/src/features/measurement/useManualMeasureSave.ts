@@ -27,25 +27,20 @@ type SaveMeasurementInput = {
 };
 
 export type UseManualMeasureSaveArgs = {
-  // Refs read
   activeObjectiveRef: React.MutableRefObject<string | null>;
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
   calibrationManualModeRef: React.MutableRefObject<boolean>;
   micrometerEnabledRef: React.MutableRefObject<boolean>;
-  // Refs written
   autoMeasurementIdRef: React.MutableRefObject<string | null>;
   activeMeasurementMethodRef: React.MutableRefObject<string | null>;
-  // Closure state
   measurements: Measurement[];
   calibrationSettings: CalibrationSettings | null;
   calibrations: Calibration[];
   calibrationSettingsList: CalibrationSettings[];
   cameraRef: React.RefObject<CameraWindowHandle | null>;
-  // Setters
   setUnavailableMsg: React.Dispatch<React.SetStateAction<string | null>>;
   setStatusMessage: (message: string) => void;
   setLatestManualPixels: (pixels: { d1Px: number; d2Px: number } | null) => void;
-  // Hook-provided callbacks
   getMachineStateSnapshot: () => Promise<MachineState | null>;
   getActiveMeasurementId: () => string | undefined;
   setActiveMeasurement: (id: string, frameId: number | null, reason: string) => void;
@@ -76,17 +71,10 @@ export function useManualMeasureSave({
 }: UseManualMeasureSaveArgs) {
   const handleManualMeasurementUpdated = useCallback(
     (result: ManualMeasureDragResult) => {
-      // Spec-format drag trace: fires every time the manual overlay emits a
-      // new diagonal — i.e. on every handle drag commit. Coordinates are in
-      // image-space (the manual overlay already maps client→image).
       void (async () => {
         try {
           const machineState = await getMachineStateSnapshot();
           const timestamp = new Date().toISOString();
-          // "New" means there's no row to update — neither the manual id
-          // nor the cross-flow active id. Without this, dragging a Manual
-          // line after an Auto save re-reads the micrometer and clobbers
-          // the existing row's depth.
           const manualPreflightActiveId = getActiveMeasurementId();
           const isNewManualMeasurement =
             manualMeasurementIdRef.current === null && !manualPreflightActiveId;
@@ -98,12 +86,6 @@ export function useManualMeasureSave({
           const manualExistingRow = manualExistingRowId
             ? measurements.find((m) => m.id === manualExistingRowId) ?? null
             : null;
-          // For an updated row (line drag, re-measure) we must echo back the
-          // saved depth + conversion fields. The backend's buildUpdateSchema
-          // injects null defaults for fields missing from the PUT body, so
-          // omitting them would wipe depthMm / depthSource / device + manual
-          // depth / convertType / convertValue. New rows freeze the device
-          // value (or none, if disabled) via manualDepthCapture.
           const depthPayload = manualDepthCapture
             ? {
                 depthMm: manualDepthCapture.depthMm,
@@ -141,17 +123,10 @@ export function useManualMeasureSave({
             return;
           }
 
-          // Stash the most recent manual pixel diagonals so the Calibration
-          // dialog can auto-fill Pixel Length X / Y without the user having
-          // to retype what they just measured on the live image.
           if (Number.isFinite(result.d1Px) && Number.isFinite(result.d2Px) && result.d1Px > 0 && result.d2Px > 0) {
             setLatestManualPixels({ d1Px: result.d1Px, d2Px: result.d2Px });
           }
 
-          // Calibration mode: the manual diamond is being used to PICK pixel
-          // diagonals for calibration only. Do NOT save a measurement row —
-          // calibration auto/manual must not pollute the measurement table.
-          // The pixel values are already captured into latestManualPixels.
           if (calibrationManualModeRef.current) {
             // eslint-disable-next-line no-console
             console.warn(
@@ -187,7 +162,6 @@ export function useManualMeasureSave({
             calibrationSettingsList,
           });
 
-
           if (!conversion.ok) {
             // eslint-disable-next-line no-console
             console.warn(
@@ -199,7 +173,6 @@ export function useManualMeasureSave({
           }
 
           const values = conversion.value;
-
 
           await waitForOverlayPaint();
           const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
@@ -255,12 +228,8 @@ export function useManualMeasureSave({
             `System Status: Manual measurement updated: HV ${values.hv ?? 'n/a (force missing)'}`
           );
         } catch (err) {
-          // Surface the real backend error (axios response body / zod issues)
-          // to the console — without this the user sees only the popup and we
-          // have no way to diagnose validation rejections.
           // eslint-disable-next-line no-console
           console.error('[measurement-row-save-error] method=Manual', err);
-          // Cast to a loose shape to avoid a hard import of axios types here.
           const ax = err as { response?: { status?: number; data?: unknown } };
           if (ax.response) {
             // eslint-disable-next-line no-console

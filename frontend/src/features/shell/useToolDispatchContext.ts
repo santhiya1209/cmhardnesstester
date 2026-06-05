@@ -14,36 +14,27 @@ import type {
 export type UseToolDispatchContextArgs = {
   cameraRef: React.RefObject<CameraWindowHandle | null>;
 
-  // From useActiveTool
   setActiveTool: (tool: ToolId) => void;
 
-  // From StatusMessageContext + App state
   setStatusMessage: (message: string) => void;
   setUnavailableMsg: React.Dispatch<React.SetStateAction<string | null>>;
 
-  // From useImageOverlay
   overlayClearAll: () => void;
   overlayTrimLast: () => void;
   overlayToggleCrossLine: () => void;
 
-  // From useManualMeasureLifecycle
   resetManualMeasure: () => void;
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
 
-  // From useLineThickness
   setLineThickness: (thickness: LineThickness) => void;
 
-  // App-owned state setters
   setMagnifierEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setTrimMeasureOpen: (open: boolean) => void;
 
-  // App-owned auto-measure handler
   handleAutoMeasure: () => void;
 
-  // App-owned overlay-clear callback (touches multiple setters)
   clearAutoMeasureOverlay: (reason: string) => void;
 
-  // From useOverlayLifecycle
   setAutoMeasureClearNonce: React.Dispatch<React.SetStateAction<number>>;
   setCommittedAutoMeasureOverlay: React.Dispatch<
     React.SetStateAction<AutoMeasureGraphics | null>
@@ -52,7 +43,6 @@ export type UseToolDispatchContextArgs = {
     React.SetStateAction<AutoMeasureGraphics | null>
   >;
 
-  // App-owned auto-measure session refs (Open Image clears them)
   autoMeasurePreviewSnapshotRef: React.MutableRefObject<AutoMeasureDetectionSnapshot | null>;
   committedAutoMeasureFrameRef: React.MutableRefObject<CapturedAutoMeasureFrame | null>;
   previewMeasurementRef: React.MutableRefObject<
@@ -61,11 +51,9 @@ export type UseToolDispatchContextArgs = {
   autoMeasurementIdRef: React.MutableRefObject<string | null>;
   committedFingerprintsRef: React.MutableRefObject<CommittedAutoMeasureFingerprint[]>;
 
-  // App-owned dialog openers
   openCalibrationPanel: (source?: 'menu' | 'toolbar' | 'snackbar') => void;
   openCameraSettingsPanel: () => void;
 
-  // From useCameraLifecycle
   openCameraDevice: () => void;
   closeCameraDevice: () => void;
 };
@@ -74,10 +62,6 @@ export type UseToolDispatchContextResult = {
   buildSharedCtx: () => ToolDispatchContext;
 };
 
-// Builds the shared ToolDispatchContext consumed by the toolbar dispatcher and
-// the menu actions hook. The camera open/close branches come straight from
-// useCameraLifecycle; everything else (clearGraphics, autoMeasure, zoom, trim,
-// magnifier, openImage, saveImage, etc.) is wired here so App.tsx stays slim.
 export function useToolDispatchContext({
   cameraRef,
   setActiveTool,
@@ -116,16 +100,9 @@ export function useToolDispatchContext({
         // eslint-disable-next-line no-console
         console.warn('[clear-graphics-click]');
         overlayClearAll();
-        // Delegate Auto Measure teardown to the tested clear path so session
-        // state, refs, and the render gate flip together. Force-bump the
-        // clear nonce so the overlay canvas clears synchronously even if a
-        // rAF was already queued from the prior frame.
         clearAutoMeasureOverlay('toolbar-clear');
         setAutoMeasureClearNonce((n) => n + 1);
         manualMeasurementIdRef.current = null;
-        // Note: active measurement row is NOT cleared from the clear-graphics
-        // menu. Per spec only camera close/open ends the session and allows
-        // a new row.
         resetManualMeasure();
         // eslint-disable-next-line no-console
         console.warn('[clear-graphics-finished]');
@@ -180,8 +157,6 @@ export function useToolDispatchContext({
               previewMeasurementRef.current = null;
               autoMeasurementIdRef.current = null;
               manualMeasurementIdRef.current = null;
-              // Note: active measurement row is NOT cleared on new-image
-              // load. Per spec only camera close/open starts a new row.
               committedFingerprintsRef.current = [];
               setStatusMessage(`System Status: Loaded ${reply.fileName}`);
             } else {

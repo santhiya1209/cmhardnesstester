@@ -21,10 +21,6 @@ export type ResolveAutoMeasureCalibrationResult = {
   forceKgf: number | null;
 };
 
-// Pure coordinator: builds the machineState slice the auto-measure pipeline
-// needs, looks up the per-objective calibration, parses the machine force, and
-// emits the spec-format scale log for explicit user clicks. No React, no refs,
-// no setters — inputs in, derived values out.
 export function resolveAutoMeasureCalibration({
   machineState,
   objectiveForCalibration,

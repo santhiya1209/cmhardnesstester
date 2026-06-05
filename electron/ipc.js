@@ -180,6 +180,36 @@ async function machineBackendRequest(pathname, options = {}) {
   return data;
 }
 
+const XYZ_DIRECTIONS = new Set([
+  'left',
+  'right',
+  'forward',
+  'back',
+  'forward-left',
+  'forward-right',
+  'back-left',
+  'back-right',
+]);
+const XYZ_Z_DIRECTIONS = new Set(['up', 'down']);
+const XYZ_XY_SPEEDS = new Set(['slow', 'mid', 'fast']);
+const XYZ_Z_SPEEDS = new Set(['ultra', 'fast', 'slow']);
+
+function validateXyzMovePayload(payload) {
+  const direction = payload && typeof payload.direction === 'string' ? payload.direction : '';
+  const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
+  if (!XYZ_DIRECTIONS.has(direction)) throw new Error('invalid xyz direction');
+  if (!XYZ_XY_SPEEDS.has(speed)) throw new Error('invalid xyz speed');
+  return { direction, speed };
+}
+
+function validateXyzZMovePayload(payload) {
+  const direction = payload && typeof payload.direction === 'string' ? payload.direction : '';
+  const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
+  if (!XYZ_Z_DIRECTIONS.has(direction)) throw new Error('invalid z direction');
+  if (!XYZ_Z_SPEEDS.has(speed)) throw new Error('invalid z speed');
+  return { direction, speed };
+}
+
 let machineEventBridgeStarted = false;
 
 function broadcastMachineState(state) {
@@ -188,6 +218,60 @@ function broadcastMachineState(state) {
       win.webContents.send('machine:state', state);
     }
   }
+}
+
+let xyzEventBridgeStarted = false;
+
+function broadcastXyzState(state) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('xyz-platform:state', state);
+    }
+  }
+}
+
+function startXyzPlatformEventBridge() {
+  if (xyzEventBridgeStarted) return;
+  xyzEventBridgeStarted = true;
+  const decoder = new TextDecoder();
+
+  const loop = async () => {
+    while (!app.isQuitting) {
+      try {
+        const response = await fetch(`${getMachineBackendUrl()}/api/xyz-platform/events`);
+        if (!response.ok || !response.body) {
+          throw new Error(`xyz event stream failed: ${response.status}`);
+        }
+        // eslint-disable-next-line no-console
+        console.log('[xyz-ipc] event bridge started');
+        const reader = response.body.getReader();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let marker = buffer.indexOf('\n\n');
+          while (marker >= 0) {
+            const block = buffer.slice(0, marker);
+            buffer = buffer.slice(marker + 2);
+            const dataLine = block.split(/\r?\n/).find((line) => line.startsWith('data: '));
+            if (dataLine) {
+              const state = JSON.parse(dataLine.slice(6));
+              broadcastXyzState(state);
+            }
+            marker = buffer.indexOf('\n\n');
+          }
+        }
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.error('[xyz-ipc] event bridge error:', message);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  };
+
+  void loop();
 }
 
 function startMachineEventBridge() {
@@ -441,6 +525,89 @@ function registerIpc() {
       method: 'POST',
       body: { direction },
     });
+  });
+
+  /* ------------------ XYZ motion-stage channels ------------------ */
+  // Thin IPC→HTTP proxy onto the backend action routes (the backend owns the
+  // serial connection). Payloads are validated here too — renderer input is
+  // untrusted — before forwarding to the zod-validated controllers.
+  ipcMain.handle('xyz-platform:get-state', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/state');
+  });
+
+  ipcMain.handle('xyz-platform:connect', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/connect', {
+      method: 'POST',
+      body: payload && typeof payload === 'object' ? payload : {},
+    });
+  });
+
+  ipcMain.handle('xyz-platform:disconnect', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/disconnect', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:move-stage', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const body = validateXyzMovePayload(payload);
+    return machineBackendRequest('/api/xyz-platform/move-stage', { method: 'POST', body });
+  });
+
+  ipcMain.handle('xyz-platform:stop-stage', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/stop-stage', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:move-z', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const body = validateXyzZMovePayload(payload);
+    return machineBackendRequest('/api/xyz-platform/move-z', { method: 'POST', body });
+  });
+
+  ipcMain.handle('xyz-platform:stop-z', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/stop-z', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:lock-z', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/lock-z', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:unlock-z', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/unlock-z', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:set-xy-speed', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
+    if (!XYZ_XY_SPEEDS.has(speed)) throw new Error('invalid xyz speed');
+    return machineBackendRequest('/api/xyz-platform/set-xy-speed', { method: 'POST', body: { speed } });
+  });
+
+  ipcMain.handle('xyz-platform:set-z-speed', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
+    if (!XYZ_Z_SPEEDS.has(speed)) throw new Error('invalid z speed');
+    return machineBackendRequest('/api/xyz-platform/set-z-speed', { method: 'POST', body: { speed } });
+  });
+
+  ipcMain.handle('xyz-platform:get-position', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/position');
+  });
+
+  ipcMain.handle('xyz-platform:move-center', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/move-center', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:locate-center', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/locate-center', { method: 'POST', body: {} });
   });
 
   /* ------------------ device channels ------------------ */

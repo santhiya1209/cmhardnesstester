@@ -257,9 +257,6 @@ function RightPanelImpl({
 }: Props) {
   useRenderCount('RightPanel');
   const [tab, setTab] = useState(0);
-  // CHD target hardness — single source of truth shared by the Depth Image tab
-  // and the Export Report dialog so the value (and the exported graph) never
-  // drift. Lives here (not inside DepthImageTab) so it survives tab switches.
   const [chdTargetInput, setChdTargetInput] = useState('550');
   const {
     data: patternPrograms,

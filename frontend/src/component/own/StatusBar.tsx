@@ -196,11 +196,6 @@ function StatusBarImpl({
   autoMeasureStatus,
 }: Props) {
   const message = useStatusMessage();
-  // Subscribe only to the machine slices StatusBar renders so it re-renders
-  // independently of App AND only when one of these derived values actually
-  // changes — not on every unrelated machine field update. getMachineStatusLabel
-  // collapses several fields into one status string, so the status subscription
-  // fires only when the label flips.
   const machineConnected = useMachineSelector((s) => s?.connected ?? false);
   const machinePort = useMachineSelector((s) => s?.port?.trim() || '-');
   const machineStatus = useMachineSelector(getMachineStatusLabel);

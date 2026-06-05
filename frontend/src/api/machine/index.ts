@@ -48,7 +48,6 @@ export const applyObjectiveBrightness = async (
   return reply;
 };
 
-// Machine settings CRUD
 export const getMachineSettings = () =>
   apiClient.get<MachineSettings[]>('/api/machine-settings');
 

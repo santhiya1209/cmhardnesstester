@@ -11,9 +11,6 @@ import { API_BASE_URL } from '@/utils/baseUrl';
 import { getMachineState } from '@/api/machine';
 import type { MachineState } from '@/types/machine';
 
-// Fields the Machine Control UI (and the App-level objective/indent effects)
-// actually render or react to. A push that leaves all of these unchanged is
-// telemetry noise (only timestamps differ) and must NOT trigger a commit.
 const UI_FIELDS: (keyof MachineState)[] = [
   'connected',
   'port',
@@ -86,9 +83,6 @@ export function MachineStateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
 
-    // Coalesce bursts of machine-state pushes into at most ONE commit per
-    // animation frame (preserves the previous rAF + dedup behaviour). The
-    // hardware emits several RX snapshots in quick succession; latest-wins.
     let pendingState: MachineState | null = null;
     let rafId: number | null = null;
 
@@ -98,7 +92,6 @@ export function MachineStateProvider({ children }: { children: ReactNode }) {
 
     const commit = (next: MachineState) => {
       const prev = snapshotRef.current;
-      // Dedupe: skip when no UI-relevant field changed.
       if (prev && UI_FIELDS.every((f) => prev[f] === next[f])) {
         return;
       }
@@ -159,7 +152,6 @@ export function MachineStateProvider({ children }: { children: ReactNode }) {
       }
     };
     source.onerror = () => {
-      // EventSource auto-reconnects; surface the latest error for the UI.
       errorRef.current = 'Connection to backend event stream lost — retrying...';
       notify();
     };
@@ -213,7 +205,6 @@ export function useMachineSelector<T>(selector: (state: MachineState | null) => 
         setValue(next);
       }
     };
-    // Catch any change that landed between the initial render and subscribe.
     check();
     return store.subscribe(check);
   }, [store]);

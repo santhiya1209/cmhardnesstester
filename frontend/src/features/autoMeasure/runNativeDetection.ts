@@ -32,10 +32,6 @@ export type RunNativeDetectionResult = {
   runThreshold: number;
 };
 
-// Pure native-detection invocation: derives the objective forwarded into the
-// native addon, emits the spec-format profile/frame/preprocess logs, picks the
-// preview vs commit measurement function, and returns the raw native result.
-// No React state, no refs, no overlay side-effects.
 export async function runNativeDetection({
   preview,
   callSource,
@@ -68,9 +64,6 @@ export async function runNativeDetection({
     extra: `width=${displayedFrame.width} height=${displayedFrame.height} frameId=${capturedFrameIdForRun ?? 'n/a'} source=${displayedFrame.source}`,
   });
 
-  // Only forward the live machine-control objective when it normalises to one
-  // of the canonical values. A transient empty / unknown machine string must
-  // never poison the value sent to native.
   const liveObjectiveCandidate = String(objectiveForCalibration ?? '')
     .trim()
     .toUpperCase();

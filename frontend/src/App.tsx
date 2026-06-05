@@ -120,11 +120,8 @@ const ROOT_SX: SxProps<Theme> = {
   flexDirection: 'column',
   height: '100vh',
   width: '100%',
-  // overflow: 'hidden',
 };
 
-// Workspace = two side-by-side panels:
-//   [ LeftPanel ] [ RightPanel ]
 const WORKSPACE_SX: SxProps<Theme> = {
   flex: 1,
   display: 'flex',
@@ -139,14 +136,7 @@ function logAfterImpressDetectionFailed(reason: string) {
 }
 
 function App() {
-  // statusMessage lives in StatusMessageContext so App does not re-render on
-  // every status update. setStatusMessage from the context is referentially
-  // stable, so consuming it here costs nothing.
   const setStatusMessage = useSetStatusMessage();
-  // Dialog state lives in DialogContext. App still reads activeDialog (since
-  // it renders every dialog conditionally), so re-renders on dialog change
-  // are unchanged; the win here is shrinking App and giving menu/toolbar
-  // dispatchers a clean hook to talk to.
   const {
     activeDialog,
     setActiveDialog,
@@ -177,9 +167,6 @@ function App() {
   const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
   const { data: micrometerConfig, refetch: refetchMicrometerConfig } = useMicrometerConfig();
   const micrometerEnabled = micrometerConfig?.enabled ?? true;
-  // Latest TestRecord drives the live target HV band used to color HV values
-  // across the app (table, top HV display, report). Records are pre-sorted by
-  // updatedAt descending in useTestRecords.
   const { data: testRecordsList, refetch: refetchTestRecords } = useTestRecords();
   const latestTestRecord = testRecordsList[0] ?? null;
   const targetMinHv =
@@ -192,8 +179,6 @@ function App() {
     Number.isFinite(latestTestRecord.targetMaxHv)
       ? latestTestRecord.targetMaxHv
       : null;
-  // When the Sample Info (testRecords) dialog closes, refetch so targetMinHv /
-  // targetMaxHv update immediately without requiring an app restart.
   const prevDialogRef = useRef<typeof activeDialog>(activeDialog);
   useEffect(() => {
     const prev = prevDialogRef.current;
@@ -202,31 +187,21 @@ function App() {
       void refetchTestRecords();
     }
   }, [activeDialog, refetchTestRecords]);
-  // Mirror to a ref so async save closures always see the latest value without
-  // re-creating callbacks every time the config toggles.
   const micrometerEnabledRef = useRef(micrometerEnabled);
   const lastLoggedMicrometerEnabledRef = useRef<boolean | null>(null);
   useEffect(() => {
     micrometerEnabledRef.current = micrometerEnabled;
     if (lastLoggedMicrometerEnabledRef.current !== micrometerEnabled) {
       lastLoggedMicrometerEnabledRef.current = micrometerEnabled;
-      // First emission after the persisted row resolves is a load; subsequent
-      // transitions are saves driven by the settings dialog.
     }
   }, [micrometerEnabled]);
   const { refetch: refetchCameraSetting } = useCameraSetting();
   const { restoreCameraSettings } = useCameraSettingsRestore({ refetchCameraSetting });
-  // Machine COM port lifecycle (selection, connect/disconnect, one-shot
-  // auto-connect from persisted settings) lives in useMachineConnection so
-  // App is not in the business of orchestrating serial reconnects.
   const { currentMachinePort, applyMachinePort } = useMachineConnection();
   useMicrometerAutoRestore();
 
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
-  // Single shared machine-state subscription lives in MachineStateProvider.
-  // App subscribes only to the slices it actually reacts to, so unrelated
-  // field updates (loadTime, sync/status, lightness) no longer re-render App.
   const machineStore = useMachineStoreApi();
   const machineForce = useMachineSelector((s) => s?.force ?? null);
   const machineHardnessLevel = useMachineSelector((s) => s?.hardnessLevel ?? null);
@@ -236,10 +211,6 @@ function App() {
   const machineTurretPosition = useMachineSelector((s) => s?.turretPosition ?? null);
   const machineIndentStatus = useMachineSelector((s) => s?.indentStatus ?? null);
   const machineLastObjectiveRx = useMachineSelector((s) => s?.lastObjectiveRx ?? null);
-  // Mirror the full snapshot to a ref so impress-complete / turret-after-impress
-  // closures can read current machine state without subscribing for re-renders.
-  // The observational lightness tracking (previously its own effect) is folded
-  // in here so it stays a pure ref-write that never re-renders App.
   const liveMachineStateRef = useRef<MachineState | null>(machineStore.getSnapshot());
   const lastLoggedLightnessRef = useRef<string | null>(null);
   useEffect(() => {
@@ -272,14 +243,6 @@ function App() {
   useRenderCount('App');
   const cameraRef = useRef<CameraWindowHandle | null>(null);
   const autoMeasureInFlightRef = useRef(false);
-  // Set true between Impress TX and the FINISH RX so any concurrent Auto
-  // Measure entry point (manual click, settings preview, drag-recompute) is
-  // refused — the indenter is still over the workpiece, the live frame is
-  // mid-motion, and any detection would commit a row for the wrong instant.
-  // Latest preview settings that arrived while a detection was in flight.
-  // Why: Slider drags fire faster than the native detection completes
-  // (~60–200ms). Without coalescing, the user's final slider position can be
-  // dropped, leaving the yellow lines fitted to a stale value.
   const autoMeasurePendingPreviewRef = useRef<AutoMeasureSettingsPayload | null>(null);
   const latestAutoMeasurePreviewSettingsRef =
     useRef<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
@@ -289,40 +252,16 @@ function App() {
   const previewMeasurementRef = useRef<{ d1Pixels: number; d2Pixels: number; confidence: number } | null>(null);
   const autoMeasureSettingsOpenRef = useRef(false);
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
-  // Magnifier is an independent helper overlay (not a mode). It can be on
-  // alongside Manual Measure for precision diamond-tip placement, and turns
-  // off when the user switches to Pointer/Auto Measure (see handleToolbarSelect).
   const [magnifierEnabled, setMagnifierEnabled] = useState(false);
-  // Single visual source of truth for the Auto/Manual measure highlight shared
-  // by the top toolbar and the Machine Control cards. Written only inside
-  // handleToolbarSelect (the one path both surfaces dispatch through) and kept
-  // consistent with activeTool below. Purely presentational.
   const [selectedMeasureMode, setSelectedMeasureMode] = useState<MeasureSelection>(null);
-  // Strict lifecycle gate. Yellow Auto Measure overlay must never be visible
-  // when the camera is not actively streaming — even if a stale graphics
-  // state lingers in React. Flipped true only after a successful openDevice
-  // reply, flipped false at closeDevice.
   const [cameraOpen, setCameraOpen] = useState(false);
-  // Counts manual Auto Measure clicks since app open so the first click — the
-  // one the startup overlay race affects — is flagged in the log trail.
   const autoMeasureClickCountRef = useRef(0);
-  // `turretMoving` gates overlay rendering during the click → ACK window.
-  // The yellow Auto Measure / Manual Measure / Calibration overlays must
-  // disappear the instant a turret or objective button is pressed, BEFORE
-  // the motion completes, so the operator never sees stale yellow lines
-  // floating on top of the camera image as the turret rotates. A watchdog
-  // (declared further below) releases the gate after 4 s if no machine RX
-  // arrives, so a dropped ACK can never permanently suppress overlay
-  // rendering.
   const [turretMoving, setTurretMoving] = useState(false);
   const turretMovingRef = useRef(false);
   const setTurretMovingState = useCallback((moving: boolean) => {
     turretMovingRef.current = moving;
     setTurretMoving(moving);
   }, []);
-  // Target objective for an in-progress turret move ("10X" / "40X").
-  // Surfaced in the CameraWindow "Turret moving to X..." popup so the
-  // operator knows exactly what the camera is switching to.
   const [turretMovingTarget, setTurretMovingTarget] = useState<string | null>(null);
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
     useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
@@ -335,26 +274,12 @@ function App() {
     clearActiveMeasurement,
   } = useActiveMeasurement();
   const committedFingerprintsRef = useCommittedFingerprints(measurements);
-  // SINGLE GLOBAL SOURCE OF TRUTH for the active objective.
-  // - Set only by the objective commit pipeline after machine ACK/RX.
-  // - Hydrated from machine-confirmed SSE state through that same pipeline.
-  // - Used by Auto Measure, Manual Measure, calibration lookup, and the
-  //   measurement table row.
-  // - There is NO silent fallback to a hardcoded default. If this is ever
-  //   null at save time, we surface a warning instead of saving "10X".
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
-  // Shared ref mirror of activeObjective: useAfterImpressFlow needs it before
-  // useObjectiveSync runs (circular dep), so the ref lives here and both hooks
-  // read/write through it. The sync effect is here too.
   const activeObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
     activeObjectiveRef.current = activeObjective;
   }, [activeObjective]);
 
-  // Refs mirroring the after-impress readiness signals so useAfterImpressFlow's
-  // detection gate can poll them without re-subscribing. cameraOpenRef is
-  // synced here; calibrationReadyRef is synced after umPerPixelForActiveObjective
-  // is resolved below. getAfterImpressReadiness is a stable reader over both.
   const cameraOpenRef = useRef(false);
   cameraOpenRef.current = cameraOpen;
   const calibrationReadyRef = useRef(false);
@@ -367,21 +292,6 @@ function App() {
     []
   );
 
-  // Strict session-based Auto Measure gating.
-  // - sessionId: bumps every time the user opens a fresh Auto Measure session
-  //   (Auto Measure click or Settings preview enter). Used by async detection
-  //   callbacks to reject results from a superseded session.
-  // - sessionActive: true while a session "owns" the overlay; cleared by any
-  //   invalidator (objective change, turret change, lightness change is N/A
-  //   because lightness never starts a session, camera close).
-  // - capturedFrameId: the frame id captured at click time. Render gate
-  //   compares the overlay's frameId against this — a stale async result
-  //   from before the most recent click is filtered out.
-  // - objectiveChangeInProgress: true between objective-change request and
-  //   the first painted live frame at the new mag. Suppresses any overlay
-  //   draw during the transition window.
-  // Status-bar surfaces. Kept as discrete state so transitions log explicitly
-  // and the bar updates without recomputing from a dozen scattered flags.
   const [cameraStatus, setCameraStatusState] = useState<CameraStatusState>('closed');
   const setCameraStatus = useCallback((next: CameraStatusState) => {
     setCameraStatusState((prev) => {
@@ -398,8 +308,6 @@ function App() {
     });
   }, []);
 
-  // Bumped on objective change to force a re-render; the value itself is read
-  // via autoMeasureSessionIdRef, so only the setter is bound here.
   const [, setAutoMeasureSessionId] = useState(0);
   const autoMeasureSessionIdRef = useRef(0);
   const [objectiveChangeInProgress, setObjectiveChangeInProgress] = useState(false);
@@ -409,10 +317,6 @@ function App() {
     setObjectiveChangeInProgress(inProgress);
   }, []);
 
-  // Overlay lifecycle state + hard render gate live in useOverlayLifecycle.
-  // These setters are destructured here because clearAutoMeasureOverlay (from
-  // useAutoMeasureSessionLifecycle, below) drives them alongside App-owned
-  // controller/measurement/camera-frame refs.
   const {
     committedAutoMeasureOverlay,
     setCommittedAutoMeasureOverlay,
@@ -435,10 +339,6 @@ function App() {
     activeObjective,
   });
 
-  // Set true whenever the active objective changes. The next would-be
-  // settings-preview run is skipped so an objective change never paints
-  // yellow lines on its own — they appear only after an explicit Auto
-  // Measure click. Cleared by the click handler.
   const suppressAutoMeasurePreviewRef = useRef(false);
   const { clearAutoMeasureOverlay } = useAutoMeasureSessionLifecycle({
     setCommittedAutoMeasureOverlay,
@@ -532,16 +432,8 @@ function App() {
     setObjectiveChangeInProgressState,
   });
 
-  // Calibration-mode Auto Measure: runs the same native detector used by
-  // normal Auto Measure but does NOT save a measurement row. Returns the
-  // detected pixel diagonals so the Calibration dialog can fill Pixel
-  // Length X / Y. The yellow corners + lines are still drawn on the camera
-  // overlay so the user can verify the detection visually after closing
-  // the dialog.
   const handleCalibrationAutoMeasure = useCallback(
     async (objective: string): Promise<{ d1Px: number; d2Px: number } | null> => {
-      // Mutually-exclusive calibration overlay: clear any manual state
-      // before kicking off auto detection so the two never coexist.
       calibrationManualModeRef.current = false;
       setManualMeasureResetKey((current) => current + 1);
       setActiveTool('pointer');
@@ -572,23 +464,8 @@ function App() {
           : settings.objectiveForMeasure;
       const minConfidence =
         settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
-      // Detection-parity rule: Calibration Auto Measure MUST use the exact
-      // same smoothing/threshold the live Auto Measure uses, so the native
-      // detector runs an identical pipeline and selects the same contour on
-      // the same indentation. Previously this path applied
-      // autoMeasureDefaultsForObjective(...) as an override, which silently
-      // diverged from the slider values whenever the user adjusted them or
-      // the objective defaults differed (e.g. calibration t=71 vs live t=92).
-      // That divergence is what caused the elongated 2.08-sideRatio contour
-      // to be picked in calibration while live picked the real diamond.
       const calibSmoothing = settings.smoothing;
       const calibThreshold = settings.threshold;
-      // Persist the frozen calibration frame so the Auto Measure Settings
-      // preview effect (which re-runs detection through runAutoMeasureRef
-      // with callSource='settings-preview') can use the SAME native 2592x1944
-      // bgr24 buffer when the user drags Smoothing/Threshold. Without this
-      // the settings preview path would fall back to the live camera and
-      // diverge from the diamond the user is calibrating against.
       committedAutoMeasureFrameRef.current = cloneCapturedFrame(frame);
       const result = await measureVickersAuto({
         smoothing: calibSmoothing,
@@ -612,10 +489,6 @@ function App() {
         setStatusMessage(`System Status: Calibration Auto Measure rejected: ${reason}`);
         return null;
       }
-      // Draw the detected diamond on the camera overlay so the user sees the
-      // detection result after closing the calibration dialog.
-      // Calibration-path detection also activates the session so the render
-      // gate allows the verification overlay to paint.
       setAutoMeasureSessionActive(true);
       setCommittedAutoMeasureOverlay(graphicsFromAutoMeasureResult(result, objective));
       // eslint-disable-next-line no-console
@@ -653,17 +526,12 @@ function App() {
     machineForce,
     machineHardnessLevel,
   });
-  // A non-null um/px for the active objective means its calibration is loaded —
-  // the after-impress readiness gate (above) reads this through calibrationReadyRef.
   calibrationReadyRef.current = umPerPixelForActiveObjective != null;
 
   const handleUpdateShape = overlay.updateShape;
 
   const openCalibrationPanel = useCallback(
     (_source: 'menu' | 'toolbar' | 'snackbar' = 'menu') => {
-      // TEMP DEBUG: snapshot every overlay source at the instant Calibration
-      // opens, BEFORE the clear runs, so the actual rendered source of any
-      // lingering yellow lines is visible in the console.
       const graphicsObjects =
         (committedAutoMeasureOverlay ? 1 : 0) + (previewAutoMeasureOverlay ? 1 : 0);
       // eslint-disable-next-line no-console
@@ -685,18 +553,8 @@ function App() {
 
       calibrationManualModeRef.current = false;
       setCalibrationMeasureMode('none', 'calibration-open');
-      // 1) Null the React overlay state (committed + preview + session) so the
-      //    render gate stops emitting the yellow Auto Measure graphics.
       clearAutoMeasureOverlay('calibration-open');
-      // 2) Force an imperative canvas clearRect via the clear nonce. React
-      //    state-null alone is NOT enough: a requestAnimationFrame queued by
-      //    the just-completed Auto Measure draw can repaint stale yellow lines
-      //    AFTER the state cleared. Bumping the nonce drives
-      //    AutoMeasureOverlay.forceClearCanvas synchronously, exactly like the
-      //    proven Clear Graphics path does.
       setAutoMeasureClearNonce((n) => n + 1);
-      // 3) Reset the manual-measure overlay too, so no overlay source survives
-      //    into calibration regardless of which tool was active.
       setManualMeasureResetKey((k) => k + 1);
       setActiveTool('pointer');
       setActiveDialog('calibration');
@@ -718,10 +576,7 @@ function App() {
       setCalibrationMeasureMode,
       setManualMeasureResetKey,
     ]
-  );
-
-
-  const { handleManualMeasurementUpdated } = useManualMeasureSave({
+  );  const { handleManualMeasurementUpdated } = useManualMeasureSave({
     activeObjectiveRef,
     manualMeasurementIdRef,
     calibrationManualModeRef,
@@ -745,15 +600,6 @@ function App() {
 
   useEffect(() => {
     const normalized = normalizeAutoMeasureSettings(autoMeasureSettings);
-    // Per-objective defaults are authoritative for smoothing/threshold. The
-    // persisted settings are a SINGLE GLOBAL row, so without this the global
-    // value clobbers the active objective's tuned defaults that the
-    // objective-change effect set — e.g. selecting 10X snaps to {4,44} but a
-    // later autoMeasureSettings load/refetch would overwrite it with the saved
-    // global (often 40X-shaped) numbers. Honor the objective defaults here so
-    // 10X stays smoothing=4/threshold=44 with objectiveForMeasure=10X and
-    // 40X stays smoothing=6/threshold=91; unrelated fields still come from
-    // the persisted row.
     const resolved = applyAutoMeasureObjectiveProfile(normalized, activeObjectiveRef.current);
     latestAutoMeasurePreviewSettingsRef.current = resolved;
     setAutoMeasurePreviewSettings(resolved);
@@ -782,10 +628,6 @@ function App() {
         forceKgf,
       } = snapshot;
 
-      // Final frontend sanity gate. This intentionally stays loose: native
-      // already selected the contour, and this layer only blocks broken or
-      // non-finite geometry. Rotation, bloom, scratches, mild asymmetry, and
-      // imperfect refined corners are accepted.
       const c = graphics.corners;
       const validation = validateAutoMeasureGeometry(c, {
         objective: objectiveForCalibration,
@@ -814,16 +656,11 @@ function App() {
         setStatusMessage(`System Status: Auto Measure rejected: ${validation.reason}`);
         return false;
       }
-      // Geometry passed — overlay validity is still pending until after paint.
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-validate] cornersValid=true linesValid=true d1Valid=${d1Px > 0} d2Valid=${d2Px > 0} overlayValid=pending`
       );
 
-      // Duplicate-measurement guard. Repeat clicks on the same indentation
-      // compare stable rounded geometry against the row fingerprint before
-      // any save. Settings-save is exempt because the user is intentionally
-      // re-detecting under new params and expects the existing row to update.
       const stableD1Px = roundAutoMeasurePixel(d1Px);
       const stableD2Px = roundAutoMeasurePixel(d2Px);
       const stableCenterX = roundAutoMeasurePixel(center.x);
@@ -911,8 +748,6 @@ function App() {
             autoMeasurePreviewSnapshotRef.current = null;
             preserveAfterImpressOverlay(5000);
             await waitForOverlayPaint();
-            // Confirm THIS run's restored geometry is the overlay on screen
-            // before claiming success (see the main commit path for rationale).
             const restoredKey = autoMeasureCornersKey(restoredGraphics.corners);
             let shown = displayedAutoMeasureGraphicsRef.current;
             let visible = !!shown && autoMeasureCornersKey(shown.corners) === restoredKey;
@@ -956,12 +791,6 @@ function App() {
         return false;
       }
 
-      // Why: always commit a NEW reference for the explicit Auto Measure
-      // click. The graphicsAlmostEqual short-circuit was suppressing overlay
-      // updates after an objective change when the new corners happened to
-      // be near-identical to the prior run, leaving the user with the table
-      // updated but no fresh yellow lines drawn. The skip is still useful
-      // for slider-driven preview spam, so keep it on settings-save only.
       const forceOverlayRefresh = source === 'auto-click' || source === 'after-impress';
       // eslint-disable-next-line no-console
       console.log(
@@ -987,26 +816,15 @@ function App() {
       previewMeasurementRef.current = null;
 
       const timestamp = new Date().toISOString();
-      // For auto-click, the existing fingerprint match at line ~2167 may have
-      // already restored autoMeasurementIdRef. If not, also reuse the active
-      // row when the user previously placed a Manual/Calibration row on this
-      // same frozen frame — otherwise we'd duplicate the indent.
       let saveRowId: string | undefined =
         autoMeasurementIdRef.current ?? undefined;
       if (saveRowId === undefined) {
         saveRowId = getActiveMeasurementId();
       }
-      // Depth is captured ONLY when creating a new auto-measure row. On
-      // re-detection of an existing row we must keep the originally saved
-      // micrometer reading — overwriting would violate "old saved row must
-      // not change" and copy the current depth across all re-detected rows.
       const isNewAutoMeasurement = saveRowId === undefined;
       const depthCapture: DepthSavePayload | null = isNewAutoMeasurement
         ? await buildNewRowDepthPayload(micrometerEnabledRef.current)
-        : null;
-
-
-      const values = conversion.value;
+        : null;      const values = conversion.value;
 
       if (values.hv === null || forceKgf === null || forceKgf === undefined || forceKgf <= 0) {
         // eslint-disable-next-line no-console
@@ -1016,23 +834,7 @@ function App() {
         setUnavailableMsg('Force value missing');
         setStatusMessage('System Status: Auto Measure blocked: Force value missing');
         return false;
-      }
-
-
-
-      await waitForOverlayPaint();
-      // Overlay visibility gate — applies to EVERY source, not just after-impress.
-      // setCommittedAutoMeasureOverlay was called above, but useOverlayLifecycle
-      // has several render guards (turretMoving, objectiveChangeInProgress,
-      // autoMeasureSessionActive, objective/frameId mismatch) that can silently
-      // suppress display even when the committed overlay is non-null. Without
-      // this check a row is saved with "success" status but no visible lines.
-      //
-      // The check confirms the overlay actually displaying carries THIS run's
-      // geometry (matching corners) — a non-null ref left over from a prior run
-      // (stale passive-effect timing) must NOT be mistaken for the new lines.
-      // One extra paint cycle covers the case where React hadn't yet flushed the
-      // commit + ref-sync effect by the time the first waitForOverlayPaint ran.
+      }      await waitForOverlayPaint();
       const committedCornersKey = autoMeasureCornersKey(graphics.corners);
       const overlayShowsThisRun = () => {
         const shown = displayedAutoMeasureGraphicsRef.current;
@@ -1076,25 +878,14 @@ function App() {
       if (source === 'after-impress') {
         preserveAfterImpressOverlay(5000);
       } else {
-        // Protect THIS run's freshly-committed overlay from a startup-time
-        // settle (objective re-sync via useObjectiveSyncGate, or a turret RX
-        // via useTurretMotionGate — both honor this preserve flag) that fires
-        // in the brief commit→save window. Without it, the first Auto Measure
-        // after a cold start saved the row but lost its yellow lines to that
-        // race. The objective/turret render gates still block any
-        // cross-objective stale paint, and the window expires fast so a later
-        // deliberate objective change clears normally.
         preserveAfterImpressOverlay(1500);
       }
-      // Overlay is confirmed visible with this run's geometry — log render success.
       // eslint-disable-next-line no-console
       console.log(`[auto-overlay-render] visible=true reason=ok`);
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-overlay-render] visible=true lines=4 objective=${objectiveForCalibration ?? 'unknown'}`
       );
-      // Deterministic finalize: capture ONLY after the overlay canvas has
-      // painted these exact final corners — never a preview/stale/blank scrape.
       const finalCornersKey = autoMeasureCornersKey(graphics.corners);
       // eslint-disable-next-line no-console
       console.log(
@@ -1111,12 +902,6 @@ function App() {
         // eslint-disable-next-line no-console
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
       }
-      // Truthful canvas-paint signal: captureFinalizedThumbnail only resolves
-      // once the overlay canvas actually painted THIS run's final corners, so
-      // a missing thumbnail means the yellow lines never reached the screen
-      // even though the App-side render gate (displayedAutoMeasureGraphicsRef)
-      // matched. Surface it rather than silently saving a "success" with no
-      // visible overlay.
       const overlayImageReady = !!imageDataUrl;
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-overlay-visible] visible=true imageReady=${overlayImageReady}`);
@@ -1266,9 +1051,6 @@ function App() {
     }
 
     if (autoMeasureInFlightRef.current) {
-      // Coalesce: remember the latest preview settings so the trailing run
-      // after the in-flight detection picks up the user's final slider value.
-      // Non-preview (explicit Auto Measure click) is still ignored while busy.
       if (preview) {
         autoMeasurePendingPreviewRef.current = settingsInput;
       }
@@ -1278,11 +1060,6 @@ function App() {
     return (async (): Promise<boolean> => {
       let settings = normalizeAutoMeasureSettings(settingsInput);
       if (!preview && callSource !== 'after-impress') {
-        // Drop the previously-committed yellow lines before running a new
-        // detection — old D1/D2 must never linger over a fresh detection
-        // attempt. The new overlay will be set only if detection succeeds.
-        // Keep committed row fingerprints alive so repeat clicks compare
-        // against every current row, even while the overlay is being refreshed.
         setCommittedAutoMeasureOverlay(() => null);
         setPreviewAutoMeasureOverlay(null);
         autoMeasurePreviewSnapshotRef.current = null;
@@ -1290,22 +1067,10 @@ function App() {
       }
 
       autoMeasureInFlightRef.current = true;
-      // Begin a fresh Auto Measure session. The session id stamps every
-      // overlay produced by this run so a result that returns after a later
-      // invalidator can be filtered out (overlay.sessionId !== current).
       const sessionIdForRun = autoMeasureSessionIdRef.current + 1;
       autoMeasureSessionIdRef.current = sessionIdForRun;
       setAutoMeasureSessionId(sessionIdForRun);
-      // Both auto-click and settings-preview activate the session — preview
-      // overlays during slider drags also need the gate to allow paint.
-      // The session ends on the next clearAutoMeasureOverlay invalidator
-      // (objective change, turret change, camera close).
       setAutoMeasureSessionActive(true);
-      // 'after-impress' is a system-triggered detection that mirrors an
-      // explicit user click — same camera-freeze + fresh-frame semantics, no
-      // prior committed snapshot to reuse. Without this branch the source
-      // fell into the else-path below and tried to reuse a non-existent
-      // committedAutoMeasureFrameRef, silently aborting detection.
       const isFreshCapture = callSource === 'auto-click' || callSource === 'after-impress';
       if (isFreshCapture) {
         setAutoMeasureStatus('detecting');
@@ -1385,10 +1150,6 @@ function App() {
         } else {
           displayedFrame = committedAutoMeasureFrameRef.current;
           if (!displayedFrame && callSource === 'settings-preview') {
-            // No prior fresh capture in this session — settings preview must
-            // not silently early-return. Capture the current frame once so
-            // the user's first slider drag has something to fit against, and
-            // commit it as the session's frame for subsequent drags.
             const fresh = cameraRef.current?.captureDisplayedFrame({ freeze: true });
             if (fresh?.ok) {
               displayedFrame = fresh;
@@ -1408,10 +1169,6 @@ function App() {
           setAutoMeasureCapturedFrameId(capturedFrameId);
         }
 
-        // After an objective change the live canvas is cleared and the next
-        // worker frame typically lands within ~33ms. If the user clicks Auto
-        // Measure during that gap, wait once for a fresh frame and retry the
-        // capture so detection runs against real pixels, not a black canvas.
         if (
           isFreshCapture &&
           displayedFrame &&
@@ -1429,7 +1186,6 @@ function App() {
 
         if (!displayedFrame?.ok) {
           if (preview) {
-            // Keep last valid overlay; surface only via status (no log spam).
             return false;
           }
           {
@@ -1440,9 +1196,6 @@ function App() {
               callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
             );
             if (isFreshCapture) setAutoMeasureStatus('failed');
-            // liveObjectiveForNative is declared further down — this branch
-            // fires before it's computed (no displayed image), so log it as
-            // 'unknown'.
             if (callSource === 'after-impress') {
               logAfterImpressDetectionFailed(stale);
               // eslint-disable-next-line no-console
@@ -1452,10 +1205,6 @@ function App() {
           return false;
         }
 
-        // Hard guard: live-camera detection input MUST be the native
-        // full-resolution bgr24 frame (2592x1944). If anything else slipped
-        // through (resized rgb32 canvas, partial frame, wrong format),
-        // reject — never let detection silently run on a downscaled frame.
         if (
           displayedFrame.source === 'live-camera' &&
           (displayedFrame.width !== 2592 ||
@@ -1483,8 +1232,6 @@ function App() {
           console.log('[auto-measure] detection-start source=after-impress');
         }
 
-        // Log the frame dimensions used for detection so coordinate-space
-        // mismatches can be spotted in the console.
         // eslint-disable-next-line no-console
         console.log(
           `[auto-measure-coords] imageWidth=${displayedFrame.width} imageHeight=${displayedFrame.height} objective=${objectiveForCalibration ?? 'unknown'} source=${displayedFrame.source}`
@@ -1551,7 +1298,6 @@ function App() {
           const reason = resolvedDetection.reason;
           logDetectResult(false, null);
           if (preview) {
-            // Preview rejection: keep last valid overlay; no log spam.
             logAutoMeasurePhase('auto-measure-reject', {
               objective: liveObjectiveForNative,
               smoothing: runSmoothing,
@@ -1569,8 +1315,6 @@ function App() {
             reason,
           });
           setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
-          // Surface the actual reason in the toast instead of the generic
-          // "Auto detection not reliable" line so the operator sees WHY.
           setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
           clearAutoMeasureOverlay(
             callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
@@ -1611,19 +1355,9 @@ function App() {
             center: resolvedDetection.validation.center,
             reason: `low-confidence-geometry-accepted confidence=${result.confidence.toFixed(3)} min=${minConfidence.toFixed(3)}`,
           });
-        }
-
-
-        // Stamp the run's session id + the captured frame id on the graphics
-        // so the render gate can reject a result that returns after a later
-        // invalidator (objective change, turret move, camera close).
-        const graphics: AutoMeasureGraphics = {
+        }        const graphics: AutoMeasureGraphics = {
           ...graphicsFromAutoMeasureResult(result, objectiveForCalibration),
           sessionId: sessionIdForRun,
-          // Stamp the frame id captured at click time — NOT the current live
-          // frame id. Detection takes 60–200 ms; the live id advances by
-          // then, so any equality check against the captured id would
-          // spuriously reject every successful detection.
           frameId: capturedFrameIdForRun,
         };
         if (callSource === 'after-impress' && result.ok) {
@@ -1642,9 +1376,6 @@ function App() {
           }
           return false;
         }
-        // Objective + frame guards. Result must belong to the objective the
-        // user was viewing at click time AND to the frame captured then —
-        // an in-flight result from a superseded objective/frame is dropped.
         {
           const liveConfirmed = activeObjectiveRef.current?.trim() || null;
           if (
@@ -1664,11 +1395,6 @@ function App() {
           console.log('[auto-measure-overlay] shown source=after-impress');
         }
         if (!preview && callSource === 'auto-click') {
-          // nativeCorners → displayCorners scale map. The camera preview
-          // canvas is now painted at full native resolution
-          // (PREVIEW_SCALE=1); the AutoMeasureOverlay receives native
-          // corners and maps them via imageToDisplay at render time. This
-          // log captures the scaled set used for the yellow overlay.
         }
         const snapshot: AutoMeasureDetectionSnapshot = {
           settings,
@@ -1725,16 +1451,7 @@ function App() {
             d2Pixels: result.d2Pixels,
             confidence: result.confidence,
           };
-          // Calibration-aware: when the preview is being driven for the
-          // Calibration auto path, push the new pixels into the same state
-          // the Calibration dialog reads (autoFillPixelLength*), so the
-          // panel's Pixel X / Pixel Y fields refresh live as the user drags
-          // Smoothing / Threshold sliders. The committed auto overlay was
-          // already updated above so the yellow guide lines move.
           if (calibrationMeasureModeRef.current === 'auto') {
-            // The yellow guides should also paint as the committed (not just
-            // preview) overlay so closing the settings dialog doesn't snap
-            // back to the pre-preview detection in calibration mode.
             setCommittedAutoMeasureOverlay(graphics);
             const nextPixels = { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
             latestManualPixelsRef.current = nextPixels;
@@ -1763,7 +1480,6 @@ function App() {
         // eslint-disable-next-line no-console
         console.warn('[auto-measure] failed:', err);
         if (preview) {
-          // Preview-time exception: keep overlay, just log + status.
           setStatusMessage('System Status: Auto Measure preview detection failed');
         } else {
           setUnavailableMsg('Auto detection not reliable. Please use manual measure.');
@@ -1779,9 +1495,6 @@ function App() {
         return false;
       } finally {
         autoMeasureInFlightRef.current = false;
-        // Drain coalesced preview: if a slider tick arrived while we were
-        // running, fire one more pass with the latest settings so the user's
-        // final position always wins.
         const pending = autoMeasurePendingPreviewRef.current;
         if (pending) {
           autoMeasurePendingPreviewRef.current = null;
@@ -1798,15 +1511,10 @@ function App() {
     getMachineStateSnapshot,
   ]);
 
-  // Keep a ref to the latest runAutoMeasure so the in-flight finally block
-  // can schedule a coalesced trailing run without depending on itself.
   useEffect(() => {
     runAutoMeasureRef.current = runAutoMeasure;
   }, [runAutoMeasure]);
 
-  // Mirror the live preview settings to a ref so the impress-complete async
-  // closure reads the current "Measure after Impress" flag without forcing
-  // that effect to re-subscribe on every settings change.
   const autoMeasurePreviewSettingsRef = useRef<AutoMeasureSettingsPayload>(autoMeasurePreviewSettings);
   useEffect(() => {
     autoMeasurePreviewSettingsRef.current = autoMeasurePreviewSettings;
@@ -1831,15 +1539,6 @@ function App() {
       });
     }
 
-    // Calibration-aware preview: when the Calibration panel is open, the
-    // slider re-run must respect the calibration overlay mode. Manual mode
-    // → ignore (no preview detection); Auto mode → emit the calibration log
-    // breadcrumb so the live and calibration paths can be diffed in the
-    // console. When Calibration is closed, the normal live preview flow is
-    // unaffected.
-    // calibrationMeasureModeRef is 'none' whenever Calibration is closed
-    // (the close handler resets it), so this naturally restricts the
-    // calibration-specific branch to the open-panel case.
     const calibrationMode = calibrationMeasureModeRef.current;
     if (calibrationMode !== 'none') {
       if (calibrationMode !== 'auto') {
@@ -1856,21 +1555,10 @@ function App() {
         suppressAutoMeasurePreviewRef.current = false;
         return;
       }
-      // Invoke through the ref so this effect does NOT depend on
-      // runAutoMeasure's callback identity. Without this indirection, every
-      // change to activeObjective / calibrations re-creates runAutoMeasure,
-      // re-fires this effect mid-drag, clears the 70ms timer, and restarts
-      // the preview pipeline — visible as jitter while the user is dragging
-      // the Smoothing / Threshold sliders.
       runAutoMeasureRef.current?.(autoMeasurePreviewSettings, true, 'settings-preview');
     }, 70);
 
     return () => window.clearTimeout(timer);
-    // committedAutoMeasureOverlay and runAutoMeasure are intentionally NOT
-    // in the deps — they would re-fire the effect mid-drag. The initial-open
-    // copy uses committedAutoMeasureOverlay from the closure captured when
-    // activeDialog flips to 'autoMeasure', which is the moment we actually
-    // want it sampled.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDialog, autoMeasurePreviewSettings]);
 
@@ -1906,9 +1594,6 @@ function App() {
     [commitAutoMeasureSnapshot, refetchAutoMeasureSettings, runAutoMeasure]
   );
 
-  // Settings dialog open log. Fires when Auto Measure Settings opens so the
-  // operator's re-fit session is anchored to the frozen frame in the log
-  // trail. Deps = [activeDialog] only, so this runs solely on dialog transition.
   useEffect(() => {
     if (activeDialog !== 'autoMeasure') return;
     // eslint-disable-next-line no-console
@@ -1916,12 +1601,7 @@ function App() {
       `[auto-settings-open] objective=${activeObjective ?? 'null'} frozenFrame=${autoMeasureCapturedFrameId ?? (committedAutoMeasureFrameRef.current ? 'present' : 'none')}`
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDialog]);
-
-  // Observational lightness tracking is folded into the machineStore ref-sync
-  // effect above (a pure ref-write that never re-renders App).
-
-  const { markTurretIntent } = useTurretMotionGate({
+  }, [activeDialog]);  const { markTurretIntent } = useTurretMotionGate({
     machineTurretPosition,
     cameraStatus,
     setTurretMovingState,
@@ -1945,9 +1625,6 @@ function App() {
     runAutoMeasure(autoMeasurePreviewSettings, false, 'auto-click');
   }, [activeTool, autoMeasurePreviewSettings, resetManualMeasure, runAutoMeasure, setActiveTool]);
 
-  // Mirror of the selected guide line as a ref so the (async/debounced) adjust
-  // handler can name the line being moved in calibration logs without
-  // re-subscribing on every selection change. Synced from state below.
   const autoMeasureSelectedLineRef = useRef<'top' | 'right' | 'bottom' | 'left' | null>(null);
 
   const { handleAutoMeasureAdjusted } = useAutoAdjustedSave({
@@ -1978,9 +1655,6 @@ function App() {
     refetchMeasurements,
   });
 
-  // Trim Measure: nudge an existing auto-measure corner by (dx, dy). Reuses
-  // the already-displayed yellow corners — does NOT add a separate overlay.
-  // No-op when there is no committed auto-measure result (nothing to trim).
   const handleTrimAdjust = useCallback(
     (corner: 'top' | 'right' | 'bottom' | 'left', dx: number, dy: number) => {
       setCommittedAutoMeasureOverlay((prev) => {
@@ -1996,18 +1670,11 @@ function App() {
     []
   );
 
-  // Shared selection state: both mouse click and keyboard Tab write this.
-  // Passed into the keyboard hook (for Tab cycling) and down to AutoMeasureOverlay
-  // (for white/thicker visual highlight) and the mouse-click handler below.
   const [autoMeasureSelectedLine, setAutoMeasureSelectedLine] = useState<
     'top' | 'right' | 'bottom' | 'left' | null
   >(null);
   autoMeasureSelectedLineRef.current = autoMeasureSelectedLine;
 
-  // Keyboard-based fine adjustment. Active when the camera is open and the
-  // pointer tool is selected, with no dialog open OR the Calibration panel open
-  // in auto-measure mode — the calibration overlay reuses this same engine so
-  // its detected lines move identically to normal Auto Measure.
   useAutoMeasureKeyboardAdjust({
     selectedLine: autoMeasureSelectedLine,
     setSelectedLine: setAutoMeasureSelectedLine,
@@ -2023,8 +1690,6 @@ function App() {
     calibrationMeasureModeRef,
   });
 
-  // Called when the operator clicks a yellow line with the mouse. Sets the
-  // shared selectedLine so keyboard arrows immediately control that line.
   const handleAutoMeasureLineSelected = useCallback(
     (line: 'top' | 'right' | 'bottom' | 'left') => {
       setAutoMeasureSelectedLine(line);
@@ -2126,34 +1791,20 @@ function App() {
       const openingConfigPanel = action === 'config:calibration' || action === 'config:camera';
       const mappedTool = TOOL_ACTION_TO_TOOL[action];
 
-      // Manual Measure must clear any active Auto Measure overlay/session so
-      // the two modes are mutually exclusive (only one set of yellow lines /
-      // crosshair on screen at a time).
       if (action === 'tools:manualMeasure') {
         if (committedAutoMeasureOverlay || previewAutoMeasureOverlay) {
           clearAutoMeasureOverlay('manual-mode-switch');
         }
       }
 
-      // Measure Length keeps its one-shot behavior on tool switch. Measure
-      // Angle is intentionally persistent and multi-measurement: Clear
-      // Graphics is the explicit removal path for those overlays.
       if (activeTool === 'measureLength' && mappedTool !== 'measureLength' && !openingConfigPanel) {
         overlay.clearByKind('length');
       }
 
-      // Magnifier is now an overlay toggle (handled in dispatcher via
-      // toggleMagnifier). When the user switches to a tool other than
-      // Manual Measure, force the magnifier off so it does not bleed into
-      // Pointer/Auto Measure/calibration.
       if (!enteringMagnifier && magnifierEnabled && action !== 'tools:manualMeasure' && !openingConfigPanel) {
         setMagnifierEnabled(false);
       }
 
-      // Shared Auto/Manual highlight (toolbar underline + Machine Control card).
-      // Auto and Manual select themselves; switching to any other measurement
-      // mode (pointer/length/angle) clears the highlight. Non-tool actions
-      // (file/config/etc.) leave it untouched.
       if (action === 'tools:autoMeasure') {
         setSelectedMeasureMode('auto');
       } else if (action === 'tools:manualMeasure') {
@@ -2178,18 +1829,11 @@ function App() {
     ]
   );
 
-  // Keep the Manual highlight consistent when Manual mode is exited outside the
-  // toolbar handler (calibration, length-switch, etc. call setActiveTool
-  // directly). activeTool remains the authority for Manual; this only clears a
-  // stale 'manual' highlight.
   useEffect(() => {
     if (selectedMeasureMode === 'manual' && activeTool !== 'manualMeasure') {
       setSelectedMeasureMode(null);
     }
-  }, [activeTool, selectedMeasureMode]);
-
-
-  useEffect(() => {
+  }, [activeTool, selectedMeasureMode]);  useEffect(() => {
     const hex = LINE_COLOR_HEX[lineColorSetting?.lineColor ?? DEFAULT_LINE_COLOR];
     document.documentElement.style.setProperty('--line-color', hex);
   }, [lineColorSetting?.lineColor]);
@@ -2206,10 +1850,6 @@ function App() {
     clearActiveMeasurement('clear-table');
   }, [clearActiveMeasurement]);
 
-  // Stable interactive props for RightPanel so its memo holds across unrelated
-  // App re-renders (notably machine-state pushes). Inline arrows / a freshly
-  // built calibrationSlot element previously created new identities every
-  // render and forced RightPanel + its subtree to re-render on every update.
   const handleTurretIntentClick = useCallback(
     () => markTurretIntent('turret-click'),
     [markTurretIntent]

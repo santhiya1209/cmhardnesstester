@@ -14,7 +14,6 @@ function readStored(): LineThickness {
       return value;
     }
   } catch {
-    // localStorage may be blocked (private mode etc.) — fall through to default.
   }
   return DEFAULT_LINE_THICKNESS;
 }
@@ -34,7 +33,6 @@ export function useLineThickness(): UseLineThicknessApi {
       try {
         window.localStorage.setItem(LINE_THICKNESS_STORAGE_KEY, next);
       } catch {
-        // Storage write blocked — UI still updates in-memory.
       }
       return next;
     });

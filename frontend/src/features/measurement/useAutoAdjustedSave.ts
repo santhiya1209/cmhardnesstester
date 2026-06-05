@@ -37,7 +37,6 @@ type SaveMeasurementInput = {
 };
 
 export type UseAutoAdjustedSaveArgs = {
-  // Overlay state (read + setters)
   previewAutoMeasureOverlay: AutoMeasureGraphics | null;
   setPreviewAutoMeasureOverlay: React.Dispatch<
     React.SetStateAction<AutoMeasureGraphics | null>
@@ -46,27 +45,22 @@ export type UseAutoAdjustedSaveArgs = {
     React.SetStateAction<AutoMeasureGraphics | null>
   >;
   displayedAutoMeasureGraphicsRef: React.MutableRefObject<AutoMeasureGraphics | null>;
-  // Refs read
   activeObjectiveRef: React.MutableRefObject<string | null>;
   autoMeasurementIdRef: React.MutableRefObject<string | null>;
   autoMeasureSelectedLineRef: React.MutableRefObject<'top' | 'right' | 'bottom' | 'left' | null>;
   calibrationManualModeRef: React.MutableRefObject<boolean>;
   calibrationMeasureModeRef: React.MutableRefObject<CalibrationMeasureMode>;
   committedFingerprintsRef: React.MutableRefObject<CommittedAutoMeasureFingerprint[]>;
-  // Refs written
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
   activeMeasurementMethodRef: React.MutableRefObject<string | null>;
-  // Closure state
   measurements: Measurement[];
   calibrationSettings: CalibrationSettings | null;
   calibrations: Calibration[];
   calibrationSettingsList: CalibrationSettings[];
   cameraRef: React.RefObject<CameraWindowHandle | null>;
-  // Setters
   setUnavailableMsg: React.Dispatch<React.SetStateAction<string | null>>;
   setStatusMessage: (message: string) => void;
   setLatestManualPixels: (pixels: { d1Px: number; d2Px: number } | null) => void;
-  // Hook-provided callbacks
   getMachineStateSnapshot: () => Promise<MachineState | null>;
   getActiveMeasurementId: () => string | undefined;
   setActiveMeasurement: (id: string, frameId: number | null, reason: string) => void;
@@ -74,11 +68,6 @@ export type UseAutoAdjustedSaveArgs = {
   refetchMeasurements: () => Promise<unknown> | unknown;
 };
 
-// Live recompute when the user drags edges/corners on the auto-measure
-// overlay. We coalesce rapid drag events with a 90ms trailing debounce so the
-// DB save and refetch don't fire 60×/sec while the overlay/graphics still
-// update in real time on every move. The cleanup effect cancels a pending
-// trailing save when the component unmounts.
 export function useAutoAdjustedSave({
   previewAutoMeasureOverlay,
   setPreviewAutoMeasureOverlay,
@@ -112,8 +101,6 @@ export function useAutoAdjustedSave({
   const handleAutoMeasureAdjusted = useCallback(
     (newCorners: AutoMeasureCorners) => {
       lastAdjustedCornersRef.current = newCorners;
-      // Update graphics immediately so the overlay & any downstream readers
-      // see the new corners on the next frame.
       const applyAdjustedCorners = (current: AutoMeasureGraphics | null) =>
         current ? { ...current, corners: newCorners } : current;
       if (previewAutoMeasureOverlay) {
@@ -122,11 +109,6 @@ export function useAutoAdjustedSave({
         setCommittedAutoMeasureOverlay(applyAdjustedCorners);
       }
 
-      // Calibration mode: the calibration panel's Pixel X / Pixel Y inputs
-      // are bound to latestManualPixels. Push the new diagonals through
-      // immediately so the form reflects every drag, and skip the
-      // measurement-row debounce below — calibration must not create a row
-      // until the user clicks Add Calibration.
       if (calibrationManualModeRef.current) {
         const d1Px = Math.hypot(
           newCorners.right.x - newCorners.left.x,
@@ -144,11 +126,6 @@ export function useAutoAdjustedSave({
         return;
       }
 
-      // Calibration auto mode: guide lines from the auto-measure detection are
-      // shown on the camera. Dragging them must update Pixel X/Y in the
-      // calibration panel live without creating a measurement row.
-      // Pixel X = distance between left/right vertical guides; Pixel Y =
-      // distance between top/bottom horizontal guides.
       if (calibrationMeasureModeRef.current === 'auto') {
         const d1Px = Math.abs(newCorners.right.x - newCorners.left.x);
         const d2Px = Math.abs(newCorners.bottom.y - newCorners.top.y);
@@ -174,8 +151,6 @@ export function useAutoAdjustedSave({
         void (async () => {
           try {
             const machineState = await getMachineStateSnapshot();
-            // Same single source of truth as Auto Measure / Manual Measure.
-            // No dialog-default silent fallback.
             const objectiveForCalibration = activeObjectiveRef.current?.trim() || null;
             if (!objectiveForCalibration) {
               setStatusMessage('System Status: Auto (Adjusted) blocked: no active objective');
@@ -194,10 +169,6 @@ export function useAutoAdjustedSave({
               corners.bottom.x - corners.top.x,
               corners.bottom.y - corners.top.y
             );
-
-            // Line drag must NEVER create a new row — that's how depth was
-            // silently being lost. Fall back to the active row id so an
-            // empty autoMeasurementIdRef (cross-flow edge case) still
 
             const targetId =
               autoMeasurementIdRef.current ?? getActiveMeasurementId() ?? undefined;
@@ -224,9 +195,7 @@ export function useAutoAdjustedSave({
             }
             const values = conversion.value;
 
-
             await waitForOverlayPaint();
-            // Deterministic finalize for the adjusted-corners save too.
             const adjustedCornersKey = autoMeasureCornersKey(corners);
             // eslint-disable-next-line no-console
             console.log(`[auto-measure-final-corners] source=adjusted key=${adjustedCornersKey}`);
@@ -241,12 +210,6 @@ export function useAutoAdjustedSave({
               // eslint-disable-next-line no-console
               console.warn('[album] missing image for measurementId=', targetId ?? 'new');
             }
-            // Depth + conversion fields must survive a line drag. The backend's
-            // buildUpdateSchema injects `null` defaults for fields missing from
-            // the PUT body, so an "omit depth" payload would wipe depthMm /
-            // depthSource / deviceDepthMm / manualDepthMm / convertType /
-            // convertValue to null on every adjust. Pass them through from the
-            // existing row when we're updating (not creating).
             const preservedConvertValue =
               typeof targetExisting?.convertValue === 'number'
                 ? targetExisting.convertValue

@@ -18,11 +18,6 @@ export type ValidateDetectionResultOutput = {
   resolvedDetection: ReturnType<typeof resolveAutoMeasureDetection>;
 };
 
-// Pure result-shape inspection: reads the native debug envelope, emits the
-// `auto-measure-contours` log, and runs the shared resolver/geometry validator
-// against the raw native result. Side-effect free — no overlay clears, no
-// status messages, no session/objective guards (those stay in App so the
-// downstream branching paths keep their ownership).
 export function validateDetectionResult({
   nativeResult,
   liveObjectiveForNative,

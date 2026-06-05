@@ -54,9 +54,6 @@ export type VickersFromPixelsValue = {
   d2Mm: number;
   avgDUm: number;
   avgDMm: number;
-  // forceKgf and hv become null when force is missing. D1µm/D2µm/Davg are
-  // still produced from calibration alone — the table now shows the µm
-  // diagonals and a blank HV instead of refusing to create a row at all.
   forceKgf: number | null;
   hv: number | null;
   calibrationId: string;
@@ -214,11 +211,6 @@ export function createDefaultManualMeasurePoints(
   ];
 }
 
-// Vickers indent pixel size scales linearly with magnification. Default the
-// initial manual cross to roughly the size of an indent at the active
-// objective — at 40X the legacy 12% radius lands near the indent edges; at
-// 10X that's ~4× too big and the user sees a cross floating far from the
-// actual diamond. Anything outside the known list keeps the legacy 12%.
 function radiusFractionForObjective(objective: string | null | undefined): number {
   const key = String(objective ?? '').trim().toUpperCase();
   if (key === '10X') return 0.04;
@@ -255,10 +247,6 @@ export function guideLinesToPoints(guides: ManualGuideLines): ManualMeasurePoint
   ];
 }
 
-// Industrial qualification: HV must lie within the workpiece's configured
-// [targetMinHv, targetMaxHv]. Returns null when no target range is set so
-// the table renderer can leave the cell blank rather than reporting NO for
-// unconfigured tests. Inclusive comparison matches typical material specs.
 export function computeQualified(
   hv: number | null | undefined,
   targetMinHv: number | null | undefined,
@@ -306,9 +294,6 @@ export function resolveManualCalibration({
   targetObjective,
   calibrationSettingsList,
 }: ResolveMicronsPerPixelArgs): ManualCalibrationInfo | null {
-  // Per-objective lookup takes priority. If a target objective is provided we
-  // MUST match it exactly — never silently fall back to another objective's
-  // calibration value.
   const target = normalizeObjectiveName(targetObjective);
   if (target) {
     const list = calibrationSettingsList ?? (calibrationSettings ? [calibrationSettings] : []);
@@ -321,8 +306,6 @@ export function resolveManualCalibration({
         objective: match.normalizedObjective ?? normalizeObjectiveName(match.objective),
       };
     }
-    // No matching per-objective calibration. Try legacy `calibrations` list
-    // filtered to the same objective only — never cross objectives.
     const legacyForObjective = calibrations
       .filter(
         (item) =>
@@ -337,11 +320,6 @@ export function resolveManualCalibration({
     if (!legacy) {
       return null;
     }
-    // Calibration coefficient: when the user filled BOTH the measured pixel
-    // span AND the real-world distance, compute µm/pixel = realDistance /
-    // pixelLength per axis. Otherwise fall back to the legacy interpretation
-    // where pixelLengthX/Y is itself the µm/pixel coefficient — keeps any
-    // pre-existing rows working without forcing the user to re-enter them.
     const realX = typeof legacy.realDistanceX === 'number' ? legacy.realDistanceX : 0;
     const realY = typeof legacy.realDistanceY === 'number' ? legacy.realDistanceY : 0;
     const pxX = legacy.pixelLengthX;
@@ -365,10 +343,6 @@ export function resolveManualCalibration({
       micronPerPixelY = computedY;
       micronPerPixel = computedY;
     } else {
-      // Legacy fallback for calibrations saved BEFORE the knownReferenceUm
-      // flow existed (no realDistance). Treat pxX/pxY as µm/pixel directly so
-      // pre-existing rows / per-objective lookups don't break. New saves go
-      // through the realDistance branch above and are unaffected.
       const axes = [pxX, pxY].filter((value) => Number.isFinite(value) && value > 0);
       if (axes.length === 0) {
         return null;
@@ -461,10 +435,6 @@ export function calculateVickersFromPixels({
     return { ok: false, reason: 'D1/D2 pixel values are invalid.', normalizedObjective };
   }
 
-  // Calibration is required to convert pixels → microns. Resolve it BEFORE
-  // checking force, because force only affects HV — D1µm/D2µm/Davg can be
-  // produced without it. Refusing the whole row when force is missing is
-  // what was leaving the measurement table blank.
   const calibration = findCalibrationForObjective(
     calibrationSettingsList ?? (calibrationSettings ? [calibrationSettings] : []),
     normalizedObjective
@@ -479,9 +449,6 @@ export function calculateVickersFromPixels({
         targetObjective: normalizedObjective,
       });
   const umPerPixel = calibration ? readUmPerPixel(calibration) : legacyCalibration?.micronPerPixel ?? 0;
-  // Per-axis coefficients per spec: prefer the legacy Calibration record's
-  // separate xUmPerPixel / yUmPerPixel (knownReferenceUm / pixelLengthX|Y).
-  // calibration_settings only carries a single value, so X==Y in that case.
   const xUmPerPixel = legacyCalibration?.micronPerPixelX ?? umPerPixel;
   const yUmPerPixel = legacyCalibration?.micronPerPixelY ?? umPerPixel;
 
@@ -514,8 +481,6 @@ export function calculateVickersFromPixels({
     return { ok: false, reason: 'Average diagonal is zero.', normalizedObjective };
   }
 
-  // HV needs force. Without force we still emit D1µm/D2µm/Davg so the table
-  // is populated; HV column displays "-" via formatHardness(null).
   const hasForce = typeof forceKgf === 'number' && Number.isFinite(forceKgf) && forceKgf > 0;
   const hv = hasForce ? VICKERS_CONSTANT * (forceKgf as number) / (avgDMm * avgDMm) : null;
   const effectiveForceKgf = hasForce ? (forceKgf as number) : null;

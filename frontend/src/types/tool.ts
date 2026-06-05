@@ -5,30 +5,20 @@ export type ToolId =
   | 'measureAngle'
   | 'magnifier';
 
-// Shared, purely-visual selection state for the measurement mode. Set inside
-// the single toolbar dispatch handler so the top toolbar and the Machine
-// Control Auto/Manual cards highlight from one source of truth. It does NOT
-// drive any measurement logic — Auto Measure stays a one-shot, Manual stays an
-// activeTool mode.
 export type MeasureSelection = 'auto' | 'manual' | null;
 
 export type ToolbarActionId =
-  // configuration shortcuts exposed in the toolbar
   | 'config:calibration'
   | 'config:camera'
-  // file
   | 'file:open'
   | 'file:save'
-  // device (camera IPC)
   | 'device:openCamera'
   | 'device:closeCamera'
-  // measurement modes (set activeTool)
   | 'tools:pointer'
   | 'tools:manualMeasure'
   | 'tools:measureLength'
   | 'tools:measureAngle'
   | 'tools:magnifier'
-  // one-shot commands (do not change activeTool)
   | 'tools:autoMeasure'
   | 'tools:autoSearchEdge'
   | 'tools:panoramicScan'
@@ -38,7 +28,6 @@ export type ToolbarActionId =
   | 'tools:resumeImage'
   | 'tools:zoomIn'
   | 'tools:zoomOut'
-  // yellow measurement-line thickness (shared across Auto + Manual overlays)
   | 'tools:lineThin'
   | 'tools:lineNormal'
   | 'tools:lineThick';
@@ -72,7 +61,4 @@ export const TOOL_ACTION_TO_TOOL: Partial<Record<ToolbarActionId, ToolId>> = {
   'tools:manualMeasure': 'manualMeasure',
   'tools:measureLength': 'measureLength',
   'tools:measureAngle': 'measureAngle',
-  // Note: 'tools:magnifier' is intentionally NOT a mode-switch. Magnifier is
-  // now an independent overlay toggle (see App.tsx `magnifierEnabled`) so it
-  // can coexist with Manual Measure as a precision-placement helper.
 };

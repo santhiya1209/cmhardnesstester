@@ -57,11 +57,6 @@ export function useTurretMotionGate({
         const to = (target ?? 'unknown') || 'unknown';
         setTurretMovingTarget(to === 'unknown' ? null : to);
       }
-      // Force-clear overlay state. clearAutoMeasureOverlay nulls
-      // committedAutoMeasureOverlay → AutoMeasureOverlay re-renders empty.
-      // Bumping manualMeasureResetKey clears the manual measure overlay's
-      // internal corners + repaints empty. The calibration overlay shares
-      // committedAutoMeasureOverlay, so the same call clears it too.
       clearAutoMeasureOverlay(reason);
       setPreviewAutoMeasureOverlay(null);
       setAutoMeasureSessionActive(false);
@@ -78,20 +73,6 @@ export function useTurretMotionGate({
   );
   useEffect(() => clearTurretMovingTimer, [clearTurretMovingTimer]);
 
-  // Turret position change — any direction button (left/front/right) that
-  // moves the turret can land on a different slot (incl. IND, which is not
-  // an objective lens and therefore does NOT bump confirmedObjective). The
-  // overlay was captured against a specific turret orientation, so any
-  // turret move invalidates it regardless of objective.
-  //
-  // IMPORTANT: do NOT clear the live canvas here. Turret rotation is a pure
-  // mechanical move on the same camera/sensor — closing or blanking the
-  // canvas would make the camera look frozen for the entire motion window
-  // (the next worker frame paints only when one is grabbed/decoded, which
-  // can lag a couple of frames during vibration). The canvas-flush belongs
-  // exclusively to the confirmed-objective-change handler below, which
-  // fires when the new turret slot actually changes the optical objective.
-  // Pure turret rotation on the same objective MUST keep streaming pixels.
   const lastSeenTurretPositionRef = useRef<string | null>(null);
   useEffect(() => {
     const pos = machineTurretPosition;
@@ -103,10 +84,6 @@ export function useTurretMotionGate({
     if (lastSeenTurretPositionRef.current === pos) return;
     lastSeenTurretPositionRef.current = pos;
     const frameId = getLastPaintedFrameId();
-    // RX confirms the motion completed — release the overlay-render gate
-    // immediately, regardless of whether the gate was set by a click in
-    // this session (a hardware-driven turret move with no click also lands
-    // here and must not leave the gate stuck on if a prior watchdog set it).
     clearTurretMovingTimer();
     setTurretMovingState(false);
     setTurretMovingTarget(null);
@@ -114,9 +91,6 @@ export function useTurretMotionGate({
     } else {
       clearAutoMeasureOverlay('turret-change');
     }
-    // Schedule a one-shot post-RX log on the next paint so the user can
-    // verify the stream resumed (frameId advanced) without the camera ever
-    // being closed/reset.
     const startId = frameId;
     let cancelled = false;
     const tickStart = Date.now();

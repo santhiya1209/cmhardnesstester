@@ -38,8 +38,6 @@ let pendingPaint: {
   epoch: number;
   frameId: number;
   grabTs: number;
-  // Latency diagnostics carried alongside the paint so the rAF blit can emit a
-  // full per-frame breakdown. All additive; -1 means "unknown → log n/a".
   decodeMs: number;
   ipcMs: number;
   mainAgeMs: number;
@@ -64,22 +62,13 @@ export function getLatestFullFrame() {
   return latestFullFrame;
 }
 
-/* ----------------------- camera latency diagnostics ----------------------- */
-// Additive instrumentation only — never alters frame flow or the
-// latest-frame-only drop policy. The renderer is the single aggregation point:
-// it sees grabTs/capturedAt/sentAt via meta, gets decodeMs echoed from the
-// worker, and measures paint locally. Per-frame breakdown is sampled at ~1Hz
-// (avoids 30fps log spam); a rolling summary is emitted every 5s. staleDrops /
-// supersededDrops are cumulative session totals.
 let perfStaleDrops = 0;
 let perfSupersededDrops = 0;
-// Timings for the frame currently handed to the worker (single in-flight).
 let perfInFlightIpcMs = -1;
 let perfInFlightMainAgeMs = -1;
 let perfInFlightSdkMs = -1;
 let perfInFlightExposureMs = -1;
 let perfInFlightGain = -1;
-// 5s rolling accumulators (averaged in the summary line).
 let perfWindowStartAt = 0;
 let perfPaintCount = 0;
 let perfSumSdk = 0, perfCntSdk = 0;
@@ -94,9 +83,6 @@ function perfNum(v: number): string {
   return v >= 0 ? String(Math.round(v * 100) / 100) : 'n/a';
 }
 
-// Called once per frame that actually completes the pipeline (after the rAF
-// putImageData). Updates the rolling window and emits the throttled per-frame
-// breakdown + the 5s summary.
 function perfAccumulate(sample: {
   sdkMs: number;
   mainAgeMs: number;
@@ -181,8 +167,6 @@ function installMainThreadPaintHandler() {
       const resolvedFrameId =
         echoedFrameId > 0 ? echoedFrameId : inFlightFrameId;
       if (paintEpoch < frameEpoch) {
-        // Decoded frame belongs to a superseded session (objective change /
-        // canvas clear bumped the epoch) — dropped, not painted.
         perfSupersededDrops += 1;
         decoderBusy = false;
         if (resolvedFrameId > 0) ackCameraFrame(resolvedFrameId);
@@ -203,8 +187,6 @@ function installMainThreadPaintHandler() {
         epoch: paintEpoch,
         frameId: resolvedFrameId,
         grabTs: inFlightGrabTs,
-        // Snapshot the in-flight per-frame timings BEFORE flushPendingFrame()
-        // below posts the next frame and overwrites perfInFlight*.
         decodeMs,
         ipcMs: perfInFlightIpcMs,
         mainAgeMs: perfInFlightMainAgeMs,
@@ -254,7 +236,6 @@ function schedulePaintRaf() {
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
-    // This frame completed the full pipeline — record its latency breakdown.
     perfAccumulate({
       sdkMs: p.sdkMs,
       mainAgeMs: p.mainAgeMs,
@@ -318,9 +299,6 @@ function subscribeIpcOnce() {
     }
     if (decoderBusy) {
       if (pendingFrame) {
-        // The previously-queued newest-pending frame is being replaced by an
-        // even newer one — it never reaches the decoder. That's a superseded
-        // drop (latest-frame-only policy working as intended).
         perfSupersededDrops += 1;
         ackCameraFrame(pendingFrame.frameId);
       }
@@ -376,10 +354,6 @@ function postFrameToWorker(
   inFlightGrabTs = meta.grabTs ?? inFlightCapturedAt;
   inFlightFrameId = frameId;
   inFlightDecodeStartedAt = Date.now();
-  // Latency diagnostics for the frame entering the decoder. ipcTransferMs and
-  // mainFrameAgeMs are derived from main-stamped meta timestamps (same machine
-  // clock, dev + packaged). sdk/exposure/gain are present only if main/native
-  // stamped them; -1 → the perf logger prints n/a.
   perfInFlightIpcMs =
     typeof meta.sentAt === 'number' && meta.sentAt > 0 && receivedAt > 0
       ? Math.max(0, receivedAt - meta.sentAt)

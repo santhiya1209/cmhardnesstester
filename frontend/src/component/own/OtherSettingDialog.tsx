@@ -147,7 +147,6 @@ function OtherSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       onStatusChange?.('Other setting saved.');
       onClose();
     } catch {
-      // surfaced via saveError
     }
   }, [data, form, onClose, onStatusChange, saveOtherSetting]);
 

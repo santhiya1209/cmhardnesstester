@@ -22,27 +22,17 @@ const MONO_STACK = [
   'monospace',
 ].join(',');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Phase 0 — Layered design tokens. This is the single source of truth for
-// every color in the UI. Reference these from sx props and styled components.
-// The legacy flat `colors` export has been removed; consumers must migrate.
-// ─────────────────────────────────────────────────────────────────────────────
 export const tokens = {
   surface: {
-    // Page background — neutral so panels read as raised.
     base: '#F5F7FA',
-    // Cards, panels, dialogs, table body.
     raised: '#FFFFFF',
-    // Inputs, table headers, subtle inset wells.
     sunken: '#EEF1F5',
-    // Inverse surface for the top app chrome.
     inverse: '#1E3A5F',
   },
   border: {
     subtle: '#E5E9EF',
     default: '#D0D7DE',
     strong: '#B7C2D2',
-    // Pure-dark border for the inverse chrome.
     inverse: '#13243D',
   },
   text: {
@@ -52,23 +42,15 @@ export const tokens = {
     disabled: '#9CA3AF',
     onAccent: '#FFFFFF',
     onInverse: '#FFFFFF',
-    // Heading color — neutral dark by default. Later phases may diverge.
     heading: '#1F2937',
   },
   accent: {
-    // Single primary accent for all interactive emphasis (buttons, focus,
-    // selected tab indicator, active toggle). Industrial navy.
     base: '#1E3A5F',
     hover: '#2A4D7A',
     pressed: '#13243D',
-    // Tinted background for hover/selected/soft chips.
     soft: '#E8EEF6',
-    // Contrast text for filled accent surfaces.
     contrast: '#FFFFFF',
   },
-  // Sky-blue secondary accent retained for surfaces already styled with it
-  // (right-panel tab indicator, HV summary, Statistics button). Phase 1 folds
-  // these into `accent` so this object can be removed.
   accentSecondary: {
     base: '#0EA5E9',
     hover: '#38BDF8',
@@ -80,8 +62,6 @@ export const tokens = {
     error: '#D32F2F',
     info: '#0EA5E9',
   },
-  // Physical line colors drawn on the camera image. NEVER theme these — they
-  // are tuned for visibility against live workpiece footage.
   overlay: {
     autoMeasureLine: '#FFFF00',
     d1d2MeasureLine: '#800080',
@@ -89,10 +69,6 @@ export const tokens = {
   },
 } as const;
 
-// Spacing scale. MUI's `theme.spacing(n)` returns `${n * 8}px`. The scale below
-// is the canonical set of step sizes used across the app — reference by name
-// in component sx props (`p: spacing.md`) instead of raw pixels.
-//   xxs = 2, xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32
 export const spacing = {
   xxs: 0.25,
   xs: 0.5,
@@ -103,7 +79,6 @@ export const spacing = {
   xxl: 4,
 } as const;
 
-// Radii — flat industrial corners, sparingly rounded.
 export const radii = {
   none: 0,
   sm: 2,
@@ -112,8 +87,6 @@ export const radii = {
   pill: 999,
 } as const;
 
-// Standardized type weights. Body copy and labels stick to 400/500; emphasis
-// and headings use 600. 300 (light) is dropped — it was unused at this size.
 const FW = {
   regular: 400,
   medium: 500,

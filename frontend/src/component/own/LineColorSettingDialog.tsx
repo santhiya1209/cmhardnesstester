@@ -60,7 +60,6 @@ function LineColorSettingDialogImpl({ open, onClose, onStatusChange, onSaved }: 
       onSaved?.(selected);
       onClose();
     } catch {
-      // error surfaced via saveError
     }
   }, [data?.id, onClose, onSaved, onStatusChange, saveLineColorSetting, selected]);
 

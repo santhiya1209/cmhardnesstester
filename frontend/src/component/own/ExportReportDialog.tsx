@@ -22,8 +22,6 @@ import { useMachineSnapshot } from '@/contexts/MachineStateContext';
 import type { Measurement } from '@/types/measurement';
 import { exportReport, type ReportType } from '@/utils/exportReport';
 
-// Brand industrial palette — kept explicit so the dialog matches the generated
-// certificate exactly (the app theme's navy is a slightly different tone).
 const NAVY = '#123B6D';
 const NAVY_DARK = '#0E2E55';
 const BLUE = '#1E88E5';
@@ -130,9 +128,6 @@ type Props = {
   cameraImageDataUrl?: string | null;
   targetMinHv?: number | null;
   targetMaxHv?: number | null;
-  // CHD target hardness (raw input string) — single source of truth owned by
-  // RightPanel and shared with the Depth/CHD tab. The exported report uses this
-  // exact value, so the dialog and the Depth tab never drift apart.
   chdTargetInput: string;
   onChdTargetInputChange: (value: string) => void;
 };
@@ -237,7 +232,6 @@ function ExportReportDialogImpl({
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="md" fullWidth>
-      {/* Navy header band */}
       <Box
         sx={{
           position: 'relative',
@@ -264,7 +258,6 @@ function ExportReportDialogImpl({
 
       <DialogContent dividers sx={{ p: 0 }}>
         <Box sx={{ display: 'grid', gridTemplateColumns: '1.35fr 1fr' }}>
-          {/* LEFT column */}
           <Box sx={{ p: 2.5, borderRight: 1, borderColor: 'divider' }}>
             <Typography sx={SECTION_LABEL_SX}>Report Information</Typography>
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.25 }}>
@@ -322,7 +315,6 @@ function ExportReportDialogImpl({
             ) : null}
           </Box>
 
-          {/* RIGHT column */}
           <Box sx={{ p: 2.5, bgcolor: '#FAFBFD' }}>
             <Typography sx={SECTION_LABEL_SX}>Live Preview</Typography>
             <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, overflow: 'hidden', bgcolor: 'background.paper' }}>

@@ -9,7 +9,6 @@ export type ToolDispatchContext = {
   setActiveTool: (tool: ToolId) => void;
   setStatus: (message: string) => void;
   notifyUnavailable: (label: string) => void;
-  // overlay commands — wired in Phase 2/3
   clearGraphics?: () => void;
   trimLastMeasurement?: () => void;
   openTrimMeasure?: () => void;
@@ -22,7 +21,6 @@ export type ToolDispatchContext = {
   zoomOut?: () => void;
   openCalibration?: () => void;
   openCameraSettings?: () => void;
-  // file/camera — wired in Phase 5
   openImage?: () => void;
   saveImage?: () => void;
   openCameraDevice?: () => void;
@@ -61,7 +59,6 @@ export function dispatchToolbarAction(
 ): void {
   const label = FRIENDLY_LABEL[action] ?? action;
 
-  // 1) Mode-switching tools — set activeTool only, no side effects.
   const tool = TOOL_ACTION_TO_TOOL[action];
   if (tool) {
     ctx.setActiveTool(tool);
@@ -69,7 +66,6 @@ export function dispatchToolbarAction(
     return;
   }
 
-  // 2) One-shot commands.
   switch (action) {
     case 'file:open':
       ctx.openImage?.();

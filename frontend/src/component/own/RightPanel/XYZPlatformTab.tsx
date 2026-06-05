@@ -18,9 +18,11 @@ import SouthIcon from '@mui/icons-material/South';
 import SouthEastIcon from '@mui/icons-material/SouthEast';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import StopIcon from '@mui/icons-material/Stop';
 import type { SxProps, Theme } from '@mui/material/styles';
-import { useSaveXyzPlatformState } from '@/hooks/mutations/useSaveXyzPlatformState';
-import { useXyzPlatformState } from '@/hooks/queries/useXyzPlatformState';
+import { useXyzPlatformHardware } from '@/hooks/mutations/useXyzPlatformHardware';
+import { useXyzPlatformStateSync } from '@/hooks/mutations/useXyzPlatformStateSync';
+import { useXyzPositionSubscription } from '@/hooks/queries/useXyzPositionSubscription';
 import type {
   FocusMode,
   XySpeed,
@@ -28,6 +30,7 @@ import type {
   XYZPlatformStatePayload,
   ZSpeed,
 } from '@/types/xyzPlatformState';
+import type { XyzCommandResult, XyzDirection, ZDirection } from '@/types/xyzPlatform';
 
 const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1 };
 const HEADER_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 };
@@ -51,6 +54,7 @@ const PAD_BTN_SX: SxProps<Theme> = {
   py: 0,
   px: 0.5,
 };
+const STOP_BTN_SX: SxProps<Theme> = { height: 30, textTransform: 'none', fontSize: 12 };
 const COORD_ROW_SX: SxProps<Theme> = {
   display: 'flex',
   alignItems: 'center',
@@ -75,18 +79,6 @@ const STATUS_ROW_SX: SxProps<Theme> = {
 const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const ALERT_SX: SxProps<Theme> = { mt: 1 };
 
-const XY_STEP_MAP: Record<XySpeed, number> = {
-  slow: 1,
-  mid: 5,
-  fast: 10,
-};
-
-const Z_STEP_MAP: Record<ZSpeed, number> = {
-  slow: 1,
-  fast: 5,
-  ultra: 10,
-};
-
 const DEFAULT_FORM_STATE: XYZPlatformStatePayload = {
   xySpeed: 'slow',
   zSpeed: 'fast',
@@ -96,7 +88,7 @@ const DEFAULT_FORM_STATE: XYZPlatformStatePayload = {
   xyLocked: false,
   zLocked: false,
   focusMode: 'manual',
-  lastAction: 'Ready for mock platform control.',
+  lastAction: 'Ready for platform control.',
 };
 
 function toFormState(state: XYZPlatformState | null): XYZPlatformStatePayload {
@@ -133,13 +125,14 @@ function formatUpdatedAt(value: string | undefined): string {
 }
 
 function XYZPlatformTabImpl() {
-  const { data: xyzPlatformState, error: loadError, loading, refetch } = useXyzPlatformState();
-  const { error: saveError, saveXyzPlatformState, saving } = useSaveXyzPlatformState();
+  const { persistedState, error: syncError, loading, saving, persist } = useXyzPlatformStateSync();
+  const hardware = useXyzPlatformHardware();
+  const live = useXyzPositionSubscription();
   const [formState, setFormState] = useState<XYZPlatformStatePayload>(DEFAULT_FORM_STATE);
 
-  const persistedFormState = useMemo(() => toFormState(xyzPlatformState), [xyzPlatformState]);
-  const isBusy = loading || saving;
-  const errorMessage = loadError ?? saveError;
+  const persistedFormState = useMemo(() => toFormState(persistedState), [persistedState]);
+  const isBusy = loading || saving || hardware.busy;
+  const errorMessage = syncError ?? hardware.error ?? live.lastError ?? undefined;
 
   useEffect(() => {
     if (!loading) {
@@ -147,115 +140,109 @@ function XYZPlatformTabImpl() {
     }
   }, [loading, persistedFormState]);
 
-  const persistState = useCallback(
-    async (nextState: XYZPlatformStatePayload) => {
-      setFormState(nextState);
-      await saveXyzPlatformState({
-        id: xyzPlatformState?.id,
-        values: nextState,
-      });
-      await refetch();
+  const commit = useCallback(
+    (next: XYZPlatformStatePayload) => {
+      setFormState(next);
+      void persist(next);
     },
-    [refetch, saveXyzPlatformState, xyzPlatformState?.id]
+    [persist]
+  );
+
+  const persistMoveResult = useCallback(
+    (result: XyzCommandResult, intent: string) => {
+      if (result.ok && result.position) {
+        commit({
+          ...formState,
+          platformX: result.position.x,
+          platformY: result.position.y,
+          platformZ: result.position.z,
+          lastAction: intent,
+        });
+      } else if (result.ok) {
+        commit({ ...formState, lastAction: intent });
+      } else {
+        commit({ ...formState, lastAction: `${intent} — failed: ${result.error}` });
+      }
+    },
+    [commit, formState]
   );
 
   const handleXySpeedChange = useCallback(
     (value: XySpeed) => {
-      void persistState({
-        ...formState,
-        xySpeed: value,
-        lastAction: `X/Y speed set to ${value}.`,
-      });
+      commit({ ...formState, xySpeed: value, lastAction: `X/Y speed set to ${value}.` });
+      void hardware.setXySpeed(value);
     },
-    [formState, persistState]
+    [commit, formState, hardware]
   );
 
   const handleZSpeedChange = useCallback(
     (value: ZSpeed) => {
-      void persistState({
-        ...formState,
-        zSpeed: value,
-        lastAction: `Z speed set to ${value}.`,
-      });
+      commit({ ...formState, zSpeed: value, lastAction: `Z speed set to ${value}.` });
+      void hardware.setZSpeed(value);
     },
-    [formState, persistState]
+    [commit, formState, hardware]
   );
 
   const handleMove = useCallback(
-    (deltaX: number, deltaY: number, lastAction: string) => {
+    async (direction: XyzDirection, intent: string) => {
       if (formState.xyLocked) {
         return;
       }
-
-      const step = XY_STEP_MAP[formState.xySpeed];
-
-      void persistState({
-        ...formState,
-        platformX: formState.platformX + deltaX * step,
-        platformY: formState.platformY + deltaY * step,
-        lastAction,
-      });
+      const result = await hardware.moveStage(direction, formState.xySpeed);
+      persistMoveResult(result, intent);
     },
-    [formState, persistState]
+    [formState.xyLocked, formState.xySpeed, hardware, persistMoveResult]
   );
 
   const handleZMove = useCallback(
-    (deltaZ: number, lastAction: string) => {
+    async (direction: ZDirection, intent: string) => {
       if (formState.zLocked) {
         return;
       }
-
-      const step = Z_STEP_MAP[formState.zSpeed];
-
-      void persistState({
-        ...formState,
-        platformZ: formState.platformZ + deltaZ * step,
-        lastAction,
-      });
+      const result = await hardware.moveZ(direction, formState.zSpeed);
+      persistMoveResult(result, intent);
     },
-    [formState, persistState]
+    [formState.zLocked, formState.zSpeed, hardware, persistMoveResult]
   );
+
+  const handleStop = useCallback(() => {
+    void hardware.stopStage();
+    void hardware.stopZ();
+    commit({ ...formState, lastAction: 'Stop requested.' });
+  }, [commit, formState, hardware]);
 
   const handleLockChange = useCallback(
     (field: 'xyLocked' | 'zLocked', value: boolean, lastAction: string) => {
-      void persistState({
-        ...formState,
-        [field]: value,
-        lastAction,
-      });
+      commit({ ...formState, [field]: value, lastAction });
+      if (field === 'zLocked') {
+        void (value ? hardware.lockZ() : hardware.unlockZ());
+      }
     },
-    [formState, persistState]
+    [commit, formState, hardware]
   );
 
   const handleFocusModeChange = useCallback(
     (focusMode: FocusMode, lastAction: string) => {
-      void persistState({
-        ...formState,
-        focusMode,
-        lastAction,
-      });
+      commit({ ...formState, focusMode, lastAction });
     },
-    [formState, persistState]
+    [commit, formState]
   );
 
-  const handleCenter = useCallback(() => {
-    void persistState({
-      ...formState,
-      platformX: 0,
-      platformY: 0,
-      lastAction: 'Centered X/Y platform (mock).',
-    });
-  }, [formState, persistState]);
+  const handleCenter = useCallback(async () => {
+    const result = await hardware.moveToCenter();
+    persistMoveResult(result, 'Centered X/Y platform.');
+  }, [hardware, persistMoveResult]);
 
-  const handleRelocation = useCallback(() => {
-    void persistState({
-      ...formState,
-      platformX: 0,
-      platformY: 0,
-      platformZ: 0,
-      lastAction: 'Relocation complete (mock reset to origin).',
-    });
-  }, [formState, persistState]);
+  const handleRelocation = useCallback(async () => {
+    const result = await hardware.locateCenter();
+    persistMoveResult(result, 'Relocation (locate center).');
+  }, [hardware, persistMoveResult]);
+
+  const displayPos = live.position ?? {
+    x: formState.platformX,
+    y: formState.platformY,
+    z: formState.platformZ,
+  };
 
   return (
     <Box sx={SECTION_SX}>
@@ -293,7 +280,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(-1, 1, 'Moved north-west (mock).')}
+            onClick={() => handleMove('forward-left', 'Moved north-west.')}
           >
             <NorthWestIcon fontSize="small" />
           </Button>
@@ -301,7 +288,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(0, 1, 'Moved north (mock).')}
+            onClick={() => handleMove('forward', 'Moved north.')}
           >
             <NorthIcon fontSize="small" />
           </Button>
@@ -309,7 +296,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(1, 1, 'Moved north-east (mock).')}
+            onClick={() => handleMove('forward-right', 'Moved north-east.')}
           >
             <NorthEastIcon fontSize="small" />
           </Button>
@@ -318,7 +305,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(-1, 0, 'Moved west (mock).')}
+            onClick={() => handleMove('left', 'Moved west.')}
           >
             <WestIcon fontSize="small" />
           </Button>
@@ -329,7 +316,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(1, 0, 'Moved east (mock).')}
+            onClick={() => handleMove('right', 'Moved east.')}
           >
             <EastIcon fontSize="small" />
           </Button>
@@ -338,7 +325,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(-1, -1, 'Moved south-west (mock).')}
+            onClick={() => handleMove('back-left', 'Moved south-west.')}
           >
             <SouthWestIcon fontSize="small" />
           </Button>
@@ -346,7 +333,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(0, -1, 'Moved south (mock).')}
+            onClick={() => handleMove('back', 'Moved south.')}
           >
             <SouthIcon fontSize="small" />
           </Button>
@@ -354,7 +341,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.xyLocked}
-            onClick={() => handleMove(1, -1, 'Moved south-east (mock).')}
+            onClick={() => handleMove('back-right', 'Moved south-east.')}
           >
             <SouthEastIcon fontSize="small" />
           </Button>
@@ -398,7 +385,7 @@ function XYZPlatformTabImpl() {
             variant={formState.focusMode === 'cFocus' ? 'contained' : 'outlined'}
             sx={PAD_BTN_SX}
             disabled={isBusy}
-            onClick={() => handleFocusModeChange('cFocus', 'Continuous focus enabled (mock).')}
+            onClick={() => handleFocusModeChange('cFocus', 'Continuous focus enabled.')}
           >
             Cfocus
           </Button>
@@ -406,7 +393,7 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.zLocked}
-            onClick={() => handleZMove(1, 'Moved Z axis upward (mock).')}
+            onClick={() => handleZMove('up', 'Moved Z axis upward.')}
           >
             <ArrowUpwardIcon fontSize="small" />
           </Button>
@@ -418,7 +405,7 @@ function XYZPlatformTabImpl() {
             variant={formState.focusMode === 'fFocus' ? 'contained' : 'outlined'}
             sx={PAD_BTN_SX}
             disabled={isBusy}
-            onClick={() => handleFocusModeChange('fFocus', 'Fine focus enabled (mock).')}
+            onClick={() => handleFocusModeChange('fFocus', 'Fine focus enabled.')}
           >
             Ffocus
           </Button>
@@ -426,17 +413,27 @@ function XYZPlatformTabImpl() {
             variant="outlined"
             sx={PAD_BTN_SX}
             disabled={isBusy || formState.zLocked}
-            onClick={() => handleZMove(-1, 'Moved Z axis downward (mock).')}
+            onClick={() => handleZMove('down', 'Moved Z axis downward.')}
           >
             <ArrowDownwardIcon fontSize="small" />
           </Button>
         </Box>
       </Box>
 
+      <Button
+        variant="outlined"
+        color="error"
+        sx={STOP_BTN_SX}
+        startIcon={<StopIcon fontSize="small" />}
+        onClick={handleStop}
+      >
+        Stop
+      </Button>
+
       <Box sx={COORD_ROW_SX}>
-        <Typography sx={COORD_SX}>X: {formatCoordinate(formState.platformX)}</Typography>
-        <Typography sx={COORD_SX}>Y: {formatCoordinate(formState.platformY)}</Typography>
-        <Typography sx={COORD_SX}>Z: {formatCoordinate(formState.platformZ)}</Typography>
+        <Typography sx={COORD_SX}>X: {formatCoordinate(displayPos.x)}</Typography>
+        <Typography sx={COORD_SX}>Y: {formatCoordinate(displayPos.y)}</Typography>
+        <Typography sx={COORD_SX}>Z: {formatCoordinate(displayPos.z)}</Typography>
       </Box>
 
       <Box sx={STATUS_ROW_SX}>
@@ -444,14 +441,14 @@ function XYZPlatformTabImpl() {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           {isBusy ? <CircularProgress size={12} /> : null}
           <Typography sx={STATUS_TEXT_SX}>
-            {`${formState.xyLocked ? 'XY locked' : 'XY unlocked'} | ${
-              formState.zLocked ? 'Z locked' : 'Z unlocked'
-            } | Focus: ${formState.focusMode}`}
+            {`${live.connected ? 'Stage connected' : 'Stage offline'} | ${
+              formState.xyLocked ? 'XY locked' : 'XY unlocked'
+            } | ${formState.zLocked ? 'Z locked' : 'Z unlocked'} | Focus: ${formState.focusMode}`}
           </Typography>
         </Box>
       </Box>
 
-      <Typography sx={STATUS_TEXT_SX}>{formatUpdatedAt(xyzPlatformState?.updatedAt)}</Typography>
+      <Typography sx={STATUS_TEXT_SX}>{formatUpdatedAt(persistedState?.updatedAt)}</Typography>
 
       {errorMessage ? (
         <Alert severity="error" sx={ALERT_SX}>

@@ -28,17 +28,13 @@ type SaveMeasurementInput = {
 };
 
 export type UseCalibrationRowSaveArgs = {
-  // Refs read
   activeObjectiveRef: React.MutableRefObject<string | null>;
   calibrationMeasureModeRef: React.MutableRefObject<'none' | 'auto' | 'manual'>;
-  // Refs written
   manualMeasurementIdRef: React.MutableRefObject<string | null>;
   autoMeasurementIdRef: React.MutableRefObject<string | null>;
   activeMeasurementMethodRef: React.MutableRefObject<string | null>;
-  // Closure state
   calibrationSettingsList: CalibrationSettings[];
   cameraRef: React.RefObject<CameraWindowHandle | null>;
-  // Setters
   setUnavailableMsg: React.Dispatch<React.SetStateAction<string | null>>;
   setStatusMessage: (message: string) => void;
   setCommittedAutoMeasureOverlay: React.Dispatch<
@@ -48,7 +44,6 @@ export type UseCalibrationRowSaveArgs = {
     React.SetStateAction<AutoMeasureGraphics | null>
   >;
   setManualMeasureResetKey: React.Dispatch<React.SetStateAction<number>>;
-  // Hook-provided callbacks
   getActiveMeasurementId: () => string | undefined;
   setActiveMeasurement: (id: string, frameId: number | null, reason: string) => void;
   saveManualMeasurement: (input: SaveMeasurementInput) => Promise<Measurement>;
@@ -60,10 +55,6 @@ export type CalibrationRowSaveArgs = {
   payload: CalibrationSavePayload;
 };
 
-// Triggered immediately after Add Calibration succeeds. Reads the CURRENT
-// D1/D2 line pixels (already in the calibration payload), runs the
-// pixels→µm→HV conversion using the just-saved calibration, and commits a
-// measurement row so the table updates without a second click.
 export function useCalibrationRowSave({
   activeObjectiveRef,
   calibrationMeasureModeRef,
@@ -98,13 +89,6 @@ export function useCalibrationRowSave({
         return;
       }
 
-      // Derive PER-AXIS coefficients per spec:
-      //   xUmPerPixel = knownReferenceUm / pixelLengthX
-      //   yUmPerPixel = knownReferenceUm / pixelLengthY
-      // Priority: 1) per-objective calibration_settings, 2) Length-tab
-      // knownReferenceUm (stored in payload.realDistanceX/Y). Otherwise block
-      // with a clear reason — never silently fall back to interpreting raw
-      // pixel lengths as µm/pixel (that path produced nonsense rows).
       const settingsMatch = findCalibrationForObjective(
         calibrationSettingsList,
         targetObjective
@@ -153,11 +137,6 @@ export function useCalibrationRowSave({
         return;
       }
 
-      // Spec formulas — separate per-axis coefficients, no averaging:
-      //   d1Um = d1Px * xUmPerPixel
-      //   d2Um = d2Px * yUmPerPixel
-      //   davgUm = (d1Um + d2Um) / 2
-      //   HV = 1.8544 * F / D_mm²  (D in mm; davgMm = davgUm / 1000)
       const d1UmExact = d1Px * xUmPerPixel;
       const d2UmExact = d2Px * yUmPerPixel;
       const davgUmExact = (d1UmExact + d2UmExact) / 2;
@@ -166,7 +145,6 @@ export function useCalibrationRowSave({
         forceKgf && forceKgf > 0 && davgMmExact > 0
           ? (1.8544 * forceKgf) / (davgMmExact * davgMmExact)
           : null;
-
 
       const round = (value: number, digits: number): number =>
         Number(value.toFixed(digits));
@@ -198,7 +176,6 @@ export function useCalibrationRowSave({
 
       const normalizedObjective = normalizeObjectiveName(targetObjective);
 
-
       let depthMm: number | null = null;
       try {
         depthMm = await readLatestMicrometerDepthMm();
@@ -208,11 +185,6 @@ export function useCalibrationRowSave({
       await waitForOverlayPaint();
       const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;
 
-      // Method must reflect the measurement tool the user just operated
-      // inside Calibration — not a hardcoded 'Manual'. The auto-measure
-      // branch of Calibration trips calibrationMeasureModeRef='auto'; the
-      // manual branch trips 'manual'. Fall back to 'Manual' for legacy paths
-      // that don't set the ref (e.g. direct-from-pixels with no overlay).
       const calibrationMode = calibrationMeasureModeRef.current;
       const resolvedMethod: 'Auto' | 'Manual' =
         calibrationMode === 'auto' ? 'Auto' : 'Manual';
@@ -239,7 +211,6 @@ export function useCalibrationRowSave({
         imageDataUrl,
       };
 
-
       try {
         const calibrationFrameId = getLastPaintedFrameId();
         const reuseId = getActiveMeasurementId();
@@ -254,9 +225,6 @@ export function useCalibrationRowSave({
         const savedMethod = saved.method ?? resolvedMethod;
         activeMeasurementMethodRef.current = savedMethod;
         await refetchMeasurements();
-        // Clear yellow Auto/Manual Measure overlays now that the calibration
-        // row has been committed. Guarded behind the successful saveManual...
-        // path above so a save failure leaves the overlay in place for retry.
         setCommittedAutoMeasureOverlay(null);
         setPreviewAutoMeasureOverlay(null);
         setManualMeasureResetKey((current) => current + 1);

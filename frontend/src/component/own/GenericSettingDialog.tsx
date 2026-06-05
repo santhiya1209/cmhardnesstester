@@ -109,7 +109,6 @@ function GenericSettingDialogImpl({ open, onClose, onStatusChange }: Props) {
       onStatusChange?.('Generic setting saved.');
       onClose();
     } catch {
-      // surfaced via saveError
     }
   }, [data?.id, form, onClose, onStatusChange, saveGenericSetting]);
 

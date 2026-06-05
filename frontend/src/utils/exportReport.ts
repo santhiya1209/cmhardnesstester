@@ -1,5 +1,3 @@
-// Centralized report generation. CSV is hand-rolled; XLSX uses exceljs for
-// styled headers/borders; DOCX uses the docx package. See CLAUDE.md §11.
 import {
   AlignmentType,
   BorderStyle,
@@ -65,8 +63,6 @@ const HEADERS = [
   'Convert Value',
   'Depth',
 ];
-
-// --- formatters (single source of truth for CSV / XLSX / DOCX) ---
 
 function safeText(value: unknown, fallback = ''): string {
   if (value === null || value === undefined) return fallback;
@@ -142,8 +138,6 @@ type ReportRow = {
   xMm: string;
   yMm: string;
   hardness: string;
-  // Raw HV number (null when missing). Used to color the Hardness Value cell
-  // in DOCX exports against the operator's target HV band.
   hardnessNumeric: number | null;
   objective: string;
   method: string;
@@ -171,10 +165,6 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
       ? `HV${m.testForceKgf}`
       : 'HV');
 
-  // Match the in-app MeasurementsTable rendering exactly so the report
-  // never disagrees with what the user just saw on screen. The table falls
-  // back to hardnessType when no convertType was saved on the row, and uses
-  // the row's HV as the convertValue whenever the resolved type is HV.
   const convertTypeRaw = formatBlank(m.convertType);
   const convertType = convertTypeRaw || hardnessType || 'NONE';
 
@@ -200,9 +190,6 @@ function normalizeReportRow(m: Measurement, idx: number): ReportRow {
   const convertValue: string =
     convertValueNum !== null ? formatHardness(convertValueNum) : '-';
 
-  // Resolve depth from the saved row only — never from a live micrometer
-  // reading. depthMm is the effective value; fall back to the per-source
-  // fields for legacy rows that may have one populated but not the other.
   const isFiniteNum = (v: unknown): v is number =>
     typeof v === 'number' && Number.isFinite(v);
   const resolvedDepthMm =
@@ -263,10 +250,6 @@ function downloadBlobBrowser(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-// Save the generated report. In Electron, round-trip through the main process
-// so we end up with a concrete file path and can auto-open the file in MS Word
-// (or the OS default handler). When the IPC bridge isn't present (pure-web
-// dev, tests), fall back to the <a download> path.
 async function saveReportBlob(blob: Blob, filename: string): Promise<void> {
   const ipc = typeof window !== 'undefined' ? window.api : undefined;
   if (!ipc || typeof ipc.invoke !== 'function') {
@@ -333,10 +316,6 @@ async function svgStringToPngBuffer(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Industrial report palette — the single source of truth for every color in
-// the generated .docx. docx wants bare 6-char hex (no leading '#').
-// ─────────────────────────────────────────────────────────────────────────────
 const C = {
   navy: '123B6D',
   navyDark: '0E2E55',
@@ -353,13 +332,7 @@ const C = {
   white: 'FFFFFF',
 } as const;
 
-// Match the on-screen DepthVsHvGraph layout 1:1 so the report image is a
-// faithful rasterization of what the user just saw on the Depth Image tab.
 const DEPTH_SIZE = { w: 900, h: 380 };
-// Right padding is intentionally generous (vs. the on-screen graph) so the
-// right-axis reference label, the last X-axis tick label, and the CHD callout
-// never sit flush against the image edge — the cause of right-side cropping in
-// the Word export. Left padding holds the Y-axis labels + rotated title.
 const DEPTH_PAD = { top: 66, right: 96, bottom: 62, left: 92 };
 const DEPTH_X_TICK_COUNT = 5;
 const DEPTH_Y_TICK_COUNT = 8;
@@ -461,7 +434,6 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
       const lx = overflowsRight ? ix - 10 : ix + 10;
       const anchor = overflowsRight ? 'end' : 'start';
       const labelLine1Y = Math.min(refY + 20, plotBottom - 24);
-      // Report X axis is always µm here, so the CHD depth is shown in µm.
       chdOverlay +=
         `<line x1="${ix}" x2="${ix}" y1="${refY}" y2="${plotBottom}" stroke="${DEPTH_COLORS.reference}" stroke-width="2" stroke-dasharray="8 6"/>` +
         `<circle cx="${ix}" cy="${refY}" r="5" fill="${DEPTH_COLORS.paper}" stroke="${DEPTH_COLORS.reference}" stroke-width="2"/>` +
@@ -488,8 +460,6 @@ async function exportCsv(rows: ReportRow[]): Promise<void> {
   await saveReportBlob(blob, REPORT_FILENAMES.csv);
 }
 
-// --- Excel via exceljs (styled headers, borders, autoFilter) ---
-
 async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Chennai Metco Vickers Measurement Software';
@@ -498,7 +468,6 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
     views: [{ state: 'frozen', ySplit: 3 }],
   });
 
-  // Title row (merged)
   ws.mergeCells(1, 1, 1, HEADERS.length);
   const titleCell = ws.getCell(1, 1);
   titleCell.value = 'CHENNAI METCO — VICKERS HARDNESS TEST REPORT';
@@ -507,14 +476,12 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
   titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF123B6D' } };
   ws.getRow(1).height = 26;
 
-  // Sub-header (sample / tester)
   ws.mergeCells(2, 1, 2, HEADERS.length);
   const subCell = ws.getCell(2, 1);
   subCell.value = `Sample: ${safeText(header.sampleName, '-')}    SN: ${safeText(header.sampleSerialNumber, '-')}    Tester: ${safeText(header.tester, '-')}    Date: ${formatInspectionDate()}`;
   subCell.font = { name: 'Arial', size: 10, italic: true };
   subCell.alignment = { horizontal: 'center' };
 
-  // Column header row
   const headerRow = ws.addRow(HEADERS);
   headerRow.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
   headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -529,13 +496,11 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
     const dataRow = ws.addRow(rowAsArray(r));
     dataRow.font = { name: 'Arial', size: 10 };
     dataRow.alignment = { horizontal: 'center', vertical: 'middle' };
-    // Zebra striping on alternate data rows.
     if (i % 2 === 1) {
       dataRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4F7FB' } };
     }
   });
 
-  // Borders
   const lastRow = ws.lastRow?.number ?? 3;
   for (let r = 3; r <= lastRow; r += 1) {
     for (let c = 1; c <= HEADERS.length; c += 1) {
@@ -548,7 +513,6 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
     }
   }
 
-  // Column widths (chars)
   const widths = [4, 9, 9, 10, 10, 12, 14, 10, 11, 11, 11, 13, 14, 12];
   ws.columns = widths.map((w) => ({ width: w }));
 
@@ -561,12 +525,8 @@ async function exportXlsx(rows: ReportRow[], header: ReportHeaderSettingPayload)
   await saveReportBlob(blob, REPORT_FILENAMES.xlsx);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Industrial Word certificate
-// ─────────────────────────────────────────────────────────────────────────────
-
 const DOCX_FONT = 'Arial';
-const DOCX_BODY_SIZE = 18; // 9pt (docx sizes are half-points)
+const DOCX_BODY_SIZE = 18;
 
 const NO_BORDER = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
 const LINE_BORDER = { style: BorderStyle.SINGLE, size: 4, color: C.line };
@@ -585,7 +545,6 @@ const CARD_BORDERS = {
   right: LINE_BORDER,
 };
 
-// A4 landscape: 16838 dxa wide × 11906 tall. Minus 720 margins → ~15398 usable.
 const PAGE_WIDTH_DXA = 15400;
 
 function makeCell(
@@ -644,7 +603,6 @@ function sectionTitle(text: string): Paragraph {
   });
 }
 
-// ── Repeating page header band (navy, left/center/right) ──────────────────────
 function buildHeaderBand(reportId: string, dateStr: string, timeStr: string): Header {
   const leftW = 4200;
   const centerW = 7000;
@@ -719,7 +677,6 @@ function buildHeaderBand(reportId: string, dateStr: string, timeStr: string): He
   return new Header({ children: [table, new Paragraph({ spacing: { after: 40 }, children: [] })] });
 }
 
-// ── Footer band (navy divider + left/center/right) ────────────────────────────
 function buildFooter(timestamp: string): Footer {
   const colW = PAGE_WIDTH_DXA / 3;
   const small = (children: TextRun[], align: typeof AlignmentType[keyof typeof AlignmentType]) =>
@@ -776,7 +733,6 @@ function buildFooter(timestamp: string): Footer {
   return new Footer({ children: [table] });
 }
 
-// ── 2-column key/value card table (Sample Information, Test Conditions) ────────
 function buildKvTable(pairs: [string, string][]): Table {
   const colW = PAGE_WIDTH_DXA / 4;
   const keyCell = (k: string) =>
@@ -907,7 +863,6 @@ function computeVerdict(stats: Statistics, minHv: number | null, maxHv: number |
   return { label: pass ? 'PASS' : 'FAIL', fill: pass ? C.green : C.red, hasCriteria: true };
 }
 
-// ── Result Summary KPI dashboard ──────────────────────────────────────────────
 function kpiCell(
   label: string,
   value: string,
@@ -972,7 +927,6 @@ function buildResultSummaryDashboard(stats: Statistics, verdict: Verdict): Table
   });
 }
 
-// ── Detailed measurement data table ───────────────────────────────────────────
 function buildDetailedDataTable(rows: ReportRow[]): Table {
   const headers = [
     '#',
@@ -1022,7 +976,6 @@ function buildDetailedDataTable(rows: ReportRow[]): Table {
   });
 }
 
-// ── Measurement image cards (2 × 2) ───────────────────────────────────────────
 async function buildPictureCards(
   measurements: Measurement[],
   rows: ReportRow[]
@@ -1132,7 +1085,6 @@ async function buildPictureCards(
   };
 }
 
-// ── CHD page: callout + statistics / notes / acceptance cards ──────────────────
 function buildChdCallout(text: string): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
@@ -1271,26 +1223,21 @@ async function exportWord(
 
   const children: (Paragraph | Table)[] = [];
 
-  // PAGE 1 — Sample Information
   children.push(sectionTitle('Sample Information'));
   children.push(buildSampleInfoTable(header, material, machineName));
   children.push(blankParagraph());
 
-  // PAGE 1 — Test Conditions
   children.push(sectionTitle('Test Conditions'));
   children.push(buildTestConditionsTable(rows, measurements, loadTimeSeconds, minHv, maxHv));
   children.push(blankParagraph());
 
-  // PAGE 1 — Result Summary dashboard
   children.push(sectionTitle('Result Summary'));
   children.push(buildResultSummaryDashboard(stats, verdict));
   children.push(blankParagraph());
 
-  // PAGE 1 — Detailed measurement data
   children.push(sectionTitle('Detailed Measurement Data'));
   children.push(buildDetailedDataTable(rows));
 
-  // IMAGE PAGE
   if (includeImage) {
     const { table } = await buildPictureCards(measurements, rows);
     if (table) {
@@ -1300,17 +1247,12 @@ async function exportWord(
     }
   }
 
-  // CHD PAGE
   if (includeDepth) {
     children.push(pageBreak());
     children.push(sectionTitle('Case Hardness Profile'));
     try {
       const svg = buildDepthSvg(measurements, chdTargetHv);
       const png = await svgStringToPngBuffer(svg, DEPTH_SIZE.w, DEPTH_SIZE.h);
-      // Insert at a width comfortably below the usable page width (twips→px at
-      // 96 dpi, then 85%) and derive the height from the SVG aspect ratio.
-      // Explicit sizing avoids relying on Word auto-scaling, which can clip a
-      // full-width image at the right margin.
       const usablePx = Math.floor((PAGE_WIDTH_DXA / 1440) * 96);
       const imgW = Math.min(DEPTH_SIZE.w, Math.floor(usablePx * 0.85));
       const imgH = Math.round(imgW * (DEPTH_SIZE.h / DEPTH_SIZE.w));
@@ -1376,16 +1318,9 @@ export type ExportReportInput = {
   measurements: Measurement[];
   header: ReportHeaderSettingPayload;
   loadTimeSeconds: number | null;
-  // CHD target hardness (HV) for the Case Hardness Profile reference line.
-  // Pass the same value the user has in the Depth Image tab's "CHD HV" field;
-  // null hides the reference line.
   chdTargetHv?: number | null;
-  // Operator-configured target HV band. Used as a fallback for the acceptance
-  // criteria when the report header's Min/Max HV are not set.
   targetMinHv?: number | null;
   targetMaxHv?: number | null;
-  // Ephemeral, dialog-only fields — NOT persisted to the DB. Shown in the
-  // Sample Information section; rendered as "Not Specified" when empty.
   material?: string | null;
   machineName?: string | null;
 };

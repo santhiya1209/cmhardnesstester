@@ -16,15 +16,12 @@ import type { MicrometerConfig } from '@/types/micrometerConfig';
 import type { ToolId } from '@/types/tool';
 
 export type UseCameraLifecycleArgs = {
-  // Refs read by the open path
   cameraRef: React.RefObject<CameraWindowHandle | null>;
   cameraMeasurementSessionIdRef: React.MutableRefObject<number>;
 
-  // Closure state read by the open path
   micrometerConfig: MicrometerConfig | null | undefined;
   currentMachinePort: string | null;
 
-  // Refs nulled / cleared by the close path
   autoMeasurePreviewSnapshotRef: React.MutableRefObject<AutoMeasureDetectionSnapshot | null>;
   committedAutoMeasureFrameRef: React.MutableRefObject<CapturedAutoMeasureFrame | null>;
   previewMeasurementRef: React.MutableRefObject<
@@ -38,13 +35,11 @@ export type UseCameraLifecycleArgs = {
   autoMeasureSessionIdRef: React.MutableRefObject<number>;
   lastSyncedObjectiveRef: React.MutableRefObject<string | null>;
 
-  // Local App state setters
   setCameraOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setCameraStatus: (next: CameraStatusState) => void;
   setAutoMeasureStatus: (next: AutoMeasureStatusState) => void;
   setUnavailableMsg: React.Dispatch<React.SetStateAction<string | null>>;
 
-  // Overlay-lifecycle setters
   setCommittedAutoMeasureOverlay: React.Dispatch<
     React.SetStateAction<AutoMeasureGraphics | null>
   >;
@@ -56,7 +51,6 @@ export type UseCameraLifecycleArgs = {
   setAutoMeasureCapturedFrameId: (id: number | null) => void;
   setAutoMeasureSessionId: React.Dispatch<React.SetStateAction<number>>;
 
-  // Cross-feature callbacks
   setActiveTool: (tool: ToolId) => void;
   resetManualMeasure: () => void;
   clearAutoMeasureOverlay: (reason: string) => void;
@@ -71,12 +65,6 @@ export type UseCameraLifecycleResult = {
   closeCameraDevice: () => void;
 };
 
-// Camera open / close orchestration. The IPC hand-off (`window.hardnessCamera`)
-// and the camera worker remain untouched; this hook owns the surrounding state
-// machine — status transitions, overlay/session teardown, fingerprint / active
-// measurement resets, manual measure reset, and micrometer port enumeration at
-// open time. The two returned functions are wired into buildSharedCtx as-is so
-// the toolbar dispatch surface is unchanged.
 export function useCameraLifecycle({
   cameraRef,
   cameraMeasurementSessionIdRef,
@@ -115,21 +103,11 @@ export function useCameraLifecycle({
     console.log('[camera-ui][open]');
     void (async () => {
       try {
-        // Reset per-session log flags so the next first-frame / first-paint
-        // events log again after a close→open cycle.
         resetCameraSession();
-        // Reload calibration list from SQLite so a saved 40X (or any other
-        // objective) calibration is picked up after a camera close/open —
-        // without this, calibrationSettingsList stays at whatever was
-        // fetched on app mount and Auto Measure can't find the calibration.
         try {
           await refetchCalibrationSettings();
         } catch {
-          /* non-fatal — calibration-confirm path will retry */
         }
-        // Enumerate OS-reported serial ports up front so we can validate
-        // the saved Machine / Micrometer selections against what the
-        // operating system actually exposes — no hardcoded fallbacks.
         const portList = await listSerialPorts().catch((err) => {
           // eslint-disable-next-line no-console
           console.warn('[serial-ports-list] renderer call failed:', err);
@@ -162,8 +140,6 @@ export function useCameraLifecycle({
         } else if (savedMicrometerPort) {
         }
 
-        // Camera open MUST NOT modify the persisted machine/micrometer
-        // COM ports — it only reads them to pass to device:open.
         setCameraStatus('opening');
         const reply = await window.hardnessCamera.openDevice(
           shouldOpenMicrometer && savedMicrometerPort
@@ -188,8 +164,6 @@ export function useCameraLifecycle({
         }
         setCameraStatus('streaming');
         setStatusMessage('System Status: Camera streaming');
-        // Stale overlays from a previous camera session must not paint
-        // over the new live stream.
         clearAutoMeasureOverlay('camera-open');
         resetManualMeasure();
         setCameraOpen(true);
@@ -198,9 +172,6 @@ export function useCameraLifecycle({
 
         await restoreCameraSettings();
 
-        // Surface micrometer outcome. The micrometer port is opened only
-        // when the user has enabled it AND selected a port that exists in
-        // the OS-reported list — never via a hardcoded fallback.
         if (reply.micrometer) {
           if (reply.micrometer.connected) {
             setStatusMessage(
@@ -215,9 +186,6 @@ export function useCameraLifecycle({
           }
         }
 
-        // Machine COM port is persisted via serial-port-setting and
-        // auto-connected at app startup. Camera open doesn't reselect it;
-        // it just notes the current selection state for diagnostics.
         if (!currentMachinePort) {
         }
       } catch (err) {
@@ -247,20 +215,7 @@ export function useCameraLifecycle({
     console.log('[camera-ui][close]');
     void (async () => {
       try {
-        // Force AutoMeasureOverlay to imperatively clearRect its canvas
-        // synchronously, before the IPC round-trip. Without this, a rAF
-        // queued by the live draw loop can repaint the 4 yellow lines
-        // AFTER the React state nulling but BEFORE device:close returns,
-        // leaving stale lines visible across the close.
         setAutoMeasureClearNonce((n) => n + 1);
-        // Drop all Auto Measure overlay state synchronously, BEFORE the
-        // IPC round-trip. The render gate at App.tsx:`displayedAutoMeasure
-        // Graphics` is `cameraOpen ? raw : null` — flipping cameraOpen
-        // false here means the AutoMeasureOverlay re-renders with null
-        // graphics on the next paint, so the 4 yellow lines and corner
-        // dots clear immediately instead of lingering through the IPC.
-        // Also covers the catch path: if device:close throws, the user
-        // still sees an empty viewport.
         setCameraOpen(false);
         setCameraStatus('closed');
         setAutoMeasureStatus('idle');
@@ -273,13 +228,8 @@ export function useCameraLifecycle({
         manualMeasurementIdRef.current = null;
         clearActiveMeasurement('camera-close-pre');
         committedFingerprintsRef.current = [];
-        // Cancel any pending coalesced trailing detection. The in-flight
-        // finally block re-reads this ref; clearing it stops the queued
-        // re-run from firing onto a closed camera.
         autoMeasurePendingPreviewRef.current = null;
         autoMeasureSettingsOpenRef.current = false;
-        // End the strict session — no overlay can paint until the next
-        // Auto Measure click on a reopened camera.
         setAutoMeasureSessionActive(false);
         setAutoMeasureCapturedFrameId(null);
         setAutoMeasureSessionId((id) => {
@@ -287,19 +237,12 @@ export function useCameraLifecycle({
           autoMeasureSessionIdRef.current = next;
           return next;
         });
-        // Camera close MUST NOT modify the persisted machine/micrometer
-        // COM ports — the close path only tears down hardware connections.
         const reply = await window.hardnessCamera.closeDevice();
-        // Always sync status + clear live canvas, freeze canvas and any
-        // overlay that belongs to the live camera frame so the viewport
-        // actually appears empty after close.
         await cameraRef.current?.refetchStatus();
         cameraRef.current?.clearLiveImage('camera-close');
         setCameraOpen(false);
         setCommittedAutoMeasureOverlay(null);
         setPreviewAutoMeasureOverlay(null);
-        // Second bump after IPC closes the stream — guarantees any rAF
-        // that landed mid-IPC is invalidated and the canvas is blank.
         setAutoMeasureClearNonce((n) => n + 1);
         autoMeasurePreviewSnapshotRef.current = null;
         committedAutoMeasureFrameRef.current = null;
@@ -309,29 +252,12 @@ export function useCameraLifecycle({
         clearActiveMeasurement('camera-close');
         committedFingerprintsRef.current = [];
         resetManualMeasure();
-        // Drop the active measure mode so the manual-measure overlay
-        // hook stops re-creating default yellow guides on the cleared
-        // canvas. Without this, bumping the reset key only clears once —
-        // the next effect re-initializes guides because active stays true
-        // and imageSize is still cached.
         setActiveTool('pointer');
-        // Reset per-session log flags so the next open re-fires
-        // [camera-frame] first-frame-after-open and the paint log.
         resetCameraSession();
-        // Drop the last-synced objective so re-confirming the SAME
-        // objective after reopen re-runs the calibration sync effect
-        // (otherwise the equality guard early-returns and Auto Measure
-        // sees a stale calibration view).
         lastSyncedObjectiveRef.current = null;
         setStatusMessage('System Status: Device closed');
         void reply;
 
-        // Machine + micrometer connections are intentionally preserved
-        // across camera close. They are independent serial devices and
-        // must remain usable until the operator clicks Machine Disconnect
-        // or the app exits. Previously this path tore down the machine
-        // RS-232 link, which forced an unwanted reconnect and lost mid-
-        // session state.
       } catch (err) {
         setUnavailableMsg(
           `Close Device failed: ${err instanceof Error ? err.message : String(err)}`

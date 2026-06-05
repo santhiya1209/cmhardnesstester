@@ -30,10 +30,6 @@ export type ManualDiagonalValues = Omit<ManualMeasurementValues, 'hv'>;
 
 export type ManualCalibrationInfo = {
   micronPerPixel: number;
-  // Per-axis coefficients. Populated from the legacy Calibration record's
-  // realDistance/pixelLength pair (knownReferenceUm / pixelLengthX|Y). Kept
-  // optional for back-compat with older callers; consumers that want spec
-  // behavior should multiply per-axis instead of using the averaged value.
   micronPerPixelX?: number;
   micronPerPixelY?: number;
   calibrationName: string | null;

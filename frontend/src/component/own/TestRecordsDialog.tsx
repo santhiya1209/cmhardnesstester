@@ -75,9 +75,6 @@ function toPayload(formState: FormState): TestRecordSavePayload | null {
     return null;
   }
 
-  // Both target fields are optional, but if either is filled, both must be
-  // valid positive numbers and min must not exceed max — otherwise qualified
-  // calculation downstream would be ambiguous.
   const minRaw = formState.targetMinHv.trim();
   const maxRaw = formState.targetMaxHv.trim();
   const targetMinHv = parseTargetHv(formState.targetMinHv);
@@ -139,12 +136,6 @@ function TestRecordsDialogImpl({
 
   useEffect(() => {
     if (open && !loading) {
-      // The Measurements-selection section was removed from Sample Info, so
-      // there's no per-row checkbox UI any more. Editing an existing record
-      // intersects the record's saved measurementIds with the current
-      // measurements table so stale references (rows the operator deleted
-      // since the record was last saved) are dropped automatically; creating
-      // a new record auto-links every measurement currently in the table.
       const allCurrentIds = measurements.map((m) => m.id);
       const liveIdSet = new Set(allCurrentIds);
       const seed = selectedRecord
@@ -176,9 +167,6 @@ function TestRecordsDialogImpl({
 
   const handleNew = useCallback(() => {
     setSelectedRecordId('');
-    // New record on the way: pre-link every measurement currently in the
-    // table so the record still carries the full set, matching the prior
-    // behavior the (now-removed) selection UI provided.
     const allCurrentIds = measurements.map((m) => m.id);
     setFormState(toFormState(null, allCurrentIds));
     setShowValidationError(false);
@@ -190,12 +178,6 @@ function TestRecordsDialogImpl({
       return;
     }
 
-    // Stale-id guard: the form state may carry measurementIds that point to
-    // measurements which have since been deleted from the table. The backend
-    // rejects the whole save with "All measurementIds must reference existing
-    // measurements..." if even one is missing. Filter the payload against the
-    // current measurements list so the save succeeds against the rows the
-    // operator actually sees on screen.
     const liveIds = new Set(measurements.map((m) => m.id));
     const requestedIds = payload.measurementIds;
     const validIds: string[] = [];
@@ -223,10 +205,6 @@ function TestRecordsDialogImpl({
       values: cleanedPayload,
     });
 
-    // Recompute Qualified for each linked measurement against the (possibly
-    // changed) target range and persist. Per-measurement persistence keeps
-    // the existing MeasurementsTable renderer working as-is — it just reads
-    // measurement.qualified.
     const targetMin = saved.targetMinHv ?? cleanedPayload.targetMinHv ?? null;
     const targetMax = saved.targetMaxHv ?? cleanedPayload.targetMaxHv ?? null;
     const measurementById = new Map(measurements.map((m) => [m.id, m] as const));

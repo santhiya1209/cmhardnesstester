@@ -60,7 +60,6 @@ type DrawTwoIndependentLinesArgs = {
   wrap: HTMLDivElement;
   active: boolean;
   imageSize: ManualMeasureImageSize | null;
-  // All four endpoints in image coords. D1 = left↔right, D2 = top↔bottom.
   d1Start: Point | null;
   d1End: Point | null;
   d2Start: Point | null;
@@ -70,10 +69,6 @@ type DrawTwoIndependentLinesArgs = {
   strokeWidth?: number;
 };
 
-// Renders two independent diagonal segments for the 10X simplified Auto
-// Measure layout. Unlike `drawManualMeasureOverlay`, the endpoints carry
-// their own (x, y) — D1 does not share midY with D2, and D2 does not share
-// midX with D1. Each line and each endpoint is independently draggable.
 export function drawTwoIndependentLines({
   canvas,
   wrap,
@@ -125,12 +120,6 @@ export function drawTwoIndependentLines({
   ctx.lineJoin = 'round';
   ctx.setLineDash([]);
 
-  // 4 fitted edge lines — these ARE the Vickers edge-fit result. Each edge
-  // is extended well past its two corner tips along its own direction so
-  // the yellow line visibly crosses the indentation edge (industrial
-  // edge-fit visualizer style) instead of stopping at the corner.
-  // EXTEND_FACTOR = 0.7 means each end extends by 70% of the corner-to-
-  // corner length, so the rendered line ≈ 2.4× the polygon edge.
   const top = dD2S;
   const right = dD1E;
   const bottom = dD2E;
@@ -161,9 +150,6 @@ export function drawTwoIndependentLines({
   strokeEdge(bottom, left);
   strokeEdge(left, top);
 
-  // Diagonals D1 (left↔right) and D2 (top↔bottom). Rendered thinner so the
-  // polygon edges remain the dominant visual; they exist to mark D1 and D2
-  // on the indentation directly.
   const diagonalWidth = Math.max(1, baseWidth - 0.6);
   ctx.lineWidth = hover === 'd1-body' || drag === 'd1-body' ? activeWidth : diagonalWidth;
   ctx.beginPath();
@@ -177,7 +163,6 @@ export function drawTwoIndependentLines({
   ctx.lineTo(dD2E.x, dD2E.y);
   ctx.stroke();
 
-  // Endpoint handles
   const handleRadius = 4;
   const drawHandle = (p: Point, key: TwoLinesHandle) => {
     const r = hover === key || drag === key ? handleRadius + 1 : handleRadius;
@@ -191,8 +176,6 @@ export function drawTwoIndependentLines({
   drawHandle(dD2E, 'bottom');
 }
 
-// Clamp a point to image bounds. Returns the clamped point and a flag
-// indicating whether clamping actually moved the point.
 export function clampPointToImage(
   p: Point,
   imageSize: ManualMeasureImageSize
@@ -279,7 +262,7 @@ export function hitTestManualGuideLine(
   return nearest.distance <= HIT_DISTANCE ? nearest.key : null;
 }
 
-const YELLOW_SELECTED = '#FFFFFF'; // white — clearly distinct from normal yellow
+const YELLOW_SELECTED = '#FFFFFF';
 
 export function drawManualMeasureOverlay({
   active,
@@ -337,10 +320,6 @@ export function drawManualMeasureOverlay({
     key === selectedGuide ? YELLOW_SELECTED : YELLOW;
 
   if (lineLayout === 'two-diagonals') {
-    // 10X simplified Auto Measure: draw only the D1 + D2 corner-to-corner
-    // segments. D1 = (leftX, midY) ↔ (rightX, midY) — horizontal axis of
-    // the diamond. D2 = (midX, topY) ↔ (midX, bottomY) — vertical axis.
-    // Hover/drag-affordance still uses lineWidth(left|right|top|bottom).
     const midX = (displayGuides.leftX + displayGuides.rightX) * 0.5;
     const midY = (displayGuides.topY + displayGuides.bottomY) * 0.5;
 
@@ -362,10 +341,6 @@ export function drawManualMeasureOverlay({
     return;
   }
 
-  // Four full-extent solid yellow guides framing the indentation —
-  // matches the reference industrial Vickers overlay. Selected line
-  // renders in white + thicker so the operator knows which line the
-  // keyboard arrow keys will move.
   ctx.strokeStyle = lineColor('left');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('left');

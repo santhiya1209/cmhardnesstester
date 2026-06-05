@@ -28,8 +28,6 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, im
     const placement = getImagePlacement(containerWidth, containerHeight, imageSize);
     if (!placement) return;
 
-    // Cursor is in CSS px relative to the container. Reject anything outside
-    // the actual image area (letterbox bars / black side bars).
     if (
       cursor.x < placement.offsetX ||
       cursor.x > placement.offsetX + placement.width ||
@@ -54,9 +52,6 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, im
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, LENS_SIZE, LENS_SIZE);
 
-      // Map cursor → image-space pixel, then → source bitmap pixel. This
-      // accounts for object-fit: contain letterboxing where the displayed
-      // image is centered inside the container with black side bars.
       const imgX = (cursor.x - placement.offsetX) / placement.scale;
       const imgY = (cursor.y - placement.offsetY) / placement.scale;
       const sx = (imgX / imageSize.width) * source.width;
@@ -97,7 +92,6 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, im
 
   if (!cursor) return null;
 
-  // Position the lens offset from the cursor, kept inside the container.
   const offset = 16;
   let left = cursor.x + offset;
   let top = cursor.y + offset;

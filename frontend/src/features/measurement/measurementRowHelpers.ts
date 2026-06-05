@@ -1,9 +1,6 @@
 import { getLatestMicrometerReading } from '@/api/micrometer';
 import { computeQualified } from '@/utils/manualMeasure';
 
-// Fixed acceptance window for the Qualified column. Treated as inclusive on
-// both ends per the workpiece spec. Hoist to a Settings panel later if a
-// per-job range is needed.
 const QUALIFIED_TARGET_MIN_HV = 300;
 const QUALIFIED_TARGET_MAX_HV = 800;
 
@@ -34,12 +31,6 @@ export type DepthSavePayload = {
   manualDepthMm: number | null;
 };
 
-// Captures the depth snapshot to save on a NEW measurement row. Enabled =
-// freeze the live micrometer reading into deviceDepthMm + depthMm with
-// source='device'. Disabled = leave depth fields null with source='manual'
-// so the operator can type the value into the table afterward. Callers MUST
-// only invoke this for new rows; existing rows are preserved via the
-// `{}`-spread path so saved depth never gets clobbered by a re-detect.
 export async function buildNewRowDepthPayload(
   micrometerEnabled: boolean
 ): Promise<DepthSavePayload> {
@@ -60,9 +51,6 @@ export async function buildNewRowDepthPayload(
   };
 }
 
-// Two RAFs guarantees overlay canvases (AutoMeasure / ManualMeasure) finished
-// painting after a state-driven update before downstream consumers composite
-// them into a thumbnail.
 export function waitForOverlayPaint(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => {

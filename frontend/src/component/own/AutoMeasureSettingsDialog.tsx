@@ -38,9 +38,6 @@ type Props = {
   onPreviewChange?: (settings: AutoMeasureSettingsPayload) => void;
   onSaved?: (settings: AutoMeasureSettingsPayload) => void;
   onStatusChange?: (message: string) => void;
-  // Currently committed objective in the app. Drives the dropdown value and
-  // smoothing/threshold defaults so this panel never changes objective by
-  // local UI intent alone.
   activeObjective?: string | null;
 };
 
@@ -57,14 +54,6 @@ function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsP
 
 const PANEL_WIDTH = 560;
 const DRAG_LOG_THROTTLE_MS = 100;
-// Preview backend (native detection + overlay paint) is heavy. Hold the
-// preview dispatch until the user pauses the slider for this long â€” the
-// thumb/number remain fully decoupled and update on every tick.
-// Live-preview cadence. The App-side coalescing (autoMeasurePendingPreviewRef)
-// ensures only one detection runs at a time and the latest pending settings
-// always wins, so a short debounce here gives a real-time slider feel without
-// queuing a stack of detections. 80ms balances rAF-fluid motion against not
-// spawning a fresh native run on every sub-pixel slider tick.
 const PREVIEW_DEBOUNCE_MS = 80;
 
 type SliderField = 'smoothing' | 'threshold';
@@ -80,21 +69,13 @@ function AutoMeasureSettingsDialogImpl({
   const { data, error: loadError, loading, refetch } = useAutoMeasureSettings();
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
   const [form, setForm] = useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
-  // formRef mirrors `form` so slider handlers see the latest value without
-  // closure staleness â€” required because a drag fires onChange faster than
-  // React batches the prior setState commit.
   const formRef = useRef<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const previewSeqRef = useRef(0);
   const previewDebounceRef = useRef<number | null>(null);
-  // True while a slider is being actively dragged. Suppresses the
-  // objective-default sync effect so a machine-driven objective tick can't
-  // overwrite the user's in-progress slider value mid-drag.
   const sliderDraggingRef = useRef(false);
   const [savedBaseline, setSavedBaseline] = useState<AutoMeasureSettingsPayload>(
     DEFAULT_AUTO_MEASURE_SETTINGS
   );
-  // Initial position: top-right area, matching the previous Dialog placement so
-  // muscle memory is preserved. Stays at this anchor until the user drags.
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const dragStateRef = useRef<{
     pointerId: number;
@@ -143,9 +124,6 @@ function AutoMeasureSettingsDialogImpl({
     }
   }, [data, loading, open, activeObjective, logSettingsObjective]);
 
-  // Live sync: while the dialog is already open, react to objective changes
-  // coming from the machine (L1OK/L2OK) or from a PC-driven toggle so the
-  // operator never has to re-pick the objective by hand.
   useEffect(() => {
     if (!open) return;
     if (sliderDraggingRef.current) return;
@@ -169,16 +147,8 @@ function AutoMeasureSettingsDialogImpl({
     logSettingsObjective(synced, defaults.smoothing, defaults.threshold);
     formRef.current = next;
     setForm(next);
-    // Intentionally do NOT call onPreviewChange here. App-level state is
-    // already mirroring the objective-driven defaults; firing a preview
-    // through this path would repaint yellow lines on objective change,
-    // which violates the "lines only on Auto Measure click" rule.
   }, [open, activeObjective, logSettingsObjective]);
 
-  // Local-only form write. Synchronous: updates ref + React state in the
-  // same commit so the slider thumb and the numeric readout move together
-  // with no preview-side coupling. Side effects (preview dispatch) MUST NOT
-  // happen here â€” see schedulePreview / flushPreview below.
   const writeLocal = useCallback((patch: Partial<AutoMeasureSettingsPayload>) => {
     const next = normalizeAutoMeasureSettings({ ...formRef.current, ...patch });
     formRef.current = next;
@@ -192,9 +162,6 @@ function AutoMeasureSettingsDialogImpl({
     previewDebounceRef.current = null;
   }, []);
 
-  // Commit the current form to the parent preview pipeline. Stamps a
-  // monotonic sequence so the App-side stale guard (latestPreviewSettings)
-  // discards an older detection finishing after a newer one was scheduled.
   const flushPreview = useCallback(
     (_source: string) => {
       clearPreviewDebounce('flush');
@@ -227,10 +194,6 @@ function AutoMeasureSettingsDialogImpl({
     };
   }, []);
 
-  // Slider onChange: write LOCAL form only. Never run detection or call the
-  // parent on the per-tick path â€” that's what made the slider feel sticky.
-  // Preview dispatch is debounced (schedulePreview) and force-flushed on
-  // release (handleSliderCommitted).
   const handleSliderChange = useCallback(
     (field: SliderField) => (_e: Event, value: number | number[]) => {
       const next = Array.isArray(value) ? value[0] : value;
@@ -243,8 +206,6 @@ function AutoMeasureSettingsDialogImpl({
     [schedulePreview, writeLocal]
   );
 
-  // Pointer/keyboard release: flush the debounced preview NOW so the user's
-  // final value is reflected immediately on letting go.
   const handleSliderCommitted = useCallback(
     (field: SliderField) => (_e: React.SyntheticEvent | Event, value: number | number[]) => {
       const next = Array.isArray(value) ? value[0] : value;
@@ -268,8 +229,6 @@ function AutoMeasureSettingsDialogImpl({
   );
 
   const handleDefault = useCallback(() => {
-    // Resolve defaults from the live objective so 10X/40X get their tuned
-    // smoothing/threshold (not the generic DEFAULT_AUTO_MEASURE_SETTINGS).
     const synced =
       normalizeObjectiveKey(activeObjective) ??
       normalizeObjectiveKey(formRef.current.objectiveForMeasure) ??
@@ -306,18 +265,11 @@ function AutoMeasureSettingsDialogImpl({
       onStatusChange?.('Auto measure settings saved.');
       onClose();
     } catch {
-      // surfaced via saveError
     }
   }, [clearPreviewDebounce, data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
-  // Drag handlers â€” pointer events give us automatic capture across the entire
-  // window, so we don't need a global mousemove listener and the panel keeps
-  // tracking the cursor even if it briefly leaves the header.
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
-    // Don't start a drag if pointerdown originated inside the close button (or
-    // any interactive child). Otherwise setPointerCapture swallows the click
-    // and the X looks dead.
     const target = event.target as HTMLElement | null;
     if (target && target.closest('button')) return;
     const panel = event.currentTarget.parentElement as HTMLElement | null;
@@ -330,15 +282,13 @@ function AutoMeasureSettingsDialogImpl({
       lastLogAt: 0,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-    // Convert anchored position to absolute on first drag so subsequent moves
-    // are stable and don't fight CSS `right` anchoring.
     setPosition({ x: rect.left, y: rect.top });
   }, []);
 
   const handleHeaderPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragStateRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const maxX = window.innerWidth - 80; // keep at least a slice on screen
+    const maxX = window.innerWidth - 80;
     const maxY = window.innerHeight - 40;
     const nextX = Math.max(0, Math.min(maxX, event.clientX - drag.offsetX));
     const nextY = Math.max(0, Math.min(maxY, event.clientY - drag.offsetY));
@@ -405,8 +355,6 @@ function AutoMeasureSettingsDialogImpl({
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        // Important: no backdrop, no scrim. The live camera below stays at
-        // full brightness â€” only this panel's own pointer events are captured.
       }}
     >
       <Box

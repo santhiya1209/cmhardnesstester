@@ -80,8 +80,6 @@ export function useReportHeaderSetting(active: boolean) {
     }
   }, []);
 
-  // Mirror state into a ref so persist() always sees the latest values without
-  // adding `state` to its dep list (would re-create the callback on every keystroke).
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;

@@ -1,7 +1,5 @@
 import SvgIcon, { type SvgIconProps } from '@mui/material/SvgIcon';
 
-// Industrial-style microscope objective for low magnification (10X). Short,
-// wider barrel — visually lighter than the 40X variant.
 export function Objective10xIcon(props: SvgIconProps) {
   return (
     <SvgIcon viewBox="0 0 24 24" {...props}>
@@ -22,8 +20,6 @@ export function Objective10xIcon(props: SvgIconProps) {
   );
 }
 
-// Industrial-style microscope objective for high magnification (40X). Taller,
-// slimmer barrel with extra knurled bands to read as "more detailed".
 export function Objective40xIcon(props: SvgIconProps) {
   return (
     <SvgIcon viewBox="0 0 24 24" {...props}>
@@ -46,9 +42,6 @@ export function Objective40xIcon(props: SvgIconProps) {
   );
 }
 
-// Vickers diamond indent with centering crosshair — represents the
-// indentation-centering / focus-alignment operation performed by the turret
-// Center slot. Clean outline style.
 export function IndentCenterIcon(props: SvgIconProps) {
   return (
     <SvgIcon viewBox="0 0 24 24" {...props}>

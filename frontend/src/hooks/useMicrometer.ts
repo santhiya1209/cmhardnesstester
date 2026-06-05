@@ -18,10 +18,6 @@ const INITIAL_STATE: MicrometerState = {
   lockedBaudRate: null,
 };
 
-// Subscribes to the main-process micrometer:state push events. Returns a
-// stable state object that only changes when the underlying value/connection
-// actually changes — consumers wrapped in React.memo will not re-render on
-// duplicate frames.
 export function useMicrometer(): MicrometerState {
   const [state, setState] = useState<MicrometerState>(INITIAL_STATE);
   const lastSerializedRef = useRef<string>('');
@@ -39,7 +35,6 @@ export function useMicrometer(): MicrometerState {
         setState(next);
       })
       .catch(() => {
-        // initial fetch optional — push events will populate
       });
 
     const off = window.api.on('micrometer:state', (next) => {

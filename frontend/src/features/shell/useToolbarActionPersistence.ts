@@ -25,15 +25,11 @@ export function useToolbarActionPersistence(
   } = useToolbarState();
   const { saveToolbarState } = useSaveToolbarState();
 
-  // Mirror the persisted row id so persistToolbarAction stays referentially
-  // stable but always reads the current id at click time.
   const toolbarStateIdRef = useRef<string | undefined>(toolbarState?.id);
   useEffect(() => {
     toolbarStateIdRef.current = toolbarState?.id;
   }, [toolbarState?.id]);
 
-  // One-shot restore: on first non-loading render after mount, surface the
-  // persisted "last toolbar action" in the status bar (or the load error).
   const restoredToolbarActionRef = useRef(false);
   useEffect(() => {
     if (toolbarStateLoading || restoredToolbarActionRef.current) {
@@ -62,7 +58,6 @@ export function useToolbarActionPersistence(
           });
           await refetchToolbarState();
         } catch {
-          // error surfaces via useSaveToolbarState's own error state
         }
       })();
     },

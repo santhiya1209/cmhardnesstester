@@ -1,9 +1,6 @@
-// Industrial hardness color rule: HV inside [min, max] → red (in-spec, needs QC
-// acknowledgement); outside the band → dark blue (out-of-spec); no targets
-// configured → inherit (no color override, theme default text color).
-export const HARDNESS_COLOR_IN_RANGE = '#D32F2F'; // red 700
-export const HARDNESS_COLOR_OUT_OF_RANGE = '#0D47A1'; // dark blue 900
-export const HARDNESS_COLOR_DEFAULT = 'inherit'; // no override — inherit theme text color
+export const HARDNESS_COLOR_IN_RANGE = '#D32F2F';
+export const HARDNESS_COLOR_OUT_OF_RANGE = '#0D47A1';
+export const HARDNESS_COLOR_DEFAULT = 'inherit';
 
 export type HardnessColorMode = 'in-range' | 'out-of-range' | 'default';
 
@@ -16,10 +13,6 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-// Returns the color to apply to a rendered HV value given the operator's
-// target band. Returns HARDNESS_COLOR_DEFAULT ('inherit') when hv is
-// null/invalid or either target bound is missing — no visible color override.
-// Inclusive comparison: HV equal to minHv or maxHv is considered in-range.
 export function getHardnessColor(
   hv: number | null | undefined,
   minHv: number | null | undefined,

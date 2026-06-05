@@ -64,10 +64,6 @@ const DEFAULT_FORM_STATE: FormState = {
   lengthMode: 'linear',
 };
 
-// Inverse Vickers: given the known HV and force (kgf), the calibration
-// diagonal in Âµm is sqrt(1.8544 * F / HV) * 1000. Used to derive the per-axis
-// calibration coefficients (xUmPerPixel = D_um / pixelX, similarly Y) without
-// asking the user for a separate reference value.
 function diagonalUmFromHv(forceKgf: number, hv: number): number | null {
   if (!Number.isFinite(forceKgf) || forceKgf <= 0) return null;
   if (!Number.isFinite(hv) || hv <= 0) return null;
@@ -144,9 +140,6 @@ function buildHardnessPayload(form: FormState): CalibrationSavePayload | null {
   if (px === null || py === null || h === null || forceKgf === null) return null;
   const diagonalUm = diagonalUmFromHv(forceKgf, h);
   if (diagonalUm === null) return null;
-  // Persist the inverse-Vickers diagonal into realDistanceX/Y so the existing
-  // resolver (xUmPerPixel = realDistance / pixelLength) and the auto-row
-  // handler both pick up correct per-axis coefficients without any extra UI.
   return {
     zoomTime: form.zoomTime,
     force: form.force,
@@ -167,8 +160,6 @@ function buildLengthPayload(form: FormState): CalibrationSavePayload | null {
   const forceKgf = parseForceKgfFromLabel(form.force);
   if (!form.zoomTime || !form.force || !form.hardnessLevel) return null;
   if (px === null || py === null || h === null || forceKgf === null) return null;
-  // Same inverse-Vickers derivation as the Hardness tab â€” both tabs now use
-  // the input HV + Force to derive the calibration diagonal.
   const diagonalUm = diagonalUmFromHv(forceKgf, h);
   if (diagonalUm === null) return null;
   return {
@@ -218,10 +209,6 @@ function CalibrationDialogImpl({
   const [confirmClear, setConfirmClear] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  // Selection-state popup: mirrors the (zoomTime, force) selection against
-  // the stored calibration list. mode=update when a row already exists for
-  // the current (objective, force); mode=insert when it does not. The
-  // upsert API ensures the save action matches `mode`.
   const [selectionStatus, setSelectionStatus] = useState<
     { mode: 'update' | 'insert'; message: string } | null
   >(null);
@@ -233,12 +220,6 @@ function CalibrationDialogImpl({
   const busy = loading || saving || deleting || clearing || importing;
   const errorMessage = loadError ?? validationError ?? actionError;
 
-  // First-open effect: runs ONLY when the panel transitions from closed to
-  // open. Sets up the initial form state, default objective, and resets
-  // selection / errors / active tab. We deliberately omit
-  // autoFillPixelLengthX/Y from the deps so live drag updates (handled by
-  // the second effect below) don't reset selectedIds / validationError /
-  // active tab while the panel is open.
   useEffect(() => {
     if (!open) return;
     void refetch();
@@ -275,11 +256,6 @@ function CalibrationDialogImpl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Live-update effect: while the panel is open, sync Pixel Length X / Y
-  // from the parent's latest manual-measure pixel diagonals. Lets the user
-  // drag the manual cross on the live image and watch Pixel X / Y values
-  // update live in the panel without dismissing it. Other form fields are
-  // untouched so user edits in Force / Hardness Level / Real Distance stay.
   useEffect(() => {
     if (!open) return;
     if (
@@ -305,17 +281,6 @@ function CalibrationDialogImpl({
     }
   }, [open, autoFillPixelLengthX, autoFillPixelLengthY]);
 
-  // Selection-state check: when the user changes Objective / Force /
-  // Hardness Level (or the items list refreshes), look up whether a
-  // calibration row already exists for the current (zoomTime, force).
-  // - exists  -> mode=update, preload Pixel X/Y + Hardness from the row
-  //              matching the current hardnessLevel (if any), show
-  //              "already calibrated" popup
-  // - missing -> mode=insert, clear Pixel X/Y + Hardness, show
-  //              "not calibrated yet" popup
-  // Preloading only fires when the (zoomTime, force, hardnessLevel) key
-  // actually changes (tracked via lastSelectionKeyRef) so live drag updates
-  // and items refetches don't stomp on the user's in-progress edits.
   useEffect(() => {
     if (!open) {
       lastSelectionKeyRef.current = null;
@@ -416,10 +381,6 @@ function CalibrationDialogImpl({
     setValidationError(null);
     setActionError(null);
     try {
-      // Pixel X/Y are RAW pixel lengths from Auto/Manual measure. The
-      // calibration diagonal (in Âµm) is derived by inverse Vickers from the
-      // known Hardness Value + Force, then per-axis coefficients are
-      // derived as D_um / pixelLengthX|Y. realDistanceX/Y carries D_um.
       const savedCalibration = await saveCalibration(payload);
       const umPerPixel =
         payload.pixelLengthX > 0 && (payload.realDistanceX ?? 0) > 0
@@ -433,8 +394,6 @@ function CalibrationDialogImpl({
       onChanged?.();
       onStatusChange?.('Calibration saved.');
 
-      // Auto-create a measurement row from the CURRENT D1/D2 line pixels so
-      // the table is populated immediately â€” see onAutoCreateMeasurementRow.
       const currentD1Px = payload.pixelLengthX;
       const currentD2Px = payload.pixelLengthY;
       if (
@@ -608,9 +567,6 @@ function CalibrationDialogImpl({
 
   const tableRows = useMemo(() => items, [items]);
 
-  // Panel-mode: render inline inside the right panel instead of an MUI modal.
-  // The live camera remains separate on the left, so the user can keep
-  // dragging measurement guides while calibration values stay visible.
   useEffect(() => {
     if (open) {
       if (panelLoggedOpenRef.current) return;
@@ -870,9 +826,6 @@ function CalibrationDialogImpl({
         </Grid>
 
         <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-          {/* Manual / Auto Measure are valid on both Length and Hardness
-              calibration: they fill Pixel Length X / Y from the live
-              indentation, which is the same field set both tabs save. */}
           <Button variant="outlined" onClick={handleManual} disabled={busy}>
             Manual Measure
           </Button>

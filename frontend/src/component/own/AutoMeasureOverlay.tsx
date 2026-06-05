@@ -12,8 +12,6 @@ import type { Point } from '@/types/tool';
 import { autoMeasureCornersKey } from '@/utils/autoMeasureOverlayKey';
 import { useRenderCount } from '@/utils/renderStats';
 
-// Frozen auto-measure overlay: detected Vickers tips are displayed using the
-// same guide-line style as Manual Measure.
 
 type CornerKey = keyof AutoMeasureCorners;
 type LineKey = 'left' | 'right' | 'top' | 'bottom';
@@ -23,13 +21,7 @@ const VERTICAL_LINES: LineKey[] = ['left', 'right'];
 const HORIZONTAL_LINES: LineKey[] = ['top', 'bottom'];
 
 const CORNER_HIT_RADIUS = 12;
-// Small radius around the diamond centroid that grabs the whole cross and
-// translates it. Kept smaller than CORNER_HIT_RADIUS so it never wins against
-// a corner handle on a tiny detection.
 const CENTER_HIT_RADIUS = 10;
-// Perpendicular hit distance from a D1/D2 line body (10X two-diagonals
-// layout). Kept slightly larger than the corner radius so the user can grab
-// a line on its midsection without precise aim.
 const LINE_BODY_HIT_DISTANCE = 8;
 
 export type AutoMeasureOverlaySource = 'auto' | 'preview' | 'save';
@@ -106,9 +98,6 @@ function cloneCorners(c: AutoMeasureCorners): AutoMeasureCorners {
   };
 }
 
-// 120ms cubic ease-out keeps slider preview transitions feeling industrial
-// (smooth, not jumpy) without leaving a perceptible lag after the user
-// stops scrolling. Bounded animation; settles via the skip-redraw guard.
 const TWEEN_DURATION_MS = 120;
 
 function easeOutCubic(t: number): number {
@@ -128,8 +117,6 @@ function lerpCorners(a: AutoMeasureCorners, b: AutoMeasureCorners, t: number): A
   };
 }
 
-// Stable per-frame identity of the drawn corners. Shared with App so the album
-// capture can confirm the overlay painted the exact final corners.
 const cornersKey = autoMeasureCornersKey;
 
 function AutoMeasureOverlayImpl({
@@ -166,13 +153,6 @@ function AutoMeasureOverlayImpl({
     if (dragRef.current) return;
     const target = graphics ? cloneCorners(graphics.corners) : null;
     const current = localCornersRef.current;
-    // Same-values fast path. If the parent re-renders and passes a new
-    // `graphics` object reference with identical corner values, do NOT
-    // restart the tween — restarting would call writeCorners every rAF tick
-    // for 120ms, mutating state with a fresh object each frame, which
-    // causes the `draw` useCallback to recreate and the redraw useEffect to
-    // re-fire. Net effect: overlay redrew at 60fps whenever the parent
-    // re-rendered, even though no visual change was needed.
     if (
       target &&
       current &&
@@ -185,7 +165,6 @@ function AutoMeasureOverlayImpl({
       window.cancelAnimationFrame(tweenFrameRef.current);
       tweenFrameRef.current = null;
     }
-    // Snap on appear/disappear — a fade-from-nothing tween isn't meaningful.
     if (!target || !current) {
       writeCorners(target);
       return;
@@ -220,13 +199,6 @@ function AutoMeasureOverlayImpl({
 
   const corners = localCorners ?? graphics?.corners ?? null;
 
-  // Imperative force-clear of the overlay canvas. Triggered when the parent
-  // bumps clearNonce (e.g. objective change) or whenever `graphics` becomes
-  // null. React state nulling alone is not reliable here — a rAF queued by
-  // a prior render can repaint stale yellow lines AFTER state has cleared,
-  // and the skip-redraw cache (`lastDrawKeyRef`) can short-circuit the next
-  // legitimate draw. Calling clearRect synchronously plus invalidating the
-  // skip cache guarantees the canvas is visually blank within the same tick.
   const forceClearCanvas = useCallback((_reason: string) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -268,9 +240,6 @@ function AutoMeasureOverlayImpl({
       const wrap = wrapRef.current;
       if (!canvas || !wrap) return;
 
-      // Hard render guard: never paint yellow lines while the camera is
-      // closed. A rAF queued by the live stream can outlive the close, so
-      // verify the live gate here and clear instead of drawing on mismatch.
       if (!cameraOpen) {
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -297,12 +266,6 @@ function AutoMeasureOverlayImpl({
       }
       lastDrawKeyRef.current = drawKey;
 
-      // Final render guard at the actual draw point. The parent component
-      // (App.tsx) already gates `displayedAutoMeasureGraphics` by objective,
-      // but this canvas is a render target shared by preview + committed +
-      // settings-save sources, so we re-verify here. On mismatch we still
-      // call clearRect (it's already the first thing the draw fns do via
-      // active=false), but skip drawing any lines.
       const normalize = (v: string | null | undefined) => (v ?? '').trim().toUpperCase();
       const overlayObjective = normalize(graphics?.objective);
       const liveObjective = normalize(activeObjective);
@@ -314,10 +277,6 @@ function AutoMeasureOverlayImpl({
         return;
       }
 
-      // Four full-extent yellow guide lines through the 4 detected diamond
-      // tips: vertical at left.x / right.x, horizontal at top.y / bottom.y.
-      // Same visual style for 10X and 40X — for 10X the two-diagonals
-      // detection still produces 4 tip points that drive these guides.
       const dragHandle = dragRef.current && dragRef.current.kind === 'line'
         ? (dragRef.current.line as 'left' | 'right' | 'top' | 'bottom')
         : null;
@@ -344,19 +303,12 @@ function AutoMeasureOverlayImpl({
         strokeWidth,
         lineLayout: 'four-guides',
       });
-      // Signal the EXACT corners now painted on the canvas (only when real
-      // lines were drawn — not on a clear pass). The album capture waits for
-      // this key so it never scrapes a stale/preview/blank overlay.
       if (corners && imageSize) {
         onOverlayDrawn?.(cornersKey(corners));
       }
     });
   }, [corners, imageSize, source, hover, selectedLine, strokeWidth, graphics?.lineLayout, graphics?.objective, graphics?.frameId, activeObjective, cameraOpen, onOverlayDrawn]);
 
-  // Latest `draw` reference for the ResizeObserver callback. The observer
-  // is installed once with `[]` deps; without this ref it would either
-  // capture a stale closure or have to be reinstalled every time `draw`'s
-  // identity changed (which was the original cause of the redraw spam).
   const drawRef = useRef(draw);
   useEffect(() => {
     drawRef.current = draw;
@@ -376,9 +328,6 @@ function AutoMeasureOverlayImpl({
     };
   }, []);
 
-  // Redraw when visual deps change. The rAF skip-gate inside `draw` still
-  // bails out if drawKey is unchanged, so this is harmless even when called
-  // with no real change.
   useEffect(() => {
     draw();
   }, [draw]);
@@ -422,7 +371,6 @@ function AutoMeasureOverlayImpl({
         bottom,
       };
 
-      // Corner handles always win.
       for (const key of CORNER_KEYS) {
         const p = handles[key];
         if (Math.hypot(display.x - p.x, display.y - p.y) <= CORNER_HIT_RADIUS) {
@@ -430,10 +378,6 @@ function AutoMeasureOverlayImpl({
         }
       }
 
-      // Line bodies: full-extent vertical guides at left.x / right.x and
-      // horizontal guides at top.y / bottom.y. Hit by perpendicular distance
-      // to the line in display coords. Applies uniformly to 10X and 40X
-      // since both render the same four-guide style.
       const lineCandidates: Array<{ key: LineKey; dist: number }> = [
         { key: 'left', dist: Math.abs(display.x - left.x) },
         { key: 'right', dist: Math.abs(display.x - right.x) },
@@ -446,7 +390,6 @@ function AutoMeasureOverlayImpl({
       }
 
       if (!isTwoDiagonals) {
-        // 40X: center hit zone — translates all 4 tips together.
         const cx = (left.x + right.x) / 2;
         const cy = (top.y + bottom.y) / 2;
         if (Math.hypot(display.x - cx, display.y - cy) <= CENTER_HIT_RADIUS) {
@@ -459,9 +402,6 @@ function AutoMeasureOverlayImpl({
     [corners, imageSize, isTwoDiagonals]
   );
 
-  // Translate all 4 corners by (dxImg, dyImg), clamped so no corner exits
-  // the image bounds. Used by the center-drag handle to slide the whole
-  // D1/D2 cross over the diamond without changing the diagonals.
   const applyCenterDelta = useCallback(
     (dxImg: number, dyImg: number, base: AutoMeasureCorners): AutoMeasureCorners => {
       const w = imageSize?.width ?? Number.POSITIVE_INFINITY;
@@ -488,10 +428,6 @@ function AutoMeasureOverlayImpl({
     [imageSize]
   );
 
-  // Two-diagonals (10X) corner drag: move the chosen tip freely in 2D and
-  // clamp to image bounds. D1 and D2 share no axis — left.y is not coupled
-  // to right.y, top.x not coupled to bottom.x. Emits [line-clamp] when the
-  // requested position is outside the image and was pulled back.
   const applyCornerDelta2D = useCallback(
     (line: LineKey, dxImg: number, dyImg: number, base: AutoMeasureCorners): AutoMeasureCorners => {
       const next = cloneCorners(base);
@@ -509,17 +445,12 @@ function AutoMeasureOverlayImpl({
     [imageSize]
   );
 
-  // Apply a 1-D drag offset (image coords) to the chosen line, recomputing all
-  // 4 corners so they stay snapped to their owning lines (Vickers geometry).
   const applyLineDelta = useCallback(
     (line: LineKey, dxImg: number, dyImg: number, base: AutoMeasureCorners): AutoMeasureCorners => {
       const next = cloneCorners(base);
       const w = imageSize?.width ?? Number.POSITIVE_INFINITY;
       const h = imageSize?.height ?? Number.POSITIVE_INFINITY;
 
-      // Each guide line owns exactly one tip coordinate: vertical lines own
-      // left.x / right.x, horizontal lines own top.y / bottom.y. Dragging a
-      // line moves only that coordinate so D1 and D2 stay decoupled.
       if (line === 'left') {
         next.left.x = Math.max(0, Math.min(w, base.left.x + dxImg));
       } else if (line === 'right') {
@@ -596,8 +527,6 @@ function AutoMeasureOverlayImpl({
         startCorners: cloneCorners(corners),
         startPointerImage,
       };
-      // Sync mouse-click selection to the shared selectedLine state so the
-      // operator can immediately use keyboard arrows on the clicked line.
       onLineSelected?.(hit.line);
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-edit] selected=${hit.line}-line source=mouse`);
@@ -618,7 +547,6 @@ function AutoMeasureOverlayImpl({
       draw();
       const finalCorners = localCorners;
       if (finalCorners) {
-        // Log total drag delta (image pixels from start to release).
         const startPt = drag.startCorners[drag.line];
         const endPt = finalCorners[drag.line];
         const totalDx = endPt.x - startPt.x;
@@ -640,8 +568,6 @@ function AutoMeasureOverlayImpl({
     [draw, localCorners, onAdjusted]
   );
 
-  // Cursor: vertical lines → ew-resize, horizontal lines → ns-resize, corners →
-  // resize indicator matching the line they belong to.
   const cursor = (() => {
     const dragKind = dragRef.current?.kind ?? null;
     const hoverKind = hover?.kind ?? null;

@@ -111,9 +111,6 @@ const ICON_BUTTON_SX: SxProps<Theme> = {
   '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.12)' },
 };
 
-// Active measurement tool: light-blue tint + a blue underline strip so the
-// selected tool reads clearly against the navy bar (synced with the Machine
-// Control card highlight).
 const ICON_BUTTON_ACTIVE_SX: SxProps<Theme> = {
   ...(ICON_BUTTON_SX as object),
   bgcolor: 'rgba(14, 165, 233, 0.20)',

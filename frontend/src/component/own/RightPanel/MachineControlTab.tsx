@@ -80,9 +80,6 @@ type MachineControlTabProps = {
   onToolbarAction?: (action: ToolbarActionId) => void;
   /** Shared Auto/Manual highlight state (also drives the toolbar underline). */
   selectedMeasureMode?: MeasureSelection;
-  // Bottom HV/HARDNESS card data — all forwarded read-only from the summary row
-  // (MeasurementsWorkspace), reusing its existing displayedMeasurement +
-  // convert state. No new source of truth here.
   /** qualified field of the displayed measurement ('YES' | 'NO' | null). */
   hardnessQualified?: string | null;
   /** Timestamp of the displayed measurement. */
@@ -98,10 +95,6 @@ type MachineControlTabProps = {
 };
 
 const FORCE_OPTIONS =['0.01kgf', '0.025kgf', '0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'];
-// Real machine turret slots (per machine notes):
-//   UL1 -> 10X, UL2 -> IND (indenter), UL3 -> 40X.
-// Other zoom values exist in the calibration table for legacy reasons but the
-// physical turret on this tester only addresses these three slots.
 const OBJECTIVE_OPTIONS = ['10X', 'IND', '40X'];
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'];
 const LIGHTNESS_MIN = 1;
@@ -135,19 +128,12 @@ const DEFAULT_FORM_STATE: FormState = {
 
 const ROOT_SX: SxProps<Theme> = {
   flex: 1,
-  // minHeight:0 lets this flex child shrink below its content height inside the
-  // (overflow-hidden) right panel, so the overflowY scroll below engages
-  // instead of the content being clipped at small window heights. overflowX is
-  // pinned hidden so a vertical scrollbar never triggers a horizontal one.
   minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
   overflowY: 'auto',
   overflowX: 'hidden',
 };
-// Machine-Control panel: two rows of three equal rounded cards (Row 1 =
-// Impress / Auto Measure / Manual Measure, Row 2 = 10X / Center / 40X), each a
-// separate raised card with a soft shadow and gap-based spacing.
 const CONTROL_CONTAINER_SX: SxProps<Theme> = {
   display: 'flex',
   flexDirection: 'column',
@@ -167,9 +153,6 @@ const CARD_ROW_SX: SxProps<Theme> = {
 
 type MeasureAccent = 'blue' | 'green';
 
-// Row 1 cards. Impress + Auto Measure use the blue (info) accent, Manual
-// Measure uses green (success). `active` shows the blue/green underline +
-// tinted background (synced with the toolbar highlight via selectedMeasureMode).
 function measureCardSx(opts: { accent: MeasureAccent; active: boolean }): SxProps<Theme> {
   return (theme) => {
     const accent = opts.accent === 'green' ? theme.palette.success.main : theme.palette.info.main;
@@ -180,9 +163,6 @@ function measureCardSx(opts: { accent: MeasureAccent; active: boolean }): SxProp
       alignItems: 'center',
       justifyContent: 'center',
       gap: 0.5,
-      // Compact industrial sizing: ~74px (was 88) frees vertical space for the
-      // KPI cards and reduces scrolling on small laptops. Colors/active
-      // highlight/behavior unchanged.
       minHeight: 74,
       px: 1,
       py: 1,
@@ -263,7 +243,6 @@ function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
       position: 'relative',
       width: '100%',
       minWidth: 0,
-      // Match the row-1 cards' compact height (~74px, was 92).
       minHeight: 74,
       px: 1,
       pt: 1,
@@ -282,7 +261,6 @@ function turretCardSx(variant: TurretVariant, active: boolean): SxProps<Theme> {
       transition: theme.transitions.create(['background-color', 'border-color', 'box-shadow'], {
         duration: 180,
       }),
-      // Bottom accent strip: yellow for 10X, blue for 40X, neutral for Center.
       '&::after': {
         content: '""',
         position: 'absolute',
@@ -330,9 +308,6 @@ const SETTING_LABEL_SX: SxProps<Theme> = {
   fontWeight: 500,
   color: 'text.secondary',
 };
-// Bottom HV/HARDNESS KPI cards: two equal white cards, thin border, rounded
-// corners, a colored top accent strip (blue / green), a large value, and a
-// footer (divider line + status/timestamp). No shadow.
 const HV_BOTTOM_SECTION_SX: SxProps<Theme> = {
   width: '100%',
   px: 1.5,
@@ -364,9 +339,6 @@ const kpiStripSx = (accent: string): SxProps<Theme> => ({
   bgcolor: accent,
 });
 const KPI_BODY_SX: SxProps<Theme> = {
-  // Compact KPI body: tighter vertical padding + gaps shave ~25-30% off the
-  // card height so more controls fit on small laptops. Horizontal padding,
-  // colors, accent strip, dropdown, values and bindings are unchanged.
   display: 'flex',
   flexDirection: 'column',
   gap: 0.25,
@@ -477,8 +449,6 @@ const LIGHTNESS_SLIDER_WRAP_SX: SxProps<Theme> = {
   flexDirection: 'column',
   justifyContent: 'center',
 };
-// Sizing only — color (sky-blue track + white thumb with glow) comes from the
-// global MuiSlider theme override so every slider in the app stays consistent.
 const LIGHTNESS_SLIDER_SX: SxProps<Theme> = {
   height: 4,
   py: '12px',
@@ -512,11 +482,6 @@ function LightnessControlImpl({ value, disabled, onDrag, onCommit }: LightnessCo
   useRenderCount('LightnessControl');
   const parsed = Number(value);
   const propValue = Number.isFinite(parsed) ? clampLightness(parsed) : LIGHTNESS_MIN;
-  // [rerender-optimization] During an active drag the slider owns its value
-  // locally so each tick re-renders only this small memoized control — not the
-  // whole Machine Control panel. Cleared on commit so the parent/machine value
-  // wins again. Machine command behavior is unchanged (onDrag/onCommit still
-  // fire identically).
   const [dragValue, setDragValue] = useState<number | null>(null);
   const sliderValue = dragValue ?? propValue;
   return (
@@ -573,8 +538,6 @@ function MachineControlTabImpl({
   micrometerEnabled = true,
 }: MachineControlTabProps = {}) {
   useRenderCount('MachineControlTab');
-  // Narrow selectors — MachineControlTab re-renders only when the fields it
-  // actually displays change, not on every accepted machine push.
   const machineConnected = useMachineSelector(s => s?.connected ?? false);
   const machineIndentStatus = useMachineSelector<IndentStatus>(s => s?.indentStatus ?? 'idle');
   const machineLastError = useMachineSelector(s => s?.lastError ?? null);
@@ -585,8 +548,6 @@ function MachineControlTabImpl({
   const machineLightness = useMachineSelector(s => s?.lightness);
   const machineLoadTime = useMachineSelector(s => s?.loadTime);
   const machineHardnessLevel = useMachineSelector(s => s?.hardnessLevel);
-  // True when a full machine state snapshot exists (force/lightness/etc. are
-  // available). False on first render before the first SSE push arrives.
   const hasMachineState = useMachineSelector(s => s !== null);
   const streamError = useMachineError();
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
@@ -626,9 +587,6 @@ function MachineControlTabImpl({
     return trimmed ? trimmed : 'HV';
   }, [hvTypeValue]);
   const bottomHardnessDisplay = hardnessValue.trim() ? hardnessValue : 'N/A';
-  // Apply the forwarded target-band color (red in-range / blue out-of-range) to
-  // the KPI value text; 'inherit' falls back to the normal text color so the
-  // value displays normally when no target is set.
   const kpiValueSx = useMemo<SxProps<Theme>>(
     () =>
       hvTargetColor && hvTargetColor !== 'inherit'
@@ -636,7 +594,6 @@ function MachineControlTabImpl({
         : KPI_VALUE_SX,
     [hvTargetColor]
   );
-  // Ensure the current convert type is always a valid Select option.
   const bottomConvertOptions = convertOptions.includes(bottomHvTypeDisplay)
     ? convertOptions
     : [bottomHvTypeDisplay, ...convertOptions];
@@ -651,9 +608,6 @@ function MachineControlTabImpl({
 
   const lastObjectiveSyncLogRef = useRef<string | null>(null);
   useEffect(() => {
-    // Single sync log: the app-committed activeObjective (the source of truth,
-    // may be null until a real commit) paired with its active highlight color
-    // — yellow for 10X, blue for 40X (the other card's background clears).
     const active = normalizeObjectiveOption(activeObjective);
     const activeColor = active === '10X' ? 'yellow' : active === '40X' ? 'blue' : 'none';
     const key = `${active ?? 'null'}|${activeColor}`;
@@ -665,8 +619,6 @@ function MachineControlTabImpl({
     );
   }, [activeObjective]);
 
-  // Trace what the Objective dropdown actually displays, logged only when the
-  // shown value changes (effect, not render — no rerender impact).
   const lastUiObjectiveLogRef = useRef<string | null>(null);
   useEffect(() => {
     if (formState.objective === lastUiObjectiveLogRef.current) return;
@@ -707,8 +659,6 @@ function MachineControlTabImpl({
         return;
       }
       if (field === 'objective') {
-        // Fire overlay-clear intent immediately so stale yellow lines are
-        // gone before the optical zoom actually changes.
         if (value === '10X' || value === '40X') {
           // eslint-disable-next-line no-console
           console.log(`[machine-objective-click] requested=${value}`);
@@ -740,9 +690,6 @@ function MachineControlTabImpl({
     [pushChange]
   );
 
-  // Debounced backend send for the lightness slider. Drag updates fire
-  // continuously; we coalesce them into one IPC call after the user pauses,
-  // and flush immediately on onChangeCommitted / direct numeric entry.
   const lightnessSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lightnessPendingRef = useRef<string | null>(null);
   useEffect(() => {
@@ -814,9 +761,6 @@ function MachineControlTabImpl({
     [pushChange]
   );
 
-  // Impress progress popup. Opens on click, transitions to "done" after the
-  // machine reports indentStatus='completed', or to "error" on indent failure
-  // / ACK timeout. Auto-closes 1.5 s after done, 4 s after error.
   const [impressPopup, setImpressPopup] = useState<{
     open: boolean;
     status: 'running' | 'done' | 'error';
@@ -869,8 +813,6 @@ function MachineControlTabImpl({
     startIndent,
   ]);
 
-  // Watch machine indent status transitions to drive popup state. Real machine
-  // status only — no optimistic "done" on click.
   useEffect(() => {
     const prev = lastIndentStatusRef.current;
     const next = machineIndentStatus;
@@ -910,16 +852,10 @@ function MachineControlTabImpl({
 
   const handleTurretClick = useCallback(
     (direction: TurretDirection) => () => {
-      // The 10X / 40X turret cards rotate to known objective slots
-      // (left=10X, right=40X); Center=front carries no objective. App-level
-      // objective state is committed only after the returned state contains
-      // the machine-confirmed objective from L<n>OK.
       const objectiveForDirection: '10X' | '40X' | null =
         direction === 'left' ? '10X' : direction === 'right' ? '40X' : null;
       // eslint-disable-next-line no-console
       console.log(`[machine-objective-click] requested=${objectiveForDirection ?? 'CENTER'}`);
-      // Fire overlay-clear intent BEFORE the IPC so stale yellow lines are
-      // gone from the moment the operator presses the button.
       if (objectiveForDirection) {
         onObjectiveChangeIntent?.(objectiveForDirection);
       } else {
@@ -930,21 +866,15 @@ function MachineControlTabImpl({
           if (objectiveForDirection) {
             commitObjectiveResult(objectiveForDirection, state);
           } else {
-            // Center/indenter slot — no measurement lens. Command handled, so
-            // clear the active objective at App level.
             onCenterCommit?.();
           }
         })
         .catch(() => {
-          // Errors surface via turretError -> errorMessage. The move was not
-          // accepted, so do NOT record the objective selection.
         });
     },
     [commitObjectiveResult, moveTurret, onCenterCommit, onObjectiveChangeIntent, onTurretIntent]
   );
 
-  // Auto/Manual Measure cards: dispatch through the exact same toolbar path so
-  // there is one handler and one source of truth (no duplicated measure logic).
   const handleAutoMeasureCardClick = useCallback(() => {
     onToolbarAction?.('tools:autoMeasure');
   }, [onToolbarAction]);
@@ -957,10 +887,6 @@ function MachineControlTabImpl({
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
   const isBusy = setBusy || indentBusy || turretBusy;
 
-  // Hook-local errors (indentError/turretError/setError) persist in React state
-  // until the next click. Once the backend reports a healthy sync (lastError
-  // cleared, syncStatus='synced'), those local strings become stale and must
-  // not keep the red banner visible. Backend lastError remains authoritative.
   const recovered =
     !!connected &&
     !machineLastError &&
@@ -1131,7 +1057,6 @@ function MachineControlTabImpl({
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
         <Box sx={HV_CARDS_GRID_SX}>
-          {/* HV card */}
           <Box sx={KPI_CARD_SX}>
             <Box sx={kpiStripSx('info.main')} />
             <Box sx={KPI_BODY_SX}>
@@ -1154,7 +1079,6 @@ function MachineControlTabImpl({
             </Box>
           </Box>
 
-          {/* HARDNESS card */}
           <Box sx={KPI_CARD_SX}>
             <Box sx={kpiStripSx('success.main')} />
             <Box sx={KPI_BODY_SX}>

@@ -100,14 +100,8 @@ function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
     }),
     [theme]
   );
-  // CHD reference only makes physical sense when the curve is depth vs HV;
-  // hide it for any other axis combination (the user-selected axes may be
-  // diagonals or measurement #, where a horizontal HV line is meaningless).
   const isDepthVsHv =
     (xKey === 'depthMm' || xKey === 'depthUm') && yKey === 'hv';
-  // Map generic {x, y} into the legacy {distanceUm, hv} shape consumed by the
-  // overlay helpers — semantically neutral, they only use the numeric fields
-  // for spatial layout.
   const legacyPoints: DepthHvGraphPoint[] = useMemo(
     () =>
       points.map((point) => ({
@@ -157,8 +151,6 @@ function DepthVsHvGraphImpl({ points, chdTargetHv, xKey, yKey }: Props) {
   );
   void genericYCrossing;
 
-  // CHD intersection diagnostics. Only meaningful for depth-vs-HV; deduped so
-  // the same outcome doesn't spam the console on unrelated re-renders.
   const lastChdLogRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isDepthVsHv) return;

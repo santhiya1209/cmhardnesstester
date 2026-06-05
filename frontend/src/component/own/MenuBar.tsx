@@ -182,7 +182,6 @@ const MenuButton = memo(function MenuButton({
     onOpen(menu.id);
   }, [anyOpen, isOpen, menu.id, onOpen]);
 
-  // Stable onClick handlers for each item, recomputed only when menu/onSelect/onClose change.
   const itemHandlers = useMemo(() => {
     const map: Record<string, () => void> = {};
     for (const item of menu.items) {

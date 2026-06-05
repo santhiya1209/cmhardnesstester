@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 
-import type { ElectronApi, HardnessCameraApi, MachineControlApi } from './types/ipc';
+import type {
+  ElectronApi,
+  HardnessCameraApi,
+  MachineControlApi,
+  XyzPlatformApi,
+} from './types/ipc';
 
 interface ImportMetaEnv {
   readonly VITE_MODE: string;
@@ -17,6 +22,7 @@ declare global {
     api: ElectronApi;
     hardnessCamera: HardnessCameraApi;
     machineControl?: MachineControlApi;
+    xyzPlatform?: XyzPlatformApi;
   }
 }
 

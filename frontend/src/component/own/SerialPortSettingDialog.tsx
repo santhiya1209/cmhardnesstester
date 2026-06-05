@@ -30,11 +30,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onStatusChange?: (message: string) => void;
-  // Current in-memory machine COM port. Lives in App state - never read from
-  // or written to the database. `null` means "no current selection".
   currentMachinePort: string | null;
-  // Callback that disconnects the previous port (if any) and connects the
-  // new one. Handles all machine connect/disconnect logging.
   onApplyMachinePort: (nextPort: string | null) => Promise<void>;
 };
 
@@ -164,9 +160,6 @@ function SerialPortSettingDialogImpl({
     error: micSaveError,
   } = useSaveMicrometerConfig();
   const [form, setForm] = useState<SerialPortSettingPayload>(DEFAULT_SERIAL_PORT_SETTING);
-  // Machine COM port: seeded preferentially from the persisted record so the
-  // dropdown reflects what the app actually auto-connected to. Falls back to
-  // the current in-memory selection while the saved record is loading.
   const [machineComPort, setMachineComPort] = useState<string>('');
   const [micrometerComPort, setMicrometerComPort] = useState<string>('');
   const [availablePorts, setAvailablePorts] = useState<SerialPortInfo[]>([]);
@@ -200,9 +193,6 @@ function SerialPortSettingDialogImpl({
 
   useEffect(() => {
     if (open && !loading) {
-      // Prefer the persisted machine port; only fall back to the in-memory
-      // selection (e.g. user picked a port and the save hasn't landed yet)
-      // when the DB record has nothing.
       const persisted = data?.machineComPort ?? null;
       setMachineComPort(persisted ?? currentMachinePort ?? '');
     }
@@ -214,7 +204,6 @@ function SerialPortSettingDialogImpl({
     }
   }, [micrometerData, micLoading, open]);
 
-  // Log what the dialog hydrated with so it's traceable in the console.
   useEffect(() => {
     if (!open || loading || micLoading) return;
     const machine = data?.machineComPort ?? currentMachinePort ?? null;
@@ -252,8 +241,6 @@ function SerialPortSettingDialogImpl({
       const nextMachinePort = machineComPort.trim().length > 0 ? machineComPort.trim() : null;
       const persistedMicrometerPort =
         micrometerComPort.trim().length > 0 ? micrometerComPort.trim() : null;
-      // Persist machine + XY/Z stage ports together. Machine port is now part
-      // of the persisted record so the next launch can auto-connect.
       // eslint-disable-next-line no-console
       console.log(`[machine-port-save] port=${nextMachinePort ?? '(none)'}`);
       await saveSerialPortSetting({
@@ -282,7 +269,6 @@ function SerialPortSettingDialogImpl({
       onStatusChange?.('Serial port setting saved.');
       onClose();
     } catch {
-      // surfaced via saveError / micSaveError / connect error logs
     }
   }, [
     data?.id,

@@ -10,23 +10,12 @@ export interface CameraSettingsRestoreApi {
   restoreCameraSettings: () => Promise<void>;
 }
 
-// Camera-settings restore on device open. Reads the most recently persisted
-// gain + exposure, drains pending frames, applies each to the SDK, then syncs
-// the React-side cache. Three independent try/catches are deliberate: a gain
-// failure must not block the exposure apply, an exposure failure must not
-// block the refetch, and the outer try/catch must surface load failures
-// without aborting the open path.
 export function useCameraSettingsRestore(
   input: UseCameraSettingsRestoreInput
 ): CameraSettingsRestoreApi {
   const { refetchCameraSetting } = input;
 
   const restoreCameraSettings = useCallback(async () => {
-    // Apply previously-saved camera settings (exposure / analog gain)
-    // to the SDK now that the handle is valid. Without this, every app
-    // restart resets the live image to the SDK's hardware defaults.
-    // Read fresh from the API to avoid the stale-closure value of
-    // `savedCameraSetting`; also keep the React-side cache in sync.
     try {
       const items = await getCameraSetting();
       const saved =
@@ -46,9 +35,6 @@ export function useCameraSettingsRestore(
         console.log(`[camera-restore] gain=${saved.analogGain}`);
         // eslint-disable-next-line no-console
         console.log(`[camera-restore] exposure=${saved.exposureTimeMs}`);
-        // Apply the saved analog gain to the real camera SDK now that
-        // the handle is valid. Without this the live image resets to the
-        // SDK's hardware defaults on every restart.
         let gainOk = false;
         try {
           dropPendingCameraFrames('gain-change');
@@ -67,7 +53,6 @@ export function useCameraSettingsRestore(
           // eslint-disable-next-line no-console
           console.error('[camera-settings-persist][error] startup gain apply threw', gainErr);
         }
-        // Apply the saved exposure time to the real camera SDK.
         let expOk = false;
         try {
           dropPendingCameraFrames('exposure-change');
@@ -98,11 +83,9 @@ export function useCameraSettingsRestore(
       // eslint-disable-next-line no-console
       console.error('[camera-settings-error] failed to load saved settings', loadErr);
     }
-    // Sync the React-side cache so the dialog opens with the right values.
     try {
       await refetchCameraSetting();
     } catch {
-      /* non-fatal */
     }
   }, [refetchCameraSetting]);
 

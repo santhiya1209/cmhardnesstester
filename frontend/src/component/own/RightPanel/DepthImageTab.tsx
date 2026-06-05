@@ -34,7 +34,6 @@ function readPersistedAxis<T extends string>(key: string, allowed: readonly T[],
     const value = window.localStorage.getItem(key);
     if (value && (allowed as readonly string[]).includes(value)) return value as T;
   } catch {
-    /* localStorage unavailable */
   }
   return fallback;
 }
@@ -82,8 +81,6 @@ type Props = {
   albumItemCount: number;
   onAlbumChanged: () => Promise<void>;
   measurements: Measurement[];
-  // CHD target hardness (raw input string) — owned by RightPanel so it is the
-  // single source of truth shared with the Export Report dialog.
   chdTargetInput: string;
   onChdTargetInputChange: (value: string) => void;
 };
@@ -116,7 +113,6 @@ function DepthImageTabImpl({
       window.localStorage.setItem(LS_X_KEY, xAxisKey);
       window.localStorage.setItem(LS_Y_KEY, yAxisKey);
     } catch {
-      /* localStorage unavailable */
     }
   }, [xAxisKey, yAxisKey]);
   const handleXChange = useCallback((event: SelectChangeEvent) => {

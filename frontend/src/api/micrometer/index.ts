@@ -2,7 +2,6 @@ import type { IpcInvokeMap } from '@/types/ipc';
 import type { MicrometerConfig, MicrometerConfigPayload } from '@/types/micrometerConfig';
 import { apiClient } from '../_client';
 
-// IPC bridge to the micrometer service (renderer ↔ main).
 export const openMicrometer = (
   port: string
 ): Promise<IpcInvokeMap['micrometer:open']['response']> =>
@@ -18,7 +17,6 @@ export const getLatestMicrometerReading = (): Promise<
   IpcInvokeMap['micrometer:get-latest-reading']['response']
 > => window.api.invoke('micrometer:get-latest-reading');
 
-// Micrometer-config CRUD (HTTP)
 export const getMicrometerConfig = () =>
   apiClient.get<MicrometerConfig[]>('/api/micrometer-config');
 

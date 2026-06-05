@@ -5,11 +5,9 @@ import type {
 } from '@/types/serialPortSetting';
 import { apiClient } from '../_client';
 
-// IPC: query available serial ports from the OS.
 export const listSerialPorts = (): Promise<IpcInvokeMap['serial:list-ports']['response']> =>
   window.api.invoke('serial:list-ports');
 
-// Serial-port-setting CRUD (HTTP)
 export const getSerialPortSetting = () =>
   apiClient.get<SerialPortSetting[]>('/api/serial-port-setting');
 

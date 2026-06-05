@@ -1,9 +1,3 @@
-// Yellow measurement-line thickness preference shared between Auto Measure
-// and Manual Measure overlays. Persisted client-side via localStorage so the
-// user's choice survives app restarts without introducing a new backend table.
-//
-// Active (hovered/dragged) lines render at 1.25× the base width to keep the
-// drag affordance visible regardless of the base setting.
 
 export type LineThickness = 'thin' | 'normal' | 'thick';
 

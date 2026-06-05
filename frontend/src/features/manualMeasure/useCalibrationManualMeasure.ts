@@ -11,17 +11,7 @@ export interface UseCalibrationManualMeasureInput {
 }
 
 export interface CalibrationManualMeasureApi {
-  // True while the user is doing a Manual Measure that was launched from the
-  // Calibration dialog. handleManualMeasurementUpdated checks this flag so it
-  // can suppress measurement-row creation (calibration mode is pixels-only)
-  // and the calibration dialog re-opens once the user is done.
   calibrationManualModeRef: React.MutableRefObject<boolean>;
-  // Mutually-exclusive overlay mode for the Calibration panel. Without this
-  // the shared AutoMeasureOverlay and ManualMeasureOverlay state could both
-  // be populated while Calibration is open — clicking Auto, then Manual,
-  // would leave the yellow auto guides visible underneath the manual
-  // draggable lines. Updated only from the three calibration entry points
-  // (auto click, manual click, dialog close).
   calibrationMeasureModeRef: React.MutableRefObject<CalibrationMeasureMode>;
   setCalibrationMeasureMode: (next: CalibrationMeasureMode, reason: string) => void;
   handleCalibrationManualMeasure: () => void;
@@ -51,16 +41,7 @@ export function useCalibrationManualMeasure(
     []
   );
 
-  // Calibration-mode Manual Measure: activates the manual measure tool while
-  // keeping the calibration PANEL open (panel layout, not modal). The user
-  // drags the cross over the indent on the live image; each drag updates
-  // latestManualPixels (and emits [calibration-drag-update]); the panel's
-  // live-update effect syncs Pixel Length X / Y in real time. The flag
-  // suppresses measurement-row creation so the calibration drag does not
-  // pollute the measurement table.
   const handleCalibrationManualMeasure = useCallback(() => {
-    // Mutually-exclusive calibration overlay: clear any auto state before
-    // entering manual mode so the yellow auto guides disappear immediately.
     if (calibrationMeasureModeRef.current === 'auto') {
     }
     setAutoMeasureSessionActive(false);

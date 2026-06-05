@@ -21,8 +21,6 @@ function applyLineDelta(
   corners: AutoMeasureCorners
 ): AutoMeasureCorners {
   const next = cloneCorners(corners);
-  // Each guide line owns exactly one axis: vertical lines own x, horizontal
-  // lines own y. Moving the opposite axis has no effect on D1/D2.
   if (line === 'left') next.left.x = Math.max(0, corners.left.x + dx);
   else if (line === 'right') next.right.x = Math.max(0, corners.right.x + dx);
   else if (line === 'top') next.top.y = Math.max(0, corners.top.y + dy);
@@ -31,26 +29,15 @@ function applyLineDelta(
 }
 
 type Args = {
-  // Shared selection state owned by App.tsx so mouse click and keyboard Tab
-  // both update the same highlighted line.
   selectedLine: ManualGuideLineKey | null;
   setSelectedLine: (line: ManualGuideLineKey | null) => void;
   committedAutoMeasureOverlay: AutoMeasureGraphics | null;
   setCommittedAutoMeasureOverlay: React.Dispatch<React.SetStateAction<AutoMeasureGraphics | null>>;
   onAdjusted: (corners: AutoMeasureCorners) => void;
-  // Gate: false when a dialog is open, camera is closed, or tool is not pointer.
   isActive: boolean;
-  // When provided and === 'auto', the overlay is the Calibration panel's
-  // detected lines: emit calibration telemetry alongside the normal logs. The
-  // movement engine itself is unchanged — calibration reuses it as-is.
   calibrationMeasureModeRef?: React.MutableRefObject<CalibrationMeasureMode>;
 };
 
-// Keyboard-based fine adjustment of the committed Auto Measure overlay.
-// Arrow keys move the selected guide line 1/5/10 image pixels (plain/Shift/Ctrl).
-// Tab/Shift+Tab cycle through lines. Enter confirms. Esc restores the original.
-// Selection state is shared with mouse-click selection via setSelectedLine so
-// both input methods control the same highlighted line.
 export function useAutoMeasureKeyboardAdjust({
   selectedLine,
   setSelectedLine,
@@ -60,8 +47,6 @@ export function useAutoMeasureKeyboardAdjust({
   isActive,
   calibrationMeasureModeRef,
 }: Args): void {
-  // Live refs — updated synchronously in render so the stable event listener
-  // always reads the current value without being recreated on state changes.
   const selectedLineRef = useRef<ManualGuideLineKey | null>(selectedLine);
   selectedLineRef.current = selectedLine;
 
@@ -74,9 +59,6 @@ export function useAutoMeasureKeyboardAdjust({
   const onAdjustedRef = useRef(onAdjusted);
   onAdjustedRef.current = onAdjusted;
 
-  // Snapshot of corners at detection time — restored on Esc.
-  // Saved when the overlay first appears (null → non-null), NOT when Tab is
-  // pressed, so Esc works even if the user started adjusting with the mouse.
   const originalCornersRef = useRef<AutoMeasureCorners | null>(null);
   const prevOverlayRef = useRef<AutoMeasureGraphics | null>(null);
 
@@ -85,14 +67,12 @@ export function useAutoMeasureKeyboardAdjust({
     prevOverlayRef.current = committedAutoMeasureOverlay;
 
     if (committedAutoMeasureOverlay && !prev) {
-      // New detection result — save original for Esc restore.
       originalCornersRef.current = cloneCorners(committedAutoMeasureOverlay.corners);
       // eslint-disable-next-line no-console
       console.log('[auto-measure-edit] initialized editable=true');
     }
 
     if (!committedAutoMeasureOverlay) {
-      // Overlay cleared (objective change, new session, etc.) — reset edit state.
       originalCornersRef.current = null;
       setSelectedLine(null);
     }
@@ -103,13 +83,11 @@ export function useAutoMeasureKeyboardAdjust({
       if (!isActiveRef.current) return;
       if (!committedOverlayRef.current) return;
 
-      // Never intercept while the user is typing in a form field.
       const tag = (document.activeElement as HTMLElement | null)?.tagName?.toLowerCase() ?? '';
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
       const { key, shiftKey, ctrlKey } = event;
 
-      // ── Tab / Shift+Tab: cycle through lines ──────────────────────────────
       if (key === 'Tab') {
         event.preventDefault();
         const current = selectedLineRef.current;
@@ -133,11 +111,9 @@ export function useAutoMeasureKeyboardAdjust({
         return;
       }
 
-      // All remaining keys require an active selection.
       const line = selectedLineRef.current;
       if (!line) return;
 
-      // ── Arrow keys: move selected line ────────────────────────────────────
       if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight') {
         event.preventDefault();
         const step = ctrlKey ? 10 : shiftKey ? 5 : 1;
@@ -156,7 +132,6 @@ export function useAutoMeasureKeyboardAdjust({
 
         const next = applyLineDelta(line, dx, dy, overlay.corners);
 
-        // Log updated diagonal measurements in image pixels.
         const d1Px = next.right.x - next.left.x;
         const d2Px = next.bottom.y - next.top.y;
         const davgPx = (d1Px + d2Px) / 2;
@@ -177,7 +152,6 @@ export function useAutoMeasureKeyboardAdjust({
         return;
       }
 
-      // ── Enter: confirm current position ───────────────────────────────────
       if (key === 'Enter') {
         event.preventDefault();
         const overlay = committedOverlayRef.current;
@@ -190,7 +164,6 @@ export function useAutoMeasureKeyboardAdjust({
         return;
       }
 
-      // ── Esc: restore original auto-measure result ─────────────────────────
       if (key === 'Escape') {
         event.preventDefault();
         const original = originalCornersRef.current;

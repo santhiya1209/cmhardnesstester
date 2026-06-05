@@ -1,22 +1,4 @@
 /// <reference lib="webworker" />
-/*
- * cameraStream.worker.ts
- *
- * Receives per-frame ArrayBuffers, decodes the raw camera bytes
- * (mono8 / rgb24 / bgr24 / *32) into ImageData, and transfers the ImageData
- * back to the main thread, which blits it with putImageData. Single render
- * path — the OffscreenCanvas path was removed (it produced a black canvas in
- * this Electron version). The 2D canvas is the render target, not a camera
- * source fallback; the camera source is always the native IPC stream.
- *
- * Messages in:
- *   { type: 'frame', buffer, width, height, pixelFormat, bits, epoch, seq, frameId, previewScale }
- *   { type: 'clear-queue' }   // no-op (no retained per-frame state)
- *   { type: 'dispose' }
- *
- * Messages out:
- *   { type: 'paint', imageData, epoch, seq, frameId }   // imageData transferred
- */
 
 type PixelFormat =
   | 'mono8'
@@ -38,22 +20,9 @@ type FrameMsg = {
   height: number;
   pixelFormat: PixelFormat;
   bits: 8 | 16;
-  // Tagged by the main thread with the live frameEpoch when posted. Echoed
-  // back in the 'paint' message so the main-thread paint handler can drop
-  // paints whose frame was received before the latest canvas clear.
   epoch?: number;
   seq?: number;
-  // Main-process-assigned monotonic frame counter (meta.frameId). Echoed back
-  // verbatim so the renderer paint log uses the SAME id as
-  // [camera-frame-capture]/-send/-recv. Without this, the renderer was logging
-  // 0 (or stale inFlightFrameId) because the variable could be overwritten by
-  // a newer post before rAF fired.
   frameId?: number;
-  // Live-preview subsample factor. 1 = full res (no downscale). 2 = half
-  // width/height (¼ pixels, ¼ work, ¼ transfer). The visible canvas binds to
-  // CSS dimensions so the user doesn't see a resolution change — only the
-  // worker→main ImageData is smaller. Auto Measure reads the raw full-res
-  // buffer held in the renderer hook, not the visible canvas.
   previewScale?: number;
 };
 type DisposeMsg = { type: 'dispose' };
@@ -61,28 +30,15 @@ type ClearQueueMsg = { type: 'clear-queue'; epoch?: number; reason?: string };
 type IncomingMsg = FrameMsg | ClearQueueMsg | DisposeMsg;
 
 function ensureImageData(w: number, h: number): ImageData {
-  // Always allocate fresh: the decoded ImageData is transferred to the main
-  // thread (its backing store detaches on postMessage), so it can never be
-  // reused across frames. This is the single render path — the OffscreenCanvas
-  // path was removed (it produced a black canvas in this Electron version).
   return new ImageData(w, h);
 }
 
-// Precomputed 256-entry LUT mapping mono8 byte → packed RGBA32 (little-endian
-// A=0xFF, B=G=R=v). Single typed-array load + single typed-array store per
-// pixel — the V8 JIT lowers this to ~3 native instructions vs ~6-8 for the
-// arithmetic version. For a 2592x1944 (~5MP) mono frame this is the dominant
-// optimization: the per-pixel bitwise expression is the hot path the profiler
-// flagged at 20-36ms.
 const MONO_LUT: Uint32Array = (() => {
   const t = new Uint32Array(256);
   for (let v = 0; v < 256; v++) t[v] = 0xff000000 | (v << 16) | (v << 8) | v;
   return t;
 })();
 
-// Unroll factor for the mono inner loop. 8 was chosen empirically: large
-// enough to amortize the loop-counter overhead but small enough that V8
-// keeps the unrolled body in its hot inlining budget.
 function decodeMono8(u8: Uint8Array, dst32: Uint32Array, total: number): void {
   const lut = MONO_LUT;
   const end = total - (total & 7);
@@ -100,12 +56,6 @@ function decodeMono8(u8: Uint8Array, dst32: Uint32Array, total: number): void {
   for (; i < total; i++) dst32[i] = lut[u8[i] as number] as number;
 }
 
-// Nearest-neighbor downscale + mono→RGBA in a single pass. For scale=2 on a
-// 2592x1944 frame this reads 1/4 of the source bytes and writes 1/4 of the
-// dest words, dropping the conversion from ~30ms to ~7-8ms. Nearest-neighbor
-// (no averaging) is visually acceptable for microscope preview at typical
-// viewport sizes; if banding ever shows up, swap in box-filter (4-tap avg)
-// which costs ~2x but still beats full-res convert.
 function decodeMono8Downscale(
   u8: Uint8Array,
   dst32: Uint32Array,
@@ -144,9 +94,6 @@ function decodeMono16Downscale(
   }
 }
 
-// rgb24 / bgr24 nearest-neighbor downscale. Source is 3 bytes/pixel; dst is
-// 32-bit RGBA. For scale=2 on 2592x1944 this reads 25% of source bytes
-// (~3.75MB instead of 15MB) and writes a 1296x972 RGBA preview.
 function decodeRgb24Downscale(
   u8: Uint8Array,
   dst32: Uint32Array,
@@ -160,7 +107,6 @@ function decodeRgb24Downscale(
   const pixelStride = 3 * scale;
   let dIdx = 0;
   if (swap) {
-    // bgr24: source[s..s+2] = B,G,R
     for (let dy = 0; dy < dstH; dy++) {
       let s = dy * scale * rowStride;
       for (let dx = 0; dx < dstW; dx++) {
@@ -172,7 +118,6 @@ function decodeRgb24Downscale(
       }
     }
   } else {
-    // rgb24: source[s..s+2] = R,G,B
     for (let dy = 0; dy < dstH; dy++) {
       let s = dy * scale * rowStride;
       for (let dx = 0; dx < dstW; dx++) {
@@ -186,8 +131,6 @@ function decodeRgb24Downscale(
   }
 }
 
-// rgb32 / bgr32 nearest-neighbor downscale. Source is already 32 bits/pixel;
-// we just sample every `scale`th word and (for bgr32) swap R↔B.
 function decodeRgb32Downscale(
   src32: Uint32Array,
   dst32: Uint32Array,
@@ -244,9 +187,6 @@ function decode(
   bits: 8 | 16,
   previewScale: number
 ): ImageData {
-  // All known DVP output formats now have a downscale path. The camera in
-  // this product actually outputs rgb24 (15MB per 5MP frame) — that's the
-  // dominant case we need to cover.
   const canDownscale =
     pixelFormat === 'mono8' ||
     pixelFormat === 'rgb24' ||
@@ -337,16 +277,10 @@ function decode(
       decodeRgb32Downscale(new Uint32Array(buffer), dst32, width, dstW, dstH, scale, swap32);
       return out;
     }
-    // The source is already 32-bit-per-pixel; we only need a byte-swap when
-    // the channel order differs. Use a Uint32Array view directly — one load
-    // + one store per pixel, no per-byte arithmetic.
     const src32 = new Uint32Array(buffer);
     if (pixelFormat === 'rgb32' || pixelFormat === 'rgba32') {
-      // src is RGBA (R lowest byte little-endian) which is exactly what
-      // canvas expects. Direct copy via .set() — one C-level memcpy.
       dst32.set(src32.subarray(0, total));
     } else {
-      // BGRA → RGBA: swap byte 0 and byte 2 of each 32-bit word, keep alpha.
       const end = total - (total & 3);
       let i = 0;
       for (; i < end; i += 4) {
@@ -373,8 +307,6 @@ function decode(
     pixelFormat === 'bayer_gr' ||
     pixelFormat === 'bayer_rg'
   ) {
-    // Microscopy preview only needs luminance — render the Bayer mosaic as
-    // grayscale (each sensor pixel → one greyscale pixel, no demosaic).
     if (bits === 16) {
       if (scale === 1) decodeMono16(new Uint16Array(buffer), dst32, total);
       else decodeMono16Downscale(new Uint16Array(buffer), dst32, width, dstW, dstH, scale);
@@ -385,7 +317,6 @@ function decode(
     return out;
   }
 
-  // 'raw' — best-effort grayscale assume 8-bit
   if (scale === 1) decodeMono8(new Uint8Array(buffer), dst32, total);
   else decodeMono8Downscale(new Uint8Array(buffer), dst32, width, dstW, dstH, scale);
   return out;
@@ -394,9 +325,6 @@ function decode(
 let resolutionLogged = false;
 function paint(frame: FrameMsg) {
   const previewScale = frame.previewScale ?? 1;
-  // Latency diagnostics: measure ONLY the raw decode/convert cost here and
-  // echo it back in the paint message so the renderer can attribute pipeline
-  // delay to the worker stage vs. IPC/grab/paint. Additive — no behavior change.
   const decodeT0 = performance.now();
   const img = decode(
     frame.buffer,
@@ -420,9 +348,6 @@ function paint(frame: FrameMsg) {
   const rawFid = (frame as { frameId?: unknown }).frameId;
   const frameId =
     typeof rawFid === 'number' && rawFid > 0 ? rawFid : 0;
-  // ImageData was freshly allocated by ensureImageData() above, so we transfer
-  // its backing store directly — zero copies. The main thread blits it with
-  // putImageData (see installMainThreadPaintHandler in useCameraStream.ts).
   (self as DedicatedWorkerGlobalScope).postMessage(
     {
       type: 'paint',
@@ -441,9 +366,6 @@ self.onmessage = (e: MessageEvent<IncomingMsg>) => {
   if (msg.type === 'frame') {
     paint(msg);
   } else if (msg.type === 'clear-queue') {
-    // No per-frame state is retained (every ImageData is allocated fresh and
-    // transferred), so there is nothing to clear here. Accepted as a no-op so
-    // the renderer's boundary/reset signals don't error.
   } else if (msg.type === 'dispose') {
     (self as DedicatedWorkerGlobalScope).close();
   }

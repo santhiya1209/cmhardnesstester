@@ -36,8 +36,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
   const [comPort, setComPort] = useState<string>('');
   const [availablePorts, setAvailablePorts] = useState<SerialPortInfo[]>([]);
   const [portsError, setPortsError] = useState<string | null>(null);
-  // Drag offset relative to the dialog's centered default position. Reset on
-  // every open so the popup re-centers if the user closes and re-opens.
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const dragStateRef = useRef<{
     pointerId: number;
@@ -74,10 +72,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
     }
   }, [data, loading, open]);
 
-  // Surface a clear hint when the saved port no longer exists in the live
-  // OS-reported list (operator unplugged the USB-serial cable, swapped
-  // adapters, etc.). Otherwise the silent fall-through looks like the
-  // setting was lost.
   const savedPortMissing =
     enabled && !!comPort && availablePorts.length > 0 &&
     !availablePorts.some((port) => port.path === comPort);
@@ -86,10 +80,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
     const paper = paperRef.current;
     if (!paper) return { x: nextX, y: nextY };
     const rect = paper.getBoundingClientRect();
-    // Translate is applied on top of the MUI-centered position, so the
-    // current rect already reflects (centeredX + dragOffset.x). To clamp we
-    // bound the delta against the viewport: how far can the rect move in
-    // each direction before its edge leaves the window?
     const currentLeft = rect.left;
     const currentTop = rect.top;
     const deltaX = nextX - dragOffset.x;
@@ -111,9 +101,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
   const handleTitlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
-      // Don't start a drag from interactive elements that may live in the
-      // header in the future (close button, etc.). Only the title bar's own
-      // surface should grab the pointer.
       const target = event.target as HTMLElement;
       if (target.closest('button, input, a, [role="button"]')) return;
       dragStateRef.current = {
@@ -175,7 +162,6 @@ function MicrometerConfigDialogImpl({ open, onClose, onStatusChange, onSaved }: 
       onSaved?.(enabled);
       onClose();
     } catch {
-      // surfaced via saveError
     }
   }, [comPort, data?.id, enabled, onClose, onSaved, onStatusChange, saveMicrometerConfig]);
 

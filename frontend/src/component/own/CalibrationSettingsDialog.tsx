@@ -91,8 +91,6 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
 
   useEffect(() => {
     if (open && !loading) {
-      // When dialog opens, prefer the most-recently-edited record's objective
-      // so the user lands on whatever they last calibrated.
       const last = [...items].sort(
         (l, r) => Date.parse(r.updatedAt) - Date.parse(l.updatedAt)
       )[0] ?? null;
@@ -129,8 +127,6 @@ function CalibrationSettingsDialogImpl({ open, onClose, onStatusChange }: Props)
       return;
     }
 
-    // Update the existing record FOR THIS OBJECTIVE only — never touch another
-    // objective's record. If none exists, create a fresh one.
     await saveCalibrationSettings({
       id: recordForObjective?.id,
       values: payload,

@@ -2,10 +2,6 @@ import type { CameraSetting, CameraSettingPayload } from '@/types/cameraSetting'
 import type { IpcInvokeMap } from '@/types/ipc';
 import { apiClient } from '../_client';
 
-// IPC operations (renderer ↔ main process). These are NOT CRUD; they drive the
-// camera native module via `window.api.invoke`. They live alongside the CRUD
-// camera-setting endpoints because both belong to the same `camera` domain.
-
 export const openCamera = (index = 0): Promise<IpcInvokeMap['camera:open']['response']> =>
   window.api.invoke('camera:open', { index });
 
@@ -47,7 +43,6 @@ export const setCameraTriggerMode = (
 export function ackCameraFrame(frameId: number): void {
   if (!frameId) return;
   void window.api.invoke('camera:frame-ack', { frameId }).catch(() => {
-    /* ack is best-effort; main process has a 200ms timeout fallback */
   });
 }
 
@@ -58,7 +53,6 @@ export function ackCameraFrame(frameId: number): void {
  */
 export function flushCameraStream(reason = 'objective-change'): void {
   void window.api.invoke('camera:flush-stream', { reason }).catch(() => {
-    /* best-effort */
   });
 }
 
@@ -78,7 +72,6 @@ export function setLiveExposureForFps(targetFps: number) {
   return setCameraExposure(exposureMs);
 }
 
-// Camera-setting CRUD (HTTP)
 export const getCameraSetting = () =>
   apiClient.get<CameraSetting[]>('/api/camera-setting');
 

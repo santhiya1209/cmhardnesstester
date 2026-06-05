@@ -33,7 +33,6 @@ function RestoreFactoryDialogImpl({ open, onClose, onStatusChange, onRestored }:
       onRestored?.();
       onClose();
     } catch {
-      // surfaced via error
     }
   }, [onClose, onRestored, onStatusChange, restore]);
 
