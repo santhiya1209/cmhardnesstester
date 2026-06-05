@@ -1,29 +1,24 @@
 import { useCallback, useState } from 'react';
-import { createCalibration } from '@/api/calibration';
+import { useCreateCalibrationMutation } from '@/store/api/calibrationApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { Calibration, CalibrationSavePayload } from '@/types/calibration';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useCreateCalibration() {
-  const [saving, setSaving] = useState(false);
+  const [createCalibration, state] = useCreateCalibrationMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveCalibration = useCallback(
     async (payload: CalibrationSavePayload): Promise<Calibration> => {
-      setSaving(true);
       setError(null);
-
       try {
-        return await createCalibration(payload);
+        return await createCalibration(payload).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save calibration.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save calibration.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createCalibration]
   );
 
-  return { saveCalibration, saving, error };
+  return { saveCalibration, saving: state.isLoading, error };
 }

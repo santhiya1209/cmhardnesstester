@@ -1,8 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createPatternProgram } from '@/api/patternProgram';
-import { updatePatternProgram } from '@/api/patternProgram';
+import {
+  useCreatePatternProgramMutation,
+  useUpdatePatternProgramMutation,
+} from '@/store/api/patternProgramApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { PatternProgram, PatternProgramPayload } from '@/types/patternProgram';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 type SavePatternProgramArgs = {
   id?: string;
@@ -10,34 +12,27 @@ type SavePatternProgramArgs = {
 };
 
 export function useSavePatternProgram() {
-  const [saving, setSaving] = useState(false);
+  const [createPatternProgram, createState] = useCreatePatternProgramMutation();
+  const [updatePatternProgram, updateState] = useUpdatePatternProgramMutation();
   const [error, setError] = useState<string | null>(null);
 
   const savePatternProgram = useCallback(
     async ({ id, values }: SavePatternProgramArgs): Promise<PatternProgram> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updatePatternProgram(id, values);
-        }
-
-        return await createPatternProgram(values);
+        if (id) return await updatePatternProgram({ id, values }).unwrap();
+        return await createPatternProgram(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save pattern program.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save pattern program.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createPatternProgram, updatePatternProgram]
   );
 
   return {
     savePatternProgram,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

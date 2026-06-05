@@ -1,58 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAlbumItems } from '@/api/albumItem';
-import type { AlbumItem } from '@/types/albumItem';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
-
-function sortAlbumItems(items: AlbumItem[]): AlbumItem[] {
-  return [...items].sort((left, right) => {
-    const leftTime = Date.parse(left.capturedAt);
-    const rightTime = Date.parse(right.capturedAt);
-    return rightTime - leftTime;
-  });
-}
+import { useCallback } from 'react';
+import { useGetAlbumItemsQuery } from '@/store/api/albumItemApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 
 export function useAlbumItems() {
-  const [data, setData] = useState<AlbumItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
-
-  const refetch = useCallback(async () => {
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const items = await getAlbumItems();
-
-      if (requestIdRef.current !== requestId) {
-        return;
-      }
-
-      setData(sortAlbumItems(items));
-    } catch (requestError) {
-      if (requestIdRef.current !== requestId) {
-        return;
-      }
-
-      setError(getApiErrorMessage(requestError, 'Failed to load album items.'));
-    } finally {
-      if (requestIdRef.current === requestId) {
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void refetch();
+  const { data = [], isFetching, error, refetch } = useGetAlbumItemsQuery();
+  const doRefetch = useCallback(async () => {
+    await refetch();
   }, [refetch]);
 
   return {
     data,
-    loading,
-    error,
-    refetch,
+    loading: isFetching,
+    error: rtkErrorMessage(error, 'Failed to load album items.'),
+    refetch: doRefetch,
   };
 }

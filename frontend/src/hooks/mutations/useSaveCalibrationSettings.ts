@@ -1,11 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createCalibrationSettings } from '@/api/calibration';
-import { updateCalibrationSettings } from '@/api/calibration';
-import type {
-  CalibrationSettings,
-  CalibrationSettingsSavePayload,
-} from '@/types/calibrationSettings';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import {
+  useCreateCalibrationSettingsMutation,
+  useUpdateCalibrationSettingsMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import type { CalibrationSettings, CalibrationSettingsSavePayload } from '@/types/calibrationSettings';
 
 type SaveCalibrationSettingsArgs = {
   id?: string;
@@ -13,34 +12,27 @@ type SaveCalibrationSettingsArgs = {
 };
 
 export function useSaveCalibrationSettings() {
-  const [saving, setSaving] = useState(false);
+  const [createCalibrationSettings, createState] = useCreateCalibrationSettingsMutation();
+  const [updateCalibrationSettings, updateState] = useUpdateCalibrationSettingsMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveCalibrationSettings = useCallback(
     async ({ id, values }: SaveCalibrationSettingsArgs): Promise<CalibrationSettings> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateCalibrationSettings(id, values);
-        }
-
-        return await createCalibrationSettings(values);
+        if (id) return await updateCalibrationSettings({ id, values }).unwrap();
+        return await createCalibrationSettings(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save calibration settings.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save calibration settings.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createCalibrationSettings, updateCalibrationSettings]
   );
 
   return {
     saveCalibrationSettings,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

@@ -1,36 +1,29 @@
 import { useCallback, useState } from 'react';
-import { createGenericSetting } from '@/api/settings';
-import { updateGenericSetting } from '@/api/settings';
-import type {
-  GenericSetting,
-  GenericSettingSavePayload,
-} from '@/types/genericSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import {
+  useCreateGenericSettingMutation,
+  useUpdateGenericSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import type { GenericSetting, GenericSettingSavePayload } from '@/types/genericSetting';
 
 export function useSaveGenericSetting() {
-  const [saving, setSaving] = useState(false);
+  const [createGenericSetting, createState] = useCreateGenericSettingMutation();
+  const [updateGenericSetting, updateState] = useUpdateGenericSettingMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveGenericSetting = useCallback(
     async ({ id, values }: GenericSettingSavePayload): Promise<GenericSetting> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateGenericSetting(id, values);
-        }
-        return await createGenericSetting(values);
+        if (id) return await updateGenericSetting({ id, values }).unwrap();
+        return await createGenericSetting(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save generic setting.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save generic setting.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createGenericSetting, updateGenericSetting]
   );
 
-  return { saveGenericSetting, saving, error };
+  return { saveGenericSetting, saving: createState.isLoading || updateState.isLoading, error };
 }

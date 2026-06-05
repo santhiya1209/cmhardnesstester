@@ -1,95 +1,78 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createReportHeaderSetting } from '@/api/settings';
-import { getReportHeaderSettings } from '@/api/settings';
-import { updateReportHeaderSetting } from '@/api/settings';
+import {
+  useCreateReportHeaderSettingMutation,
+  useGetReportHeaderSettingsQuery,
+  useUpdateReportHeaderSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import {
   DEFAULT_REPORT_HEADER_SETTING,
   type ReportHeaderSetting,
   type ReportHeaderSettingPayload,
 } from '@/types/reportHeaderSetting';
 
-type State = {
-  data: ReportHeaderSetting | null;
-  values: ReportHeaderSettingPayload;
-  loading: boolean;
-  saving: boolean;
-  error: string | null;
-};
-
 export function useReportHeaderSetting(active: boolean) {
-  const [state, setState] = useState<State>({
-    data: null,
-    values: DEFAULT_REPORT_HEADER_SETTING,
-    loading: false,
-    saving: false,
-    error: null,
+  const { data: rows, isFetching, error: loadError } = useGetReportHeaderSettingsQuery(undefined, {
+    skip: !active,
   });
-  const loadedRef = useRef(false);
+  const [createReportHeaderSetting] = useCreateReportHeaderSettingMutation();
+  const [updateReportHeaderSetting, { isLoading: saving }] = useUpdateReportHeaderSettingMutation();
+
+  const server: ReportHeaderSetting | null = rows && rows.length > 0 ? rows[0] : null;
+  const [values, setValuesState] = useState<ReportHeaderSettingPayload>(DEFAULT_REPORT_HEADER_SETTING);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const seededRef = useRef(false);
 
   useEffect(() => {
-    if (!active || loadedRef.current) return;
-    loadedRef.current = true;
-    setState((s) => ({ ...s, loading: true, error: null }));
-    getReportHeaderSettings()
-      .then((rows) => {
-        const first = rows[0] ?? null;
-        setState({
-          data: first,
-          values: first
-            ? {
-                sampleName: first.sampleName,
-                sampleSerialNumber: first.sampleSerialNumber,
-                inspectionCompany: first.inspectionCompany,
-                tester: first.tester,
-                reviewer: first.reviewer,
-                hardnessMin: first.hardnessMin,
-                hardnessMax: first.hardnessMax,
-              }
-            : DEFAULT_REPORT_HEADER_SETTING,
-          loading: false,
-          saving: false,
-          error: null,
-        });
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setState((s) => ({ ...s, loading: false, error: message }));
+    if (server && !seededRef.current) {
+      seededRef.current = true;
+      setValuesState({
+        sampleName: server.sampleName,
+        sampleSerialNumber: server.sampleSerialNumber,
+        inspectionCompany: server.inspectionCompany,
+        tester: server.tester,
+        reviewer: server.reviewer,
+        hardnessMin: server.hardnessMin,
+        hardnessMax: server.hardnessMax,
       });
-  }, [active]);
-
-  const setValues = useCallback(
-    (patch: Partial<ReportHeaderSettingPayload>) => {
-      setState((s) => ({ ...s, values: { ...s.values, ...patch } }));
-    },
-    []
-  );
-
-  const persist = useCallback(async (): Promise<ReportHeaderSettingPayload> => {
-    setState((s) => ({ ...s, saving: true, error: null }));
-    try {
-      const current = stateRef.current;
-      const saved = current.data
-        ? await updateReportHeaderSetting(current.data.id, current.values)
-        : await createReportHeaderSetting(current.values);
-      setState((s) => ({ ...s, data: saved, saving: false }));
-      return current.values;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setState((s) => ({ ...s, saving: false, error: message }));
-      throw err;
     }
+  }, [server]);
+
+  const setValues = useCallback((patch: Partial<ReportHeaderSettingPayload>) => {
+    setValuesState((current) => ({ ...current, ...patch }));
   }, []);
 
-  const stateRef = useRef(state);
+  const valuesRef = useRef(values);
   useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
+    valuesRef.current = values;
+  }, [values]);
+  const serverRef = useRef(server);
+  useEffect(() => {
+    serverRef.current = server;
+  }, [server]);
+
+  const persist = useCallback(async (): Promise<ReportHeaderSettingPayload> => {
+    setSaveError(null);
+    const next = valuesRef.current;
+    const existing = serverRef.current;
+    try {
+      if (existing) {
+        await updateReportHeaderSetting({ id: existing.id, values: next }).unwrap();
+      } else {
+        await createReportHeaderSetting(next).unwrap();
+      }
+      return next;
+    } catch (requestError) {
+      setSaveError(rtkErrorMessage(requestError, 'Failed to save report header setting.'));
+      throw requestError;
+    }
+  }, [createReportHeaderSetting, updateReportHeaderSetting]);
 
   return {
-    values: state.values,
-    loading: state.loading,
-    saving: state.saving,
-    error: state.error,
+    values,
+    loading: isFetching,
+    saving,
+    error: saveError ?? rtkErrorMessage(loadError, 'Failed to load report header setting.'),
     setValues,
     persist,
   };

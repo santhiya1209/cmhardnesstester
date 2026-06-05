@@ -1,25 +1,20 @@
 import { useCallback, useState } from 'react';
-import { clearCalibrations } from '@/api/calibration';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import { useClearCalibrationsMutation } from '@/store/api/calibrationApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 
 export function useClearCalibrations() {
-  const [clearing, setClearing] = useState(false);
+  const [clearCalibrations, state] = useClearCalibrationsMutation();
   const [error, setError] = useState<string | null>(null);
 
   const clearAll = useCallback(async (): Promise<void> => {
-    setClearing(true);
     setError(null);
-
     try {
-      await clearCalibrations();
+      await clearCalibrations().unwrap();
     } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to clear calibrations.');
-      setError(message);
+      setError(rtkErrorMessage(requestError, 'Failed to clear calibrations.'));
       throw requestError;
-    } finally {
-      setClearing(false);
     }
-  }, []);
+  }, [clearCalibrations]);
 
-  return { clearAll, clearing, error };
+  return { clearAll, clearing: state.isLoading, error };
 }

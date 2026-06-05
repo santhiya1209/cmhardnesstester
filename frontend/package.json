@@ -13,11 +13,13 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^9.0.0",
     "@mui/material": "^9.0.0",
+    "@reduxjs/toolkit": "^2.12.0",
     "axios": "^1.15.2",
     "docx": "^9.6.1",
     "exceljs": "^4.4.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-redux": "^9.3.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.4",

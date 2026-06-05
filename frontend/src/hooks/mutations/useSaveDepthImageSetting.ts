@@ -1,11 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createDepthImageSetting } from '@/api/settings';
-import { updateDepthImageSetting } from '@/api/settings';
-import type {
-  DepthImageSetting,
-  DepthImageSettingPayload,
-} from '@/types/depthImageSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import {
+  useCreateDepthImageSettingMutation,
+  useUpdateDepthImageSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import type { DepthImageSetting, DepthImageSettingPayload } from '@/types/depthImageSetting';
 
 type SaveDepthImageSettingArgs = {
   id?: string;
@@ -13,34 +12,27 @@ type SaveDepthImageSettingArgs = {
 };
 
 export function useSaveDepthImageSetting() {
-  const [saving, setSaving] = useState(false);
+  const [createDepthImageSetting, createState] = useCreateDepthImageSettingMutation();
+  const [updateDepthImageSetting, updateState] = useUpdateDepthImageSettingMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveDepthImageSetting = useCallback(
     async ({ id, values }: SaveDepthImageSettingArgs): Promise<DepthImageSetting> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateDepthImageSetting(id, values);
-        }
-
-        return await createDepthImageSetting(values);
+        if (id) return await updateDepthImageSetting({ id, values }).unwrap();
+        return await createDepthImageSetting(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save depth image settings.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save depth image settings.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createDepthImageSetting, updateDepthImageSetting]
   );
 
   return {
     saveDepthImageSetting,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

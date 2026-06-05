@@ -1,11 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createAutoMeasureSettings } from '@/api/settings';
-import { updateAutoMeasureSettings } from '@/api/settings';
-import type {
-  AutoMeasureSettings,
-  AutoMeasureSettingsPayload,
-} from '@/types/autoMeasureSettings';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import {
+  useCreateAutoMeasureSettingsMutation,
+  useUpdateAutoMeasureSettingsMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import type { AutoMeasureSettings, AutoMeasureSettingsPayload } from '@/types/autoMeasureSettings';
 
 type SaveAutoMeasureSettingsArgs = {
   id?: string;
@@ -13,34 +12,27 @@ type SaveAutoMeasureSettingsArgs = {
 };
 
 export function useSaveAutoMeasureSettings() {
-  const [saving, setSaving] = useState(false);
+  const [createAutoMeasureSettings, createState] = useCreateAutoMeasureSettingsMutation();
+  const [updateAutoMeasureSettings, updateState] = useUpdateAutoMeasureSettingsMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveAutoMeasureSettings = useCallback(
     async ({ id, values }: SaveAutoMeasureSettingsArgs): Promise<AutoMeasureSettings> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateAutoMeasureSettings(id, values);
-        }
-
-        return await createAutoMeasureSettings(values);
+        if (id) return await updateAutoMeasureSettings({ id, values }).unwrap();
+        return await createAutoMeasureSettings(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save auto measure settings.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save auto measure settings.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createAutoMeasureSettings, updateAutoMeasureSettings]
   );
 
   return {
     saveAutoMeasureSettings,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

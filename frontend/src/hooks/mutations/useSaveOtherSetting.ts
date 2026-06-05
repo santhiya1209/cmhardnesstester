@@ -1,33 +1,29 @@
 import { useCallback, useState } from 'react';
-import { createOtherSetting } from '@/api/settings';
-import { updateOtherSetting } from '@/api/settings';
+import {
+  useCreateOtherSettingMutation,
+  useUpdateOtherSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { OtherSetting, OtherSettingSavePayload } from '@/types/otherSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useSaveOtherSetting() {
-  const [saving, setSaving] = useState(false);
+  const [createOtherSetting, createState] = useCreateOtherSettingMutation();
+  const [updateOtherSetting, updateState] = useUpdateOtherSettingMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveOtherSetting = useCallback(
     async ({ id, values }: OtherSettingSavePayload): Promise<OtherSetting> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateOtherSetting(id, values);
-        }
-        return await createOtherSetting(values);
+        if (id) return await updateOtherSetting({ id, values }).unwrap();
+        return await createOtherSetting(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save other setting.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save other setting.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createOtherSetting, updateOtherSetting]
   );
 
-  return { saveOtherSetting, saving, error };
+  return { saveOtherSetting, saving: createState.isLoading || updateState.isLoading, error };
 }

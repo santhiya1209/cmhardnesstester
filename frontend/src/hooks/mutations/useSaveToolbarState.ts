@@ -1,8 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createToolbarState } from '@/api/toolbar';
-import { updateToolbarState } from '@/api/toolbar';
+import {
+  useCreateToolbarStateMutation,
+  useUpdateToolbarStateMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { ToolbarState, ToolbarStatePayload } from '@/types/toolbarState';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 type SaveToolbarStateArgs = {
   id?: string;
@@ -10,34 +12,27 @@ type SaveToolbarStateArgs = {
 };
 
 export function useSaveToolbarState() {
-  const [saving, setSaving] = useState(false);
+  const [createToolbarState, createState] = useCreateToolbarStateMutation();
+  const [updateToolbarState, updateState] = useUpdateToolbarStateMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveToolbarState = useCallback(
     async ({ id, values }: SaveToolbarStateArgs): Promise<ToolbarState> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateToolbarState(id, values);
-        }
-
-        return await createToolbarState(values);
+        if (id) return await updateToolbarState({ id, values }).unwrap();
+        return await createToolbarState(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save toolbar state.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save toolbar state.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createToolbarState, updateToolbarState]
   );
 
   return {
     saveToolbarState,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

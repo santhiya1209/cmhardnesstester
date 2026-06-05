@@ -1,11 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createXyzPlatformState } from '@/api/xyzPlatform';
-import { updateXyzPlatformState } from '@/api/xyzPlatform';
-import type {
-  XYZPlatformState,
-  XYZPlatformStatePayload,
-} from '@/types/xyzPlatformState';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import {
+  useCreateXyzPlatformStateMutation,
+  useUpdateXyzPlatformStateMutation,
+} from '@/store/api/xyzPlatformStateApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import type { XYZPlatformState, XYZPlatformStatePayload } from '@/types/xyzPlatformState';
 
 type SaveXyzPlatformStateArgs = {
   id?: string;
@@ -13,34 +12,27 @@ type SaveXyzPlatformStateArgs = {
 };
 
 export function useSaveXyzPlatformState() {
-  const [saving, setSaving] = useState(false);
+  const [createXyzPlatformState, createState] = useCreateXyzPlatformStateMutation();
+  const [updateXyzPlatformState, updateState] = useUpdateXyzPlatformStateMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveXyzPlatformState = useCallback(
     async ({ id, values }: SaveXyzPlatformStateArgs): Promise<XYZPlatformState> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateXyzPlatformState(id, values);
-        }
-
-        return await createXyzPlatformState(values);
+        if (id) return await updateXyzPlatformState({ id, values }).unwrap();
+        return await createXyzPlatformState(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save XYZ platform state.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save XYZ platform state.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createXyzPlatformState, updateXyzPlatformState]
   );
 
   return {
     saveXyzPlatformState,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

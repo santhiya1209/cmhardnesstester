@@ -1,8 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createMachineSettings } from '@/api/machine';
-import { updateMachineSettings } from '@/api/machine';
+import {
+  useCreateMachineSettingsMutation,
+  useUpdateMachineSettingsMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { MachineSettings, MachineSettingsPayload } from '@/types/machineSettings';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 type SaveMachineSettingsArgs = {
   id?: string;
@@ -10,31 +12,27 @@ type SaveMachineSettingsArgs = {
 };
 
 export function useSaveMachineSettings() {
-  const [saving, setSaving] = useState(false);
+  const [createMachineSettings, createState] = useCreateMachineSettingsMutation();
+  const [updateMachineSettings, updateState] = useUpdateMachineSettingsMutation();
   const [error, setError] = useState<string | null>(null);
 
-  const saveMachineSettings = useCallback(async ({ id, values }: SaveMachineSettingsArgs): Promise<MachineSettings> => {
-    setSaving(true);
-    setError(null);
-
-    try {
-      if (id) {
-        return await updateMachineSettings(id, values);
+  const saveMachineSettings = useCallback(
+    async ({ id, values }: SaveMachineSettingsArgs): Promise<MachineSettings> => {
+      setError(null);
+      try {
+        if (id) return await updateMachineSettings({ id, values }).unwrap();
+        return await createMachineSettings(values).unwrap();
+      } catch (requestError) {
+        setError(rtkErrorMessage(requestError, 'Failed to save machine settings.'));
+        throw requestError;
       }
-
-      return await createMachineSettings(values);
-    } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to save machine settings.');
-      setError(message);
-      throw requestError;
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+    },
+    [createMachineSettings, updateMachineSettings]
+  );
 
   return {
     saveMachineSettings,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

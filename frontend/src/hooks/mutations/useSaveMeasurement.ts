@@ -1,8 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createMeasurement } from '@/api/measurement';
-import { updateMeasurement } from '@/api/measurement';
+import {
+  useCreateMeasurementMutation,
+  useUpdateMeasurementMutation,
+} from '@/store/api/measurementApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { Measurement, MeasurementSavePayload } from '@/types/measurement';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 type SaveMeasurementArgs = {
   id?: string;
@@ -10,31 +12,29 @@ type SaveMeasurementArgs = {
 };
 
 export function useSaveMeasurement() {
-  const [saving, setSaving] = useState(false);
+  const [createMeasurement, createState] = useCreateMeasurementMutation();
+  const [updateMeasurement, updateState] = useUpdateMeasurementMutation();
   const [error, setError] = useState<string | null>(null);
 
-  const saveMeasurement = useCallback(async ({ id, values }: SaveMeasurementArgs): Promise<Measurement> => {
-    setSaving(true);
-    setError(null);
-
-    try {
-      if (id) {
-        return await updateMeasurement(id, values);
+  const saveMeasurement = useCallback(
+    async ({ id, values }: SaveMeasurementArgs): Promise<Measurement> => {
+      setError(null);
+      try {
+        if (id) {
+          return await updateMeasurement({ id, values }).unwrap();
+        }
+        return await createMeasurement(values).unwrap();
+      } catch (requestError) {
+        setError(rtkErrorMessage(requestError, 'Failed to save measurement.'));
+        throw requestError;
       }
-
-      return await createMeasurement(values);
-    } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to save measurement.');
-      setError(message);
-      throw requestError;
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+    },
+    [createMeasurement, updateMeasurement]
+  );
 
   return {
     saveMeasurement,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

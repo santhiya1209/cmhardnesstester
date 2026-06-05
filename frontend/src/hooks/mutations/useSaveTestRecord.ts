@@ -1,8 +1,10 @@
 import { useCallback, useState } from 'react';
-import { createTestRecord } from '@/api/testRecord';
-import { updateTestRecord } from '@/api/testRecord';
+import {
+  useCreateTestRecordMutation,
+  useUpdateTestRecordMutation,
+} from '@/store/api/testRecordApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { TestRecord, TestRecordSavePayload } from '@/types/testRecord';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 type SaveTestRecordArgs = {
   id?: string;
@@ -10,31 +12,27 @@ type SaveTestRecordArgs = {
 };
 
 export function useSaveTestRecord() {
-  const [saving, setSaving] = useState(false);
+  const [createTestRecord, createState] = useCreateTestRecordMutation();
+  const [updateTestRecord, updateState] = useUpdateTestRecordMutation();
   const [error, setError] = useState<string | null>(null);
 
-  const saveTestRecord = useCallback(async ({ id, values }: SaveTestRecordArgs): Promise<TestRecord> => {
-    setSaving(true);
-    setError(null);
-
-    try {
-      if (id) {
-        return await updateTestRecord(id, values);
+  const saveTestRecord = useCallback(
+    async ({ id, values }: SaveTestRecordArgs): Promise<TestRecord> => {
+      setError(null);
+      try {
+        if (id) return await updateTestRecord({ id, values }).unwrap();
+        return await createTestRecord(values).unwrap();
+      } catch (requestError) {
+        setError(rtkErrorMessage(requestError, 'Failed to save test record.'));
+        throw requestError;
       }
-
-      return await createTestRecord(values);
-    } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to save test record.');
-      setError(message);
-      throw requestError;
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+    },
+    [createTestRecord, updateTestRecord]
+  );
 
   return {
     saveTestRecord,
-    saving,
+    saving: createState.isLoading || updateState.isLoading,
     error,
   };
 }

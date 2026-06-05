@@ -1,25 +1,23 @@
 import { useCallback, useState } from 'react';
-import { deleteCalibration } from '@/api/calibration';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import { useDeleteCalibrationMutation } from '@/store/api/calibrationApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 
 export function useDeleteCalibration() {
-  const [deleting, setDeleting] = useState(false);
+  const [deleteCalibration, state] = useDeleteCalibrationMutation();
   const [error, setError] = useState<string | null>(null);
 
-  const removeCalibration = useCallback(async (id: string): Promise<void> => {
-    setDeleting(true);
-    setError(null);
+  const removeCalibration = useCallback(
+    async (id: string): Promise<void> => {
+      setError(null);
+      try {
+        await deleteCalibration(id).unwrap();
+      } catch (requestError) {
+        setError(rtkErrorMessage(requestError, 'Failed to delete calibration.'));
+        throw requestError;
+      }
+    },
+    [deleteCalibration]
+  );
 
-    try {
-      await deleteCalibration(id);
-    } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to delete calibration.');
-      setError(message);
-      throw requestError;
-    } finally {
-      setDeleting(false);
-    }
-  }, []);
-
-  return { removeCalibration, deleting, error };
+  return { removeCalibration, deleting: state.isLoading, error };
 }

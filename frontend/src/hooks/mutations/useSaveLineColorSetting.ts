@@ -1,38 +1,34 @@
 import { useCallback, useState } from 'react';
-import { createLineColorSetting } from '@/api/settings';
-import { updateLineColorSetting } from '@/api/settings';
+import {
+  useCreateLineColorSettingMutation,
+  useUpdateLineColorSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type {
   LineColorSetting,
   LineColorSettingPayload,
   LineColorSettingSavePayload,
 } from '@/types/lineColorSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useSaveLineColorSetting() {
-  const [saving, setSaving] = useState(false);
+  const [createLineColorSetting, createState] = useCreateLineColorSettingMutation();
+  const [updateLineColorSetting, updateState] = useUpdateLineColorSettingMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveLineColorSetting = useCallback(
     async ({ id, values }: LineColorSettingSavePayload): Promise<LineColorSetting> => {
-      setSaving(true);
       setError(null);
-
+      const payload: LineColorSettingPayload = { lineColor: values.lineColor };
       try {
-        const payload: LineColorSettingPayload = { lineColor: values.lineColor };
-        if (id) {
-          return await updateLineColorSetting(id, payload);
-        }
-        return await createLineColorSetting(payload);
+        if (id) return await updateLineColorSetting({ id, values: payload }).unwrap();
+        return await createLineColorSetting(payload).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save line color setting.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save line color setting.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createLineColorSetting, updateLineColorSetting]
   );
 
-  return { saveLineColorSetting, saving, error };
+  return { saveLineColorSetting, saving: createState.isLoading || updateState.isLoading, error };
 }

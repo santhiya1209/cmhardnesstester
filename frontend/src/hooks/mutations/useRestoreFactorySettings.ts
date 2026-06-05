@@ -1,24 +1,20 @@
 import { useCallback, useState } from 'react';
-import { restoreFactorySettings } from '@/api/settings';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import { useRestoreFactorySettingsMutation } from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 
 export function useRestoreFactorySettings() {
-  const [restoring, setRestoring] = useState(false);
+  const [restoreFactorySettings, state] = useRestoreFactorySettingsMutation();
   const [error, setError] = useState<string | null>(null);
 
   const restore = useCallback(async (): Promise<void> => {
-    setRestoring(true);
     setError(null);
     try {
-      await restoreFactorySettings();
+      await restoreFactorySettings().unwrap();
     } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to restore factory settings.');
-      setError(message);
+      setError(rtkErrorMessage(requestError, 'Failed to restore factory settings.'));
       throw requestError;
-    } finally {
-      setRestoring(false);
     }
-  }, []);
+  }, [restoreFactorySettings]);
 
-  return { restore, restoring, error };
+  return { restore, restoring: state.isLoading, error };
 }

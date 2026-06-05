@@ -1,36 +1,29 @@
 import { useCallback, useState } from 'react';
-import { createSerialPortSetting } from '@/api/serialPort';
-import { updateSerialPortSetting } from '@/api/serialPort';
-import type {
-  SerialPortSetting,
-  SerialPortSettingSavePayload,
-} from '@/types/serialPortSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import {
+  useCreateSerialPortSettingMutation,
+  useUpdateSerialPortSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import type { SerialPortSetting, SerialPortSettingSavePayload } from '@/types/serialPortSetting';
 
 export function useSaveSerialPortSetting() {
-  const [saving, setSaving] = useState(false);
+  const [createSerialPortSetting, createState] = useCreateSerialPortSettingMutation();
+  const [updateSerialPortSetting, updateState] = useUpdateSerialPortSettingMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveSerialPortSetting = useCallback(
     async ({ id, values }: SerialPortSettingSavePayload): Promise<SerialPortSetting> => {
-      setSaving(true);
       setError(null);
-
       try {
-        if (id) {
-          return await updateSerialPortSetting(id, values);
-        }
-        return await createSerialPortSetting(values);
+        if (id) return await updateSerialPortSetting({ id, values }).unwrap();
+        return await createSerialPortSetting(values).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save serial port setting.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save serial port setting.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createSerialPortSetting, updateSerialPortSetting]
   );
 
-  return { saveSerialPortSetting, saving, error };
+  return { saveSerialPortSetting, saving: createState.isLoading || updateState.isLoading, error };
 }

@@ -1,47 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getSerialPortSetting } from '@/api/serialPort';
-import type { SerialPortSetting } from '@/types/serialPortSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
-
-function selectCurrent(items: SerialPortSetting[]): SerialPortSetting | null {
-  if (items.length === 0) return null;
-  return [...items].sort((left, right) => {
-    const leftTime = Date.parse(left.updatedAt);
-    const rightTime = Date.parse(right.updatedAt);
-    return rightTime - leftTime;
-  })[0];
-}
+import { useCallback, useMemo } from 'react';
+import { useGetSerialPortSettingQuery } from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import { selectLatestByUpdatedAt } from '@/store/selectLatest';
 
 export function useSerialPortSetting() {
-  const [data, setData] = useState<SerialPortSetting | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
-
-  const refetch = useCallback(async () => {
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const items = await getSerialPortSetting();
-      if (requestIdRef.current !== requestId) return;
-      setData(selectCurrent(items));
-    } catch (requestError) {
-      if (requestIdRef.current !== requestId) return;
-      setError(getApiErrorMessage(requestError, 'Failed to load serial port setting.'));
-    } finally {
-      if (requestIdRef.current === requestId) {
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void refetch();
+  const { data, isFetching, error, refetch } = useGetSerialPortSettingQuery();
+  const current = useMemo(() => selectLatestByUpdatedAt(data ?? []), [data]);
+  const doRefetch = useCallback(async () => {
+    await refetch();
   }, [refetch]);
 
-  return { data, loading, error, refetch };
+  return {
+    data: current,
+    loading: isFetching,
+    error: rtkErrorMessage(error, 'Failed to load serial port setting.'),
+    refetch: doRefetch,
+  };
 }

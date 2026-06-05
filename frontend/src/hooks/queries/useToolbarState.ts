@@ -1,62 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getToolbarStates } from '@/api/toolbar';
-import type { ToolbarState } from '@/types/toolbarState';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
-
-function selectCurrentToolbarState(items: ToolbarState[]): ToolbarState | null {
-  if (items.length === 0) {
-    return null;
-  }
-
-  return [...items].sort((left, right) => {
-    const leftTime = Date.parse(left.updatedAt);
-    const rightTime = Date.parse(right.updatedAt);
-    return rightTime - leftTime;
-  })[0];
-}
+import { useCallback, useMemo } from 'react';
+import { useGetToolbarStatesQuery } from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
+import { selectLatestByUpdatedAt } from '@/store/selectLatest';
 
 export function useToolbarState() {
-  const [data, setData] = useState<ToolbarState | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
-
-  const refetch = useCallback(async () => {
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const items = await getToolbarStates();
-
-      if (requestIdRef.current !== requestId) {
-        return;
-      }
-
-      setData(selectCurrentToolbarState(items));
-    } catch (requestError) {
-      if (requestIdRef.current !== requestId) {
-        return;
-      }
-
-      setError(getApiErrorMessage(requestError, 'Failed to load toolbar state.'));
-    } finally {
-      if (requestIdRef.current === requestId) {
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void refetch();
+  const { data, isFetching, error, refetch } = useGetToolbarStatesQuery();
+  const current = useMemo(() => selectLatestByUpdatedAt(data ?? []), [data]);
+  const doRefetch = useCallback(async () => {
+    await refetch();
   }, [refetch]);
 
   return {
-    data,
-    loading,
-    error,
-    refetch,
+    data: current,
+    loading: isFetching,
+    error: rtkErrorMessage(error, 'Failed to load toolbar state.'),
+    refetch: doRefetch,
   };
 }

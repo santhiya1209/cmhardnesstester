@@ -1,30 +1,24 @@
 import { useCallback, useState } from 'react';
-import { createAlbumItem } from '@/api/albumItem';
+import { useCreateAlbumItemMutation } from '@/store/api/albumItemApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { AlbumItem, AlbumItemPayload } from '@/types/albumItem';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useCreateAlbumItem() {
-  const [creating, setCreating] = useState(false);
+  const [createAlbumItem, state] = useCreateAlbumItemMutation();
   const [error, setError] = useState<string | null>(null);
 
-  const addAlbumItem = useCallback(async (payload: AlbumItemPayload): Promise<AlbumItem> => {
-    setCreating(true);
-    setError(null);
+  const addAlbumItem = useCallback(
+    async (payload: AlbumItemPayload): Promise<AlbumItem> => {
+      setError(null);
+      try {
+        return await createAlbumItem(payload).unwrap();
+      } catch (requestError) {
+        setError(rtkErrorMessage(requestError, 'Failed to save album item.'));
+        throw requestError;
+      }
+    },
+    [createAlbumItem]
+  );
 
-    try {
-      return await createAlbumItem(payload);
-    } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to save album item.');
-      setError(message);
-      throw requestError;
-    } finally {
-      setCreating(false);
-    }
-  }, []);
-
-  return {
-    addAlbumItem,
-    creating,
-    error,
-  };
+  return { addAlbumItem, creating: state.isLoading, error };
 }

@@ -1,29 +1,27 @@
 import { useCallback, useState } from 'react';
-import { deleteTestRecord } from '@/api/testRecord';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
+import { useDeleteTestRecordMutation } from '@/store/api/testRecordApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 
 export function useDeleteTestRecord() {
-  const [deleting, setDeleting] = useState(false);
+  const [deleteTestRecord, deleteState] = useDeleteTestRecordMutation();
   const [error, setError] = useState<string | null>(null);
 
-  const removeTestRecord = useCallback(async (id: string): Promise<void> => {
-    setDeleting(true);
-    setError(null);
-
-    try {
-      await deleteTestRecord(id);
-    } catch (requestError) {
-      const message = getApiErrorMessage(requestError, 'Failed to delete test record.');
-      setError(message);
-      throw requestError;
-    } finally {
-      setDeleting(false);
-    }
-  }, []);
+  const removeTestRecord = useCallback(
+    async (id: string): Promise<void> => {
+      setError(null);
+      try {
+        await deleteTestRecord(id).unwrap();
+      } catch (requestError) {
+        setError(rtkErrorMessage(requestError, 'Failed to delete test record.'));
+        throw requestError;
+      }
+    },
+    [deleteTestRecord]
+  );
 
   return {
     removeTestRecord,
-    deleting,
+    deleting: deleteState.isLoading,
     error,
   };
 }

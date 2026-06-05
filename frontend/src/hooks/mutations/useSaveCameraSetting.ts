@@ -1,41 +1,37 @@
 import { useCallback, useState } from 'react';
-import { createCameraSetting } from '@/api/camera';
-import { updateCameraSetting } from '@/api/camera';
+import {
+  useCreateCameraSettingMutation,
+  useUpdateCameraSettingMutation,
+} from '@/store/api/settingsApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type {
   CameraSetting,
   CameraSettingPayload,
   CameraSettingSavePayload,
 } from '@/types/cameraSetting';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useSaveCameraSetting() {
-  const [saving, setSaving] = useState(false);
+  const [createCameraSetting, createState] = useCreateCameraSettingMutation();
+  const [updateCameraSetting, updateState] = useUpdateCameraSettingMutation();
   const [error, setError] = useState<string | null>(null);
 
   const saveCameraSetting = useCallback(
     async ({ id, values }: CameraSettingSavePayload): Promise<CameraSetting> => {
-      setSaving(true);
       setError(null);
-
+      const payload: CameraSettingPayload = {
+        analogGain: values.analogGain,
+        exposureTimeMs: values.exposureTimeMs,
+      };
       try {
-        const payload: CameraSettingPayload = {
-          analogGain: values.analogGain,
-          exposureTimeMs: values.exposureTimeMs,
-        };
-        if (id) {
-          return await updateCameraSetting(id, payload);
-        }
-        return await createCameraSetting(payload);
+        if (id) return await updateCameraSetting({ id, values: payload }).unwrap();
+        return await createCameraSetting(payload).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to save camera setting.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to save camera setting.'));
         throw requestError;
-      } finally {
-        setSaving(false);
       }
     },
-    []
+    [createCameraSetting, updateCameraSetting]
   );
 
-  return { saveCameraSetting, saving, error };
+  return { saveCameraSetting, saving: createState.isLoading || updateState.isLoading, error };
 }

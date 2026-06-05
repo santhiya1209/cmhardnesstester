@@ -1,29 +1,24 @@
 import { useCallback, useState } from 'react';
-import { importCalibrations } from '@/api/calibration';
+import { useImportCalibrationsMutation } from '@/store/api/calibrationApi';
+import { rtkErrorMessage } from '@/store/rtkError';
 import type { Calibration, CalibrationImportPayload } from '@/types/calibration';
-import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 
 export function useImportCalibrations() {
-  const [importing, setImporting] = useState(false);
+  const [importCalibrations, state] = useImportCalibrationsMutation();
   const [error, setError] = useState<string | null>(null);
 
   const importItems = useCallback(
     async (payload: CalibrationImportPayload): Promise<Calibration[]> => {
-      setImporting(true);
       setError(null);
-
       try {
-        return await importCalibrations(payload);
+        return await importCalibrations(payload).unwrap();
       } catch (requestError) {
-        const message = getApiErrorMessage(requestError, 'Failed to import calibrations.');
-        setError(message);
+        setError(rtkErrorMessage(requestError, 'Failed to import calibrations.'));
         throw requestError;
-      } finally {
-        setImporting(false);
       }
     },
-    []
+    [importCalibrations]
   );
 
-  return { importItems, importing, error };
+  return { importItems, importing: state.isLoading, error };
 }
