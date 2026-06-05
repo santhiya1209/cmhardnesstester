@@ -101,46 +101,10 @@ export function useAutoMeasure({
   const handleAutoMeasureAdjusted = useCallback(
     (newCorners: AutoMeasureCorners) => {
       lastAdjustedCornersRef.current = newCorners;
-      const applyAdjustedCorners = (current: AutoMeasureGraphics | null) =>
-        current ? { ...current, corners: newCorners } : current;
-      if (previewAutoMeasureOverlay) {
-        setPreviewAutoMeasureOverlay(applyAdjustedCorners);
-      } else {
-        setCommittedAutoMeasureOverlay(applyAdjustedCorners);
-      }
-
-      if (calibrationManualModeRef.current) {
-        const d1Px = Math.hypot(
-          newCorners.right.x - newCorners.left.x,
-          newCorners.right.y - newCorners.left.y
-        );
-        const d2Px = Math.hypot(
-          newCorners.bottom.x - newCorners.top.x,
-          newCorners.bottom.y - newCorners.top.y
-        );
-        setLatestManualPixels({ d1Px, d2Px });
-        if (adjustSaveTimerRef.current !== null) {
-          window.clearTimeout(adjustSaveTimerRef.current);
-          adjustSaveTimerRef.current = null;
-        }
-        return;
-      }
-
-      if (calibrationMeasureModeRef.current === 'auto') {
-        const d1Px = Math.abs(newCorners.right.x - newCorners.left.x);
-        const d2Px = Math.abs(newCorners.bottom.y - newCorners.top.y);
-        setLatestManualPixels({ d1Px, d2Px });
-        // eslint-disable-next-line no-console
-        console.log(
-          `[calibration-line-drag] line=${autoMeasureSelectedLineRef.current ?? 'unknown'} pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`
-        );
-        if (adjustSaveTimerRef.current !== null) {
-          window.clearTimeout(adjustSaveTimerRef.current);
-          adjustSaveTimerRef.current = null;
-        }
-        return;
-      }
-
+      // Debounce every React-state + save effect. A drag/keyboard burst calls
+      // this per pixel; the overlay already shows the live corners via its own
+      // local state, so the source-of-truth sync, HV recompute and save run once
+      // the move settles instead of re-rendering the whole panel on each step.
       if (adjustSaveTimerRef.current !== null) {
         window.clearTimeout(adjustSaveTimerRef.current);
       }
@@ -148,6 +112,39 @@ export function useAutoMeasure({
         adjustSaveTimerRef.current = null;
         const corners = lastAdjustedCornersRef.current;
         if (!corners) return;
+
+        const applyAdjustedCorners = (current: AutoMeasureGraphics | null) =>
+          current ? { ...current, corners } : current;
+        if (previewAutoMeasureOverlay) {
+          setPreviewAutoMeasureOverlay(applyAdjustedCorners);
+        } else {
+          setCommittedAutoMeasureOverlay(applyAdjustedCorners);
+        }
+
+        if (calibrationManualModeRef.current) {
+          const d1Px = Math.hypot(
+            corners.right.x - corners.left.x,
+            corners.right.y - corners.left.y
+          );
+          const d2Px = Math.hypot(
+            corners.bottom.x - corners.top.x,
+            corners.bottom.y - corners.top.y
+          );
+          setLatestManualPixels({ d1Px, d2Px });
+          return;
+        }
+
+        if (calibrationMeasureModeRef.current === 'auto') {
+          const d1Px = Math.abs(corners.right.x - corners.left.x);
+          const d2Px = Math.abs(corners.bottom.y - corners.top.y);
+          setLatestManualPixels({ d1Px, d2Px });
+          // eslint-disable-next-line no-console
+          console.log(
+            `[calibration-line-drag] line=${autoMeasureSelectedLineRef.current ?? 'unknown'} pixelX=${d1Px.toFixed(2)} pixelY=${d2Px.toFixed(2)}`
+          );
+          return;
+        }
+
         void (async () => {
           try {
             const machineState = await getMachineStateSnapshot();

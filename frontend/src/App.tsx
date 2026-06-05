@@ -84,9 +84,7 @@ import {
   validateAutoMeasureGeometry,
   type AutoMeasureCallSource,
   type AutoMeasureDetectionSnapshot,
-  type CapturedAutoMeasureFrame,
   type CommitAutoMeasureSource,
-  type RunAutoMeasure,
 } from '@/features/autoMeasure/autoMeasureHelpers';
 import { useCommittedFingerprints } from '@/features/autoMeasure/useCommittedFingerprints';
 import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAutoMeasureCalibration';
@@ -94,6 +92,7 @@ import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
 import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
 import { useAutoMeasureSessionLifecycle } from '@/features/autoMeasure/useAutoMeasureSessionLifecycle';
+import { useAutoMeasureRefs } from '@/features/autoMeasure/useAutoMeasureRefs';
 import { useAfterImpressFlow } from '@/features/impress/useAfterImpressFlow';
 import { useObjectiveSync } from '@/features/objective/useObjectiveSync';
 import { useActiveMeasurement } from '@/features/measurement/useActiveMeasurement';
@@ -241,21 +240,24 @@ function App() {
   const lineThickness = useLineThickness();
   useRenderCount('App');
   const cameraRef = useRef<CameraWindowHandle | null>(null);
-  const autoMeasureInFlightRef = useRef(false);
-  const autoMeasurePendingPreviewRef = useRef<AutoMeasureSettingsPayload | null>(null);
-  const latestAutoMeasurePreviewSettingsRef =
-    useRef<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
-  const runAutoMeasureRef = useRef<RunAutoMeasure | null>(null);
-  const autoMeasurePreviewSnapshotRef = useRef<AutoMeasureDetectionSnapshot | null>(null);
-  const committedAutoMeasureFrameRef = useRef<CapturedAutoMeasureFrame | null>(null);
-  const previewMeasurementRef = useRef<{ d1Pixels: number; d2Pixels: number; confidence: number } | null>(null);
-  const autoMeasureSettingsOpenRef = useRef(false);
+  const {
+    autoMeasureInFlightRef,
+    autoMeasurePendingPreviewRef,
+    latestAutoMeasurePreviewSettingsRef,
+    runAutoMeasureRef,
+    autoMeasurePreviewSnapshotRef,
+    committedAutoMeasureFrameRef,
+    previewMeasurementRef,
+    autoMeasureSettingsOpenRef,
+    autoMeasureClickCountRef,
+    autoMeasurementIdRef,
+    autoMeasureSessionIdRef,
+    suppressAutoMeasurePreviewRef,
+  } = useAutoMeasureRefs();
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
   const [magnifierEnabled, setMagnifierEnabled] = useState(false);
   const [selectedMeasureMode, setSelectedMeasureMode] = useState<MeasureSelection>(null);
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const autoMeasureClickCountRef = useRef(0);
-  const [turretMoving, setTurretMoving] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);  const [turretMoving, setTurretMoving] = useState(false);
   const turretMovingRef = useRef(false);
   const setTurretMovingState = useCallback((moving: boolean) => {
     turretMovingRef.current = moving;
@@ -263,9 +265,7 @@ function App() {
   }, []);
   const [turretMovingTarget, setTurretMovingTarget] = useState<string | null>(null);
   const [autoMeasurePreviewSettings, setAutoMeasurePreviewSettings] =
-    useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
-  const autoMeasurementIdRef = useRef<string | null>(null);
-  const {
+    useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);  const {
     activeMeasurementMethodRef,
     cameraMeasurementSessionIdRef,
     getActiveMeasurementId,
@@ -307,9 +307,7 @@ function App() {
     });
   }, []);
 
-  const [, setAutoMeasureSessionId] = useState(0);
-  const autoMeasureSessionIdRef = useRef(0);
-  const [objectiveChangeInProgress, setObjectiveChangeInProgress] = useState(false);
+  const [, setAutoMeasureSessionId] = useState(0);  const [objectiveChangeInProgress, setObjectiveChangeInProgress] = useState(false);
   const objectiveChangeInProgressRef = useRef(false);
   const setObjectiveChangeInProgressState = useCallback((inProgress: boolean) => {
     objectiveChangeInProgressRef.current = inProgress;
@@ -337,8 +335,6 @@ function App() {
     objectiveChangeInProgress,
     activeObjective,
   });
-
-  const suppressAutoMeasurePreviewRef = useRef(false);
   const { clearAutoMeasureOverlay } = useAutoMeasureSessionLifecycle({
     setCommittedAutoMeasureOverlay,
     setPreviewAutoMeasureOverlay,
