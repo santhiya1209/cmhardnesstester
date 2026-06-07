@@ -50,3 +50,18 @@ export const FocusModeSchema = z.enum(['manual', 'cFocus', 'fFocus']);
 
 export const SetFocusModeSchema = z.object({ mode: FocusModeSchema });
 export type SetFocusModeInput = z.infer<typeof SetFocusModeSchema>;
+
+// Expert manual probe (dev-console only). commandText is sent verbatim (or
+// checksum-wrapped for "#..!" in checksum mode) — there is no safe-command
+// allowlist here by design; it is gated behind a connected port and explicit text.
+export const ManualProbeSchema = z.object({
+  // NOTE: no .trim() / .transform() — probe bytes (incl. CR/LF/tabs) must reach
+  // the wire verbatim. Only bound the length so a stray paste can't flood serial.
+  commandText: z.string().min(1).max(64),
+  // checksum:false (or omitted) => raw byte-exact; true => append checksum + 0x21.
+  checksum: z.boolean().optional(),
+  mode: z.enum(['raw', 'checksum']).optional(),
+  terminator: z.enum(['none', 'cr', 'crlf']).optional(),
+  timeoutMs: z.number().int().positive().max(10000).optional(),
+});
+export type ManualProbeInput = z.infer<typeof ManualProbeSchema>;

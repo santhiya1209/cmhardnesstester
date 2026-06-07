@@ -539,29 +539,85 @@ function registerIpc() {
 
   ipcMain.handle('xyz-platform:connect', async (_e, payload) => {
     startXyzPlatformEventBridge();
-    return machineBackendRequest('/api/xyz-platform/connect', {
-      method: 'POST',
-      body: payload && typeof payload === 'object' ? payload : {},
-    });
+    // Port is the operator-selected X/Y port from Serial Port Setting — no
+    // hardcoded COM. Reject empty, and guard against opening the micrometer's
+    // live port here (the backend separately rejects the machine COM port).
+    const port = payload && typeof payload.port === 'string' ? payload.port.trim() : '';
+    if (!port) {
+      // eslint-disable-next-line no-console
+      console.error('[xyz-error] error="X/Y port is not configured"');
+      return { ok: false, error: 'XYZ_PORT_NOT_CONFIGURED', message: 'X/Y port is not configured' };
+    }
+    const micPort = micrometerService.getState().portName;
+    if (micPort && port === micPort) {
+      const message = 'X/Y port cannot use micrometer COM port';
+      // eslint-disable-next-line no-console
+      console.error(`[xyz-error] error="${message}"`);
+      return { ok: false, error: 'XYZ_PORT_CONFLICT', message };
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=connect port=${port}`);
+    return machineBackendRequest('/api/xyz-platform/connect', { method: 'POST', body: { port } });
   });
 
   ipcMain.handle('xyz-platform:disconnect', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=disconnect');
     return machineBackendRequest('/api/xyz-platform/disconnect', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:diagnose', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=diagnose');
+    return machineBackendRequest('/api/xyz-platform/diagnose', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:test-line-control', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=testLineControl');
+    return machineBackendRequest('/api/xyz-platform/test-line-control', { method: 'POST', body: {} });
+  });
+
+  // Expert manual probe — dev-console only (window.xyzPlatform.probe). Renderer
+  // input is untrusted: require a non-empty string command, pass options through
+  // to the zod-validated controller. WARNING: a moving command WILL move hardware.
+  ipcMain.handle('xyz-platform:probe', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    // PROBE MODE: do NOT trim — CR/LF/tabs in commandText are part of the test
+    // and must reach the wire byte-for-byte. Only reject a truly empty string.
+    const commandText =
+      payload && typeof payload.commandText === 'string' ? payload.commandText : '';
+    if (commandText.length === 0) {
+      return { ok: false, error: 'XYZ_PROBE_EMPTY_COMMAND', message: 'commandText is required' };
+    }
+    const opts = payload && typeof payload.options === 'object' && payload.options ? payload.options : {};
+    const body = { commandText };
+    if (typeof opts.checksum === 'boolean') body.checksum = opts.checksum;
+    if (opts.mode === 'raw' || opts.mode === 'checksum') body.mode = opts.mode;
+    if (opts.terminator === 'none' || opts.terminator === 'cr' || opts.terminator === 'crlf') {
+      body.terminator = opts.terminator;
+    }
+    if (Number.isFinite(Number(opts.timeoutMs))) body.timeoutMs = Number(opts.timeoutMs);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=probe commandText=${JSON.stringify(commandText)}`);
+    return machineBackendRequest('/api/xyz-platform/probe', { method: 'POST', body });
   });
 
   ipcMain.handle('xyz-platform:move-stage', async (_e, payload) => {
     startXyzPlatformEventBridge();
     const body = validateXyzMovePayload(payload);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ipc] move-stage requested direction=${body.direction} speed=${body.speed}`);
+    console.log(`[xyz-ipc] method=moveStage direction=${body.direction} speed=${body.speed}`);
     return machineBackendRequest('/api/xyz-platform/move-stage', { method: 'POST', body });
   });
 
   ipcMain.handle('xyz-platform:stop-stage', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
-    console.log('[xyz-ipc] stop-stage requested');
+    console.log('[xyz-ipc] method=stopStage');
     return machineBackendRequest('/api/xyz-platform/stop-stage', { method: 'POST', body: {} });
   });
 
@@ -569,42 +625,42 @@ function registerIpc() {
     startXyzPlatformEventBridge();
     const body = validateXyzZMovePayload(payload);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ipc] move-z requested direction=${body.direction} speed=${body.speed}`);
+    console.log(`[xyz-ipc] method=moveZ direction=${body.direction} speed=${body.speed}`);
     return machineBackendRequest('/api/xyz-platform/move-z', { method: 'POST', body });
   });
 
   ipcMain.handle('xyz-platform:stop-z', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
-    console.log('[xyz-ipc] stop-z requested');
+    console.log('[xyz-ipc] method=stopZ');
     return machineBackendRequest('/api/xyz-platform/stop-z', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:lock-z', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
-    console.log('[xyz-ipc] lock-z requested');
+    console.log('[xyz-ipc] method=lockZ');
     return machineBackendRequest('/api/xyz-platform/lock-z', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:unlock-z', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
-    console.log('[xyz-ipc] unlock-z requested');
+    console.log('[xyz-ipc] method=unlockZ');
     return machineBackendRequest('/api/xyz-platform/unlock-z', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:lock-xy', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
-    console.log('[xyz-ipc] lock-xy requested');
+    console.log('[xyz-ipc] method=lockXy');
     return machineBackendRequest('/api/xyz-platform/lock-xy', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:unlock-xy', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
-    console.log('[xyz-ipc] unlock-xy requested');
+    console.log('[xyz-ipc] method=unlockXy');
     return machineBackendRequest('/api/xyz-platform/unlock-xy', { method: 'POST', body: {} });
   });
 
@@ -613,7 +669,7 @@ function registerIpc() {
     const mode = payload && typeof payload.mode === 'string' ? payload.mode : '';
     if (!XYZ_FOCUS_MODES.has(mode)) throw new Error('invalid xyz focus mode');
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ipc] set-focus-mode requested mode=${mode}`);
+    console.log(`[xyz-ipc] method=setFocusMode mode=${mode}`);
     return machineBackendRequest('/api/xyz-platform/set-focus-mode', { method: 'POST', body: { mode } });
   });
 
@@ -621,6 +677,8 @@ function registerIpc() {
     startXyzPlatformEventBridge();
     const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
     if (!XYZ_XY_SPEEDS.has(speed)) throw new Error('invalid xyz speed');
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=setXySpeed speed=${speed}`);
     return machineBackendRequest('/api/xyz-platform/set-xy-speed', { method: 'POST', body: { speed } });
   });
 
@@ -628,11 +686,15 @@ function registerIpc() {
     startXyzPlatformEventBridge();
     const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
     if (!XYZ_Z_SPEEDS.has(speed)) throw new Error('invalid z speed');
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=setZSpeed speed=${speed}`);
     return machineBackendRequest('/api/xyz-platform/set-z-speed', { method: 'POST', body: { speed } });
   });
 
   ipcMain.handle('xyz-platform:get-position', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=getPosition');
     return machineBackendRequest('/api/xyz-platform/position');
   });
 

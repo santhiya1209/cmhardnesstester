@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   connectStage,
+  diagnoseStage,
   disconnectStage,
   getStagePosition,
   getStageState,
@@ -10,12 +11,14 @@ import {
   moveStage,
   moveStageToCenter,
   moveZ,
+  probeStage,
   setFocusMode,
   setXySpeed,
   setZSpeed,
   stopStage,
   stopZ,
   streamStageEvents,
+  testLineControlStage,
   unlockXy,
   unlockZ,
 } from '../controllers/xyz-platform';
@@ -27,6 +30,9 @@ const router = Router();
 router.get('/state', getStageState);
 router.get('/events', streamStageEvents);
 router.post('/connect', connectStage);
+router.post('/diagnose', diagnoseStage);
+router.post('/test-line-control', testLineControlStage);
+router.post('/probe', probeStage);
 router.post('/disconnect', disconnectStage);
 router.post('/move-stage', moveStage);
 router.post('/stop-stage', stopStage);

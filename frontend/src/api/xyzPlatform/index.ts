@@ -5,7 +5,11 @@ import type {
 import type {
   FocusMode,
   XyzCommandResult,
+  XyzDiagnoseResult,
   XyzDirection,
+  XyzLineControlResult,
+  XyzProbeOptions,
+  XyzProbeResult,
   XyzStageState,
   XySpeed,
   ZDirection,
@@ -31,6 +35,70 @@ const BRIDGE_UNAVAILABLE: XyzCommandResult = {
 function bridge(): NonNullable<typeof window.xyzPlatform> | null {
   return window.xyzPlatform ?? null;
 }
+
+/** Lightweight connect/disconnect result — the live state still arrives via the subscription. */
+export type XyzConnectResult = { ok: boolean; error?: string; message?: string };
+
+const BRIDGE_UNAVAILABLE_CONNECT: XyzConnectResult = {
+  ok: false,
+  error: 'XYZ_BRIDGE_UNAVAILABLE',
+  message: 'XYZ platform hardware bridge is unavailable (not running in Electron).',
+};
+
+export const xyzConnect = (opts: { port: string }): Promise<XyzConnectResult> => {
+  const b = bridge();
+  if (!b) return Promise.resolve(BRIDGE_UNAVAILABLE_CONNECT);
+  return b.connect(opts).then((res) => ({ ok: res.ok, error: res.error, message: res.message }));
+};
+
+export const xyzDisconnect = (): Promise<XyzConnectResult> => {
+  const b = bridge();
+  if (!b) return Promise.resolve(BRIDGE_UNAVAILABLE_CONNECT);
+  return b.disconnect().then((res) => ({ ok: res.ok, error: res.error, message: res.message }));
+};
+
+const BRIDGE_UNAVAILABLE_DIAGNOSE: XyzDiagnoseResult = {
+  ok: false,
+  error: 'XYZ_BRIDGE_UNAVAILABLE',
+  port: null,
+  open: null,
+  anyRx: false,
+  probes: [],
+  summary: 'XYZ platform hardware bridge is unavailable (not running in Electron).',
+};
+
+/** Hardware diagnostic — sends safe non-moving probes and reports any RX. Inspect the `[xyz-probe-*]` logs. */
+export const xyzDiagnose = (): Promise<XyzDiagnoseResult> =>
+  bridge()?.diagnose() ?? Promise.resolve(BRIDGE_UNAVAILABLE_DIAGNOSE);
+
+const BRIDGE_UNAVAILABLE_LINE_CONTROL: XyzLineControlResult = {
+  ok: false,
+  error: 'XYZ_BRIDGE_UNAVAILABLE',
+  port: null,
+  open: null,
+  supported: false,
+  anyRx: false,
+  configs: [],
+  summary: 'XYZ platform hardware bridge is unavailable (not running in Electron).',
+};
+
+/** RTS/DTR line-control diagnostic — sweeps the four combos sending safe #10!. Inspect the `[xyz-line-control*]` logs. */
+export const xyzTestLineControl = (): Promise<XyzLineControlResult> =>
+  bridge()?.testLineControl() ?? Promise.resolve(BRIDGE_UNAVAILABLE_LINE_CONTROL);
+
+/**
+ * Expert manual probe (dev console only — not wired to any UI control).
+ * ⚠ WARNING: a moving command (e.g. "#0C+00000001!") WILL physically move the stage.
+ */
+export const xyzProbe = (commandText: string, options?: XyzProbeOptions): Promise<XyzProbeResult> =>
+  bridge()?.probe(commandText, options) ??
+  Promise.resolve({
+    label: 'bridge-unavailable',
+    tx: commandText,
+    txHex: '',
+    rx: null,
+    error: 'XYZ_BRIDGE_UNAVAILABLE',
+  });
 
 export const xyzMoveStage = (direction: XyzDirection, speed: XySpeed): Promise<XyzCommandResult> =>
   bridge()?.moveStage(direction, speed) ?? Promise.resolve(BRIDGE_UNAVAILABLE);

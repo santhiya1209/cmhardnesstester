@@ -232,17 +232,40 @@ function SerialPortSettingDialogImpl({
     setMicrometerComPort(next);
   }, []);
 
-  const portConflict =
-    !!machineComPort && !!micrometerComPort && machineComPort === micrometerComPort;
+  // A port may belong to exactly one device. X/Y and Z must not collide with the
+  // Machine or Micrometer ports (different physical controllers). X/Y and Z may
+  // share a port — the XYZ stage is a single controller and the service opens
+  // only the X/Y port (Z movement isn't a separate connection).
+  const xyPort = form.xyPortName ?? '';
+  const zPort = form.zPortName ?? '';
+  const conflicts: string[] = [];
+  if (machineComPort && micrometerComPort && machineComPort === micrometerComPort) {
+    conflicts.push('Machine and Micrometer cannot use same COM port');
+  }
+  if (xyPort && machineComPort && xyPort === machineComPort) {
+    conflicts.push('X/Y port cannot use machine COM port');
+  }
+  if (xyPort && micrometerComPort && xyPort === micrometerComPort) {
+    conflicts.push('X/Y port cannot use micrometer COM port');
+  }
+  if (zPort && machineComPort && zPort === machineComPort) {
+    conflicts.push('Z port cannot use machine COM port');
+  }
+  if (zPort && micrometerComPort && zPort === micrometerComPort) {
+    conflicts.push('Z port cannot use micrometer COM port');
+  }
+  const hasConflict = conflicts.length > 0;
 
   const handleConfirm = useCallback(async () => {
-    if (portConflict) return;
+    if (hasConflict) return;
     try {
       const nextMachinePort = machineComPort.trim().length > 0 ? machineComPort.trim() : null;
       const persistedMicrometerPort =
         micrometerComPort.trim().length > 0 ? micrometerComPort.trim() : null;
       // eslint-disable-next-line no-console
       console.log(`[machine-port-save] port=${nextMachinePort ?? '(none)'}`);
+      // eslint-disable-next-line no-console
+      console.log(`[serial-settings] xyzXyPort=${form.xyPortName ?? '(none)'} xyzZPort=${form.zPortName ?? '(none)'}`);
       await saveSerialPortSetting({
         id: data?.id,
         values: { ...form, machineComPort: nextMachinePort },
@@ -280,7 +303,7 @@ function SerialPortSettingDialogImpl({
     onApplyMachinePort,
     onClose,
     onStatusChange,
-    portConflict,
+    hasConflict,
     saveMicrometerConfig,
     saveSerialPortSetting,
   ]);
@@ -324,11 +347,11 @@ function SerialPortSettingDialogImpl({
           onChange={handleZPortChange}
         />
 
-        {portConflict ? (
-          <Alert severity="warning" sx={{ mt: 1 }}>
-            Machine and Micrometer cannot use same COM port
+        {conflicts.map((message) => (
+          <Alert key={message} severity="warning" sx={{ mt: 1 }}>
+            {message}
           </Alert>
-        ) : null}
+        ))}
         {portsError ? (
           <Alert severity="warning" sx={{ mt: 1 }}>
             {`Port list unavailable: ${portsError}`}
@@ -345,7 +368,7 @@ function SerialPortSettingDialogImpl({
         <Button
           variant="contained"
           onClick={() => void handleConfirm()}
-          disabled={busy || portConflict}
+          disabled={busy || hasConflict}
         >
           Confirm
         </Button>

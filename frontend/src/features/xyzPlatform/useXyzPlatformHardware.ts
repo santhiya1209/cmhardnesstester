@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react';
 import {
+  xyzConnect,
+  xyzDisconnect,
   xyzGetPosition,
   xyzLocateCenter,
   xyzLockXy,
@@ -51,6 +53,38 @@ export function useXyzPlatformHardware() {
     []
   );
 
+  // Connect/disconnect are NOT movement commands and return the stage-state
+  // response shape, so they don't go through `run`. They only toggle busy +
+  // surface a connect error; the authoritative connected/lastError state still
+  // arrives via the `xyz-platform:state` subscription. The port is the operator-
+  // selected X/Y port from Serial Port Setting — no hardcoded COM number.
+  const connect = useCallback(async (port: string) => {
+    const trimmed = port?.trim() ?? '';
+    if (!trimmed) {
+      setError('X/Y port is not configured');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await xyzConnect({ port: trimmed });
+      if (!res.ok) setError(res.message ?? res.error ?? 'Connect failed');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const disconnect = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await xyzDisconnect();
+      if (!res.ok) setError(res.message ?? res.error ?? 'Disconnect failed');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   const moveStage = useCallback(
     (direction: XyzDirection, speed: XySpeed) => run(() => xyzMoveStage(direction, speed)),
     [run]
@@ -75,6 +109,8 @@ export function useXyzPlatformHardware() {
   return {
     busy,
     error,
+    connect,
+    disconnect,
     moveStage,
     stopStage,
     moveZ,

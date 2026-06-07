@@ -18,6 +18,7 @@ import {
 import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { useMachineConnection } from '@/features/machine/useMachineConnection';
 import { useMicrometerAutoRestore } from '@/features/machine/useMicrometerAutoRestore';
+import { useXyzAutoConnect } from '@/features/xyzPlatform/useXyzAutoConnect';
 import { measureVickersAuto } from '@/api/system';
 import { useCameraLifecycle } from '@/features/camera/useCameraLifecycle';
 import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRestore';
@@ -197,6 +198,7 @@ function App() {
   const { restoreCameraSettings } = useCameraSettingsRestore({ refetchCameraSetting });
   const { currentMachinePort, applyMachinePort } = useMachineConnection();
   useMicrometerAutoRestore();
+  useXyzAutoConnect();
 
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();

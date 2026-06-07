@@ -1,9 +1,8 @@
-import { memo, useCallback, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
-import CircularProgress from '@mui/material/CircularProgress';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -18,60 +17,97 @@ import SouthIcon from '@mui/icons-material/South';
 import SouthEastIcon from '@mui/icons-material/SouthEast';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
-import StopIcon from '@mui/icons-material/Stop';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
 import { useXyzPlatformStateSync } from '@/features/xyzPlatform/useXyzPlatformStateSync';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
+import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import type { FocusMode, XySpeed, ZSpeed } from '@/types/xyzPlatformState';
 import type { XyzDirection, ZDirection } from '@/types/xyzPlatform';
 
-const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1 };
-const HEADER_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 };
-const GROUP_LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary', fontWeight: 600 };
-const RADIO_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 };
-const RADIO_GROUP_SX: SxProps<Theme> = {
+// Industrial light-grey, thin-bordered, compact layout mirroring the old
+// software's XYZ Platform Control panel. No card shadows, rectangular buttons,
+// blue arrow glyphs. Two side-by-side group boxes: X/Y (left) and Z (right).
+const SECTION_SX: SxProps<Theme> = { px: 1, py: 1, display: 'flex', flexDirection: 'column', gap: 0.75 };
+const CONNECT_ROW_SX: SxProps<Theme> = {
   display: 'flex',
-  flexDirection: 'row',
-  gap: 0,
-  '& .MuiFormControlLabel-root': { mr: 1.5 },
-  '& .MuiFormControlLabel-label': { fontSize: 12 },
-  '& .MuiRadio-root': { p: 0.25 },
+  alignItems: 'center',
+  gap: 0.75,
+  flexWrap: 'wrap',
+  pb: 0.75,
+  borderBottom: 1,
+  borderColor: 'divider',
 };
-const GRIDS_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 };
-const PAD_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0.5 };
-const PAD_BTN_SX: SxProps<Theme> = {
-  minWidth: 0,
-  height: 32,
+const CONNECT_BTN_SX: SxProps<Theme> = {
+  height: 24,
   textTransform: 'none',
   fontSize: 11,
   py: 0,
-  px: 0.5,
+  px: 1,
+  minWidth: 0,
 };
-const STOP_BTN_SX: SxProps<Theme> = { height: 30, textTransform: 'none', fontSize: 12 };
+const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary' };
+const GROUPS_ROW_SX: SxProps<Theme> = { display: 'flex', width: '100%', gap: 0.75, alignItems: 'flex-start' };
+const GROUP_BOX_SX = {
+  border: '1px solid',
+  borderColor: 'grey.400',
+  borderRadius: 0.5,
+  bgcolor: 'grey.50',
+  p: 0.75,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 0.5,
+  boxShadow: 'none',
+} as const;
+// X/Y is the main area (wider); Z sits to its right (narrower). Both grow to
+// fill the panel so no empty space is left on the right.
+const XY_GROUP_SX: SxProps<Theme> = { ...GROUP_BOX_SX, flex: '2 1 0', minWidth: 0 };
+const Z_GROUP_SX: SxProps<Theme> = { ...GROUP_BOX_SX, flex: '1 1 0', minWidth: 0 };
+const GROUP_TITLE_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, color: 'text.primary', lineHeight: 1 };
+const RADIO_GROUP_SX: SxProps<Theme> = {
+  flexWrap: 'nowrap',
+  '& .MuiFormControlLabel-root': { mr: 0.5, ml: 0 },
+  '& .MuiFormControlLabel-label': { fontSize: 11 },
+  '& .MuiRadio-root': { p: 0.125 },
+};
+// X/Y body: 3 square arrow columns + 1 auto-width text column (Lock/Unlock/Relocatio).
+const XY_GRID_SX: SxProps<Theme> = {
+  display: 'grid',
+  gridTemplateColumns: '38px 38px 38px auto',
+  gap: 0.5,
+};
+// Z body: 2 equal columns.
+const Z_GRID_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5 };
+const ARROW_BTN_SX: SxProps<Theme> = {
+  minWidth: 0,
+  width: '100%',
+  height: 34,
+  p: 0,
+  borderColor: 'grey.500',
+  color: 'primary.main',
+  '& svg': { fontSize: 20 },
+};
+const TEXT_BTN_SX: SxProps<Theme> = {
+  minWidth: 0,
+  width: '100%',
+  height: 34,
+  px: 0.5,
+  py: 0,
+  fontSize: 10.5,
+  lineHeight: 1.1,
+  textTransform: 'none',
+  borderColor: 'grey.500',
+  color: 'text.primary',
+};
 const COORD_ROW_SX: SxProps<Theme> = {
   display: 'flex',
-  alignItems: 'center',
-  gap: 3,
-  pt: 1,
-  borderTop: 1,
-  borderColor: 'divider',
-};
-const COORD_SX: SxProps<Theme> = {
-  fontSize: 12,
-  color: 'text.secondary',
-  fontFamily: 'Consolas, monospace',
-};
-const STATUS_ROW_SX: SxProps<Theme> = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 1,
-  flexWrap: 'wrap',
+  gap: 1.5,
   pt: 0.5,
+  borderTop: 1,
+  borderColor: 'grey.300',
 };
-const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
-const ALERT_SX: SxProps<Theme> = { mt: 1 };
+const COORD_SX: SxProps<Theme> = { fontSize: 11, color: 'text.primary', fontFamily: 'Consolas, monospace' };
+const ALERT_SX: SxProps<Theme> = { mt: 0.5, py: 0, fontSize: 11 };
 
 function formatCoordinate(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
@@ -83,21 +119,31 @@ function XYZPlatformTabImpl() {
   // a displayed value before a validated hardware (or software-interlock) RX.
   const live = useXyzStageState();
   const hardware = useXyzPlatformHardware();
-  const { persistedState, persist } = useXyzPlatformStateSync();
+  const { persist } = useXyzPlatformStateSync();
+  const { data: serialSetting } = useSerialPortSetting();
+
+  // Operator-selected X/Y port from Serial Port Setting — the single source for
+  // which COM the stage connects on. No hardcoded COM number here.
+  const savedXyPort = serialSetting?.xyPortName?.trim() || null;
 
   const isBusy = hardware.busy;
   const errorMessage = hardware.error ?? live.lastError ?? undefined;
+  // Movement is only allowed once the service reports a live connection (which
+  // can only happen after an X/Y port is configured and Connect succeeds).
+  const movementDisabled = isBusy || !live.connected;
+  const connectionStatus = live.connected ? 'Connected' : live.lastError ? 'Error' : 'Disconnected';
 
-  // Restore the operator's saved X/Y + Z speed PREFERENCES once, by replaying
-  // them as real setXySpeed/setZSpeed commands. The UI never sets speed itself;
-  // `live.xySpeed/zSpeed` still reflect only what the controller accepted.
-  const restoredRef = useRef(false);
+  // Backend snapshot (`live.xyLocked`) is the SOLE source of the lock state shown
+  // here — no local UI lock flag. Log every backend-driven change so the
+  // enabled/disabled rendering is traceable to a confirmed state, not a click.
   useEffect(() => {
-    if (restoredRef.current || !live.connected || !persistedState) return;
-    restoredRef.current = true;
-    void hardware.setXySpeed(persistedState.xySpeed);
-    void hardware.setZSpeed(persistedState.zSpeed);
-  }, [live.connected, persistedState, hardware]);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ui-lock-state] locked=${live.xyLocked} source=backend-state`);
+  }, [live.xyLocked]);
+
+  // NOTE: speed preferences are NOT auto-replayed on connect — no setXySpeed/
+  // setZSpeed is sent automatically when the stage connects. Speed is only set
+  // when the operator changes the dropdown (handleXySpeedChange/handleZSpeedChange).
 
   // Persist a speed preference (only after the controller accepted it). Mirrors
   // the backend-owned snapshot for the other columns; only the speeds are ever
@@ -149,11 +195,6 @@ function XYZPlatformTabImpl() {
     [hardware, live.zSpeed]
   );
 
-  const handleStop = useCallback(() => {
-    void hardware.stopStage();
-    void hardware.stopZ();
-  }, [hardware]);
-
   const handleXyLock = useCallback(
     (locked: boolean) => {
       void (locked ? hardware.lockXy() : hardware.unlockXy());
@@ -183,209 +224,179 @@ function XYZPlatformTabImpl() {
     void hardware.locateCenter();
   }, [hardware]);
 
+  // Connect/disconnect ONLY fire the IPC bridge (COM4); the connected/error
+  // state shown below comes from the service via the live subscription.
+  const handleConnect = useCallback(() => {
+    void hardware.connect(savedXyPort ?? '');
+  }, [hardware, savedXyPort]);
+
+  const handleDisconnect = useCallback(() => {
+    void hardware.disconnect();
+  }, [hardware]);
+
   const pos = live.position;
+  // X/Y movement requires the stage to be LOCKED (servo engaged): locked ⇒ arrows
+  // enabled + movement allowed; unlocked ⇒ arrows greyed + movement blocked.
+  const xyMoveDisabled = movementDisabled || !live.xyLocked;
+  const zMoveDisabled = movementDisabled || live.zLocked;
 
   return (
     <Box sx={SECTION_SX}>
-      <Box sx={HEADER_ROW_SX}>
-        <Typography sx={GROUP_LABEL_SX}>X/Y</Typography>
-        <Typography sx={GROUP_LABEL_SX}>Z</Typography>
+      {/* Compact connect/status strip (not in the old reference, but auto-connect
+          can fail, so a manual fallback + honest status stays). */}
+      <Box sx={CONNECT_ROW_SX}>
+        <Typography sx={STATUS_TEXT_SX}>
+          {savedXyPort ? `Port: ${savedXyPort}` : 'X/Y port is not configured'}
+        </Typography>
+        <Button
+          variant="contained"
+          size="small"
+          sx={CONNECT_BTN_SX}
+          disabled={isBusy || live.connected || !savedXyPort}
+          onClick={handleConnect}
+        >
+          Connect
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          sx={CONNECT_BTN_SX}
+          disabled={isBusy || !live.connected}
+          onClick={handleDisconnect}
+        >
+          Disconnect
+        </Button>
+        <Typography sx={STATUS_TEXT_SX}>Status: {connectionStatus}</Typography>
       </Box>
 
-      <Box sx={RADIO_ROW_SX}>
-        <RadioGroup
-          row
-          value={live.xySpeed}
-          onChange={(event) => handleXySpeedChange(event.target.value as XySpeed)}
-          sx={RADIO_GROUP_SX}
-        >
-          <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
-          <FormControlLabel value="mid" control={<Radio size="small" />} label="Mid" />
-          <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
-        </RadioGroup>
-        <RadioGroup
-          row
-          value={live.zSpeed}
-          onChange={(event) => handleZSpeedChange(event.target.value as ZSpeed)}
-          sx={RADIO_GROUP_SX}
-        >
-          <FormControlLabel value="ultra" control={<Radio size="small" />} label="Ultra" />
-          <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
-          <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
-        </RadioGroup>
-      </Box>
+      <Box sx={GROUPS_ROW_SX}>
+        {/* ---------------- LEFT GROUP: X/Y ---------------- */}
+        <Box sx={XY_GROUP_SX}>
+          <Typography sx={GROUP_TITLE_SX}>X/Y</Typography>
+          <RadioGroup
+            row
+            value={live.xySpeed}
+            onChange={(event) => handleXySpeedChange(event.target.value as XySpeed)}
+            sx={RADIO_GROUP_SX}
+          >
+            <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
+            <FormControlLabel value="mid" control={<Radio size="small" />} label="Mid" />
+            <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
+          </RadioGroup>
 
-      <Box sx={GRIDS_SX}>
-        <Box sx={PAD_SX}>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('forward-left')}
-          >
-            <NorthWestIcon fontSize="small" />
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('forward')}
-          >
-            <NorthIcon fontSize="small" />
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('forward-right')}
-          >
-            <NorthEastIcon fontSize="small" />
-          </Button>
+          <Box sx={XY_GRID_SX}>
+            {/* Row 1: ↖ ↑ ↗ | Lock */}
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('forward-left')}>
+              <NorthWestIcon />
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('forward')}>
+              <NorthIcon />
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('forward-right')}>
+              <NorthEastIcon />
+            </Button>
+            <Button
+              variant={live.xyLocked ? 'contained' : 'outlined'}
+              sx={TEXT_BTN_SX}
+              disabled={isBusy}
+              onClick={() => handleXyLock(true)}
+            >
+              Lock
+            </Button>
 
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('left')}
-          >
-            <WestIcon fontSize="small" />
-          </Button>
-          <Button variant="outlined" sx={PAD_BTN_SX} disabled={isBusy} onClick={handleCenter}>
-            <ControlCameraIcon fontSize="small" />
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('right')}
-          >
-            <EastIcon fontSize="small" />
-          </Button>
+            {/* Row 2: ← ⊕ → | Unlock */}
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('left')}>
+              <WestIcon />
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={handleCenter}>
+              <ControlCameraIcon />
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('right')}>
+              <EastIcon />
+            </Button>
+            <Button
+              variant={!live.xyLocked ? 'contained' : 'outlined'}
+              sx={TEXT_BTN_SX}
+              disabled={isBusy}
+              onClick={() => handleXyLock(false)}
+            >
+              Unlock
+            </Button>
 
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('back-left')}
-          >
-            <SouthWestIcon fontSize="small" />
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('back')}
-          >
-            <SouthIcon fontSize="small" />
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.xyLocked}
-            onClick={() => handleMove('back-right')}
-          >
-            <SouthEastIcon fontSize="small" />
-          </Button>
+            {/* Row 3: ↙ ↓ ↘ | Relocatio */}
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('back-left')}>
+              <SouthWestIcon />
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('back')}>
+              <SouthIcon />
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('back-right')}>
+              <SouthEastIcon />
+            </Button>
+            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={xyMoveDisabled} onClick={handleRelocation}>
+              Relocatio
+            </Button>
+          </Box>
+
+          <Box sx={COORD_ROW_SX}>
+            <Typography sx={COORD_SX}>X: {formatCoordinate(pos.x)}</Typography>
+            <Typography sx={COORD_SX}>Y: {formatCoordinate(pos.y)}</Typography>
+          </Box>
         </Box>
 
-        <Box sx={PAD_SX}>
-          <Button
-            variant={live.xyLocked ? 'contained' : 'outlined'}
-            sx={PAD_BTN_SX}
-            disabled={isBusy}
-            onClick={() => handleXyLock(true)}
+        {/* ---------------- RIGHT GROUP: Z ---------------- */}
+        <Box sx={Z_GROUP_SX}>
+          <Typography sx={GROUP_TITLE_SX}>Z</Typography>
+          <RadioGroup
+            row
+            value={live.zSpeed}
+            onChange={(event) => handleZSpeedChange(event.target.value as ZSpeed)}
+            sx={RADIO_GROUP_SX}
           >
-            Lock
-          </Button>
-          <Button
-            variant={live.zLocked ? 'contained' : 'outlined'}
-            sx={PAD_BTN_SX}
-            disabled={isBusy}
-            onClick={() => handleZLock(true)}
-          >
-            Lock
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy}
-            onClick={() => handleZLock(false)}
-          >
-            Unlock
-          </Button>
+            <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
+            <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
+          </RadioGroup>
 
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy}
-            onClick={() => handleXyLock(false)}
-          >
-            Unlock
-          </Button>
-          <Button
-            variant={live.focusMode === 'cFocus' ? 'contained' : 'outlined'}
-            sx={PAD_BTN_SX}
-            disabled={isBusy}
-            onClick={() => handleFocusMode('cFocus')}
-          >
-            Cfocus
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.zLocked}
-            onClick={() => handleZMove('up')}
-          >
-            <ArrowUpwardIcon fontSize="small" />
-          </Button>
+          <Box sx={Z_GRID_SX}>
+            {/* Row 1: Lock | Unlock */}
+            <Button
+              variant={live.zLocked ? 'contained' : 'outlined'}
+              sx={TEXT_BTN_SX}
+              disabled={isBusy}
+              onClick={() => handleZLock(true)}
+            >
+              Lock
+            </Button>
+            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={isBusy} onClick={() => handleZLock(false)}>
+              Unlock
+            </Button>
 
-          <Button variant="outlined" sx={PAD_BTN_SX} disabled={isBusy} onClick={handleRelocation}>
-            Relocatio
-          </Button>
-          <Button
-            variant={live.focusMode === 'fFocus' ? 'contained' : 'outlined'}
-            sx={PAD_BTN_SX}
-            disabled={isBusy}
-            onClick={() => handleFocusMode('fFocus')}
-          >
-            Ffocus
-          </Button>
-          <Button
-            variant="outlined"
-            sx={PAD_BTN_SX}
-            disabled={isBusy || live.zLocked}
-            onClick={() => handleZMove('down')}
-          >
-            <ArrowDownwardIcon fontSize="small" />
-          </Button>
-        </Box>
-      </Box>
+            {/* Row 2: Cfocus | ↑ */}
+            <Button
+              variant={live.focusMode === 'cFocus' ? 'contained' : 'outlined'}
+              sx={TEXT_BTN_SX}
+              disabled={isBusy}
+              onClick={() => handleFocusMode('cFocus')}
+            >
+              Cfocus
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} onClick={() => handleZMove('up')}>
+              <ArrowUpwardIcon />
+            </Button>
 
-      <Button
-        variant="outlined"
-        color="error"
-        sx={STOP_BTN_SX}
-        startIcon={<StopIcon fontSize="small" />}
-        onClick={handleStop}
-      >
-        Stop
-      </Button>
-
-      <Box sx={COORD_ROW_SX}>
-        <Typography sx={COORD_SX}>X: {formatCoordinate(pos.x)}</Typography>
-        <Typography sx={COORD_SX}>Y: {formatCoordinate(pos.y)}</Typography>
-        <Typography sx={COORD_SX}>Z: {formatCoordinate(pos.z)}</Typography>
-      </Box>
-
-      <Box sx={STATUS_ROW_SX}>
-        <Typography sx={STATUS_TEXT_SX}>{live.lastAction}</Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {isBusy ? <CircularProgress size={12} /> : null}
-          <Typography sx={STATUS_TEXT_SX}>
-            {`${live.connected ? 'Stage connected' : 'Stage offline'} | ${
-              live.xyLocked ? 'XY locked' : 'XY unlocked'
-            } | ${live.zLocked ? 'Z locked' : 'Z unlocked'} | Focus: ${live.focusMode}`}
-          </Typography>
+            {/* Row 3: Ffocus | ↓ */}
+            <Button
+              variant={live.focusMode === 'fFocus' ? 'contained' : 'outlined'}
+              sx={TEXT_BTN_SX}
+              disabled={isBusy}
+              onClick={() => handleFocusMode('fFocus')}
+            >
+              Ffocus
+            </Button>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} onClick={() => handleZMove('down')}>
+              <ArrowDownwardIcon />
+            </Button>
+          </Box>
         </Box>
       </Box>
 

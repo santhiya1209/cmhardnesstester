@@ -32,7 +32,11 @@ import type {
 import type {
   FocusMode,
   XyzCommandResult,
+  XyzDiagnoseResult,
   XyzDirection,
+  XyzLineControlResult,
+  XyzProbeOptions,
+  XyzProbeResult,
   XyzStageState,
   XyzStageStateResponse,
   XySpeed,
@@ -311,6 +315,11 @@ export interface XyzPlatformApi {
   subscribeState(listener: (state: XyzStageState) => void): () => void;
   connect(opts: { port: string; baudRate?: number }): Promise<XyzStageStateResponse>;
   disconnect(): Promise<XyzStageStateResponse>;
+  diagnose(): Promise<XyzDiagnoseResult>;
+  /** RTS/DTR line-control diagnostic — sweeps the four combos sending safe #10!. */
+  testLineControl(): Promise<XyzLineControlResult>;
+  /** Expert dev-console probe. WARNING: a moving command WILL move the stage. */
+  probe(commandText: string, options?: XyzProbeOptions): Promise<XyzProbeResult>;
   moveStage(direction: XyzDirection, speed: XySpeed): Promise<XyzCommandResult>;
   stopStage(): Promise<XyzCommandResult>;
   moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;

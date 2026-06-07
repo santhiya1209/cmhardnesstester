@@ -40,6 +40,9 @@ const ALLOWED_INVOKE = new Set([
   'xyz-platform:get-state',
   'xyz-platform:connect',
   'xyz-platform:disconnect',
+  'xyz-platform:diagnose',
+  'xyz-platform:test-line-control',
+  'xyz-platform:probe',
   'xyz-platform:move-stage',
   'xyz-platform:stop-stage',
   'xyz-platform:move-z',
@@ -167,6 +170,12 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   },
   connect: (opts) => ipcRenderer.invoke('xyz-platform:connect', opts || {}),
   disconnect: () => ipcRenderer.invoke('xyz-platform:disconnect'),
+  diagnose: () => ipcRenderer.invoke('xyz-platform:diagnose'),
+  // RTS/DTR line-control diagnostic — sweeps the four combos sending safe #10!.
+  testLineControl: () => ipcRenderer.invoke('xyz-platform:test-line-control'),
+  // Expert dev-console probe. WARNING: a moving command WILL move the stage.
+  probe: (commandText, options) =>
+    ipcRenderer.invoke('xyz-platform:probe', { commandText, options: options || {} }),
   moveStage: (direction, speed) =>
     ipcRenderer.invoke('xyz-platform:move-stage', { direction, speed }),
   stopStage: () => ipcRenderer.invoke('xyz-platform:stop-stage'),

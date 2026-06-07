@@ -6,6 +6,7 @@ import {
 } from '../lib/services/xyz-platform-serial.service';
 import {
   ConnectStageSchema,
+  ManualProbeSchema,
   MoveStageSchema,
   MoveZSchema,
   SetFocusModeSchema,
@@ -124,6 +125,24 @@ export async function moveStageToCenter(_req: Request, res: Response): Promise<v
 
 export async function locateStageCenter(_req: Request, res: Response): Promise<void> {
   sendResult(res, await xyzPlatformSerialService.locateCenter());
+}
+
+export async function diagnoseStage(_req: Request, res: Response): Promise<void> {
+  res.json(await xyzPlatformSerialService.diagnose());
+}
+
+export async function testLineControlStage(_req: Request, res: Response): Promise<void> {
+  res.json(await xyzPlatformSerialService.testLineControl());
+}
+
+export async function probeStage(req: Request, res: Response): Promise<void> {
+  const parsed = ManualProbeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  const { commandText, ...options } = parsed.data;
+  res.json(await xyzPlatformSerialService.probe(commandText, options));
 }
 
 export function streamStageEvents(req: Request, res: Response): void {
