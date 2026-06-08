@@ -242,6 +242,11 @@ function App() {
   const lineThickness = useLineThickness();
   useRenderCount('App');
   const cameraRef = useRef<CameraWindowHandle | null>(null);
+  // True only during the window between committing the auto-measure overlay
+  // lines and confirming they painted on the canvas. While true, no clear may
+  // wipe the latest overlay — that is the stale path that left "Detection
+  // success" on screen with no visible lines.
+  const overlayPaintPendingRef = useRef(false);
   const {
     autoMeasureInFlightRef,
     autoMeasurePendingPreviewRef,
@@ -350,6 +355,7 @@ function App() {
     setAutoMeasureCapturedFrameId,
     setAutoMeasureSessionId,
     autoMeasureSessionIdRef,
+    overlayPaintPendingRef,
   });
 
   const {
@@ -802,6 +808,10 @@ function App() {
       const committedHasGeometry = !!graphics.corners;
       // eslint-disable-next-line no-console
       console.log(
+        `[auto-measure-overlay-lines-set] lines=4 session=${graphics.sessionId ?? 'n/a'} objective=${objectiveForCalibration ?? 'unknown'}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
         `[auto-overlay-commit] success=true hasGeometry=${committedHasGeometry} frameId=${graphics.frameId ?? 'n/a'} objective=${graphics.objective ?? 'unknown'}`
       );
       // eslint-disable-next-line no-console
@@ -884,6 +894,63 @@ function App() {
         `[auto-measure-overlay-render] visible=true lines=4 objective=${objectiveForCalibration ?? 'unknown'}`
       );
       const finalCornersKey = autoMeasureCornersKey(graphics.corners);
+
+      // Hard paint gate. The render gate above only proves the overlay PASSED
+      // React's display filter — not that the canvas actually drew the 4 lines.
+      // Confirm the real paint (overlayDrawnKeyRef) before success / save. While
+      // confirming, overlayPaintPendingRef blocks any clear from wiping it.
+      overlayPaintPendingRef.current = true;
+      const overlayPainted =
+        (await cameraRef.current?.confirmOverlayPainted(finalCornersKey)) ?? false;
+      overlayPaintPendingRef.current = false;
+
+      const cornerPoints = graphics.corners
+        ? [graphics.corners.top, graphics.corners.right, graphics.corners.bottom, graphics.corners.left]
+        : [];
+      const fourLinesPresent =
+        cornerPoints.length === 4 &&
+        cornerPoints.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+      const d1Valid = Number.isFinite(values.d1Um) && values.d1Um > 0;
+      const d2Valid = Number.isFinite(values.d2Um) && values.d2Um > 0;
+      const davgValid = Number.isFinite(values.avgDUm) && values.avgDUm > 0;
+      const hardnessValid =
+        typeof values.hv === 'number' && Number.isFinite(values.hv) && values.hv > 0;
+
+      const saveBlockedReason =
+        !d1Valid || !d2Valid || !davgValid
+          ? 'diagonal-invalid'
+          : !hardnessValid
+            ? 'hardness-invalid'
+            : !fourLinesPresent
+              ? 'overlay-lines-missing'
+              : !overlayVisible
+                ? 'overlay-not-visible'
+                : !overlayPainted
+                  ? 'overlay-not-painted'
+                  : null;
+      if (saveBlockedReason) {
+        // eslint-disable-next-line no-console
+        console.log(`[measurement-save-blocked] reason=${saveBlockedReason}`);
+        if (!overlayPainted) {
+          // Keep the frozen frame + the committed overlay; do NOT resume live
+          // and do NOT clear before the lines are confirmed painted.
+          // eslint-disable-next-line no-console
+          console.log('[auto-measure-live-resume-blocked] reason=overlay-not-painted');
+        }
+        if (source === 'after-impress') {
+          logAfterImpressDetectionFailed(saveBlockedReason);
+        }
+        setAutoMeasureStatus('failed');
+        setUnavailableMsg('Measurement lines are not visible. Please run Auto Measure again.');
+        setStatusMessage(
+          'System Status: Measurement lines are not visible. Please run Auto Measure again.'
+        );
+        return false;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[auto-measure-overlay-painted] session=${graphics.sessionId ?? 'n/a'} key=${finalCornersKey}`
+      );
       // eslint-disable-next-line no-console
       console.log(
         `[album-overlay-source] source=committed-final session=${graphics.sessionId ?? 'n/a'} key=${finalCornersKey}`
@@ -1072,6 +1139,8 @@ function App() {
       if (isFreshCapture) {
         setAutoMeasureStatus('detecting');
         setCameraStatus('frozen');
+        // eslint-disable-next-line no-console
+        console.log(`[auto-measure-start] source=${callSource} session=${sessionIdForRun}`);
       }
       if (!preview) {
         setStatusMessage('System Status: Auto Measure running');
@@ -1854,6 +1923,7 @@ function App() {
   const { calibrationSlot } = useCalibrationDialogSlot({
     calibrationOpen: activeDialog === 'calibration',
     activeObjective,
+    activeForce: machineForce == null ? null : String(machineForce),
     latestManualPixels,
     calibrationManualModeRef,
     setCalibrationMeasureMode,

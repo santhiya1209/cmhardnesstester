@@ -28,9 +28,6 @@ import Typography from '@mui/material/Typography';
 import { useCalibrations } from '@/hooks/queries/useCalibrations';
 import { useCreateCalibration } from '@/hooks/mutations/useCreateCalibration';
 import { useDeleteCalibration } from '@/hooks/mutations/useDeleteCalibration';
-import { useClearCalibrations } from '@/hooks/mutations/useClearCalibrations';
-import { useImportCalibrations } from '@/hooks/mutations/useImportCalibrations';
-import { exportCalibrations } from '@/api/calibration';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 import type {
   Calibration,
@@ -40,13 +37,15 @@ import type {
 } from '@/types/calibration';
 import { tokens } from '@/theme/theme';
 
-const ZOOM_OPTIONS = ['2.5X', '5X', '10X', '20X', '40X', '50X'] as const;
-const FORCE_OPTIONS = ['0.05kgf', '0.1kgf', '0.2kgf', '0.3kgf', '0.5kgf', '1kgf'] as const;
 const HARDNESS_LEVEL_OPTIONS = ['Low', 'Middle', 'High'] as const;
 
+// Shown when Machine Control reports no value yet (e.g. before the machine
+// connects). The displayed objective and force always mirror Machine Control —
+// there is no separate calibration objective/force state.
+const DEFAULT_OBJECTIVE = '10X';
+const DEFAULT_FORCE = '1kgf';
+
 type FormState = {
-  zoomTime: string;
-  force: string;
   hardnessLevel: string;
   pixelLengthX: string;
   pixelLengthY: string;
@@ -55,8 +54,6 @@ type FormState = {
 };
 
 const DEFAULT_FORM_STATE: FormState = {
-  zoomTime: '10X',
-  force: '1kgf',
   hardnessLevel: 'Middle',
   pixelLengthX: '0',
   pixelLengthY: '0',
@@ -99,6 +96,11 @@ type Props = {
    */
   defaultObjective?: string | null;
   /**
+   * Active force from Machine Control. The Calibration force field mirrors it
+   * live (read-only) — there is no separate calibration force state.
+   */
+  defaultForce?: string | null;
+  /**
    * Run native Auto Measure detection on the current live frame using the
    * dialog's selected objective. Returns detected pixel diagonals so the
    * dialog can fill Pixel Length X / Y. NO measurement row is created
@@ -131,18 +133,22 @@ function nonNeg(value: string): number | null {
   return n;
 }
 
-function buildHardnessPayload(form: FormState): CalibrationSavePayload | null {
+function buildHardnessPayload(
+  form: FormState,
+  objective: string,
+  force: string
+): CalibrationSavePayload | null {
   const px = nonNeg(form.pixelLengthX);
   const py = nonNeg(form.pixelLengthY);
   const h = nonNeg(form.hardness);
-  const forceKgf = parseForceKgfFromLabel(form.force);
-  if (!form.zoomTime || !form.force || !form.hardnessLevel) return null;
+  const forceKgf = parseForceKgfFromLabel(force);
+  if (!objective || !force || !form.hardnessLevel) return null;
   if (px === null || py === null || h === null || forceKgf === null) return null;
   const diagonalUm = diagonalUmFromHv(forceKgf, h);
   if (diagonalUm === null) return null;
   return {
-    zoomTime: form.zoomTime,
-    force: form.force,
+    zoomTime: objective,
+    force,
     hardnessLevel: form.hardnessLevel,
     pixelLengthX: px,
     pixelLengthY: py,
@@ -153,18 +159,22 @@ function buildHardnessPayload(form: FormState): CalibrationSavePayload | null {
   };
 }
 
-function buildLengthPayload(form: FormState): CalibrationSavePayload | null {
+function buildLengthPayload(
+  form: FormState,
+  objective: string,
+  force: string
+): CalibrationSavePayload | null {
   const px = nonNeg(form.pixelLengthX);
   const py = nonNeg(form.pixelLengthY);
   const h = nonNeg(form.hardness);
-  const forceKgf = parseForceKgfFromLabel(form.force);
-  if (!form.zoomTime || !form.force || !form.hardnessLevel) return null;
+  const forceKgf = parseForceKgfFromLabel(force);
+  if (!objective || !force || !form.hardnessLevel) return null;
   if (px === null || py === null || h === null || forceKgf === null) return null;
   const diagonalUm = diagonalUmFromHv(forceKgf, h);
   if (diagonalUm === null) return null;
   return {
-    zoomTime: form.zoomTime,
-    force: form.force,
+    zoomTime: objective,
+    force,
     hardnessLevel: form.hardnessLevel,
     pixelLengthX: px,
     pixelLengthY: py,
@@ -193,6 +203,7 @@ function CalibrationDialogImpl({
   autoFillPixelLengthX,
   autoFillPixelLengthY,
   defaultObjective,
+  defaultForce,
   onRequestAutoMeasure,
   onRequestManualMeasure,
   onAutoCreateMeasurementRow,
@@ -200,34 +211,41 @@ function CalibrationDialogImpl({
   const { data: items, error: loadError, loading, refetch } = useCalibrations();
   const { saveCalibration, saving } = useCreateCalibration();
   const { removeCalibration, deleting } = useDeleteCalibration();
-  const { clearAll, clearing } = useClearCalibrations();
-  const { importItems, importing } = useImportCalibrations();
 
   const [tab, setTab] = useState<CalibrationType>('hardness');
   const [form, setForm] = useState<FormState>(DEFAULT_FORM_STATE);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [confirmClear, setConfirmClear] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [selectionStatus, setSelectionStatus] = useState<
     { mode: 'update' | 'insert'; message: string } | null
   >(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const panelLoggedOpenRef = useRef(false);
   const lastLivePixelLogRef = useRef<string | null>(null);
   const lastSelectionKeyRef = useRef<string | null>(null);
 
-  const busy = loading || saving || deleting || clearing || importing;
+  // Objective is the live Machine Control objective (defaultObjective). It is
+  // NOT held in form state, so it updates immediately when Machine Control
+  // changes — there is no separate calibration objective to keep in sync.
+  const objective = useMemo(() => {
+    const normalized =
+      typeof defaultObjective === 'string' ? defaultObjective.trim().toUpperCase() : '';
+    return normalized || DEFAULT_OBJECTIVE;
+  }, [defaultObjective]);
+
+  // Force mirrors the live Machine Control force (defaultForce) the same way —
+  // not held in form state, updates immediately when Machine Control changes.
+  const force = useMemo(() => {
+    const normalized = typeof defaultForce === 'string' ? defaultForce.trim() : '';
+    return normalized || DEFAULT_FORCE;
+  }, [defaultForce]);
+
+  const busy = loading || saving || deleting;
   const errorMessage = loadError ?? validationError ?? actionError;
 
   useEffect(() => {
     if (!open) return;
     void refetch();
-    const normalizedDefault =
-      typeof defaultObjective === 'string' ? defaultObjective.trim().toUpperCase() : '';
-    const objective = (ZOOM_OPTIONS as readonly string[]).includes(normalizedDefault)
-      ? normalizedDefault
-      : DEFAULT_FORM_STATE.zoomTime;
     const pxX =
       typeof autoFillPixelLengthX === 'number' &&
       Number.isFinite(autoFillPixelLengthX) &&
@@ -242,12 +260,10 @@ function CalibrationDialogImpl({
         : DEFAULT_FORM_STATE.pixelLengthY;
     setForm({
       ...DEFAULT_FORM_STATE,
-      zoomTime: objective,
       pixelLengthX: pxX,
       pixelLengthY: pxY,
     });
     setSelectedIds([]);
-    setConfirmClear(false);
     setValidationError(null);
     setActionError(null);
     const hasMeasuredPixels =
@@ -288,8 +304,6 @@ function CalibrationDialogImpl({
     }
     if (loading) return;
 
-    const objective = form.zoomTime;
-    const force = form.force;
     const hardnessLevel = form.hardnessLevel;
     const selectionKey = `${objective}|${force}|${hardnessLevel}`;
     const keyChanged = lastSelectionKeyRef.current !== selectionKey;
@@ -340,7 +354,7 @@ function CalibrationDialogImpl({
         }));
       }
     }
-  }, [open, loading, items, form.zoomTime, form.force, form.hardnessLevel]);
+  }, [open, loading, items, objective, force, form.hardnessLevel]);
 
   const handleTabChange = useCallback((_e: unknown, value: CalibrationType) => {
     setTab(value);
@@ -373,7 +387,29 @@ function CalibrationDialogImpl({
   );
 
   const handleAdd = useCallback(async () => {
-    const payload = tab === 'hardness' ? buildHardnessPayload(form) : buildLengthPayload(form);
+    const pixelX = Number(form.pixelLengthX);
+    const pixelY = Number(form.pixelLengthY);
+    if (
+      !Number.isFinite(pixelX) ||
+      !Number.isFinite(pixelY) ||
+      pixelX <= 0 ||
+      pixelY <= 0
+    ) {
+      setValidationError(
+        'Pixel X and Pixel Y must be greater than 0. Please run Auto Measure first.'
+      );
+      return;
+    }
+    const hardnessRaw = form.hardness.trim();
+    const hardnessValue = Number(hardnessRaw);
+    if (hardnessRaw === '' || !Number.isFinite(hardnessValue) || hardnessValue <= 0) {
+      setValidationError('Please enter hardness value before calibration.');
+      return;
+    }
+    const payload =
+      tab === 'hardness'
+        ? buildHardnessPayload(form, objective, force)
+        : buildLengthPayload(form, objective, force);
     if (!payload) {
       setValidationError('Please fill all fields with valid values.');
       return;
@@ -421,7 +457,7 @@ function CalibrationDialogImpl({
       console.error(`[calibration] save failed: ${getApiErrorMessage(e, 'Failed to save calibration.')}`);
       setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
     }
-  }, [form, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, selectionStatus, tab]);
+  }, [form, objective, force, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, tab]);
 
   const handleManual = useCallback(() => {
     if (!onRequestManualMeasure) {
@@ -438,7 +474,7 @@ function CalibrationDialogImpl({
     }
     setActionError(null);
     try {
-      const detected = await onRequestAutoMeasure(form.zoomTime);
+      const detected = await onRequestAutoMeasure(objective);
       if (!detected) {
         setActionError('Auto Measure could not detect a diamond. Try Manual Measure instead.');
         return;
@@ -456,7 +492,7 @@ function CalibrationDialogImpl({
       console.error(`[calibration] auto-measure failed: ${getApiErrorMessage(e, 'Auto Measure failed.')}`);
       setActionError(getApiErrorMessage(e, 'Auto Measure failed.'));
     }
-  }, [form.force, form.hardnessLevel, form.zoomTime, onRequestAutoMeasure, onStatusChange]);
+  }, [objective, onRequestAutoMeasure, onStatusChange]);
 
   const toggleSelected = useCallback((id: string) => {
     setSelectedIds((current) =>
@@ -482,88 +518,6 @@ function CalibrationDialogImpl({
       setActionError(getApiErrorMessage(e, 'Failed to delete calibration.'));
     }
   }, [onChanged, onStatusChange, refetch, removeCalibration, selectedIds]);
-
-  const handleClearRequest = useCallback(() => {
-    if (items.length === 0) return;
-    setConfirmClear(true);
-  }, [items.length]);
-
-  const handleClearConfirm = useCallback(async () => {
-    setConfirmClear(false);
-    setActionError(null);
-    try {
-      await clearAll();
-      setSelectedIds([]);
-      await refetch();
-      onChanged?.();
-      onStatusChange?.('Calibration list cleared.');
-    } catch (e) {
-      setActionError(getApiErrorMessage(e, 'Failed to clear calibrations.'));
-    }
-  }, [clearAll, onChanged, onStatusChange, refetch]);
-
-  const handleExport = useCallback(async () => {
-    setActionError(null);
-    try {
-      const data = await exportCalibrations();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `calibrations-${new Date().toISOString().slice(0, 10)}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      onStatusChange?.('Calibrations exported.');
-    } catch (e) {
-      setActionError(getApiErrorMessage(e, 'Failed to export calibrations.'));
-    }
-  }, [onStatusChange]);
-
-  const handleImportClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleImportFile = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = '';
-      if (!file) return;
-      setActionError(null);
-      try {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-        const rawItems: unknown[] = Array.isArray(parsed)
-          ? parsed
-          : Array.isArray(parsed?.items)
-            ? parsed.items
-            : [];
-        const importedItems: CalibrationSavePayload[] = rawItems.map((it) => {
-          const r = it as Partial<Calibration>;
-          return {
-            zoomTime: String(r.zoomTime ?? ''),
-            force: String(r.force ?? ''),
-            hardnessLevel: String(r.hardnessLevel ?? ''),
-            pixelLengthX: Number(r.pixelLengthX ?? 0),
-            pixelLengthY: Number(r.pixelLengthY ?? 0),
-            hardness: Number(r.hardness ?? 0),
-            calibrationType: (r.calibrationType ?? 'hardness') as CalibrationType,
-            lengthMode: r.lengthMode,
-            realDistanceX:
-              typeof r.realDistanceX === 'number' ? r.realDistanceX : undefined,
-            realDistanceY:
-              typeof r.realDistanceY === 'number' ? r.realDistanceY : undefined,
-          };
-        });
-        await importItems({ items: importedItems });
-        await refetch();
-        onChanged?.();
-        onStatusChange?.(`Imported ${importedItems.length} calibration(s).`);
-      } catch (e) {
-        setActionError(getApiErrorMessage(e, 'Failed to import calibrations.'));
-      }
-    },
-    [importItems, onChanged, onStatusChange, refetch]
-  );
 
   const tableRows = useMemo(() => items, [items]);
 
@@ -679,12 +633,6 @@ function CalibrationDialogImpl({
         </TableContainer>
 
         <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
-          <Button variant="outlined" onClick={handleImportClick} disabled={busy}>
-            Import
-          </Button>
-          <Button variant="outlined" onClick={() => void handleExport()} disabled={busy}>
-            Export
-          </Button>
           <Button
             variant="outlined"
             color="error"
@@ -693,21 +641,6 @@ function CalibrationDialogImpl({
           >
             Delete
           </Button>
-          <Button
-            variant="outlined"
-            color="warning"
-            onClick={handleClearRequest}
-            disabled={busy || items.length === 0}
-          >
-            Clear
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json"
-            style={{ display: 'none' }}
-            onChange={(e) => void handleImportFile(e)}
-          />
         </Stack>
 
         <Typography variant="subtitle2" sx={SECTION_TITLE_SX}>
@@ -743,31 +676,21 @@ function CalibrationDialogImpl({
         <Grid container spacing={1.5}>
           <Grid size={{ xs: 4 }}>
             <Typography variant="caption">Zoom Time / Objective</Typography>
-            <FormControl fullWidth size="small">
-              <Select
-                value={form.zoomTime}
-                onChange={handleSelectChange('zoomTime')}
-                disabled={busy}
-              >
-                {ZOOM_OPTIONS.map((o) => (
-                  <MenuItem key={o} value={o}>
-                    {o}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <TextField
+              fullWidth
+              size="small"
+              value={objective}
+              slotProps={{ input: { readOnly: true } }}
+            />
           </Grid>
           <Grid size={{ xs: 4 }}>
             <Typography variant="caption">Force</Typography>
-            <FormControl fullWidth size="small">
-              <Select value={form.force} onChange={handleSelectChange('force')} disabled={busy}>
-                {FORCE_OPTIONS.map((o) => (
-                  <MenuItem key={o} value={o}>
-                    {o}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <TextField
+              fullWidth
+              size="small"
+              value={force}
+              slotProps={{ input: { readOnly: true } }}
+            />
           </Grid>
           <Grid size={{ xs: 4 }}>
             <Typography variant="caption">Hardness Level</Typography>
@@ -858,34 +781,6 @@ function CalibrationDialogImpl({
           Close
         </Button>
       </Box>
-
-      {confirmClear ? (
-        <Alert
-          severity="warning"
-          sx={{
-            mx: 2,
-            mb: 1,
-            alignItems: 'center',
-          }}
-          action={
-            <Stack direction="row" spacing={1}>
-              <Button size="small" onClick={() => setConfirmClear(false)}>
-                Cancel
-              </Button>
-              <Button
-                size="small"
-                color="error"
-                variant="contained"
-                onClick={() => void handleClearConfirm()}
-              >
-                Clear All
-              </Button>
-            </Stack>
-          }
-        >
-          Clear all {items.length} calibration record(s)?
-        </Alert>
-      ) : null}
     </Box>
   );
 }

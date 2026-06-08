@@ -138,6 +138,15 @@ export type CameraWindowHandle = {
     expectedCornersKey: string,
     options?: { maxWidth?: number; mimeType?: string; quality?: number }
   ) => Promise<string | null>;
+  /**
+   * Resolves true only once the auto-measure overlay for `expectedCornersKey`
+   * has actually been painted onto the canvas (the AutoMeasureOverlay draw loop
+   * reported that exact corners key via onOverlayDrawn). Resolves false if the
+   * paint never lands within `timeoutMs`. This is the hard paint gate the
+   * Auto Measure save flow uses — a passing React render gate does NOT imply
+   * the canvas drew the 4 lines.
+   */
+  confirmOverlayPainted: (expectedCornersKey: string, timeoutMs?: number) => Promise<boolean>;
   refetchStatus: () => Promise<void>;
   clearLiveCanvas: (reason?: string) => void;
   clearLiveImage: (reason?: string) => void;
@@ -478,6 +487,21 @@ function CameraWindowImpl(
     [captureThumbnailDataUrl]
   );
 
+  const confirmOverlayPainted = useCallback(
+    async (expectedCornersKey: string, timeoutMs = 600): Promise<boolean> => {
+      if (!expectedCornersKey || expectedCornersKey === 'none') return false;
+      const deadline = Date.now() + timeoutMs;
+      while (
+        overlayDrawnKeyRef.current !== expectedCornersKey &&
+        Date.now() < deadline
+      ) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      return overlayDrawnKeyRef.current === expectedCornersKey;
+    },
+    []
+  );
+
   const clearLiveCanvas = useCallback((_reason: string = 'objective-change') => {
     const live = canvasRef.current;
     if (!live) return;
@@ -589,6 +613,7 @@ function CameraWindowImpl(
       exportImageBlob,
       captureThumbnailDataUrl,
       captureFinalizedThumbnail,
+      confirmOverlayPainted,
       refetchStatus,
       clearLiveCanvas,
       clearLiveImage,
@@ -604,6 +629,7 @@ function CameraWindowImpl(
       exportImageBlob,
       captureThumbnailDataUrl,
       captureFinalizedThumbnail,
+      confirmOverlayPainted,
       refetchStatus,
       clearLiveCanvas,
       clearLiveImage,

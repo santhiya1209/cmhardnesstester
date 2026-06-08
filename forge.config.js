@@ -5,9 +5,7 @@ module.exports = {
     name: 'VickersMeasurementSoftware',
     executableName: 'VickersMeasurementSoftware',
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
-    // Windows EXE icon (electron-packager appends `.ico`). Same source the
-    // BrowserWindow (electron/main.js resolveAppIcon) and NSIS installer use.
-    icon: path.resolve(__dirname, "frontend/public/app-icon.png"),
+    icon: path.resolve(__dirname, "frontend/public/icon.ico"),
     asar: true,
     extraResource: [
       'drivers/opencv',
@@ -19,6 +17,10 @@ module.exports = {
       /^\/release($|\/)/,
       /^\/out($|\/)/,
       /^\/\.git($|\/)/,
+      // drivers/ is shipped LOOSE via extraResource (read from process.resourcesPath
+      // in cameraService.js + NSIS). Excluding it here drops the ~175 MB duplicate
+      // copy that was otherwise packed into app.asar and never read.
+      /^\/drivers($|\/)/,
       /^\/frontend\/src($|\/)/,
       /^\/frontend\/node_modules($|\/)/,
       /^\/frontend\/index\.html$/,
@@ -27,6 +29,15 @@ module.exports = {
       /^\/frontend\/package(-lock)?\.json$/,
       /^\/backend\/src($|\/)/,
       /^\/backend\/tsconfig\.json$/,
+      // backend/ is a separate npm project, so Forge's root prune doesn't strip its
+      // devDependencies. The backend ships only compiled backend/dist at runtime, so
+      // these dev-only packages (~40 MB) must be excluded from the asar by hand.
+      /^\/backend\/node_modules\/typescript($|\/)/,
+      /^\/backend\/node_modules\/@esbuild($|\/)/,
+      /^\/backend\/node_modules\/esbuild($|\/)/,
+      /^\/backend\/node_modules\/tsx($|\/)/,
+      /^\/backend\/node_modules\/@types($|\/)/,
+      /^\/backend\/node_modules\/@electron($|\/)/,
       /^\/native\/hardness-addon\/src($|\/)/,
       /^\/native\/hardness-addon\/include($|\/)/,
       /^\/native\/hardness-addon\/bin($|\/)/,
@@ -63,7 +74,7 @@ module.exports = {
         perMachine: false,
         shortcutName: 'Vickers Measurement Software',
         // App icon used for desktop + Start menu shortcuts.
-        win: { icon: 'build/icon.ico' },
+        win: { icon: path.resolve(__dirname, "frontend/public/icon.ico") },
         // Installer/uninstaller + setup header icons.
         nsis: {
           installerIcon: 'build/icon.ico',

@@ -7,6 +7,7 @@ type CalibrationDialogProps = React.ComponentProps<typeof CalibrationDialog>;
 export type UseCalibrationDialogSlotArgs = {
   calibrationOpen: boolean;
   activeObjective: string | null;
+  activeForce: string | null;
   latestManualPixels: { d1Px: number; d2Px: number } | null;
 
   calibrationManualModeRef: React.MutableRefObject<boolean>;
@@ -30,6 +31,7 @@ export type UseCalibrationDialogSlotResult = {
 export function useCalibrationDialogSlot({
   calibrationOpen,
   activeObjective,
+  activeForce,
   latestManualPixels,
   calibrationManualModeRef,
   setCalibrationMeasureMode,
@@ -71,6 +73,7 @@ export function useCalibrationDialogSlot({
     () => activeObjective || null,
     [activeObjective]
   );
+  const calibrationDefaultForce = useMemo(() => activeForce || null, [activeForce]);
   const calibrationAutoFillX = latestManualPixels?.d1Px ?? null;
   const calibrationAutoFillY = latestManualPixels?.d2Px ?? null;
   const calibrationSlot = useMemo(
@@ -83,6 +86,7 @@ export function useCalibrationDialogSlot({
         autoFillPixelLengthX={calibrationAutoFillX}
         autoFillPixelLengthY={calibrationAutoFillY}
         defaultObjective={calibrationDefaultObjective}
+        defaultForce={calibrationDefaultForce}
         onRequestAutoMeasure={onRequestAutoMeasure}
         onRequestManualMeasure={onRequestManualMeasure}
         onAutoCreateMeasurementRow={onAutoCreateMeasurementRow}
@@ -96,6 +100,7 @@ export function useCalibrationDialogSlot({
       calibrationAutoFillX,
       calibrationAutoFillY,
       calibrationDefaultObjective,
+      calibrationDefaultForce,
       onRequestAutoMeasure,
       onRequestManualMeasure,
       onAutoCreateMeasurementRow,

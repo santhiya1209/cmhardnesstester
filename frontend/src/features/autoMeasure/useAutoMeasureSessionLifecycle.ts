@@ -24,6 +24,12 @@ export type UseAutoMeasureSessionLifecycleArgs = {
   setAutoMeasureCapturedFrameId: Dispatch<SetStateAction<number | null>>;
   setAutoMeasureSessionId: Dispatch<SetStateAction<number>>;
   autoMeasureSessionIdRef: MutableRefObject<number>;
+  /**
+   * When true, a paint-confirmation is in flight for the freshly committed
+   * overlay. Clears are refused (logged + skipped) so a transient/stale clear
+   * can't wipe the latest auto-measure overlay before it is confirmed painted.
+   */
+  overlayPaintPendingRef: MutableRefObject<boolean>;
 };
 
 export type UseAutoMeasureSessionLifecycle = {
@@ -50,8 +56,16 @@ export function useAutoMeasureSessionLifecycle({
   setAutoMeasureCapturedFrameId,
   setAutoMeasureSessionId,
   autoMeasureSessionIdRef,
+  overlayPaintPendingRef,
 }: UseAutoMeasureSessionLifecycleArgs): UseAutoMeasureSessionLifecycle {
   const clearAutoMeasureOverlay = useCallback((reason: string) => {
+    if (overlayPaintPendingRef.current) {
+      // Do NOT clear the latest auto-measure overlay while its paint is still
+      // being confirmed — clearing here is the stale path that hid the lines.
+      // eslint-disable-next-line no-console
+      console.log(`[auto-measure-overlay-cleared] reason=${reason} skipped=paint-pending`);
+      return;
+    }
     // eslint-disable-next-line no-console
     console.log(`[auto-overlay-clear] reason=${reason}`);
     // eslint-disable-next-line no-console
