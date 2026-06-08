@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { EntityIdSchema, IsoDateTimeSchema, NonEmptyStringSchema } from './common';
 
-export const XySpeedSchema = z.enum(['slow', 'mid', 'fast']);
+export const XySpeedSchema = z.enum(['slow', 'mid', 'fast', 'ultra']);
 export const ZSpeedSchema = z.enum(['ultra', 'fast', 'slow']);
 export const FocusModeSchema = z.enum(['manual', 'cFocus', 'fFocus']);
 

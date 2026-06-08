@@ -191,16 +191,17 @@ const XYZ_DIRECTIONS = new Set([
   'back-right',
 ]);
 const XYZ_Z_DIRECTIONS = new Set(['up', 'down']);
-const XYZ_XY_SPEEDS = new Set(['slow', 'mid', 'fast']);
+const XYZ_XY_SPEEDS = new Set(['slow', 'mid', 'fast', 'ultra']);
 const XYZ_Z_SPEEDS = new Set(['ultra', 'fast', 'slow']);
 const XYZ_FOCUS_MODES = new Set(['manual', 'cFocus', 'fFocus']);
+const ZAXIS_IMAGE_SELECTIONS = new Set([30, 40, 50, 60, 70, 80, 90, 100]);
 
 function validateXyzMovePayload(payload) {
+  // Jog press carries direction only — speed is backend-owned state set via
+  // setXySpeed, never per-move.
   const direction = payload && typeof payload.direction === 'string' ? payload.direction : '';
-  const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
   if (!XYZ_DIRECTIONS.has(direction)) throw new Error('invalid xyz direction');
-  if (!XYZ_XY_SPEEDS.has(speed)) throw new Error('invalid xyz speed');
-  return { direction, speed };
+  return { direction };
 }
 
 function validateXyzZMovePayload(payload) {
@@ -610,7 +611,7 @@ function registerIpc() {
     startXyzPlatformEventBridge();
     const body = validateXyzMovePayload(payload);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ipc] method=moveStage direction=${body.direction} speed=${body.speed}`);
+    console.log(`[xyz-ipc] method=moveStage direction=${body.direction}`);
     return machineBackendRequest('/api/xyz-platform/move-stage', { method: 'POST', body });
   });
 
@@ -698,14 +699,57 @@ function registerIpc() {
     return machineBackendRequest('/api/xyz-platform/position');
   });
 
-  ipcMain.handle('xyz-platform:move-center', async () => {
+  ipcMain.handle('xyz-platform:move-center', async (_e, payload) => {
     startXyzPlatformEventBridge();
-    return machineBackendRequest('/api/xyz-platform/move-center', { method: 'POST', body: {} });
+    const homeBeforeRelocation = !!(payload && payload.homeBeforeRelocation);
+    return machineBackendRequest('/api/xyz-platform/move-center', {
+      method: 'POST',
+      body: { homeBeforeRelocation },
+    });
   });
 
-  ipcMain.handle('xyz-platform:locate-center', async () => {
+  ipcMain.handle('xyz-platform:locate-center', async (_e, payload) => {
     startXyzPlatformEventBridge();
-    return machineBackendRequest('/api/xyz-platform/locate-center', { method: 'POST', body: {} });
+    const homeBeforeRelocation = !!(payload && payload.homeBeforeRelocation);
+    return machineBackendRequest('/api/xyz-platform/locate-center', {
+      method: 'POST',
+      body: { homeBeforeRelocation },
+    });
+  });
+
+  ipcMain.handle('xyz-platform:set-center', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/set-center', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:home', async () => {
+    startXyzPlatformEventBridge();
+    return machineBackendRequest('/api/xyz-platform/home', { method: 'POST', body: {} });
+  });
+
+  // Z Axis settings — backend-owned config singleton (no hardware movement). The
+  // backend zod schema is the authoritative validator; these handlers reject
+  // obviously malformed renderer input before forwarding.
+  ipcMain.handle('xyz-platform:get-z-settings', async () => {
+    return machineBackendRequest('/api/xyz-platform/z-settings');
+  });
+
+  ipcMain.handle('xyz-platform:save-z-settings', async (_e, payload) => {
+    if (!payload || typeof payload !== 'object') throw new Error('invalid z settings payload');
+    return machineBackendRequest('/api/xyz-platform/z-settings', { method: 'POST', body: payload });
+  });
+
+  ipcMain.handle('xyz-platform:preview-z-settings', async (_e, payload) => {
+    const imageSelection = payload && Number(payload.imageSelection);
+    if (!ZAXIS_IMAGE_SELECTIONS.has(imageSelection)) throw new Error('invalid image selection');
+    return machineBackendRequest('/api/xyz-platform/z-settings/preview', {
+      method: 'POST',
+      body: { imageSelection },
+    });
+  });
+
+  ipcMain.handle('xyz-platform:revert-z-settings', async () => {
+    return machineBackendRequest('/api/xyz-platform/z-settings/revert', { method: 'POST', body: {} });
   });
 
   /* ------------------ device channels ------------------ */

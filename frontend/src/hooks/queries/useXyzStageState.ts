@@ -19,6 +19,9 @@ export interface XyzStageSnapshot {
   zLocked: boolean;
   focusMode: FocusMode;
   moving: boolean;
+  /** Operator-taught optical center (absolute pulses), or null until taught. */
+  centerX: number | null;
+  centerY: number | null;
   lastAction: string;
   lastError: string | null;
 }
@@ -32,6 +35,8 @@ const INITIAL: XyzStageSnapshot = {
   zLocked: false,
   focusMode: 'manual',
   moving: false,
+  centerX: null,
+  centerY: null,
   lastAction: 'Ready for platform control.',
   lastError: null,
 };
@@ -49,6 +54,8 @@ export function useXyzStageState(): XyzStageSnapshot {
     const unsubscribe = subscribeXyzStageState((state) => {
       const { x, y, z } = state.position;
       const lastError = state.lastError ?? null;
+      const centerX = state.centerX ?? null;
+      const centerY = state.centerY ?? null;
       const key = [
         state.connected,
         x,
@@ -60,6 +67,8 @@ export function useXyzStageState(): XyzStageSnapshot {
         state.zLocked,
         state.focusMode,
         state.moving,
+        centerX ?? '',
+        centerY ?? '',
         state.lastAction,
         lastError ?? '',
       ].join('|');
@@ -74,6 +83,8 @@ export function useXyzStageState(): XyzStageSnapshot {
         zLocked: state.zLocked,
         focusMode: state.focusMode,
         moving: state.moving,
+        centerX,
+        centerY,
         lastAction: state.lastAction,
         lastError,
       });

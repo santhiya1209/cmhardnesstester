@@ -11,6 +11,7 @@ import type { OtherSetting, OtherSettingPayload } from '@/types/otherSetting';
 import type { ReportHeaderSetting, ReportHeaderSettingPayload } from '@/types/reportHeaderSetting';
 import type { SerialPortSetting, SerialPortSettingPayload } from '@/types/serialPortSetting';
 import type { ToolbarState, ToolbarStatePayload } from '@/types/toolbarState';
+import type { XYZPlatformSettings, XYZPlatformSettingsPayload } from '@/types/xyzPlatformSettings';
 
 const SINGLE = 'CURRENT';
 
@@ -172,6 +173,19 @@ export const settingsApi = baseApi.injectEndpoints({
       invalidatesTags: [{ type: 'ToolbarState', id: SINGLE }],
     }),
 
+    getXyzPlatformSettings: build.query<XYZPlatformSettings[], void>({
+      query: () => '/api/xyz-platform-settings',
+      providesTags: [{ type: 'XyzPlatformSettings', id: SINGLE }],
+    }),
+    createXyzPlatformSettings: build.mutation<XYZPlatformSettings, XYZPlatformSettingsPayload>({
+      query: (body) => ({ url: '/api/xyz-platform-settings', method: 'POST', body }),
+      invalidatesTags: [{ type: 'XyzPlatformSettings', id: SINGLE }],
+    }),
+    updateXyzPlatformSettings: build.mutation<XYZPlatformSettings, { id: string; values: XYZPlatformSettingsPayload }>({
+      query: ({ id, values }) => ({ url: `/api/xyz-platform-settings/${id}`, method: 'PUT', body: values }),
+      invalidatesTags: [{ type: 'XyzPlatformSettings', id: SINGLE }],
+    }),
+
     restoreFactorySettings: build.mutation<void, void>({
       query: () => ({ url: '/api/factory-reset', method: 'POST' }),
       invalidatesTags: [
@@ -235,5 +249,8 @@ export const {
   useGetToolbarStatesQuery,
   useCreateToolbarStateMutation,
   useUpdateToolbarStateMutation,
+  useGetXyzPlatformSettingsQuery,
+  useCreateXyzPlatformSettingsMutation,
+  useUpdateXyzPlatformSettingsMutation,
   useRestoreFactorySettingsMutation,
 } = settingsApi;

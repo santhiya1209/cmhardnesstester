@@ -15,6 +15,11 @@ import type {
   ZDirection,
   ZSpeed,
 } from '@/types/xyzPlatform';
+import type {
+  ImageSelection,
+  ZAxisSettingsPayload,
+  ZAxisSettingsResult,
+} from '@/types/zAxisSettings';
 import { apiClient } from '../_client';
 
 export const getXyzPlatformStates = () =>
@@ -100,8 +105,8 @@ export const xyzProbe = (commandText: string, options?: XyzProbeOptions): Promis
     error: 'XYZ_BRIDGE_UNAVAILABLE',
   });
 
-export const xyzMoveStage = (direction: XyzDirection, speed: XySpeed): Promise<XyzCommandResult> =>
-  bridge()?.moveStage(direction, speed) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+export const xyzMoveStage = (direction: XyzDirection): Promise<XyzCommandResult> =>
+  bridge()?.moveStage(direction) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
 export const xyzStopStage = (): Promise<XyzCommandResult> =>
   bridge()?.stopStage() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
@@ -136,12 +141,43 @@ export const xyzSetZSpeed = (speed: ZSpeed): Promise<XyzCommandResult> =>
 export const xyzGetPosition = (): Promise<XyzCommandResult> =>
   bridge()?.getPosition() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
-export const xyzMoveToCenter = (): Promise<XyzCommandResult> =>
-  bridge()?.moveToCenter() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+/** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
+export const xyzMoveToCenter = (opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult> =>
+  bridge()?.moveToCenter(opts) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
-export const xyzLocateCenter = (): Promise<XyzCommandResult> =>
-  bridge()?.locateCenter() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+/** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
+export const xyzLocateCenter = (opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult> =>
+  bridge()?.locateCenter(opts) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+/** Teach: capture the current position as the optical center and persist it. */
+export const xyzSetCenter = (): Promise<XyzCommandResult> =>
+  bridge()?.setCenter() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+/** Dedicated hardware home (#12!) — separate from Relocation. */
+export const xyzHome = (): Promise<XyzCommandResult> =>
+  bridge()?.home() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
 /** Subscribe to live stage-state pushes. Returns an unsubscribe fn (no-op outside Electron). */
 export const subscribeXyzStageState = (listener: (state: XyzStageState) => void): (() => void) =>
   bridge()?.subscribeState(listener) ?? (() => {});
+
+// ── Z Axis settings (backend-owned config singleton; no hardware movement) ──
+const Z_SETTINGS_BRIDGE_UNAVAILABLE: ZAxisSettingsResult = {
+  ok: false,
+  error: 'XYZ_BRIDGE_UNAVAILABLE',
+  message: 'XYZ platform hardware bridge is unavailable (not running in Electron).',
+};
+
+export const getZAxisSettings = (): Promise<ZAxisSettingsResult> =>
+  bridge()?.getZSettings() ?? Promise.resolve(Z_SETTINGS_BRIDGE_UNAVAILABLE);
+
+export const saveZAxisSettings = (settings: ZAxisSettingsPayload): Promise<ZAxisSettingsResult> =>
+  bridge()?.saveZSettings(settings) ?? Promise.resolve(Z_SETTINGS_BRIDGE_UNAVAILABLE);
+
+export const previewZAxisImageSelection = (
+  imageSelection: ImageSelection
+): Promise<ZAxisSettingsResult> =>
+  bridge()?.previewZSettings(imageSelection) ?? Promise.resolve(Z_SETTINGS_BRIDGE_UNAVAILABLE);
+
+export const revertZAxisSettings = (): Promise<ZAxisSettingsResult> =>
+  bridge()?.revertZSettings() ?? Promise.resolve(Z_SETTINGS_BRIDGE_UNAVAILABLE);

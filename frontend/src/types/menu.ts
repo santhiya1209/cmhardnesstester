@@ -9,11 +9,9 @@ export type ConfigDialogId =
   | 'config:camera'
   | 'config:generic'
   | 'config:other'
-  | 'config:restoreFactory';
-
-export type ConfigUnavailableId =
-  | 'config:xyPlatform'
-  | 'config:zAxis';
+  | 'config:restoreFactory'
+  | 'config:zAxis'
+  | 'config:xyPlatform';
 
 export type FileMenuId =
   | 'file:open'
@@ -30,5 +28,4 @@ export type MenuActionId =
   | DeviceMenuId
   | DataMenuId
   | ToolbarActionId
-  | ConfigDialogId
-  | ConfigUnavailableId;
+  | ConfigDialogId;

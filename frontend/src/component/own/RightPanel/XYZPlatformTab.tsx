@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
+import Checkbox from '@mui/material/Checkbox';
+import IconButton from '@mui/material/IconButton';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -17,7 +19,9 @@ import SouthIcon from '@mui/icons-material/South';
 import SouthEastIcon from '@mui/icons-material/SouthEast';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import SettingsIcon from '@mui/icons-material/Settings';
 import type { SxProps, Theme } from '@mui/material/styles';
+import { useDialog } from '@/contexts/DialogContext';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
 import { useXyzPlatformStateSync } from '@/features/xyzPlatform/useXyzPlatformStateSync';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
@@ -99,6 +103,12 @@ const TEXT_BTN_SX: SxProps<Theme> = {
   borderColor: 'grey.500',
   color: 'text.primary',
 };
+const CENTER_ACTIONS_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 0.5 };
+const HOME_FIRST_SX: SxProps<Theme> = {
+  m: 0,
+  '& .MuiFormControlLabel-label': { fontSize: 11, color: 'text.secondary' },
+  '& .MuiCheckbox-root': { p: 0.25 },
+};
 const COORD_ROW_SX: SxProps<Theme> = {
   display: 'flex',
   gap: 1.5,
@@ -121,6 +131,10 @@ function XYZPlatformTabImpl() {
   const hardware = useXyzPlatformHardware();
   const { persist } = useXyzPlatformStateSync();
   const { data: serialSetting } = useSerialPortSetting();
+  // Z Axis Settings dialog is shared app-wide (also reachable from Configuration →
+  // Z Axis Setting). Open the single instance via the dialog context — no local
+  // open-state mirror, no second mount.
+  const { setActiveDialog } = useDialog();
 
   // Operator-selected X/Y port from Serial Port Setting — the single source for
   // which COM the stage connects on. No hardcoded COM number here.
@@ -181,11 +195,54 @@ function XYZPlatformTabImpl() {
     [hardware, persistSpeedPref]
   );
 
-  const handleMove = useCallback(
+  // Press-and-hold JOG. `joggingRef` is UI-ONLY press tracking (a ref, never
+  // rendered) so we send exactly one move on press and one stop on release —
+  // it is NOT movement state (the authoritative `moving`/position come only from
+  // the backend `xyz-platform:state` broadcast).
+  const joggingRef = useRef<XyzDirection | null>(null);
+
+  const startJog = useCallback(
     (direction: XyzDirection) => {
-      void hardware.moveStage(direction, live.xySpeed);
+      if (joggingRef.current) return; // one jog at a time; ignore repeat presses
+      joggingRef.current = direction;
+      void hardware.moveStage(direction);
     },
-    [hardware, live.xySpeed]
+    [hardware]
+  );
+
+  const stopJog = useCallback(() => {
+    if (!joggingRef.current) return;
+    joggingRef.current = null;
+    void hardware.stopStage();
+  }, [hardware]);
+
+  // Safety stops for a missed button release: any global pointer-up/cancel,
+  // window blur, key-up, and unmount all halt an in-flight jog. (The backend
+  // also runs an independent watchdog that sends #0B if no stop arrives.)
+  useEffect(() => {
+    const onStop = () => stopJog();
+    window.addEventListener('pointerup', onStop);
+    window.addEventListener('pointercancel', onStop);
+    window.addEventListener('blur', onStop);
+    window.addEventListener('keyup', onStop);
+    return () => {
+      window.removeEventListener('pointerup', onStop);
+      window.removeEventListener('pointercancel', onStop);
+      window.removeEventListener('blur', onStop);
+      window.removeEventListener('keyup', onStop);
+      stopJog(); // halt on unmount
+    };
+  }, [stopJog]);
+
+  // Per-arrow handlers: mousedown starts the jog, mouseup/leave/cancel stops it.
+  const jogHandlers = useCallback(
+    (direction: XyzDirection) => ({
+      onMouseDown: () => startJog(direction),
+      onMouseUp: stopJog,
+      onMouseLeave: stopJog,
+      onPointerCancel: stopJog,
+    }),
+    [startJog, stopJog]
   );
 
   const handleZMove = useCallback(
@@ -216,12 +273,32 @@ function XYZPlatformTabImpl() {
     [hardware]
   );
 
+  // Optional: home (#12!) first, then move to center. Default OFF (a UI control
+  // input, not movement state). Passed to the backend per relocate call.
+  const [homeBeforeRelocation, setHomeBeforeRelocation] = useState(false);
+
+  // Both the ⊕ Center button and the Relocation button move to the taught
+  // optical center (NOT hardware home, unless homeBeforeRelocation is checked).
+  // If the center has not been taught the backend returns "XY center offset not
+  // configured", surfaced in the Alert.
   const handleCenter = useCallback(() => {
-    void hardware.moveToCenter();
-  }, [hardware]);
+    void hardware.moveToCenter({ homeBeforeRelocation });
+  }, [hardware, homeBeforeRelocation]);
 
   const handleRelocation = useCallback(() => {
-    void hardware.locateCenter();
+    void hardware.locateCenter({ homeBeforeRelocation });
+  }, [hardware, homeBeforeRelocation]);
+
+  // Teach the optical center from the current position (operator jogs the stage
+  // to the camera center first, then clicks Set Center).
+  const handleSetCenter = useCallback(() => {
+    void hardware.setCenter();
+  }, [hardware]);
+
+  // Dedicated hardware home (#12!) — the controller's zero, separate from
+  // Relocation so homing is an explicit, deliberate action.
+  const handleHome = useCallback(() => {
+    void hardware.home();
   }, [hardware]);
 
   // Connect/disconnect ONLY fire the IPC bridge (COM4); the connected/error
@@ -267,6 +344,14 @@ function XYZPlatformTabImpl() {
           Disconnect
         </Button>
         <Typography sx={STATUS_TEXT_SX}>Status: {connectionStatus}</Typography>
+        <Box sx={{ flex: 1 }} />
+        <IconButton
+          size="small"
+          onClick={() => setActiveDialog('xyPlatform')}
+          aria-label="XY platform settings"
+        >
+          <SettingsIcon fontSize="small" />
+        </IconButton>
       </Box>
 
       <Box sx={GROUPS_ROW_SX}>
@@ -282,17 +367,18 @@ function XYZPlatformTabImpl() {
             <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
             <FormControlLabel value="mid" control={<Radio size="small" />} label="Mid" />
             <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
+            <FormControlLabel value="ultra" control={<Radio size="small" />} label="Ultra" />
           </RadioGroup>
 
           <Box sx={XY_GRID_SX}>
             {/* Row 1: ↖ ↑ ↗ | Lock */}
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('forward-left')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-left')}>
               <NorthWestIcon />
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('forward')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward')}>
               <NorthIcon />
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('forward-right')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-right')}>
               <NorthEastIcon />
             </Button>
             <Button
@@ -305,13 +391,13 @@ function XYZPlatformTabImpl() {
             </Button>
 
             {/* Row 2: ← ⊕ → | Unlock */}
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('left')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('left')}>
               <WestIcon />
             </Button>
             <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={handleCenter}>
               <ControlCameraIcon />
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('right')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('right')}>
               <EastIcon />
             </Button>
             <Button
@@ -324,23 +410,54 @@ function XYZPlatformTabImpl() {
             </Button>
 
             {/* Row 3: ↙ ↓ ↘ | Relocatio */}
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('back-left')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-left')}>
               <SouthWestIcon />
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('back')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back')}>
               <SouthIcon />
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={() => handleMove('back-right')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-right')}>
               <SouthEastIcon />
             </Button>
             <Button variant="outlined" sx={TEXT_BTN_SX} disabled={xyMoveDisabled} onClick={handleRelocation}>
-              Relocatio
+              Relocation
             </Button>
           </Box>
+
+          {/* Teach + hardware-home row. Set Center captures the current position
+              as the optical center; Home (#12!) goes to the controller's zero —
+              kept distinct from Relocation. Both only need a live connection. */}
+          <Box sx={CENTER_ACTIONS_ROW_SX}>
+            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={movementDisabled} onClick={handleSetCenter}>
+              Set Center
+            </Button>
+            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={movementDisabled} onClick={handleHome}>
+              Home
+            </Button>
+          </Box>
+
+          {/* Optional: home (#12!) before relocating to center. Default off. */}
+          <FormControlLabel
+            sx={HOME_FIRST_SX}
+            control={
+              <Checkbox
+                size="small"
+                checked={homeBeforeRelocation}
+                onChange={(event) => setHomeBeforeRelocation(event.target.checked)}
+              />
+            }
+            label="Home before relocation"
+          />
 
           <Box sx={COORD_ROW_SX}>
             <Typography sx={COORD_SX}>X: {formatCoordinate(pos.x)}</Typography>
             <Typography sx={COORD_SX}>Y: {formatCoordinate(pos.y)}</Typography>
+            <Typography sx={COORD_SX}>
+              Center:{' '}
+              {live.centerX !== null && live.centerY !== null
+                ? `(${formatCoordinate(live.centerX)}, ${formatCoordinate(live.centerY)})`
+                : 'not set'}
+            </Typography>
           </Box>
         </Box>
 
@@ -397,6 +514,10 @@ function XYZPlatformTabImpl() {
               <ArrowDownwardIcon />
             </Button>
           </Box>
+
+          <Button variant="outlined" sx={TEXT_BTN_SX} onClick={() => setActiveDialog('zAxis')}>
+            Z Settings…
+          </Button>
         </Box>
       </Box>
 

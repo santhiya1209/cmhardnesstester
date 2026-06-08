@@ -30,6 +30,7 @@ export const baseApi = createApi({
     'AlbumItem',
     'ToolbarState',
     'XyzPlatformState',
+    'XyzPlatformSettings',
     'Health',
   ],
   endpoints: () => ({}),

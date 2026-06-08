@@ -18,6 +18,9 @@ import { PatternProgramModel } from './pattern-program';
 import { TestRecordModel } from './test-record';
 import { ToolbarStateModel } from './toolbar-state';
 import { XYZPlatformStateModel } from './xyz-platform-state';
+import { XYZCenterCalibrationModel } from './xyz-center-calibration';
+import { XYZPlatformSettingsModel } from './xyz-platform-settings';
+import { ZAxisSettingsModel } from './z-axis-settings';
 
 const DatabaseMetaSchema = z.object({
   version: z.literal(1),
@@ -40,6 +43,9 @@ export const DatabaseSchema = z.object({
   reportHeaderSettings: z.array(ReportHeaderSettingModel).default([]),
   testRecords: z.array(TestRecordModel).default([]),
   xyzPlatformStates: z.array(XYZPlatformStateModel).default([]),
+  xyzCenterCalibration: z.array(XYZCenterCalibrationModel).default([]),
+  xyzPlatformSettings: z.array(XYZPlatformSettingsModel).default([]),
+  zAxisSettings: z.array(ZAxisSettingsModel).default([]),
   patternPrograms: z.array(PatternProgramModel).default([]),
   depthImageSettings: z.array(DepthImageSettingModel).default([]),
   albumItems: z.array(AlbumItemModel).default([]),
@@ -63,6 +69,9 @@ export const COLLECTION_NAMES = [
   'reportHeaderSettings',
   'testRecords',
   'xyzPlatformStates',
+  'xyzCenterCalibration',
+  'xyzPlatformSettings',
+  'zAxisSettings',
   'patternPrograms',
   'depthImageSettings',
   'albumItems',
@@ -91,6 +100,9 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     reportHeaderSettings: [],
     testRecords: [],
     xyzPlatformStates: [],
+    xyzCenterCalibration: [],
+    xyzPlatformSettings: [],
+    zAxisSettings: [],
     patternPrograms: [],
     depthImageSettings: [],
     albumItems: [],

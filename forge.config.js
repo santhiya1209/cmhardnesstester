@@ -1,3 +1,5 @@
+const path = require("node:path")
+
 module.exports = {
   packagerConfig: {
     name: 'VickersMeasurementSoftware',
@@ -5,7 +7,7 @@ module.exports = {
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
     // Windows EXE icon (electron-packager appends `.ico`). Same source the
     // BrowserWindow (electron/main.js resolveAppIcon) and NSIS installer use.
-    icon: 'build/icon',
+    icon: path.resolve(__dirname, "frontend/public/app-icon.png"),
     asar: true,
     extraResource: [
       'drivers/opencv',

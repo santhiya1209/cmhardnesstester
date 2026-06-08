@@ -46,6 +46,8 @@ export function useMenuActions(input: UseMenuActionsInput): MenuActionsApi {
         'config:generic': 'generic',
         'config:other': 'other',
         'config:restoreFactory': 'restoreFactory',
+        'config:zAxis': 'zAxis',
+        'config:xyPlatform': 'xyPlatform',
       };
       setActiveDialog(map[id]);
     },

@@ -51,7 +51,7 @@ export type XyzDirection =
 
 export type ZDirection = 'up' | 'down';
 
-export type XySpeed = 'slow' | 'mid' | 'fast';
+export type XySpeed = 'slow' | 'mid' | 'fast' | 'ultra';
 export type ZSpeed = 'ultra' | 'fast' | 'slow';
 
 export interface XyzPosition {

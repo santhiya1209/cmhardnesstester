@@ -26,6 +26,8 @@ export type DialogKey =
   | 'restoreFactory'
   | 'serialPort'
   | 'testRecords'
+  | 'xyPlatform'
+  | 'zAxis'
   | null;
 
 type DialogContextValue = {

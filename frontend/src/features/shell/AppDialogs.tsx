@@ -8,6 +8,8 @@ import OtherSettingDialog from '@/component/own/OtherSettingDialog';
 import RestoreFactoryDialog from '@/component/own/RestoreFactoryDialog';
 import SerialPortSettingDialog from '@/component/own/SerialPortSettingDialog';
 import TestRecordsDialog from '@/component/own/TestRecordsDialog';
+import XYPlatformSettingsDialog from '@/component/own/XYPlatformSettingsDialog';
+import ZAxisSettingsDialog from '@/component/own/ZAxisSettingsDialog';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
@@ -115,6 +117,15 @@ function AppDialogs({
         open={activeDialog === 'other'}
         onClose={closeDialog}
         onStatusChange={handleDialogStatusChange}
+      />
+      <ZAxisSettingsDialog
+        open={activeDialog === 'zAxis'}
+        onClose={closeDialog}
+        onStatusChange={handleDialogStatusChange}
+      />
+      <XYPlatformSettingsDialog
+        open={activeDialog === 'xyPlatform'}
+        onClose={closeDialog}
       />
       <RestoreFactoryDialog
         open={activeDialog === 'restoreFactory'}

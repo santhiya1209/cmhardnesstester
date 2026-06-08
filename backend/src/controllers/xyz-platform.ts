@@ -9,6 +9,7 @@ import {
   ManualProbeSchema,
   MoveStageSchema,
   MoveZSchema,
+  RelocateSchema,
   SetFocusModeSchema,
   SetXySpeedSchema,
   SetZSpeedSchema,
@@ -52,7 +53,7 @@ export async function moveStage(req: Request, res: Response): Promise<void> {
     res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
     return;
   }
-  sendResult(res, await xyzPlatformSerialService.moveStage(parsed.data.direction, parsed.data.speed));
+  sendResult(res, await xyzPlatformSerialService.moveStage(parsed.data.direction));
 }
 
 export async function stopStage(_req: Request, res: Response): Promise<void> {
@@ -119,12 +120,30 @@ export async function getStagePosition(_req: Request, res: Response): Promise<vo
   sendResult(res, await xyzPlatformSerialService.getPosition());
 }
 
-export async function moveStageToCenter(_req: Request, res: Response): Promise<void> {
-  sendResult(res, await xyzPlatformSerialService.moveToCenter());
+export async function moveStageToCenter(req: Request, res: Response): Promise<void> {
+  const parsed = RelocateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.moveToCenter(parsed.data.homeBeforeRelocation ?? false));
 }
 
-export async function locateStageCenter(_req: Request, res: Response): Promise<void> {
-  sendResult(res, await xyzPlatformSerialService.locateCenter());
+export async function locateStageCenter(req: Request, res: Response): Promise<void> {
+  const parsed = RelocateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.locateCenter(parsed.data.homeBeforeRelocation ?? false));
+}
+
+export async function setStageCenter(_req: Request, res: Response): Promise<void> {
+  sendResult(res, await xyzPlatformSerialService.setCenter());
+}
+
+export async function homeStage(_req: Request, res: Response): Promise<void> {
+  sendResult(res, await xyzPlatformSerialService.home());
 }
 
 export async function diagnoseStage(_req: Request, res: Response): Promise<void> {

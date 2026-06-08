@@ -5,6 +5,7 @@ import {
   disconnectStage,
   getStagePosition,
   getStageState,
+  homeStage,
   locateStageCenter,
   lockXy,
   lockZ,
@@ -13,6 +14,7 @@ import {
   moveZ,
   probeStage,
   setFocusMode,
+  setStageCenter,
   setXySpeed,
   setZSpeed,
   stopStage,
@@ -22,6 +24,12 @@ import {
   unlockXy,
   unlockZ,
 } from '../controllers/xyz-platform';
+import {
+  getZSettings,
+  previewZSettings,
+  revertZSettings,
+  saveZSettings,
+} from '../controllers/z-settings';
 
 // Dedicated XYZ motion-stage ACTION routes. NOTE: hardware control only — the
 // xyz-platform-states router (CRUD) handles UI-state persistence separately.
@@ -48,5 +56,13 @@ router.post('/set-z-speed', setZSpeed);
 router.get('/position', getStagePosition);
 router.post('/move-center', moveStageToCenter);
 router.post('/locate-center', locateStageCenter);
+router.post('/set-center', setStageCenter);
+router.post('/home', homeStage);
+
+// Z Axis settings — backend-owned config singleton (NOT hardware movement).
+router.get('/z-settings', getZSettings);
+router.post('/z-settings', saveZSettings);
+router.post('/z-settings/preview', previewZSettings);
+router.post('/z-settings/revert', revertZSettings);
 
 export default router;

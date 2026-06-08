@@ -57,6 +57,12 @@ const ALLOWED_INVOKE = new Set([
   'xyz-platform:get-position',
   'xyz-platform:move-center',
   'xyz-platform:locate-center',
+  'xyz-platform:set-center',
+  'xyz-platform:home',
+  'xyz-platform:get-z-settings',
+  'xyz-platform:save-z-settings',
+  'xyz-platform:preview-z-settings',
+  'xyz-platform:revert-z-settings',
   'app:exit',
 ]);
 
@@ -176,8 +182,8 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   // Expert dev-console probe. WARNING: a moving command WILL move the stage.
   probe: (commandText, options) =>
     ipcRenderer.invoke('xyz-platform:probe', { commandText, options: options || {} }),
-  moveStage: (direction, speed) =>
-    ipcRenderer.invoke('xyz-platform:move-stage', { direction, speed }),
+  moveStage: (direction) =>
+    ipcRenderer.invoke('xyz-platform:move-stage', { direction }),
   stopStage: () => ipcRenderer.invoke('xyz-platform:stop-stage'),
   moveZ: (direction, speed) => ipcRenderer.invoke('xyz-platform:move-z', { direction, speed }),
   stopZ: () => ipcRenderer.invoke('xyz-platform:stop-z'),
@@ -189,6 +195,15 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   setXySpeed: (speed) => ipcRenderer.invoke('xyz-platform:set-xy-speed', { speed }),
   setZSpeed: (speed) => ipcRenderer.invoke('xyz-platform:set-z-speed', { speed }),
   getPosition: () => ipcRenderer.invoke('xyz-platform:get-position'),
-  moveToCenter: () => ipcRenderer.invoke('xyz-platform:move-center'),
-  locateCenter: () => ipcRenderer.invoke('xyz-platform:locate-center'),
+  moveToCenter: (opts) => ipcRenderer.invoke('xyz-platform:move-center', opts || {}),
+  locateCenter: (opts) => ipcRenderer.invoke('xyz-platform:locate-center', opts || {}),
+  setCenter: () => ipcRenderer.invoke('xyz-platform:set-center'),
+  home: () => ipcRenderer.invoke('xyz-platform:home'),
+  // Z Axis settings — backend-owned config singleton. Read/save/preview/revert
+  // only; no Z hardware movement is involved.
+  getZSettings: () => ipcRenderer.invoke('xyz-platform:get-z-settings'),
+  saveZSettings: (settings) => ipcRenderer.invoke('xyz-platform:save-z-settings', settings || {}),
+  previewZSettings: (imageSelection) =>
+    ipcRenderer.invoke('xyz-platform:preview-z-settings', { imageSelection }),
+  revertZSettings: () => ipcRenderer.invoke('xyz-platform:revert-z-settings'),
 });

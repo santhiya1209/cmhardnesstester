@@ -3,12 +3,14 @@ import {
   xyzConnect,
   xyzDisconnect,
   xyzGetPosition,
+  xyzHome,
   xyzLocateCenter,
   xyzLockXy,
   xyzLockZ,
   xyzMoveStage,
   xyzMoveToCenter,
   xyzMoveZ,
+  xyzSetCenter,
   xyzSetFocusMode,
   xyzSetXySpeed,
   xyzSetZSpeed,
@@ -85,11 +87,19 @@ export function useXyzPlatformHardware() {
     }
   }, []);
 
-  const moveStage = useCallback(
-    (direction: XyzDirection, speed: XySpeed) => run(() => xyzMoveStage(direction, speed)),
-    [run]
-  );
-  const stopStage = useCallback(() => run(() => xyzStopStage()), [run]);
+  // Jog start/stop deliberately bypass `run` (no busy toggle) so a held arrow is
+  // never disabled mid-press by the busy flag. They still surface errors, and
+  // `moving` comes from the backend state broadcast, never from here.
+  const moveStage = useCallback(async (direction: XyzDirection) => {
+    const result = await xyzMoveStage(direction);
+    if (!result.ok) setError(result.message ?? result.error);
+    return result;
+  }, []);
+  const stopStage = useCallback(async () => {
+    const result = await xyzStopStage();
+    if (!result.ok) setError(result.message ?? result.error);
+    return result;
+  }, []);
   const moveZ = useCallback(
     (direction: ZDirection, speed: ZSpeed) => run(() => xyzMoveZ(direction, speed)),
     [run]
@@ -103,8 +113,16 @@ export function useXyzPlatformHardware() {
   const setXySpeed = useCallback((speed: XySpeed) => run(() => xyzSetXySpeed(speed)), [run]);
   const setZSpeed = useCallback((speed: ZSpeed) => run(() => xyzSetZSpeed(speed)), [run]);
   const getPosition = useCallback(() => run(() => xyzGetPosition()), [run]);
-  const moveToCenter = useCallback(() => run(() => xyzMoveToCenter()), [run]);
-  const locateCenter = useCallback(() => run(() => xyzLocateCenter()), [run]);
+  const moveToCenter = useCallback(
+    (opts?: { homeBeforeRelocation?: boolean }) => run(() => xyzMoveToCenter(opts)),
+    [run]
+  );
+  const locateCenter = useCallback(
+    (opts?: { homeBeforeRelocation?: boolean }) => run(() => xyzLocateCenter(opts)),
+    [run]
+  );
+  const setCenter = useCallback(() => run(() => xyzSetCenter()), [run]);
+  const home = useCallback(() => run(() => xyzHome()), [run]);
 
   return {
     busy,
@@ -125,5 +143,7 @@ export function useXyzPlatformHardware() {
     getPosition,
     moveToCenter,
     locateCenter,
+    setCenter,
+    home,
   };
 }

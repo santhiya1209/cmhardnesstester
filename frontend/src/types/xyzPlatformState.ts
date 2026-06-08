@@ -1,4 +1,4 @@
-export type XySpeed = 'slow' | 'mid' | 'fast';
+export type XySpeed = 'slow' | 'mid' | 'fast' | 'ultra';
 export type ZSpeed = 'ultra' | 'fast' | 'slow';
 export type FocusMode = 'manual' | 'cFocus' | 'fFocus';
 

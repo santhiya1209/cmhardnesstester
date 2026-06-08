@@ -16,7 +16,7 @@ export const XyzDirectionSchema = z.enum([
 ]);
 
 export const ZDirectionSchema = z.enum(['up', 'down']);
-export const XySpeedSchema = z.enum(['slow', 'mid', 'fast']);
+export const XySpeedSchema = z.enum(['slow', 'mid', 'fast', 'ultra']);
 export const ZSpeedSchema = z.enum(['ultra', 'fast', 'slow']);
 
 export const ConnectStageSchema = z.object({
@@ -28,11 +28,18 @@ export const ConnectStageSchema = z.object({
 });
 export type ConnectStageInput = z.infer<typeof ConnectStageSchema>;
 
+// Jog press: direction only. Speed is backend-owned state (set via setXySpeed),
+// never passed per move — so no free speed value can ride in on a jog.
 export const MoveStageSchema = z.object({
   direction: XyzDirectionSchema,
-  speed: XySpeedSchema,
 });
 export type MoveStageInput = z.infer<typeof MoveStageSchema>;
+
+// Relocation accepts an optional, default-OFF flag to home (#12!) first.
+export const RelocateSchema = z.object({
+  homeBeforeRelocation: z.boolean().optional(),
+});
+export type RelocateInput = z.infer<typeof RelocateSchema>;
 
 export const MoveZSchema = z.object({
   direction: ZDirectionSchema,

@@ -21,6 +21,7 @@ import testRecordsRouter from './test-records';
 import toolbarStatesRouter from './toolbar-states';
 import xyzPlatformRouter from './xyz-platform';
 import xyzPlatformStatesRouter from './xyz-platform-states';
+import xyzPlatformSettingsRouter from './xyz-platform-settings';
 
 const router = Router();
 
@@ -40,6 +41,7 @@ router.use('/other-setting', otherSettingRouter);
 router.use('/report-header-setting', reportHeaderSettingRouter);
 router.use('/test-records', testRecordsRouter);
 router.use('/xyz-platform-states', xyzPlatformStatesRouter);
+router.use('/xyz-platform-settings', xyzPlatformSettingsRouter);
 router.use('/xyz-platform', xyzPlatformRouter);
 router.use('/pattern-programs', patternProgramsRouter);
 router.use('/depth-image-settings', depthImageSettingsRouter);

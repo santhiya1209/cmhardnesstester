@@ -6,6 +6,7 @@ import { errorHandler } from './lib/http';
 import { initializeSqlite, deleteAllMeasurements } from './lib/sqlite';
 import apiRouter from './routes';
 import { hardnessMachineSerialService } from './lib/services/hardness-machine-serial.service';
+import { zSettingsService } from './lib/services/z-settings.service';
 
 export function createApp(): Express {
   const app = express();
@@ -38,6 +39,7 @@ export interface StartResult {
 
 export async function start(): Promise<StartResult> {
   await initializeSqlite();
+  await zSettingsService.load();
   const cleared = deleteAllMeasurements();
   // eslint-disable-next-line no-console
   console.log(`[startup] measurements cleared on open count=${cleared}`);

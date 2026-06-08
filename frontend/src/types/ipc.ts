@@ -43,6 +43,7 @@ import type {
   ZDirection,
   ZSpeed,
 } from './xyzPlatform';
+import type { ImageSelection, ZAxisSettingsPayload, ZAxisSettingsResult } from './zAxisSettings';
 
 export type DeviceOpenResponse = {
   ok: true;
@@ -168,7 +169,13 @@ export type IpcInvokeChannel =
   | 'xyz-platform:set-z-speed'
   | 'xyz-platform:get-position'
   | 'xyz-platform:move-center'
-  | 'xyz-platform:locate-center';
+  | 'xyz-platform:locate-center'
+  | 'xyz-platform:set-center'
+  | 'xyz-platform:home'
+  | 'xyz-platform:get-z-settings'
+  | 'xyz-platform:save-z-settings'
+  | 'xyz-platform:preview-z-settings'
+  | 'xyz-platform:revert-z-settings';
 
 export type IpcEventChannel =
   | 'app:status'
@@ -254,7 +261,7 @@ export type IpcInvokeMap = {
   };
   'xyz-platform:disconnect': { request: void; response: XyzStageStateResponse };
   'xyz-platform:move-stage': {
-    request: { direction: XyzDirection; speed: XySpeed };
+    request: { direction: XyzDirection };
     response: XyzCommandResult;
   };
   'xyz-platform:stop-stage': { request: void; response: XyzCommandResult };
@@ -271,8 +278,23 @@ export type IpcInvokeMap = {
   'xyz-platform:set-xy-speed': { request: { speed: XySpeed }; response: XyzCommandResult };
   'xyz-platform:set-z-speed': { request: { speed: ZSpeed }; response: XyzCommandResult };
   'xyz-platform:get-position': { request: void; response: XyzCommandResult };
-  'xyz-platform:move-center': { request: void; response: XyzCommandResult };
-  'xyz-platform:locate-center': { request: void; response: XyzCommandResult };
+  'xyz-platform:move-center': {
+    request: { homeBeforeRelocation?: boolean } | void;
+    response: XyzCommandResult;
+  };
+  'xyz-platform:locate-center': {
+    request: { homeBeforeRelocation?: boolean } | void;
+    response: XyzCommandResult;
+  };
+  'xyz-platform:set-center': { request: void; response: XyzCommandResult };
+  'xyz-platform:home': { request: void; response: XyzCommandResult };
+  'xyz-platform:get-z-settings': { request: void; response: ZAxisSettingsResult };
+  'xyz-platform:save-z-settings': { request: ZAxisSettingsPayload; response: ZAxisSettingsResult };
+  'xyz-platform:preview-z-settings': {
+    request: { imageSelection: ImageSelection };
+    response: ZAxisSettingsResult;
+  };
+  'xyz-platform:revert-z-settings': { request: void; response: ZAxisSettingsResult };
 };
 
 export type IpcEventPayloadMap = {
@@ -320,7 +342,8 @@ export interface XyzPlatformApi {
   testLineControl(): Promise<XyzLineControlResult>;
   /** Expert dev-console probe. WARNING: a moving command WILL move the stage. */
   probe(commandText: string, options?: XyzProbeOptions): Promise<XyzProbeResult>;
-  moveStage(direction: XyzDirection, speed: XySpeed): Promise<XyzCommandResult>;
+  /** Start a press-and-hold jog in `direction`. Release calls stopStage(). */
+  moveStage(direction: XyzDirection): Promise<XyzCommandResult>;
   stopStage(): Promise<XyzCommandResult>;
   moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;
   stopZ(): Promise<XyzCommandResult>;
@@ -332,6 +355,20 @@ export interface XyzPlatformApi {
   setXySpeed(speed: XySpeed): Promise<XyzCommandResult>;
   setZSpeed(speed: ZSpeed): Promise<XyzCommandResult>;
   getPosition(): Promise<XyzCommandResult>;
-  moveToCenter(): Promise<XyzCommandResult>;
-  locateCenter(): Promise<XyzCommandResult>;
+  /** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
+  moveToCenter(opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult>;
+  /** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
+  locateCenter(opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult>;
+  /** Teach: capture the current position as the optical center and persist it. */
+  setCenter(): Promise<XyzCommandResult>;
+  /** Dedicated hardware home (#12!) — the controller's zero, separate from Relocation. */
+  home(): Promise<XyzCommandResult>;
+  /** Read the backend-owned Z Axis settings singleton. */
+  getZSettings(): Promise<ZAxisSettingsResult>;
+  /** Persist the full Z Axis settings (Confirm). */
+  saveZSettings(settings: ZAxisSettingsPayload): Promise<ZAxisSettingsResult>;
+  /** Apply ONLY the image-selection in-memory (Preview) — no DB write, no hardware. */
+  previewZSettings(imageSelection: ImageSelection): Promise<ZAxisSettingsResult>;
+  /** Discard an in-memory preview, reverting to the last saved settings (Cancel). */
+  revertZSettings(): Promise<ZAxisSettingsResult>;
 }

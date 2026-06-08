@@ -1,6 +1,5 @@
 import type {
   ConfigDialogId,
-  ConfigUnavailableId,
   MenuActionId,
 } from '@/types/menu';
 import type { ToolbarActionId } from '@/types/tool';
@@ -13,7 +12,7 @@ export type MenuDispatchContext = ToolDispatchContext & {
   saveOriginalImage?: () => void;
 };
 
-const CONFIG_LABEL: Record<ConfigDialogId | ConfigUnavailableId, string> = {
+const CONFIG_LABEL: Record<ConfigDialogId, string> = {
   'config:lineColor': 'Line Color Setting',
   'config:calibration': 'Calibration',
   'config:autoMeasure': 'Auto Measure Setting',
@@ -37,11 +36,8 @@ const CONFIG_DIALOG_IDS = new Set<ConfigDialogId>([
   'config:generic',
   'config:other',
   'config:restoreFactory',
-]);
-
-const CONFIG_UNAVAILABLE_IDS = new Set<ConfigUnavailableId>([
-  'config:xyPlatform',
   'config:zAxis',
+  'config:xyPlatform',
 ]);
 
 const TOOLBAR_PREFIXES = ['file:', 'device:', 'tools:'];
@@ -77,11 +73,6 @@ export function dispatchMenuAction(action: MenuActionId, ctx: MenuDispatchContex
     const id = action as ConfigDialogId;
     ctx.openConfigDialog(id);
     ctx.setStatus(`${CONFIG_LABEL[id]} opened`);
-    return;
-  }
-
-  if (CONFIG_UNAVAILABLE_IDS.has(action as ConfigUnavailableId)) {
-    ctx.notifyUnavailable(CONFIG_LABEL[action as ConfigUnavailableId]);
     return;
   }
 
