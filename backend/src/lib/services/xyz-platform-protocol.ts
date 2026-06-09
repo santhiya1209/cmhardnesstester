@@ -232,6 +232,21 @@ export function buildMoveXyCommand(xPulses: number, yPulses: number): XyzBuiltCo
   return makeCommand('moveXy', `#11${signed8(xPulses)}${signed8(yPulses)}!`, 'position');
 }
 
+/**
+ * Pick the narrowest relative-move frame for a relocation delta, so only the
+ * axes that actually change are commanded:
+ *   dx≠0 && dy≠0 → #11 (move both)
+ *   dx≠0 && dy=0 → #0C (move X only)
+ *   dx=0 && dy≠0 → #0E (move Y only)
+ *   dx=0 && dy=0 → null (already at target — caller sends nothing)
+ */
+export function buildRelocationMoveCommand(dx: number, dy: number): XyzBuiltCommand | null {
+  if (dx === 0 && dy === 0) return null;
+  if (dx !== 0 && dy !== 0) return buildMoveXyCommand(dx, dy);
+  if (dx !== 0) return buildMoveXCommand(dx);
+  return buildMoveYCommand(dy);
+}
+
 export function buildHomeCommand(): XyzBuiltCommand {
   return makeCommand('home', '#12!', 'ack-or-position');
 }

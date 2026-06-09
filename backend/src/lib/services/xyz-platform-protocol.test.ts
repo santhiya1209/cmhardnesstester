@@ -14,6 +14,7 @@ import {
   buildMoveXCommand,
   buildMoveYCommand,
   buildMoveXyCommand,
+  buildRelocationMoveCommand,
   buildHomeCommand,
   parseXyzFrame,
   type XyzBuiltCommand,
@@ -66,6 +67,26 @@ for (const [cmd, expected] of FULL_HEX) {
     assert.equal(hexUpper(cmd.frame), expected);
   });
 }
+
+// --- Relocation command selection: narrowest move per changing axis ---------
+test('relocation dx≠0 dy≠0 -> #11 move both', () => {
+  const cmd = buildRelocationMoveCommand(100, -50);
+  assert.equal(cmd?.key, 'moveXy');
+  assert.equal(cmd?.visible, '#11+00000100-00000050!');
+});
+test('relocation dx≠0 dy=0 -> #0C move X only', () => {
+  const cmd = buildRelocationMoveCommand(100, 0);
+  assert.equal(cmd?.key, 'moveX');
+  assert.equal(cmd?.visible, '#0C+00000100!');
+});
+test('relocation dx=0 dy≠0 -> #0E move Y only', () => {
+  const cmd = buildRelocationMoveCommand(0, -50);
+  assert.equal(cmd?.key, 'moveY');
+  assert.equal(cmd?.visible, '#0E-00000050!');
+});
+test('relocation dx=0 dy=0 -> null (no command sent)', () => {
+  assert.equal(buildRelocationMoveCommand(0, 0), null);
+});
 
 // --- Parser: HARDWARE-VERIFIED replies --------------------------------------
 test('parse #01OK -> ack code 01', () => {

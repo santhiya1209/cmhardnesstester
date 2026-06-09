@@ -6,6 +6,7 @@ import {
   buildMoveXCommand,
   buildMoveXyCommand,
   buildMoveYCommand,
+  buildRelocationMoveCommand,
   buildSetXAccelerationCommand,
   buildSetXBeginSpeedCommand,
   buildSetXFinalSpeedCommand,
@@ -1628,14 +1629,20 @@ class XyzPlatformSerialService extends EventEmitter {
       return before;
     }
 
-    // 3) Move by the delta (single #11 X/Y move — RX-gated to a real reply).
+    // 3) Move by the delta with the narrowest command for the axes that change
+    // (#11 both, #0C X-only, #0E Y-only) — RX-gated to a real reply. The
+    // dx===0 && dy===0 case already returned above, so a command is always built.
     // eslint-disable-next-line no-console
     console.log(`[xyz-relocation-center-step] commandId=${commandId} dx=${dx} dy=${dy}`);
     // eslint-disable-next-line no-console
     console.log(`[xyz-center-move-tx] commandId=${commandId} dx=${dx} dy=${dy}`);
     const moved = await this.runCommand(
       'relocate',
-      () => buildMoveXyCommand(dx, dy),
+      () => {
+        const cmd = buildRelocationMoveCommand(dx, dy);
+        if (!cmd) throw new Error('XYZ_RELOCATION_NO_DELTA');
+        return cmd;
+      },
       `Relocate to optical center (dx ${dx}, dy ${dy}).`
     );
     if (!moved.ok) {
