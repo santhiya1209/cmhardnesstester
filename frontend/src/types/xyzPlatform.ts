@@ -40,6 +40,8 @@ export interface XyzStageState {
   zLocked: boolean;
   focusMode: FocusMode;
   moving: boolean;
+  /** False until a real position frame has been received (UI shows "--"). */
+  positionKnown: boolean;
   /** Operator-taught optical center (absolute pulses), or null until taught. */
   centerX: number | null;
   centerY: number | null;

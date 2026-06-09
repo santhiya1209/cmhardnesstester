@@ -143,6 +143,35 @@ const HOME_QUERY_DELAY_MS = 1500;
 // never reports a fake success.
 const CENTER_NOT_CONFIGURED = 'XY center offset not configured';
 
+// Preemption is a CONTROLLED transition (a new command intentionally superseded
+// an in-flight one), not a hardware failure.
+const PREEMPTED_MESSAGE = 'Previous stage command was stopped to run the new command.';
+const STAGE_COMMAND_FAILED_MESSAGE = 'XYZ stage command failed. Check connection and try again.';
+
+/**
+ * Map an internal error CODE to an operator-facing message. Codes that already
+ * carry a human sentence (e.g. CENTER_NOT_CONFIGURED) are returned as-is;
+ * everything else that isn't explicitly mapped falls back to the generic
+ * "command failed" message so a raw token like a serial timeout never reaches
+ * the UI. The raw code still travels in `result.error` for logs/diagnostics.
+ */
+function friendlyXyzMessage(code: string): string {
+  switch (code) {
+    case 'XYZ_STAGE_PREEMPTED':
+      return PREEMPTED_MESSAGE;
+    case 'XYZ_STAGE_NOT_CONNECTED':
+      return 'XYZ stage is not connected. Connect the stage and try again.';
+    case 'XYZ_STAGE_XY_UNLOCKED':
+      return 'Lock the X/Y stage before moving.';
+    case 'XYZ_STAGE_NO_POSITION':
+      return 'Cannot read the stage position. Check connection and try again.';
+    case CENTER_NOT_CONFIGURED:
+      return 'Please set center before relocation.';
+    default:
+      return STAGE_COMMAND_FAILED_MESSAGE;
+  }
+}
+
 export type XyzSerialMode = 'separate' | 'shared' | 'unknown';
 
 export type FocusMode = 'manual' | 'cFocus' | 'fFocus';
@@ -158,6 +187,11 @@ export interface XyzStageState {
   zLocked: boolean;
   focusMode: FocusMode;
   moving: boolean;
+  /**
+   * False until a real position frame (#10!/#11) has been received, so the UI
+   * can show "--" instead of a fabricated 0,0 before the stage is ever read.
+   */
+  positionKnown: boolean;
   /** Operator-taught optical center (absolute pulses), or null until taught. */
   centerX: number | null;
   centerY: number | null;
@@ -179,7 +213,7 @@ export interface ConnectStageOptions {
 
 export type XyzCommandResult =
   | { ok: true; position?: XyzPosition; rx?: string; commandId: string }
-  | { ok: false; error: string; commandId?: string };
+  | { ok: false; error: string; commandId?: string; message?: string };
 
 export interface XyzOpenSettings {
   baudRate: number;
@@ -261,6 +295,7 @@ const DEFAULT_STATE: XyzStageState = {
   zLocked: false,
   focusMode: 'manual',
   moving: false,
+  positionKnown: false,
   centerX: null,
   centerY: null,
   lastAction: 'XYZ stage idle.',
@@ -357,6 +392,10 @@ class XyzPlatformSerialService extends EventEmitter {
       position: patch.position ? { ...patch.position } : { ...this.state.position },
       updatedAt: new Date().toISOString(),
     };
+    // eslint-disable-next-line no-console
+    console.log(
+      `[xyz-state-broadcast] connected=${this.state.connected} x=${this.state.positionKnown ? this.state.position.x : 'unknown'} y=${this.state.positionKnown ? this.state.position.y : 'unknown'} moving=${this.state.moving} xyLocked=${this.state.xyLocked} xySpeed=${this.state.xySpeed} lastError=${JSON.stringify(this.state.lastError ?? null)}`
+    );
     this.emit('state', this.getState());
   }
 
@@ -1046,8 +1085,9 @@ class XyzPlatformSerialService extends EventEmitter {
           console.log(`[xyz-rx-checksum] commandId=${commandId} kind=position rx=${hexByte(parsed.checksum)} expectedSum=${hexByte(parsed.checksumExpected)} match=${parsed.checksum === parsed.checksumExpected}`);
         }
         // Position is a REAL reply (e.g. from #10!), not optimistic. busy flag is
-        // truthful motion state derived from the frame.
-        this.setState({ position, moving: parsed.busy, lastError: undefined });
+        // truthful motion state derived from the frame. positionKnown latches true
+        // so the UI can stop showing "--".
+        this.setState({ position, positionKnown: true, moving: parsed.busy, lastError: undefined });
         this.resolvePending(position);
         break;
       }
@@ -1256,12 +1296,22 @@ class XyzPlatformSerialService extends EventEmitter {
         : { ok: true, rx: this.state.lastRx, commandId };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
+      const message = friendlyXyzMessage(error);
+      if (error === 'XYZ_STAGE_PREEMPTED') {
+        // Controlled transition: a newer command (e.g. Stop) intentionally
+        // superseded this in-flight one. NOT a hardware failure — log it as a
+        // preemption, surface a clean message, never a red crash-style error.
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-move-preempted] commandId=${commandId} action=${action}`);
+        this.setState({ lastError: message });
+        return { ok: false, error, message, commandId };
+      }
       // eslint-disable-next-line no-console
       console.error(`[xyz-error] commandId=${commandId} error=${JSON.stringify(error)}`);
       // eslint-disable-next-line no-console
       console.error(`[xyz-status] commandId=${commandId} status=failed`);
-      this.setState({ lastError: error });
-      return { ok: false, error, commandId };
+      this.setState({ lastError: message });
+      return { ok: false, error, message, commandId };
     }
   }
 
@@ -1314,6 +1364,8 @@ class XyzPlatformSerialService extends EventEmitter {
    * while already moving is ignored (no second move is ever queued).
    */
   async moveStage(direction: XyzDirection): Promise<XyzCommandResult> {
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-move-request] direction=${direction} speed=${this.state.xySpeed}`);
     if (!MOVE_COMMANDS_CONFIRMED) {
       return this.moveNotConfirmed(`moveStage(${direction})`);
     }
@@ -1346,8 +1398,16 @@ class XyzPlatformSerialService extends EventEmitter {
     this.clearJogWatchdog();
     // eslint-disable-next-line no-console
     console.log('[xyz-move-stop]');
+    // eslint-disable-next-line no-console
+    console.log('[xyz-stop-request]');
     const result = await this.runCommand('stopStage', () => buildStopXyCommand(), 'Stop X/Y.', true);
     this.setState({ moving: false });
+    if (result.ok && result.position) {
+      // The #0B stop reply carries the REAL landing position — the move is now
+      // complete against confirmed hardware coordinates.
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-complete] x=${result.position.x} y=${result.position.y}`);
+    }
     return result;
   }
 
@@ -1369,12 +1429,16 @@ class XyzPlatformSerialService extends EventEmitter {
   }
 
   async lockXy(): Promise<XyzCommandResult> {
+    // eslint-disable-next-line no-console
+    console.log('[xyz-lock-request]');
     const result = await this.runCommand('lockXy', () => buildLockXyCommand(), 'X/Y platform locked.');
     if (result.ok) this.setState({ xyLocked: true });
     return result;
   }
 
   async unlockXy(): Promise<XyzCommandResult> {
+    // eslint-disable-next-line no-console
+    console.log('[xyz-unlock-request]');
     const result = await this.runCommand('unlockXy', () => buildUnlockXyCommand(), 'X/Y platform unlocked.');
     if (result.ok) this.setState({ xyLocked: false });
     return result;
@@ -1389,6 +1453,8 @@ class XyzPlatformSerialService extends EventEmitter {
    * mode restores on the next startup.
    */
   async setXySpeed(speed: XySpeed): Promise<XyzCommandResult> {
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-speed-request] mode=${speed}`);
     if (!Object.prototype.hasOwnProperty.call(XY_SPEED_LIMITS, speed)) {
       const error = 'XYZ_STAGE_INVALID_SPEED';
       // eslint-disable-next-line no-console
@@ -1402,6 +1468,9 @@ class XyzPlatformSerialService extends EventEmitter {
     if (!result.ok) return result;
     this.setState({ xySpeed: speed });
     this.persistConfig();
+    // Speed is confirmed only after the registers were accepted by the hardware.
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-speed-confirmed] mode=${speed}`);
     return result;
   }
 
@@ -1493,10 +1562,11 @@ class XyzPlatformSerialService extends EventEmitter {
 
     await this.ensureCenterLoaded();
     if (this.centerX === null || this.centerY === null) {
+      const message = friendlyXyzMessage(CENTER_NOT_CONFIGURED);
       // eslint-disable-next-line no-console
       console.warn(`[xyz-relocation-error] commandId=${commandId} reason=${JSON.stringify(CENTER_NOT_CONFIGURED)}`);
-      this.setState({ lastError: CENTER_NOT_CONFIGURED });
-      return { ok: false, error: CENTER_NOT_CONFIGURED, commandId };
+      this.setState({ lastError: message });
+      return { ok: false, error: CENTER_NOT_CONFIGURED, message, commandId };
     }
     if (!this.state.connected) {
       // eslint-disable-next-line no-console
@@ -1515,6 +1585,8 @@ class XyzPlatformSerialService extends EventEmitter {
     // Optional: establish machine reference first (default OFF). The post-home
     // position (#10!) becomes the start point for the center delta below.
     if (homeBeforeRelocation) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-relocation-home-step] commandId=${commandId}`);
       const homed = await this.home();
       if (!homed.ok) {
         // eslint-disable-next-line no-console
@@ -1550,11 +1622,15 @@ class XyzPlatformSerialService extends EventEmitter {
     if (dx === 0 && dy === 0) {
       // eslint-disable-next-line no-console
       console.log(`[xyz-relocation-arrived] commandId=${commandId} x=${before.position.x} y=${before.position.y} note=already-centered`);
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-relocation-complete] commandId=${commandId} x=${before.position.x} y=${before.position.y} note=already-centered`);
       this.setState({ lastAction: 'At optical center.', lastError: undefined });
       return before;
     }
 
     // 3) Move by the delta (single #11 X/Y move — RX-gated to a real reply).
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-relocation-center-step] commandId=${commandId} dx=${dx} dy=${dy}`);
     // eslint-disable-next-line no-console
     console.log(`[xyz-center-move-tx] commandId=${commandId} dx=${dx} dy=${dy}`);
     const moved = await this.runCommand(
@@ -1576,11 +1652,15 @@ class XyzPlatformSerialService extends EventEmitter {
       // The move itself succeeded with a real reply; report it rather than fail.
       // eslint-disable-next-line no-console
       console.warn(`[xyz-relocation-arrived] commandId=${commandId} note=confirm-query-unavailable`);
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-relocation-complete] commandId=${commandId} note=confirm-query-unavailable`);
       this.setState({ lastAction: 'Relocated to optical center.', lastError: undefined });
       return moved;
     }
     // eslint-disable-next-line no-console
     console.log(`[xyz-relocation-arrived] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-relocation-complete] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
     this.setState({ lastAction: 'Relocated to optical center.', lastError: undefined });
     return after;
   }
@@ -1593,14 +1673,19 @@ class XyzPlatformSerialService extends EventEmitter {
    */
   async setCenter(): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-set-center] commandId=${commandId} phase=request`);
     await this.ensureCenterLoaded();
     // eslint-disable-next-line no-console
     console.log(`[xyz-position-query] commandId=${commandId} phase=set-center`);
     const pos = await this.getPosition();
     if (!pos.ok) return pos;
     if (!pos.position) {
-      this.setState({ lastError: 'XYZ_STAGE_NO_POSITION' });
-      return { ok: false, error: 'XYZ_STAGE_NO_POSITION', commandId };
+      // Current position is unknown — refuse to teach a center from a fabricated
+      // 0,0. (req 6 exact operator message.)
+      const message = 'Cannot set center because current stage position is unknown.';
+      this.setState({ lastError: message });
+      return { ok: false, error: 'XYZ_STAGE_NO_POSITION', message, commandId };
     }
     this.centerX = pos.position.x;
     this.centerY = pos.position.y;
@@ -1624,6 +1709,8 @@ class XyzPlatformSerialService extends EventEmitter {
    */
   async home(): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-home-request] commandId=${commandId}`);
     if (!MOVE_COMMANDS_CONFIRMED) {
       return this.moveNotConfirmed('home');
     }

@@ -123,6 +123,28 @@ function formatCoordinate(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
+// Map a raw service error CODE to an operator-facing sentence. The backend now
+// sets friendly text on most failures, but command paths that return a bare code
+// (e.g. a move while unlocked) are normalised here too. Anything already written
+// as a sentence (or a backend friendly message) passes through unchanged.
+function friendlyXyzError(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  switch (raw) {
+    case 'XYZ_STAGE_PREEMPTED':
+      return 'Previous stage command was stopped to run the new command.';
+    case 'XYZ_STAGE_XY_UNLOCKED':
+      return 'Lock the X/Y stage before moving.';
+    case 'XYZ_STAGE_NOT_CONNECTED':
+      return 'XYZ stage is not connected. Connect the stage and try again.';
+    case 'XYZ_STAGE_NO_POSITION':
+      return 'Cannot read the stage position. Check connection and try again.';
+    case 'XYZ_STAGE_INVALID_SPEED':
+      return 'That speed is not available.';
+    default:
+      return raw;
+  }
+}
+
 function XYZPlatformTabImpl() {
   // The ONLY source of truth for everything rendered here is the backend
   // service snapshot. Every value below comes from `live`; no handler mutates
@@ -141,7 +163,7 @@ function XYZPlatformTabImpl() {
   const savedXyPort = serialSetting?.xyPortName?.trim() || null;
 
   const isBusy = hardware.busy;
-  const errorMessage = hardware.error ?? live.lastError ?? undefined;
+  const errorMessage = friendlyXyzError(hardware.error ?? live.lastError ?? undefined);
   // Movement is only allowed once the service reports a live connection (which
   // can only happen after an X/Y port is configured and Connect succeeds).
   const movementDisabled = isBusy || !live.connected;
@@ -181,6 +203,8 @@ function XYZPlatformTabImpl() {
 
   const handleXySpeedChange = useCallback(
     async (value: XySpeed) => {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-ui-action] action=set-xy-speed value=${value}`);
       const result = await hardware.setXySpeed(value);
       if (result.ok) persistSpeedPref({ xySpeed: value });
     },
@@ -204,10 +228,12 @@ function XYZPlatformTabImpl() {
   const startJog = useCallback(
     (direction: XyzDirection) => {
       if (joggingRef.current) return; // one jog at a time; ignore repeat presses
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-ui-action] action=jog-start direction=${direction} speed=${live.xySpeed}`);
       joggingRef.current = direction;
       void hardware.moveStage(direction);
     },
-    [hardware]
+    [hardware, live.xySpeed]
   );
 
   const stopJog = useCallback(() => {
@@ -254,6 +280,8 @@ function XYZPlatformTabImpl() {
 
   const handleXyLock = useCallback(
     (locked: boolean) => {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-ui-action] action=${locked ? 'lock-xy' : 'unlock-xy'}`);
       void (locked ? hardware.lockXy() : hardware.unlockXy());
     },
     [hardware]
@@ -282,22 +310,30 @@ function XYZPlatformTabImpl() {
   // If the center has not been taught the backend returns "XY center offset not
   // configured", surfaced in the Alert.
   const handleCenter = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ui-action] action=move-center homeBeforeRelocation=${homeBeforeRelocation}`);
     void hardware.moveToCenter({ homeBeforeRelocation });
   }, [hardware, homeBeforeRelocation]);
 
   const handleRelocation = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ui-action] action=relocation homeBeforeRelocation=${homeBeforeRelocation}`);
     void hardware.locateCenter({ homeBeforeRelocation });
   }, [hardware, homeBeforeRelocation]);
 
   // Teach the optical center from the current position (operator jogs the stage
   // to the camera center first, then clicks Set Center).
   const handleSetCenter = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ui-action] action=set-center');
     void hardware.setCenter();
   }, [hardware]);
 
   // Dedicated hardware home (#12!) — the controller's zero, separate from
   // Relocation so homing is an explicit, deliberate action.
   const handleHome = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ui-action] action=home');
     void hardware.home();
   }, [hardware]);
 
@@ -450,13 +486,13 @@ function XYZPlatformTabImpl() {
           />
 
           <Box sx={COORD_ROW_SX}>
-            <Typography sx={COORD_SX}>X: {formatCoordinate(pos.x)}</Typography>
-            <Typography sx={COORD_SX}>Y: {formatCoordinate(pos.y)}</Typography>
+            <Typography sx={COORD_SX}>X: {live.positionKnown ? formatCoordinate(pos.x) : '--'}</Typography>
+            <Typography sx={COORD_SX}>Y: {live.positionKnown ? formatCoordinate(pos.y) : '--'}</Typography>
             <Typography sx={COORD_SX}>
               Center:{' '}
               {live.centerX !== null && live.centerY !== null
                 ? `(${formatCoordinate(live.centerX)}, ${formatCoordinate(live.centerY)})`
-                : 'not set'}
+                : '--'}
             </Typography>
           </Box>
         </Box>
