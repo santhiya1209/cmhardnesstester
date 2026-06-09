@@ -51,8 +51,33 @@ export type XyzDirection =
 
 export type ZDirection = 'up' | 'down';
 
-export type XySpeed = 'slow' | 'mid' | 'fast' | 'ultra';
+// The four operator XY speed tiers. The six-tier expansion (medium / veryFast /
+// superFast / ultraFast) was reverted; those names are accepted ONLY as read-aliases
+// for rows persisted during that window and normalized back here so old data still
+// loads. ZSpeed is a separate axis enum, intentionally unchanged.
+export const XY_SPEED_MODES = ['slow', 'mid', 'fast', 'ultra'] as const;
+export type XySpeed = (typeof XY_SPEED_MODES)[number];
 export type ZSpeed = 'ultra' | 'fast' | 'slow';
+
+/**
+ * Reverse-aliases for values written by the (reverted) six-tier expansion: medium
+ * collapses to mid; the high tiers (veryFast/superFast/ultraFast) collapse to ultra.
+ */
+const XY_SPEED_ALIASES: Record<string, XySpeed> = {
+  medium: 'mid',
+  veryFast: 'ultra',
+  superFast: 'ultra',
+  ultraFast: 'ultra',
+};
+
+/**
+ * Normalize a possibly-legacy speed string to one of the four canonical XY tiers,
+ * or null if unrecognized. Canonical values pass through unchanged. Pure.
+ */
+export function normalizeXySpeed(value: string): XySpeed | null {
+  if ((XY_SPEED_MODES as readonly string[]).includes(value)) return value as XySpeed;
+  return XY_SPEED_ALIASES[value] ?? null;
+}
 
 export interface XyzPosition {
   x: number;
@@ -249,6 +274,88 @@ export function buildRelocationMoveCommand(dx: number, dy: number): XyzBuiltComm
 
 export function buildHomeCommand(): XyzBuiltCommand {
   return makeCommand('home', '#12!', 'ack-or-position');
+}
+
+// --- Move completion gating (settle-gate) -----------------------------------
+//
+// A relative move (#0C/#0E/#11) returns position frames; the controller emits an
+// in-motion (busy '-') snapshot BEFORE the final idle ('+') frame. Resolving the
+// command on that first busy snapshot completes the move early — the long axis has
+// barely moved while the short axis is already done, so the stage never reaches
+// target (it crept ~6 pulses/relocation). These pure predicates encode the rule
+// that move-class completion must wait for the IDLE frame, while every other
+// position consumer (get-position #10!, stop #0B) resolves on the first reply.
+
+/**
+ * Move-class commands (#0C move X, #0E move Y, #11 move XY) — the ONLY commands
+ * whose completion is settle-gated (must wait for an idle position frame). Stop,
+ * get-position, lock/unlock, speed and home are NOT move-class.
+ */
+export function isMoveClassCommand(key: XyzCommandKey): boolean {
+  return key === 'moveX' || key === 'moveY' || key === 'moveXy';
+}
+
+/**
+ * The controller's TRANSIENT busy reply (e.g. "ERRt!") seen when #10! is queried
+ * while the stage is still moving. Distinct from the hard "ERROR" protocol failure:
+ * during a move settle it means "still moving — retry", never success and never a
+ * hard error. Only recognised in the move-settle context by the caller.
+ */
+export function isBusyResponseToken(raw: string): boolean {
+  return /^ERRt!?$/i.test(raw.trim());
+}
+
+/**
+ * Whether a parsed position frame should COMPLETE the pending command. Move-class
+ * commands complete ONLY on an idle frame (busy === false); all other position
+ * consumers (#10! get-position, #0B stop) complete on the first valid frame.
+ */
+export function positionFrameCompletesCommand(key: XyzCommandKey, busy: boolean): boolean {
+  return isMoveClassCommand(key) ? !busy : true;
+}
+
+/** Whether each physical axis is inverted relative to operator intent. */
+export interface AxisInversion {
+  reverseX: boolean;
+  reverseY: boolean;
+}
+
+/**
+ * Operator-frame unit vector for each arrow BEFORE axis inversion: +x = right,
+ * +y = forward/up. The controller's native pulse sign is derived by applying the
+ * configured AxisInversion — so a reversed axis flips the commanded sign without
+ * touching the protocol bytes themselves.
+ */
+const JOG_VECTORS: Record<XyzDirection, { x: number; y: number }> = {
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+  forward: { x: 0, y: 1 },
+  back: { x: 0, y: -1 },
+  'forward-left': { x: -1, y: 1 },
+  'forward-right': { x: 1, y: 1 },
+  'back-left': { x: -1, y: -1 },
+  'back-right': { x: 1, y: -1 },
+};
+
+/**
+ * Build the single relative-move frame for a press-and-hold jog in `direction`,
+ * applying `invert` so the UI arrow matches physical operator expectation. Picks
+ * the narrowest frame for the axes that actually move:
+ *   x≠0 && y≠0 → #11 (both)   x≠0 → #0C (X only)   y≠0 → #0E (Y only)
+ * `pulses` is the bounded full-travel magnitude; the matching #0B! (release) is
+ * what actually stops the stage.
+ */
+export function buildJogMoveCommand(
+  direction: XyzDirection,
+  pulses: number,
+  invert: AxisInversion = { reverseX: false, reverseY: false }
+): XyzBuiltCommand {
+  const v = JOG_VECTORS[direction];
+  const x = (invert.reverseX ? -v.x : v.x) * pulses;
+  const y = (invert.reverseY ? -v.y : v.y) * pulses;
+  if (x !== 0 && y !== 0) return buildMoveXyCommand(x, y);
+  if (x !== 0) return buildMoveXCommand(x);
+  return buildMoveYCommand(y);
 }
 
 // --- RX parser --------------------------------------------------------------

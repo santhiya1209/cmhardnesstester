@@ -26,18 +26,37 @@ export interface XyzPosition {
 /** Mirrors the backend xyz-platform action-route result shape. */
 export type XyzCommandResult =
   | { ok: true; position?: XyzPosition; rx?: string; commandId: string }
-  | { ok: false; error: string; commandId?: string; message?: string };
+  | {
+      ok: false;
+      error: string;
+      commandId?: string;
+      message?: string;
+      /**
+       * True when a stop (#0B) intentionally preempted this command — expected
+       * jog control flow, NOT an error. Callers must not surface it to the user.
+       */
+      preempted?: boolean;
+    };
 
 /** Live stage state broadcast over the `xyz-platform:state` IPC event. */
 export interface XyzStageState {
   connected: boolean;
   port: string | null;
   serialMode: XyzSerialMode;
+  /** Raw hardware position in PULSES (exactly what the #11 frame reports). */
   position: XyzPosition;
+  /** Position in MILLIMETRES (pulses / pulsePerMm), derived in the backend from the
+   * same real #11 RX frame. This is the value shown in the UI — never computed here. */
+  positionMm: XyzPosition;
   xySpeed: XySpeed;
   zSpeed: ZSpeed;
   xyLocked: boolean;
   zLocked: boolean;
+  /** Z serial connection — INDEPENDENT of `connected` (the X/Y port). */
+  zConnected: boolean;
+  zPort: string | null;
+  /** True while a Z press-and-hold jog is in flight (separate from X/Y `moving`). */
+  zMoving: boolean;
   focusMode: FocusMode;
   moving: boolean;
   /** False until a real position frame has been received (UI shows "--"). */
@@ -120,6 +139,26 @@ export interface XyzLineControlEntry {
   txHex: string;
   rx: string | null;
   rxHex?: string;
+}
+
+/** One Z diagnostic probe — exact TX and whatever (if anything) came back. */
+export interface ZProbeResult {
+  label: string;
+  tx: string;
+  rx: string | null;
+  classification: 'ack' | 'status' | 'error' | 'unknown' | null;
+  error?: string;
+}
+
+/** Result of `window.xyzPlatform.diagnoseZ()` — see the [z-*] logs for detail. */
+export interface XyzZDiagnoseResult {
+  ok: boolean;
+  error?: string;
+  port: string | null;
+  baudRate: number | null;
+  anyRx: boolean;
+  probes: ZProbeResult[];
+  summary: string;
 }
 
 /** Result of `window.xyzPlatform.testLineControl()` — see the [xyz-line-control*] logs. */

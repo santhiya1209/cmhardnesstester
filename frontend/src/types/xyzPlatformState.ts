@@ -1,3 +1,5 @@
+// The four operator XY speed tiers. Any six-tier value from a row persisted during
+// that (reverted) window is normalized back by the backend before it reaches the UI.
 export type XySpeed = 'slow' | 'mid' | 'fast' | 'ultra';
 export type ZSpeed = 'ultra' | 'fast' | 'slow';
 export type FocusMode = 'manual' | 'cFocus' | 'fFocus';

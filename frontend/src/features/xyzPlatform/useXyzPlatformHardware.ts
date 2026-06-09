@@ -1,21 +1,26 @@
 import { useCallback, useState } from 'react';
 import {
   xyzConnect,
+  xyzConnectZ,
   xyzDisconnect,
+  xyzDisconnectZ,
   xyzGetPosition,
   xyzHome,
   xyzLocateCenter,
   xyzLockXy,
   xyzLockZ,
   xyzMoveStage,
+  xyzMoveStep,
   xyzMoveToCenter,
   xyzMoveZ,
+  xyzPollZStatus,
   xyzSetCenter,
   xyzSetFocusMode,
   xyzSetXySpeed,
   xyzSetZSpeed,
+  xyzStartZJog,
   xyzStopStage,
-  xyzStopZ,
+  xyzStopZJog,
   xyzUnlockXy,
   xyzUnlockZ,
 } from '@/api/xyzPlatform';
@@ -42,7 +47,9 @@ export function useXyzPlatformHardware() {
       setBusy(true);
       try {
         const result = await action();
-        setError(result.ok ? null : result.message ?? result.error);
+        // A preempted command is expected jog control flow, never a user error.
+        if (result.ok || result.preempted) setError(null);
+        else setError(result.message ?? result.error);
         return result;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -92,19 +99,71 @@ export function useXyzPlatformHardware() {
   // `moving` comes from the backend state broadcast, never from here.
   const moveStage = useCallback(async (direction: XyzDirection) => {
     const result = await xyzMoveStage(direction);
-    if (!result.ok) setError(result.message ?? result.error);
+    if (!result.ok && !result.preempted) setError(result.message ?? result.error);
+    return result;
+  }, []);
+  // Quick tap: a single finite step. Like moveStage it bypasses `run` (no busy
+  // toggle) so the arrow isn't disabled by a transient flag; `moving`/position
+  // still come only from the backend broadcast.
+  const moveStep = useCallback(async (direction: XyzDirection) => {
+    const result = await xyzMoveStep(direction);
+    if (!result.ok && !result.preempted) setError(result.message ?? result.error);
     return result;
   }, []);
   const stopStage = useCallback(async () => {
     const result = await xyzStopStage();
-    if (!result.ok) setError(result.message ?? result.error);
+    // A #0B that preempted an in-flight command is expected jog control flow.
+    if (!result.ok && !result.preempted) setError(result.message ?? result.error);
     return result;
   }, []);
-  const moveZ = useCallback(
-    (direction: ZDirection, speed: ZSpeed) => run(() => xyzMoveZ(direction, speed)),
-    [run]
-  );
-  const stopZ = useCallback(() => run(() => xyzStopZ()), [run]);
+  // Z quick-tap step + press-and-hold jog mirror their X/Y counterparts: they
+  // bypass `run` (no busy toggle) so a held Z arrow is never disabled mid-press;
+  // `zMoving` comes only from the backend broadcast.
+  const moveZ = useCallback(async (direction: ZDirection, speed: ZSpeed) => {
+    const result = await xyzMoveZ(direction, speed);
+    if (!result.ok && !result.preempted) setError(result.message ?? result.error);
+    return result;
+  }, []);
+  const startZJog = useCallback(async (direction: ZDirection) => {
+    const result = await xyzStartZJog(direction);
+    if (!result.ok && !result.preempted) setError(result.message ?? result.error);
+    return result;
+  }, []);
+  const stopZJog = useCallback(async () => {
+    const result = await xyzStopZJog();
+    if (!result.ok && !result.preempted) setError(result.message ?? result.error);
+    return result;
+  }, []);
+  // Kept for API symmetry; the backend single-shot Z stop routes to the jog stop.
+  const stopZ = stopZJog;
+  const pollZStatus = useCallback(() => run(() => xyzPollZStatus()), [run]);
+  // Dedicated Z connection — INDEPENDENT of the X/Y connect. Port is the operator-
+  // selected Z port from Serial Port Setting; empty fails honestly (no fallback).
+  const connectZ = useCallback(async (port: string, baudRate?: number) => {
+    const trimmed = port?.trim() ?? '';
+    if (!trimmed) {
+      setError('Z Axis port not configured');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await xyzConnectZ({ port: trimmed, baudRate });
+      if (!res.ok) setError(res.message ?? res.error ?? 'Z connect failed');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  const disconnectZ = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await xyzDisconnectZ();
+      if (!res.ok) setError(res.message ?? res.error ?? 'Z disconnect failed');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
   const lockZ = useCallback(() => run(() => xyzLockZ()), [run]);
   const unlockZ = useCallback(() => run(() => xyzUnlockZ()), [run]);
   const lockXy = useCallback(() => run(() => xyzLockXy()), [run]);
@@ -130,9 +189,15 @@ export function useXyzPlatformHardware() {
     connect,
     disconnect,
     moveStage,
+    moveStep,
     stopStage,
     moveZ,
     stopZ,
+    startZJog,
+    stopZJog,
+    pollZStatus,
+    connectZ,
+    disconnectZ,
     lockZ,
     unlockZ,
     lockXy,

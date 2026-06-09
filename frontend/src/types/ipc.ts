@@ -39,6 +39,7 @@ import type {
   XyzProbeResult,
   XyzStageState,
   XyzStageStateResponse,
+  XyzZDiagnoseResult,
   XySpeed,
   ZDirection,
   ZSpeed,
@@ -344,9 +345,22 @@ export interface XyzPlatformApi {
   probe(commandText: string, options?: XyzProbeOptions): Promise<XyzProbeResult>;
   /** Start a press-and-hold jog in `direction`. Release calls stopStage(). */
   moveStage(direction: XyzDirection): Promise<XyzCommandResult>;
+  /** Quick tap: move exactly the configured per-tier step distance once (RX-gated). */
+  moveStep(direction: XyzDirection): Promise<XyzCommandResult>;
   stopStage(): Promise<XyzCommandResult>;
+  /** Quick-tap Z step (one configured stepDistanceMm, RX-gated). */
   moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;
   stopZ(): Promise<XyzCommandResult>;
+  /** Open the dedicated Z serial connection on the configured Z port. */
+  connectZ(opts: { port: string; baudRate?: number }): Promise<XyzStageStateResponse>;
+  disconnectZ(): Promise<XyzStageStateResponse>;
+  /** Press-and-hold Z jog start (#+S#/#-S#). Release calls stopZJog(). */
+  startZJog(direction: ZDirection): Promise<XyzCommandResult>;
+  stopZJog(): Promise<XyzCommandResult>;
+  /** Poll Z status (#sss#). */
+  pollZStatus(): Promise<XyzCommandResult>;
+  /** Dev diagnostic — runs the legacy Z command sequence and reports TX/RX. */
+  diagnoseZ(options?: { includeJog?: boolean; speedRegisterValue?: number }): Promise<XyzZDiagnoseResult>;
   lockZ(): Promise<XyzCommandResult>;
   unlockZ(): Promise<XyzCommandResult>;
   lockXy(): Promise<XyzCommandResult>;

@@ -6,8 +6,12 @@ import {
 } from '../lib/services/xyz-platform-serial.service';
 import {
   ConnectStageSchema,
+  ConnectZSchema,
+  DiagnoseZSchema,
+  JogZSchema,
   ManualProbeSchema,
   MoveStageSchema,
+  MoveStepSchema,
   MoveZSchema,
   RelocateSchema,
   SetFocusModeSchema,
@@ -56,6 +60,15 @@ export async function moveStage(req: Request, res: Response): Promise<void> {
   sendResult(res, await xyzPlatformSerialService.moveStage(parsed.data.direction));
 }
 
+export async function moveStep(req: Request, res: Response): Promise<void> {
+  const parsed = MoveStepSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.moveStep(parsed.data.direction));
+}
+
 export async function stopStage(_req: Request, res: Response): Promise<void> {
   sendResult(res, await xyzPlatformSerialService.stopStage());
 }
@@ -71,6 +84,52 @@ export async function moveZ(req: Request, res: Response): Promise<void> {
 
 export async function stopZ(_req: Request, res: Response): Promise<void> {
   sendResult(res, await xyzPlatformSerialService.stopZ());
+}
+
+export async function connectZAxis(req: Request, res: Response): Promise<void> {
+  const parsed = ConnectZSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const state = await xyzPlatformSerialService.connectZ(parsed.data);
+    res.json({ ok: true, state });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, error: 'ConnectFailed', message });
+  }
+}
+
+export async function disconnectZAxis(_req: Request, res: Response): Promise<void> {
+  const state = await xyzPlatformSerialService.disconnectZ();
+  res.json({ ok: true, state });
+}
+
+export async function startZJog(req: Request, res: Response): Promise<void> {
+  const parsed = JogZSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.startZJog(parsed.data.direction));
+}
+
+export async function stopZJog(_req: Request, res: Response): Promise<void> {
+  sendResult(res, await xyzPlatformSerialService.stopZJog());
+}
+
+export async function pollZStatus(_req: Request, res: Response): Promise<void> {
+  sendResult(res, await xyzPlatformSerialService.pollZStatus());
+}
+
+export async function diagnoseZAxis(req: Request, res: Response): Promise<void> {
+  const parsed = DiagnoseZSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  res.json(await xyzPlatformSerialService.diagnoseZ(parsed.data));
 }
 
 export async function lockZ(_req: Request, res: Response): Promise<void> {
@@ -139,6 +198,8 @@ export async function locateStageCenter(req: Request, res: Response): Promise<vo
 }
 
 export async function setStageCenter(_req: Request, res: Response): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log('[xyz-set-center-request] route=/api/xyz-platform/set-center');
   sendResult(res, await xyzPlatformSerialService.setCenter());
 }
 

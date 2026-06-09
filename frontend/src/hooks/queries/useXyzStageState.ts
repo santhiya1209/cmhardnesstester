@@ -12,11 +12,19 @@ import type { FocusMode, XyzPosition, XySpeed, ZSpeed } from '@/types/xyzPlatfor
  */
 export interface XyzStageSnapshot {
   connected: boolean;
+  /** Raw hardware position in pulses. */
   position: XyzPosition;
+  /** Backend-derived position in mm (pulses / pulsePerMm) — the displayed value. */
+  positionMm: XyzPosition;
   xySpeed: XySpeed;
   zSpeed: ZSpeed;
   xyLocked: boolean;
   zLocked: boolean;
+  /** Z serial connection — independent of `connected` (the X/Y port). */
+  zConnected: boolean;
+  zPort: string | null;
+  /** True while a Z press-and-hold jog is in flight (separate from `moving`). */
+  zMoving: boolean;
   focusMode: FocusMode;
   moving: boolean;
   /** False until a real position frame has been received (UI shows "--"). */
@@ -31,10 +39,14 @@ export interface XyzStageSnapshot {
 const INITIAL: XyzStageSnapshot = {
   connected: false,
   position: { x: 0, y: 0, z: 0 },
+  positionMm: { x: 0, y: 0, z: 0 },
   xySpeed: 'slow',
   zSpeed: 'fast',
   xyLocked: false,
   zLocked: false,
+  zConnected: false,
+  zPort: null,
+  zMoving: false,
   focusMode: 'manual',
   moving: false,
   positionKnown: false,
@@ -56,19 +68,31 @@ export function useXyzStageState(): XyzStageSnapshot {
   useEffect(() => {
     const unsubscribe = subscribeXyzStageState((state) => {
       const { x, y, z } = state.position;
+      // mm mirror from the backend; fall back to pulses only if an older backend
+      // build omits the field (so the UI never crashes on a missing positionMm).
+      const mm = state.positionMm ?? state.position;
       const lastError = state.lastError ?? null;
       const centerX = state.centerX ?? null;
       const centerY = state.centerY ?? null;
       const positionKnown = state.positionKnown ?? false;
+      const zConnected = state.zConnected ?? false;
+      const zPort = state.zPort ?? null;
+      const zMoving = state.zMoving ?? false;
       const key = [
         state.connected,
         x,
         y,
         z,
+        mm.x,
+        mm.y,
+        mm.z,
         state.xySpeed,
         state.zSpeed,
         state.xyLocked,
         state.zLocked,
+        zConnected,
+        zPort ?? '',
+        zMoving,
         state.focusMode,
         state.moving,
         positionKnown,
@@ -82,10 +106,14 @@ export function useXyzStageState(): XyzStageSnapshot {
       setSnapshot({
         connected: state.connected,
         position: { x, y, z },
+        positionMm: { x: mm.x, y: mm.y, z: mm.z },
         xySpeed: state.xySpeed,
         zSpeed: state.zSpeed,
         xyLocked: state.xyLocked,
         zLocked: state.zLocked,
+        zConnected,
+        zPort,
+        zMoving,
         focusMode: state.focusMode,
         moving: state.moving,
         positionKnown,

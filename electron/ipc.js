@@ -191,7 +191,10 @@ const XYZ_DIRECTIONS = new Set([
   'back-right',
 ]);
 const XYZ_Z_DIRECTIONS = new Set(['up', 'down']);
-const XYZ_XY_SPEEDS = new Set(['slow', 'mid', 'fast', 'ultra']);
+// The four operator XY tiers. The reverted six-tier names (medium/veryFast/
+// superFast/ultraFast) are still forwarded to the backend, which reverse-normalizes
+// them, so a stale renderer can't be hard-blocked here. Z speeds are a separate enum.
+const XYZ_XY_SPEEDS = new Set(['slow', 'mid', 'fast', 'ultra', 'medium', 'veryFast', 'superFast', 'ultraFast']);
 const XYZ_Z_SPEEDS = new Set(['ultra', 'fast', 'slow']);
 const XYZ_FOCUS_MODES = new Set(['manual', 'cFocus', 'fFocus']);
 const ZAXIS_IMAGE_SELECTIONS = new Set([30, 40, 50, 60, 70, 80, 90, 100]);
@@ -210,6 +213,13 @@ function validateXyzZMovePayload(payload) {
   if (!XYZ_Z_DIRECTIONS.has(direction)) throw new Error('invalid z direction');
   if (!XYZ_Z_SPEEDS.has(speed)) throw new Error('invalid z speed');
   return { direction, speed };
+}
+
+// Press-and-hold Z jog: direction only (speed is backend-owned state).
+function validateXyzZDirectionPayload(payload) {
+  const direction = payload && typeof payload.direction === 'string' ? payload.direction : '';
+  if (!XYZ_Z_DIRECTIONS.has(direction)) throw new Error('invalid z direction');
+  return { direction };
 }
 
 let machineEventBridgeStarted = false;
@@ -615,6 +625,14 @@ function registerIpc() {
     return machineBackendRequest('/api/xyz-platform/move-stage', { method: 'POST', body });
   });
 
+  ipcMain.handle('xyz-platform:move-step', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const body = validateXyzMovePayload(payload);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=moveStep direction=${body.direction}`);
+    return machineBackendRequest('/api/xyz-platform/move-step', { method: 'POST', body });
+  });
+
   ipcMain.handle('xyz-platform:stop-stage', async () => {
     startXyzPlatformEventBridge();
     // eslint-disable-next-line no-console
@@ -635,6 +653,73 @@ function registerIpc() {
     // eslint-disable-next-line no-console
     console.log('[xyz-ipc] method=stopZ');
     return machineBackendRequest('/api/xyz-platform/stop-z', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:connect-z', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    // Port is the operator-selected Z port from Serial Port Setting — NO hardcoded
+    // COM, NO fallback, NO auto-scan. Reject empty, and guard against opening a port
+    // already used by the micrometer (the backend separately rejects the machine
+    // port; the settings dialog prevents Z == X/Y).
+    const port = payload && typeof payload.port === 'string' ? payload.port.trim() : '';
+    if (!port) {
+      // eslint-disable-next-line no-console
+      console.error('[z-error] error="Z Axis port not configured"');
+      return { ok: false, error: 'XYZ_Z_PORT_NOT_CONFIGURED', message: 'Z Axis port not configured' };
+    }
+    const micPort = micrometerService.getState().portName;
+    if (micPort && port === micPort) {
+      const message = 'Z port cannot use micrometer COM port';
+      // eslint-disable-next-line no-console
+      console.error(`[z-error] error="${message}"`);
+      return { ok: false, error: 'XYZ_Z_PORT_CONFLICT', message };
+    }
+    const body = { port };
+    if (payload && typeof payload.baudRate === 'number') body.baudRate = payload.baudRate;
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=connectZ port=${port} baudRate=${body.baudRate ?? 'default'}`);
+    return machineBackendRequest('/api/xyz-platform/connect-z', { method: 'POST', body });
+  });
+
+  ipcMain.handle('xyz-platform:disconnect-z', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=disconnectZ');
+    return machineBackendRequest('/api/xyz-platform/disconnect-z', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:start-z-jog', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const body = validateXyzZDirectionPayload(payload);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=startZJog direction=${body.direction}`);
+    return machineBackendRequest('/api/xyz-platform/start-z-jog', { method: 'POST', body });
+  });
+
+  ipcMain.handle('xyz-platform:stop-z-jog', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=stopZJog');
+    return machineBackendRequest('/api/xyz-platform/stop-z-jog', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:poll-z-status', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=pollZStatus');
+    return machineBackendRequest('/api/xyz-platform/poll-z-status', { method: 'POST', body: {} });
+  });
+
+  ipcMain.handle('xyz-platform:diagnose-z', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const body = {};
+    if (payload && typeof payload.includeJog === 'boolean') body.includeJog = payload.includeJog;
+    if (payload && typeof payload.speedRegisterValue === 'number') {
+      body.speedRegisterValue = payload.speedRegisterValue;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=diagnoseZ includeJog=${!!body.includeJog}`);
+    return machineBackendRequest('/api/xyz-platform/diagnose-z', { method: 'POST', body });
   });
 
   ipcMain.handle('xyz-platform:lock-z', async () => {
@@ -719,6 +804,8 @@ function registerIpc() {
 
   ipcMain.handle('xyz-platform:set-center', async () => {
     startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=setCenter');
     return machineBackendRequest('/api/xyz-platform/set-center', { method: 'POST', body: {} });
   });
 

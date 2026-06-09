@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import {
   connectStage,
+  connectZAxis,
   diagnoseStage,
+  diagnoseZAxis,
   disconnectStage,
+  disconnectZAxis,
   getStagePosition,
   getStageState,
   homeStage,
@@ -11,14 +14,18 @@ import {
   lockZ,
   moveStage,
   moveStageToCenter,
+  moveStep,
   moveZ,
+  pollZStatus,
   probeStage,
   setFocusMode,
   setStageCenter,
   setXySpeed,
   setZSpeed,
+  startZJog,
   stopStage,
   stopZ,
+  stopZJog,
   streamStageEvents,
   testLineControlStage,
   unlockXy,
@@ -43,9 +50,16 @@ router.post('/test-line-control', testLineControlStage);
 router.post('/probe', probeStage);
 router.post('/disconnect', disconnectStage);
 router.post('/move-stage', moveStage);
+router.post('/move-step', moveStep);
 router.post('/stop-stage', stopStage);
 router.post('/move-z', moveZ);
 router.post('/stop-z', stopZ);
+router.post('/connect-z', connectZAxis);
+router.post('/disconnect-z', disconnectZAxis);
+router.post('/start-z-jog', startZJog);
+router.post('/stop-z-jog', stopZJog);
+router.post('/poll-z-status', pollZStatus);
+router.post('/diagnose-z', diagnoseZAxis);
 router.post('/lock-z', lockZ);
 router.post('/unlock-z', unlockZ);
 router.post('/lock-xy', lockXy);

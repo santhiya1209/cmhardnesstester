@@ -2,10 +2,8 @@ import { EventEmitter } from 'node:events';
 import {
   buildGetPositionCommand,
   buildHomeCommand,
+  buildJogMoveCommand,
   buildLockXyCommand,
-  buildMoveXCommand,
-  buildMoveXyCommand,
-  buildMoveYCommand,
   buildRelocationMoveCommand,
   buildSetXAccelerationCommand,
   buildSetXBeginSpeedCommand,
@@ -16,8 +14,13 @@ import {
   buildStopXyCommand,
   buildUnlockXyCommand,
   buildXyVisibleCommandPayload,
+  isBusyResponseToken,
+  isMoveClassCommand,
+  normalizeXySpeed,
   parseXyzFrame,
+  positionFrameCompletesCommand,
   type XyzBuiltCommand,
+  type XyzCommandKey,
   type XyzExpect,
   type XyzProtocolMode,
   type XyzDirection,
@@ -28,15 +31,80 @@ import {
 } from './xyz-platform-protocol';
 import { getSerialQueue } from './serial-command-queue';
 import { hardnessMachineSerialService } from './hardness-machine-serial.service';
+import {
+  zAxisSerialService,
+  type ConnectZOptions,
+  type ZCommandResult,
+  type ZDiagnoseResult,
+} from './z-axis-serial.service';
+import { resolveZSign, zMmToPulses, zSpeedRegisterValue } from './z-axis-protocol';
+import { zSettingsService } from './z-settings.service';
 import { randomUUID } from 'node:crypto';
 import { readCollection } from '../db';
 import { upsertRows } from '../sqlite';
 import type { XYZCenterCalibration } from '../../models/xyz-center-calibration';
 import {
   DEFAULT_XYZ_PLATFORM_SETTINGS,
+  type XyzSpeedProfile,
   type XYZPlatformSettings,
   type XYZPlatformSettingsPayload,
 } from '../../models/xyz-platform-settings';
+
+/**
+ * Normalize a persisted XY Platform Settings row to the CURRENT shape. Rows saved
+ * by an older build may still carry the legacy speed-profile fields
+ * (stepDistanceMm / beginSpeedMmS / accelerationMmS2 / finalSpeedMmS /
+ * registerValue) and lack the new begin/accel/final register values — those legacy
+ * fields are ignored and any missing new field is filled from
+ * DEFAULT_XYZ_PLATFORM_SETTINGS. This guarantees the backend never builds a #05–#0A
+ * frame from an `undefined` register value. Pure settings-shape normalization — no
+ * movement, no serial side effect, no fabricated hardware value.
+ */
+function normalizeXyzSettings(
+  row: Partial<XYZPlatformSettings> | null | undefined
+): XYZPlatformSettingsPayload {
+  const d = DEFAULT_XYZ_PLATFORM_SETTINGS;
+  if (!row) return structuredClone(d);
+  const rawProfiles = (row.speedProfiles ?? {}) as Record<string, Partial<XyzSpeedProfile>>;
+  // A row persisted during the (reverted) six-tier window keyed these tiers as
+  // medium/ultraFast — fall back to those so an operator's customized values still
+  // carry into mid/ultra.
+  const legacyProfileKey: Record<string, string> = { mid: 'medium', ultra: 'ultraFast' };
+  const modes = Object.keys(d.speedProfiles) as Array<keyof typeof d.speedProfiles>;
+  const speedProfiles = Object.fromEntries(
+    modes.map((mode) => {
+      const def = d.speedProfiles[mode];
+      const p = rawProfiles[mode] ?? rawProfiles[legacyProfileKey[mode]] ?? {};
+      return [
+        mode,
+        {
+          beginRegisterValue: p.beginRegisterValue ?? def.beginRegisterValue,
+          accelerationRegisterValue: p.accelerationRegisterValue ?? def.accelerationRegisterValue,
+          finalRegisterValue: p.finalRegisterValue ?? def.finalRegisterValue,
+          approxMmS: p.approxMmS ?? def.approxMmS,
+          // Per-tap step distance; fall back to the tier default when an older row
+          // has no value so a quick tap always has a defined distance to move.
+          stepDistanceMm: p.stepDistanceMm ?? def.stepDistanceMm,
+        },
+      ];
+    })
+  ) as XYZPlatformSettingsPayload['speedProfiles'];
+  return {
+    runningByNewThread: row.runningByNewThread ?? d.runningByNewThread,
+    hasEmptyTrip: row.hasEmptyTrip ?? d.hasEmptyTrip,
+    reverseXAxis: row.reverseXAxis ?? d.reverseXAxis,
+    reverseYAxis: row.reverseYAxis ?? d.reverseYAxis,
+    pulsePerMm: row.pulsePerMm ?? d.pulsePerMm,
+    travelXmm: row.travelXmm ?? d.travelXmm,
+    travelYmm: row.travelYmm ?? d.travelYmm,
+    physicalCenterXmm: row.physicalCenterXmm ?? d.physicalCenterXmm,
+    physicalCenterYmm: row.physicalCenterYmm ?? d.physicalCenterYmm,
+    physicalCenterXpulses: row.physicalCenterXpulses ?? d.physicalCenterXpulses,
+    physicalCenterYpulses: row.physicalCenterYpulses ?? d.physicalCenterYpulses,
+    emptyTrip: { ...d.emptyTrip, ...(row.emptyTrip ?? {}) },
+    speedProfiles,
+  };
+}
 
 // Defensive require so the backend keeps booting even if `serialport` is not
 // rebuilt for the current Node ABI yet — mirrors the hardness-machine service.
@@ -109,14 +177,6 @@ const TX_TIMEOUT_MS = 5000;
 // Per-probe RX collection window used only by diagnose(). Short because a live
 // controller answers within a few hundred ms; long enough to catch a slow reply.
 const PROBE_WINDOW_MS = 800;
-// Fixed, validated XY speed tiers in mm/s. These are the ONLY accepted speed
-// modes — no free/custom value ever comes from the renderer. The numeric mm/s
-// is written directly to the controller's #05–#0A speed registers (the register
-// unit is treated as mm/s until a real pulses/mm calibration is established).
-// Valid XY speed tiers. The actual value written to #05–#0A comes from the
-// operator's XY Platform Settings (`speedProfiles[mode].registerValue`); this map
-// is only the set of legal modes + the ultimate default if settings are absent.
-const XY_SPEED_LIMITS: Record<XySpeed, number> = { slow: 1, mid: 5, fast: 10, ultra: 20 };
 // Press-and-hold JOG: the confirmed protocol has no continuous-motion command,
 // so a jog press sends ONE relative move with a large, bounded full-travel pulse
 // count and the release sends Stop (#0B). Bounded (not the 8-digit max) so a
@@ -127,9 +187,6 @@ const JOG_PULSES = 1_000_000;
 // starts (release event missed, renderer/IPC dropped), the service sends #0B
 // itself. Bounds runaway TIME just as JOG_PULSES bounds runaway DISTANCE.
 const JOG_WATCHDOG_MS = 10_000;
-// No confirmed Z protocol bytes exist yet — Z actions return this distinct code
-// so the UI/logs show a not-mapped feature, NOT a serial/ACK failure.
-const Z_NOT_CONFIGURED = 'XYZ_Z_COMMAND_NOT_MAPPED';
 // X/Y MOVE/HOME protocol is HARDWARE-VERIFIED (Hercules): moveX #0C, moveY #0E,
 // moveXY #11 (position reply), home #12 (no immediate ACK -> query #10! after a
 // delay). Movement is RX-gated: success only from a real position reply (no fake
@@ -138,6 +195,12 @@ const MOVE_COMMANDS_CONFIRMED = true;
 const MOVE_NOT_CONFIRMED = 'XYZ_STAGE_COMMAND_NOT_CONFIRMED';
 // Home (#12!) returns no immediate reply — wait this long, then read position.
 const HOME_QUERY_DELAY_MS = 1500;
+// Settle poll for move-class commands (#0C/#0E/#11): after a busy ('-') position
+// frame, re-query #10! this often to elicit the final idle ('+') frame that
+// completes the move. Small and conservative; the move's existing TX_TIMEOUT_MS
+// is the hard ceiling (the poll never extends it). Only ever ONE poll is in flight
+// and only while the original move command is still pending — no concurrent TX.
+const SETTLE_POLL_MS = 120;
 // Relocation target is the OPERATOR-TAUGHT optical center (absolute pulses). It
 // is distinct from the controller's hardware zero (#12! home). Until taught,
 // Relocation fails honestly with this message — it never homes as a fallback and
@@ -168,6 +231,20 @@ function friendlyXyzMessage(code: string): string {
       return 'Cannot read the stage position. Check connection and try again.';
     case CENTER_NOT_CONFIGURED:
       return 'Please set center before relocation.';
+    case 'Z Axis port not configured':
+      return 'Z Axis port not configured. Set it in Serial Port Setting.';
+    case 'XYZ_Z_NOT_CONNECTED':
+      return 'Z axis is not connected. Connect the Z port and try again.';
+    case 'XYZ_Z_UNLOCKED':
+      return 'Lock the Z axis before moving.';
+    case 'XYZ_Z_BUSY':
+      return 'Z axis is already moving.';
+    case 'XYZ_Z_STOP_UNCONFIRMED':
+      return 'Z jog stop was not confirmed by the controller. Check the Z connection.';
+    case 'XYZ_Z_TIMEOUT':
+      return 'The Z controller did not respond. Check the Z connection and try again.';
+    case 'Z_STAGE_PROTOCOL_ERROR':
+      return 'The Z controller reported an error (ERROR).';
     default:
       return STAGE_COMMAND_FAILED_MESSAGE;
   }
@@ -181,11 +258,27 @@ export interface XyzStageState {
   connected: boolean;
   port: string | null;
   serialMode: XyzSerialMode;
+  /** Raw hardware position in PULSES (exactly what the #11 frame reports). */
   position: XyzPosition;
+  /**
+   * Position in MILLIMETRES — `position` pulses divided by the configured
+   * pulsePerMm. Derived in the backend from the SAME real #11 RX frame as
+   * `position` (never computed/simulated in the frontend); this is the value the
+   * UI displays.
+   */
+  positionMm: XyzPosition;
   xySpeed: XySpeed;
   zSpeed: ZSpeed;
   xyLocked: boolean;
   zLocked: boolean;
+  /**
+   * Z serial connection state — INDEPENDENT of `connected` (which is the X/Y
+   * port). The Z axis is a separate physical connection on its own port.
+   */
+  zConnected: boolean;
+  zPort: string | null;
+  /** True while a Z press-and-hold jog is in flight (separate from X/Y `moving`). */
+  zMoving: boolean;
   focusMode: FocusMode;
   moving: boolean;
   /**
@@ -214,7 +307,18 @@ export interface ConnectStageOptions {
 
 export type XyzCommandResult =
   | { ok: true; position?: XyzPosition; rx?: string; commandId: string }
-  | { ok: false; error: string; commandId?: string; message?: string };
+  | {
+      ok: false;
+      error: string;
+      commandId?: string;
+      message?: string;
+      /**
+       * True when this command failed because a stop (#0B) intentionally
+       * preempted it — expected jog control flow, NOT a hardware error. Callers
+       * must treat it as a no-op (no error toast), never as a failure.
+       */
+      preempted?: boolean;
+    };
 
 export interface XyzOpenSettings {
   baudRate: number;
@@ -290,10 +394,14 @@ const DEFAULT_STATE: XyzStageState = {
   port: null,
   serialMode: 'unknown',
   position: { x: 0, y: 0, z: 0 },
+  positionMm: { x: 0, y: 0, z: 0 },
   xySpeed: 'slow',
   zSpeed: 'fast',
   xyLocked: false,
   zLocked: false,
+  zConnected: false,
+  zPort: null,
+  zMoving: false,
   focusMode: 'manual',
   moving: false,
   positionKnown: false,
@@ -301,18 +409,6 @@ const DEFAULT_STATE: XyzStageState = {
   centerY: null,
   lastAction: 'XYZ stage idle.',
   updatedAt: new Date().toISOString(),
-};
-
-const MOVE_BUILDERS: Record<XyzDirection, (pulses: number) => XyzBuiltCommand> = {
-  // left = X negative, right = X positive, forward = Y positive, back = Y negative.
-  left: (p) => buildMoveXCommand(-p),
-  right: (p) => buildMoveXCommand(p),
-  forward: (p) => buildMoveYCommand(p),
-  back: (p) => buildMoveYCommand(-p),
-  'forward-left': (p) => buildMoveXyCommand(-p, p),
-  'forward-right': (p) => buildMoveXyCommand(p, p),
-  'back-left': (p) => buildMoveXyCommand(-p, -p),
-  'back-right': (p) => buildMoveXyCommand(p, -p),
 };
 
 function hexSpaced(buf: Buffer): string {
@@ -339,9 +435,19 @@ class XyzPlatformSerialService extends EventEmitter {
   private pendingReject: ((err: Error) => void) | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingCommandId: string | null = null;
+  // Epoch ms when the in-flight command registered its waiter — used to report
+  // oldCommandAgeMs in [xyz-preempt] when a stop interrupts it.
+  private pendingStartedAt: number | null = null;
   // RX kind the in-flight command is waiting for — logged in [xyz-ack-match] /
   // [xyz-rx-unmatched] so an unexpected reply is traceable to what was expected.
   private pendingExpect: XyzExpect | null = null;
+  // Protocol command id of the in-flight command (e.g. 'moveXy', 'getPosition').
+  // Drives the move-class settle-gate: a move (#0C/#0E/#11) completes only on an
+  // idle position frame, every other consumer on the first reply.
+  private pendingKey: XyzCommandKey | null = null;
+  // Active move-settle re-query timer (#10!). Non-null only while a move-class
+  // command is waiting out a busy ('-') frame. One poll in flight at a time.
+  private settlePollTimer: ReturnType<typeof setTimeout> | null = null;
   // In-flight TX context, surfaced in [xyz-protocol-error] (label + tx text/hex).
   private pendingLabel: string | null = null;
   private pendingTxVisible: string | null = null;
@@ -377,9 +483,32 @@ class XyzPlatformSerialService extends EventEmitter {
   // Active press-and-hold jog safety watchdog. Non-null only while a jog is in
   // flight; fires Stop (#0B) if the release event is missed.
   private jogWatchdog: ReturnType<typeof setTimeout> | null = null;
+  // True only while a press-and-hold jog is in flight — between moveStage's TX
+  // accept and stopStage's #0B RX. The jog move is sent fire-and-forget, so there
+  // is NO pending command and the controller's in-motion #11 frames arrive
+  // UNSOLICITED. While this is set, such a frame updates X/Y but must NOT clear
+  // `moving` or be treated as move completion: only the #0B stop reply ends a jog.
+  private jogActive = false;
+  // Per-axis travel bound in pulses (travelMm * pulsePerMm), refreshed whenever
+  // settings load. Used ONLY to warn when an RX position exceeds the expected
+  // range — never to clamp or fabricate a coordinate. Seeded from the confirmed
+  // defaults so the bound is valid before the first settings read.
+  private travelLimitPulses = {
+    x: DEFAULT_XYZ_PLATFORM_SETTINGS.travelXmm * DEFAULT_XYZ_PLATFORM_SETTINGS.pulsePerMm,
+    y: DEFAULT_XYZ_PLATFORM_SETTINGS.travelYmm * DEFAULT_XYZ_PLATFORM_SETTINGS.pulsePerMm,
+  };
+  // The ONE mm↔pulse factor used to convert a hardware #11 position (pulses) into
+  // the displayed mm value. Cached so the synchronous RX frame handler can convert
+  // without an async settings read; refreshed from the active settings whenever
+  // loadActiveSettings() runs. Seeded from the confirmed default until the first load.
+  private pulsePerMm = DEFAULT_XYZ_PLATFORM_SETTINGS.pulsePerMm;
 
   getState(): XyzStageState {
-    return { ...this.state, position: { ...this.state.position } };
+    return {
+      ...this.state,
+      position: { ...this.state.position },
+      positionMm: { ...this.state.positionMm },
+    };
   }
 
   isConnected(): boolean {
@@ -391,11 +520,12 @@ class XyzPlatformSerialService extends EventEmitter {
       ...this.state,
       ...patch,
       position: patch.position ? { ...patch.position } : { ...this.state.position },
+      positionMm: patch.positionMm ? { ...patch.positionMm } : { ...this.state.positionMm },
       updatedAt: new Date().toISOString(),
     };
     // eslint-disable-next-line no-console
     console.log(
-      `[xyz-state-broadcast] connected=${this.state.connected} x=${this.state.positionKnown ? this.state.position.x : 'unknown'} y=${this.state.positionKnown ? this.state.position.y : 'unknown'} moving=${this.state.moving} xyLocked=${this.state.xyLocked} xySpeed=${this.state.xySpeed} lastError=${JSON.stringify(this.state.lastError ?? null)}`
+      `[xyz-state-broadcast] connected=${this.state.connected} x=${this.state.positionKnown ? this.state.position.x : 'unknown'} y=${this.state.positionKnown ? this.state.position.y : 'unknown'} moving=${this.state.moving} xyLocked=${this.state.xyLocked} xySpeed=${this.state.xySpeed} centerX=${this.state.centerX ?? 'unset'} centerY=${this.state.centerY ?? 'unset'} lastError=${JSON.stringify(this.state.lastError ?? null)}`
     );
     this.emit('state', this.getState());
   }
@@ -571,6 +701,8 @@ class XyzPlatformSerialService extends EventEmitter {
     portInstance.on('close', () => {
       this.port = null;
       this.rxBuffer = '';
+      this.clearJogWatchdog();
+      this.jogActive = false;
       this.setState({ connected: false, port: null, moving: false });
     });
 
@@ -599,6 +731,14 @@ class XyzPlatformSerialService extends EventEmitter {
       // eslint-disable-next-line no-console
       console.warn(`[xyz-speed] action=restore result=failed error=${JSON.stringify(speedApplied.error)}`);
     }
+    // Document the GEOMETRIC travel center (fixed machine geometry, pulses =
+    // centerMm * pulsePerMm). It is recorded for reference ONLY — relocation uses
+    // the operator-taught optical center, NEVER this value (and never home 0,0).
+    const settings = await this.loadActiveSettings();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[xyz-physical-center] xPulses=${settings.physicalCenterXpulses} yPulses=${settings.physicalCenterYpulses} xMm=${settings.physicalCenterXmm} yMm=${settings.physicalCenterYmm} pulsePerMm=${settings.pulsePerMm} note=documented-not-used-for-relocation`
+    );
     return this.getState();
   }
 
@@ -610,6 +750,8 @@ class XyzPlatformSerialService extends EventEmitter {
       this.port = null;
     }
     this.rxBuffer = '';
+    this.clearJogWatchdog();
+    this.jogActive = false;
     this.setState({ connected: false, port: null, moving: false, lastAction: 'XYZ stage disconnected.' });
     return this.getState();
   }
@@ -1077,18 +1219,110 @@ class XyzPlatformSerialService extends EventEmitter {
     switch (parsed.kind) {
       case 'position': {
         const position: XyzPosition = { x: parsed.x, y: parsed.y, z: this.state.position.z };
+        // Convert the RAW hardware pulses to MILLIMETRES with the configured factor.
+        // This is the SINGLE conversion site; the frontend displays this verbatim.
+        const ppm = this.pulsePerMm > 0 ? this.pulsePerMm : 1;
+        const positionMm: XyzPosition = {
+          x: parsed.x / ppm,
+          y: parsed.y / ppm,
+          z: this.state.position.z / ppm,
+        };
+        const action = this.pendingLabel ?? 'none';
+        const moveClass = this.isMoveClassPending();
+        // [xyz-move-frame] — every position frame seen while a command waits, with
+        // its busy/idle status. For a move (#0C/#0E/#11) this is the frame the
+        // settle-gate evaluates: idle ('+') completes, busy ('-') keeps waiting.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[xyz-move-frame] commandId=${commandId} action=${JSON.stringify(action)} expect=${expected} status=${JSON.stringify(parsed.status)} busy=${parsed.busy} x=${parsed.x} y=${parsed.y}`
+        );
         // eslint-disable-next-line no-console
         console.log(`[xyz-position-parse] commandId=${commandId} x=${parsed.x} y=${parsed.y} status=${JSON.stringify(parsed.status)} busy=${parsed.busy}`);
+        // Status-character diagnostic. Surfaces the RAW status byte alongside the
+        // CURRENT busy decision (only '-' => busy today) so a hardware run can
+        // confirm what '+' / '/' / '.' / '-' actually mean BEFORE any busy/idle
+        // logic is changed. Logging only — does not alter completion behavior.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[xyz-status-char] raw=${JSON.stringify(parsed.status)} computedBusy=${parsed.busy} commandId=${commandId} action=${JSON.stringify(action)} x=${parsed.x} y=${parsed.y}`
+        );
         // eslint-disable-next-line no-console
         console.log(`[xyz-position-rx] commandId=${commandId} x=${parsed.x} y=${parsed.y} busy=${parsed.busy}`);
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-position] commandId=${commandId} x=${parsed.x} y=${parsed.y} busy=${parsed.busy} status=${JSON.stringify(parsed.status)}`);
         if (parsed.checksum !== undefined && parsed.checksumExpected !== undefined) {
           // eslint-disable-next-line no-console
           console.log(`[xyz-rx-checksum] commandId=${commandId} kind=position rx=${hexByte(parsed.checksum)} expectedSum=${hexByte(parsed.checksumExpected)} match=${parsed.checksum === parsed.checksumExpected}`);
         }
         // Position is a REAL reply (e.g. from #10!), not optimistic. busy flag is
         // truthful motion state derived from the frame. positionKnown latches true
-        // so the UI can stop showing "--".
-        this.setState({ position, positionKnown: true, moving: parsed.busy, lastError: undefined });
+        // so the UI can stop showing "--". ALWAYS broadcast the real RX position —
+        // even when the move is still settling — so the UI tracks live motion.
+        // This is the ONLY site that mutates the displayed X/Y, and it fires solely
+        // from a parsed hardware position frame — never a fixed software increment.
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-position-update] x=${parsed.x} y=${parsed.y} source=hardware`);
+        // Conversion trace: raw pulses in, mm out, with the factor used. Proof that
+        // the displayed mm is derived from a real RX frame, not a frontend guess.
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-position-raw] commandId=${commandId} rawX=${parsed.x} rawY=${parsed.y}`);
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-position-mm] commandId=${commandId} mmX=${positionMm.x} mmY=${positionMm.y} pulsePerMm=${ppm}`);
+        // ACTIVE-JOG GUARD. During a press-and-hold jog the move was sent
+        // fire-and-forget (no pending command), so these #11 frames are UNSOLICITED
+        // in-motion telemetry. They update the live X/Y but must NOT clear `moving`
+        // (a transient '+'/',' status mid-jog would otherwise broadcast moving=false
+        // and stop the jog early) and must NOT resolve/complete any command. Only the
+        // #0B stop reply — which runs as a PENDING command (pendingCommandId set) —
+        // ends a jog, so it deliberately bypasses this guard.
+        if (this.jogActive && this.pendingCommandId === null) {
+          // eslint-disable-next-line no-console
+          console.log(`[xyz-jog-position-update] x=${parsed.x} y=${parsed.y} moving=true commandId=none`);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[xyz-jog-ignore-unsolicited-complete] x=${parsed.x} y=${parsed.y} status=${JSON.stringify(parsed.status)} busy=${parsed.busy} reason=active-jog`
+          );
+          this.setState({ position, positionMm, positionKnown: true, moving: true, lastError: undefined });
+          break; // do NOT complete/resolve/stop the jog on an unsolicited frame
+        }
+        this.setState({ position, positionMm, positionKnown: true, moving: parsed.busy, lastError: undefined });
+        // Travel-range SAFETY warning only — the real RX value is kept as-is (never
+        // clamped or faked). Coordinates are SIGNED (+/-): negative positions are
+        // normal hardware output (confirmed by RX logs, e.g. x=-179), so the bound
+        // is on MAGNITUDE (|pos| > travel), NOT a >= 0 floor. A value outside
+        // ±travel is logged for the operator to notice a mis-home / runaway, not
+        // silently corrected.
+        const { x: limX, y: limY } = this.travelLimitPulses;
+        if (Math.abs(parsed.x) > limX || Math.abs(parsed.y) > limY) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[xyz-travel-warning] commandId=${commandId} x=${parsed.x} y=${parsed.y} expectedX=[-${limX},${limX}] expectedY=[-${limY},${limY}] note=position-exceeds-travel-no-clamp`
+          );
+        }
+        // SETTLE-GATE. A move-class command (#0C/#0E/#11) completes ONLY on the final
+        // idle ('+') frame. While busy ('-'), keep the waiter alive (do NOT resolve,
+        // do NOT clear the timeout) and schedule a #10! re-query to elicit the idle
+        // frame. Every other position consumer (#10! get-position, #0B stop, or a
+        // stray frame with no pending command) completes on the first valid frame —
+        // unchanged. positionFrameCompletesCommand() is the single, unit-tested rule.
+        const shouldComplete =
+          this.pendingKey === null
+            ? true
+            : positionFrameCompletesCommand(this.pendingKey, parsed.busy);
+        if (!shouldComplete) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[xyz-move-settle-wait] commandId=${commandId} action=${JSON.stringify(action)} status=${JSON.stringify(parsed.status)} busy=${parsed.busy} x=${parsed.x} y=${parsed.y}`
+          );
+          this.scheduleSettlePoll(commandId);
+          break;
+        }
+        // [xyz-move-resolve] — the frame that actually completes the command. For a
+        // move this is now guaranteed to be the idle frame (reason=idle-position-frame).
+        // eslint-disable-next-line no-console
+        console.log(
+          `[xyz-move-resolve] commandId=${commandId} action=${JSON.stringify(action)} reason=${moveClass ? 'idle-position-frame' : 'position-frame'} status=${JSON.stringify(parsed.status)} busy=${parsed.busy} x=${parsed.x} y=${parsed.y}`
+        );
         this.resolvePending(position);
         break;
       }
@@ -1121,6 +1355,18 @@ class XyzPlatformSerialService extends EventEmitter {
         break;
       }
       case 'unknown':
+        // ERRt! is the controller's TRANSIENT busy reply to a #10! issued while the
+        // stage is still moving. ONLY in the move-settle context it means "still
+        // moving — retry": log it, keep the move waiter alive, and re-query until
+        // idle (or timeout). It is never success and (in this context) never a hard
+        // error. Outside a pending move it stays an unmatched/unknown reply, so no
+        // other command path changes behavior.
+        if (this.isMoveClassPending() && isBusyResponseToken(parsed.raw)) {
+          // eslint-disable-next-line no-console
+          console.log(`[xyz-busy-response] commandId=${commandId} raw=${JSON.stringify(parsed.raw)}`);
+          this.scheduleSettlePoll(commandId);
+          break;
+        }
         // No fabricated position/ack — log the unmatched reply and leave any
         // in-flight wait to time out so a command never reports success on an
         // unrecognised reply.
@@ -1144,6 +1390,9 @@ class XyzPlatformSerialService extends EventEmitter {
     this.pendingLabel = null;
     this.pendingTxVisible = null;
     this.pendingTxHex = null;
+    this.pendingStartedAt = null;
+    this.pendingKey = null;
+    this.clearSettlePoll();
     if (resolve) resolve(position);
   }
 
@@ -1161,7 +1410,53 @@ class XyzPlatformSerialService extends EventEmitter {
     this.pendingLabel = null;
     this.pendingTxVisible = null;
     this.pendingTxHex = null;
+    this.pendingStartedAt = null;
+    this.pendingKey = null;
+    this.clearSettlePoll();
     if (reject) reject(err);
+  }
+
+  /** True while the in-flight command is a move (#0C/#0E/#11) — i.e. settle-gated. */
+  private isMoveClassPending(): boolean {
+    return this.pendingKey !== null && isMoveClassCommand(this.pendingKey);
+  }
+
+  /** Cancel any scheduled move-settle re-query. */
+  private clearSettlePoll(): void {
+    if (this.settlePollTimer) {
+      clearTimeout(this.settlePollTimer);
+      this.settlePollTimer = null;
+    }
+  }
+
+  /**
+   * Schedule a single delayed #10! re-query to elicit the final idle ('+') frame
+   * that completes a move-class command stuck on a busy ('-') reply. It does NOT
+   * register a new waiter and does NOT enqueue a command — it writes #10! straight
+   * to the open port so the SAME pending move waiter consumes the resulting frame.
+   * The original move therefore resolves only on a real idle position (never faked).
+   * Guards keep it safe: one poll in flight at a time, and the poll aborts if the
+   * pending command is no longer this move (resolved/preempted) or the port closed.
+   * The move's existing TX_TIMEOUT_MS remains the hard ceiling — the poll never
+   * touches it, so a controller that never settles still times out honestly.
+   */
+  private scheduleSettlePoll(commandId: string): void {
+    if (this.settlePollTimer) return; // already one in flight
+    this.settlePollTimer = setTimeout(() => {
+      this.settlePollTimer = null;
+      if (this.pendingCommandId !== commandId || !this.isMoveClassPending()) return;
+      if (!this.port || !this.state.connected) return;
+      const built = buildGetPositionCommand();
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-settle-poll] commandId=${commandId} tx=${JSON.stringify(built.visible)}`);
+      this.port.write(built.frame, (err) => {
+        if (err) {
+          // eslint-disable-next-line no-console
+          console.error(`[xyz-serial-error] commandId=${commandId} action=settle-poll error=${JSON.stringify(err.message)}`);
+          // No reschedule — the move's own timeout is the backstop.
+        }
+      });
+    }, SETTLE_POLL_MS);
   }
 
   /** Write a frame and wait for the RX position/ack (or time out). */
@@ -1178,7 +1473,9 @@ class XyzPlatformSerialService extends EventEmitter {
       this.pendingResolve = resolve;
       this.pendingReject = reject;
       this.pendingCommandId = commandId;
+      this.pendingStartedAt = Date.now();
       this.pendingExpect = built.expect;
+      this.pendingKey = built.key;
       this.pendingAckCode = built.ackCode ?? null;
       this.pendingLabel = label;
       this.pendingTxVisible = built.visible;
@@ -1189,10 +1486,13 @@ class XyzPlatformSerialService extends EventEmitter {
         this.pendingTimer = null;
         this.pendingCommandId = null;
         this.pendingExpect = null;
+        this.pendingKey = null;
+        this.clearSettlePoll();
         this.pendingAckCode = null;
         this.pendingLabel = null;
         this.pendingTxVisible = null;
         this.pendingTxHex = null;
+        this.pendingStartedAt = null;
         // eslint-disable-next-line no-console
         console.error(`[xyz-timeout] commandId=${commandId} timeoutMs=${TX_TIMEOUT_MS}`);
         reject(new Error('XYZ_STAGE_ACK_TIMEOUT'));
@@ -1283,6 +1583,18 @@ class XyzPlatformSerialService extends EventEmitter {
     // stuck waiter so it is never blocked by a hung command.
     const queue = getSerialQueue(route.port as string);
     if (priority) {
+      // A priority command (only Stop/#0B) intentionally interrupts whatever is
+      // in flight. Trace exactly WHAT it superseded so the preemption is never a
+      // mystery. `stopStage` from a release is jog-stop; from a direction change
+      // the renderer still issues a stopStage, so jog-stop covers both wire-side.
+      if (this.pendingReject) {
+        const ageMs = this.pendingStartedAt ? Date.now() - this.pendingStartedAt : -1;
+        const reason = action === 'stopStage' ? 'jog-stop' : 'priority-command';
+        // eslint-disable-next-line no-console
+        console.log(
+          `[xyz-preempt] oldCommand=${this.pendingLabel ?? 'unknown'} newCommand=${action} oldCommandAgeMs=${ageMs} reason=${reason} source=runCommand-priority`
+        );
+      }
       this.rejectPending(new Error('XYZ_STAGE_PREEMPTED'));
     }
 
@@ -1299,13 +1611,13 @@ class XyzPlatformSerialService extends EventEmitter {
       const error = err instanceof Error ? err.message : String(err);
       const message = friendlyXyzMessage(error);
       if (error === 'XYZ_STAGE_PREEMPTED') {
-        // Controlled transition: a newer command (e.g. Stop) intentionally
-        // superseded this in-flight one. NOT a hardware failure — log it as a
-        // preemption, surface a clean message, never a red crash-style error.
+        // EXPECTED jog control flow: a Stop (#0B) intentionally superseded this
+        // in-flight command. NOT a hardware failure — flag it `preempted` and do
+        // NOT write lastError, so no red snackbar ever shows for a normal stop.
+        // (The interruption is already traced via [xyz-preempt] above.)
         // eslint-disable-next-line no-console
-        console.log(`[xyz-move-preempted] commandId=${commandId} action=${action}`);
-        this.setState({ lastError: message });
-        return { ok: false, error, message, commandId };
+        console.log(`[xyz-move-preempted] commandId=${commandId} action=${action} userFacing=false`);
+        return { ok: false, error, preempted: true, commandId };
       }
       // eslint-disable-next-line no-console
       console.error(`[xyz-error] commandId=${commandId} error=${JSON.stringify(error)}`);
@@ -1329,19 +1641,6 @@ class XyzPlatformSerialService extends EventEmitter {
     // eslint-disable-next-line no-console
     console.log(`[xyz-status] commandId=${commandId} status=confirmed`);
     return { ok: true, commandId };
-  }
-
-  /**
-   * Every Z method fails safely — there is NO confirmed Z protocol yet (TODO).
-   * This is a not-implemented feature, NOT a serial/ACK failure: logged under
-   * [xyz-todo] (not [xyz-error]) so it can't be mistaken for a comms problem.
-   */
-  private zNotConfigured(action: string): Promise<XyzCommandResult> {
-    const commandId = this.nextCommandId();
-    // eslint-disable-next-line no-console
-    console.warn(`[xyz-todo] commandId=${commandId} action=${action} note=${JSON.stringify(Z_NOT_CONFIGURED)} (feature not configured — not a serial failure)`);
-    this.setState({ lastError: Z_NOT_CONFIGURED });
-    return Promise.resolve({ ok: false, error: Z_NOT_CONFIGURED, commandId });
   }
 
   // --- Public command surface (mirrors window.xyzPlatform.*) -----------------
@@ -1373,6 +1672,8 @@ class XyzPlatformSerialService extends EventEmitter {
     // X/Y must be LOCKED (servo engaged) to move: lock enables movement, unlock
     // blocks it. Mirrors the UI gating (locked ⇒ arrows enabled).
     if (!this.state.xyLocked) {
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-move-blocked] reason=xy-unlocked direction=${direction}`);
       return Promise.resolve({ ok: false, error: 'XYZ_STAGE_XY_UNLOCKED', commandId: this.nextCommandId() });
     }
     // One active jog at a time — suppress a repeated press while already moving.
@@ -1381,16 +1682,77 @@ class XyzPlatformSerialService extends EventEmitter {
       console.log(`[xyz-move-start] direction=${direction} skipped=already-moving`);
       return { ok: true, commandId: this.state.lastCommandId ?? this.nextCommandId() };
     }
+    // Axis inversion comes from the operator's XY Platform Settings (Y is reversed
+    // on this hardware by default) so the UI arrow matches physical motion. It
+    // flips only the commanded pulse SIGN — never the protocol bytes — and is NOT
+    // applied to relocation/position (those work in native controller pulses).
+    const settings = await this.loadActiveSettings();
+    const invert = { reverseX: settings.reverseXAxis, reverseY: settings.reverseYAxis };
     // eslint-disable-next-line no-console
-    console.log(`[xyz-move-start] direction=${direction} pulses=${JOG_PULSES}`);
-    const built = MOVE_BUILDERS[direction](JOG_PULSES);
+    console.log(`[xyz-jog-dispatch] direction=${direction} pulses=${JOG_PULSES} reverseX=${invert.reverseX} reverseY=${invert.reverseY} speed=${this.state.xySpeed}`);
+    const built = buildJogMoveCommand(direction, JOG_PULSES, invert);
     const sent = await this.sendFireAndForget('moveStage', () => built, `Jog ${direction}.`);
-    if (!sent.ok) return sent;
+    if (!sent.ok) {
+      // eslint-disable-next-line no-console
+      console.error(`[xyz-jog-error] phase=start direction=${direction} error=${JSON.stringify(sent.error)}`);
+      return sent;
+    }
     // Movement state is set ONLY after the TX was accepted by the OS serial layer
     // (not a guessed coordinate). Real X/Y still updates only from an RX frame.
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-jog-start] direction=${direction} speed=${this.state.xySpeed} pulses=${JOG_PULSES} commandId=${sent.commandId}`);
+    // Mark the jog active BEFORE broadcasting moving=true so any immediately
+    // following unsolicited #11 frame is caught by the active-jog guard.
+    this.jogActive = true;
     this.setState({ moving: true });
     this.armJogWatchdog();
     return sent;
+  }
+
+  /**
+   * QUICK-TAP step move. A single arrow tap moves exactly the configured per-tier
+   * distance (stepDistanceMm), converted to pulses with the active pulsePerMm and
+   * sent as ONE finite relative move. Unlike the press-and-hold jog this is NOT
+   * fire-and-forget: it runs as a normal pending command so it is settle-gated to
+   * the idle #11 frame, and the displayed mm comes only from that real RX position
+   * (no #0B, no optimistic update, no frontend simulation).
+   */
+  async moveStep(direction: XyzDirection): Promise<XyzCommandResult> {
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-step-request] direction=${direction} speed=${this.state.xySpeed}`);
+    if (!MOVE_COMMANDS_CONFIRMED) {
+      return this.moveNotConfirmed(`moveStep(${direction})`);
+    }
+    if (!this.state.xyLocked) {
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-step-blocked] reason=xy-unlocked direction=${direction}`);
+      return { ok: false, error: 'XYZ_STAGE_XY_UNLOCKED', commandId: this.nextCommandId() };
+    }
+    // One move at a time — ignore a tap while a jog/step is already running.
+    if (this.state.moving || this.jogActive) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-step-skip] direction=${direction} reason=already-moving`);
+      return { ok: true, commandId: this.state.lastCommandId ?? this.nextCommandId() };
+    }
+    const settings = await this.loadActiveSettings();
+    const invert = { reverseX: settings.reverseXAxis, reverseY: settings.reverseYAxis };
+    const profile = settings.speedProfiles[this.state.xySpeed];
+    // Normalized settings always carry stepDistanceMm; the ?? is a defensive floor.
+    const stepMm = profile.stepDistanceMm ?? DEFAULT_XYZ_PLATFORM_SETTINGS.speedProfiles[this.state.xySpeed].stepDistanceMm ?? 0;
+    const pulses = Math.max(1, Math.round(stepMm * settings.pulsePerMm));
+    // eslint-disable-next-line no-console
+    console.log(
+      `[xyz-step-dispatch] direction=${direction} speed=${this.state.xySpeed} stepMm=${stepMm} pulsePerMm=${settings.pulsePerMm} pulses=${pulses} reverseX=${invert.reverseX} reverseY=${invert.reverseY}`
+    );
+    const built = buildJogMoveCommand(direction, pulses, invert);
+    // RX-gated finite move: runCommand waits for the idle position frame, and the
+    // [xyz-position-raw]/[xyz-position-mm] logs fire from that real #11 reply.
+    const result = await this.runCommand('moveStep', () => built, `Step ${direction} ${stepMm}mm.`);
+    if (result.ok && result.position) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-step-complete] direction=${direction} x=${result.position.x} y=${result.position.y} source=hardware-rx`);
+    }
+    return result;
   }
 
   /** Stop X/Y (release/cancel). #0B preempts any in-flight wait and replies with
@@ -1398,16 +1760,48 @@ class XyzPlatformSerialService extends EventEmitter {
   async stopStage(): Promise<XyzCommandResult> {
     this.clearJogWatchdog();
     // eslint-disable-next-line no-console
+    console.log('[xyz-jog-stop-request]');
+    // eslint-disable-next-line no-console
+    console.log('[xyz-jog-stop]');
+    // eslint-disable-next-line no-console
     console.log('[xyz-move-stop]');
     // eslint-disable-next-line no-console
     console.log('[xyz-stop-request]');
-    const result = await this.runCommand('stopStage', () => buildStopXyCommand(), 'Stop X/Y.', true);
+    // Keep jogActive set THROUGH the #0B TX/RX so a last unsolicited #11 frame is
+    // still guarded; the #0B reply itself runs as a pending command (so it bypasses
+    // the guard and completes normally). Only after #0B RX do we end the jog.
+    let result = await this.runCommand('stopStage', () => buildStopXyCommand(), 'Stop X/Y.', true);
+    this.jogActive = false;
     this.setState({ moving: false });
+    // eslint-disable-next-line no-console
+    console.log(
+      `[xyz-jog-stop-confirmed] x=${this.state.positionKnown ? this.state.position.x : 'unknown'} y=${this.state.positionKnown ? this.state.position.y : 'unknown'} moving=false`
+    );
+    // #0B normally replies with the real landing position (used as today). If this
+    // controller ever ACKs the stop WITHOUT a position frame, query #10! once for
+    // the true final position instead of completing with an unknown coordinate.
+    // No fabrication — if the requery also fails, the honest stop result stands.
+    if (result.ok && !result.position) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-stop-no-position-requery] commandId=${result.commandId} note=stop-acked-without-position-querying-#10!`);
+      const queried = await this.getPosition();
+      if (queried.ok && queried.position) {
+        result = { ...result, position: queried.position, rx: queried.rx };
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(`[xyz-stop-no-position-requery] result=failed reason=${JSON.stringify(queried.ok ? 'no-position-frame' : queried.error)}`);
+      }
+    }
     if (result.ok && result.position) {
       // The #0B stop reply carries the REAL landing position — the move is now
       // complete against confirmed hardware coordinates.
       // eslint-disable-next-line no-console
+      console.log(`[xyz-jog-stop-position] x=${result.position.x} y=${result.position.y} source=hardware-rx`);
+      // eslint-disable-next-line no-console
       console.log(`[xyz-move-complete] x=${result.position.x} y=${result.position.y}`);
+    } else if (!result.ok && !result.preempted) {
+      // eslint-disable-next-line no-console
+      console.error(`[xyz-jog-error] phase=stop error=${JSON.stringify(result.error)}`);
     }
     return result;
   }
@@ -1456,7 +1850,11 @@ class XyzPlatformSerialService extends EventEmitter {
   async setXySpeed(speed: XySpeed): Promise<XyzCommandResult> {
     // eslint-disable-next-line no-console
     console.log(`[xyz-speed-request] mode=${speed}`);
-    if (!Object.prototype.hasOwnProperty.call(XY_SPEED_LIMITS, speed)) {
+    // Normalize any reverted six-tier value back to a canonical tier (medium→mid,
+    // veryFast/superFast/ultraFast→ultra) and reject any unrecognised mode — no
+    // free speed value ever reaches the wire.
+    const mode = normalizeXySpeed(speed);
+    if (!mode) {
       const error = 'XYZ_STAGE_INVALID_SPEED';
       // eslint-disable-next-line no-console
       console.warn(`[xyz-speed] rejected=${JSON.stringify(speed)} kept=${this.state.xySpeed} reason=invalid-mode`);
@@ -1464,10 +1862,10 @@ class XyzPlatformSerialService extends EventEmitter {
       return { ok: false, error, commandId: this.nextCommandId() };
     }
     // eslint-disable-next-line no-console
-    console.log(`[xyz-speed] mode=${speed}`);
-    const result = await this.applyXySpeedToHardware(speed);
+    console.log(`[xyz-speed] mode=${mode}`);
+    const result = await this.applyXySpeedToHardware(mode);
     if (!result.ok) return result;
-    this.setState({ xySpeed: speed });
+    this.setState({ xySpeed: mode });
     this.persistConfig();
     // Speed is confirmed only after the registers were accepted by the hardware.
     // eslint-disable-next-line no-console
@@ -1475,27 +1873,28 @@ class XyzPlatformSerialService extends EventEmitter {
     return result;
   }
 
-  /** Write the tier's REGISTER VALUE (controller units, from settings) to the
-   * #05–#0A registers. No state change or persistence here — callers own that. */
+  /** Write the tier's begin/accel/final REGISTER VALUES (controller units, from
+   * settings) to the #05–#0A registers — begin/accel/final applied to both X and
+   * Y. No state change or persistence here — callers own that. */
   private async applyXySpeedToHardware(speed: XySpeed): Promise<XyzCommandResult> {
     const settings = await this.loadActiveSettings();
-    const value = settings.speedProfiles[speed].registerValue;
     const profile = settings.speedProfiles[speed];
+    const { beginRegisterValue, accelerationRegisterValue, finalRegisterValue } = profile;
     // eslint-disable-next-line no-console
     console.log(
-      `[xyz-speed] mode=${speed} registerValue=${value} finalSpeedMmS=${profile.finalSpeedMmS} note=controller-units-uncalibrated`
+      `[xyz-speed] mode=${speed} begin=${beginRegisterValue} accel=${accelerationRegisterValue} final=${finalRegisterValue} approxMmS=${profile.approxMmS} note=controller-units-uncalibrated`
     );
     const steps: Array<() => XyzBuiltCommand> = [
-      () => buildSetXBeginSpeedCommand(value),
-      () => buildSetXAccelerationCommand(value),
-      () => buildSetXFinalSpeedCommand(value),
-      () => buildSetYBeginSpeedCommand(value),
-      () => buildSetYAccelerationCommand(value),
-      () => buildSetYFinalSpeedCommand(value),
+      () => buildSetXBeginSpeedCommand(beginRegisterValue),
+      () => buildSetXAccelerationCommand(accelerationRegisterValue),
+      () => buildSetXFinalSpeedCommand(finalRegisterValue),
+      () => buildSetYBeginSpeedCommand(beginRegisterValue),
+      () => buildSetYAccelerationCommand(accelerationRegisterValue),
+      () => buildSetYFinalSpeedCommand(finalRegisterValue),
     ];
     let last: XyzCommandResult | null = null;
     for (const build of steps) {
-      const result = await this.runCommand('setXySpeed', build, `Set X/Y speed ${speed} (register ${value}).`);
+      const result = await this.runCommand('setXySpeed', build, `Set X/Y speed ${speed}.`);
       if (!result.ok) return result;
       last = result;
     }
@@ -1505,21 +1904,33 @@ class XyzPlatformSerialService extends EventEmitter {
   /**
    * Read the operator's XY Platform Settings singleton (backend-owned config).
    * Returns the documented defaults when none has been saved — that default IS
-   * the active configuration, not a fabricated hardware value. The only setting
-   * consumed for movement today is the per-tier speed register value; the rest
-   * (reverse axes, empty trip, runningByNewThread, step distances) are stored
-   * config — no serial bytes are invented for unmapped controller features.
+   * the active configuration, not a fabricated hardware value. The only settings
+   * consumed for movement today are the per-tier begin/accel/final speed register
+   * values; the rest (reverse axes, empty trip, runningByNewThread, pulses/mm) are
+   * stored config — no serial bytes are invented for unmapped controller features.
    */
   async loadActiveSettings(): Promise<XYZPlatformSettingsPayload> {
+    let settings: XYZPlatformSettingsPayload = DEFAULT_XYZ_PLATFORM_SETTINGS;
     try {
       const rows = (await readCollection('xyzPlatformSettings')) as XYZPlatformSettings[];
-      if (rows[0]) return rows[0];
+      // Normalize the persisted row to the current shape — a row saved by an older
+      // build may still use the legacy speedProfiles fields. The operator's saved
+      // values are kept; only the shape is reconciled (see normalizeXyzSettings).
+      if (rows[0]) settings = normalizeXyzSettings(rows[0]);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.warn(`[xyz-settings] action=load error=${JSON.stringify(message)}`);
     }
-    return DEFAULT_XYZ_PLATFORM_SETTINGS;
+    // Refresh the travel-safety bound (pulses) from the active settings so the
+    // RX position warning uses the operator's configured travel, not a stale one.
+    this.travelLimitPulses = {
+      x: settings.travelXmm * settings.pulsePerMm,
+      y: settings.travelYmm * settings.pulsePerMm,
+    };
+    // Keep the display conversion factor in sync with the operator's configuration.
+    this.pulsePerMm = settings.pulsePerMm;
+    return settings;
   }
 
   // Focus mode — software state only (no focus command exists in the protocol).
@@ -1612,12 +2023,33 @@ class XyzPlatformSerialService extends EventEmitter {
       return { ok: false, error: 'XYZ_STAGE_NO_POSITION', commandId };
     }
 
-    // 2) Compute the relative delta to the absolute optical center.
+    // Captured before the next serial round-trip so the post-move RX audit can
+    // diff the landing position against this exact start point.
+    const beforePos = before.position;
+
+    // 2) Compute the relative delta to the absolute OPTICAL center (operator-taught,
+    // NOT hardware home 0,0 and NOT the geometric center 40000,40000).
     const dx = this.centerX - before.position.x;
     const dy = this.centerY - before.position.y;
     // eslint-disable-next-line no-console
     console.log(
+      `[xyz-relocation-delta] commandId=${commandId} target=optical-center centerX=${this.centerX} centerY=${this.centerY} currentX=${before.position.x} currentY=${before.position.y} dx=${dx} dy=${dy}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
       `[xyz-center-offset] commandId=${commandId} centerX=${this.centerX} centerY=${this.centerY} currentX=${before.position.x} currentY=${before.position.y} dx=${dx} dy=${dy}`
+    );
+
+    // [xyz-relocation-audit] — DIAGNOSTIC ONLY. Records the requested delta, the
+    // exact TX frame that will be sent, and the configured reverse flags. Relocation
+    // deliberately works in NATIVE controller pulses and does NOT apply reverseX/Y;
+    // logging them here proves no hidden sign flip is in play (the flags are
+    // compared, never applied).
+    const auditSettings = await this.loadActiveSettings();
+    const auditCmd = buildRelocationMoveCommand(dx, dy);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[xyz-relocation-audit] commandId=${commandId} requestedDx=${dx} requestedDy=${dy} txCommand=${JSON.stringify(auditCmd?.visible ?? 'none')} reverseX=${auditSettings.reverseXAxis} reverseY=${auditSettings.reverseYAxis}`
     );
 
     if (dx === 0 && dy === 0) {
@@ -1641,6 +2073,8 @@ class XyzPlatformSerialService extends EventEmitter {
       () => {
         const cmd = buildRelocationMoveCommand(dx, dy);
         if (!cmd) throw new Error('XYZ_RELOCATION_NO_DELTA');
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-relocation-command] commandId=${commandId} key=${cmd.key} visible=${JSON.stringify(cmd.visible)} dx=${dx} dy=${dy}`);
         return cmd;
       },
       `Relocate to optical center (dx ${dx}, dy ${dy}).`
@@ -1655,6 +2089,26 @@ class XyzPlatformSerialService extends EventEmitter {
     // eslint-disable-next-line no-console
     console.log(`[xyz-position-query] commandId=${commandId} phase=after`);
     const after = await this.getPosition();
+
+    // [xyz-relocation-rx] / [xyz-relocation-error] — DIAGNOSTIC ONLY. Diff the
+    // landing position the controller actually reported against the requested
+    // delta. `landing` is the after-query position when available, else the
+    // move command's own RX position (the move is RX-gated, so `moved.position`
+    // is a real reply, never fabricated). No coordinate is changed here.
+    const landing = after.ok && after.position ? after.position : moved.position;
+    if (landing) {
+      const actualDx = landing.x - beforePos.x;
+      const actualDy = landing.y - beforePos.y;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[xyz-relocation-rx] commandId=${commandId} beforeX=${beforePos.x} beforeY=${beforePos.y} afterX=${landing.x} afterY=${landing.y} actualDx=${actualDx} actualDy=${actualDy}`
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[xyz-relocation-error] commandId=${commandId} expectedDx=${dx} actualDx=${actualDx} expectedDy=${dy} actualDy=${actualDy}`
+      );
+    }
+
     if (!after.ok || !after.position) {
       // The move itself succeeded with a real reply; report it rather than fail.
       // eslint-disable-next-line no-console
@@ -1673,29 +2127,35 @@ class XyzPlatformSerialService extends EventEmitter {
   }
 
   /**
-   * Teach the optical center: capture the CURRENT real position (#10!) as the
-   * center and persist it. The operator jogs the stage until the camera is on
-   * the reference, then calls this — so the stored center is the true optical
-   * center, independent of the controller's hardware zero.
+   * Teach the optical center from the LAST RX-CONFIRMED position the backend
+   * already holds (`this.state.position`, the value shown in the UI) — NOT a
+   * fresh #10! query. The controller does not answer #10! with a position frame
+   * on this hardware; position is only ever known from a real move/jog reply, so
+   * querying here bails and the center never saves. We capture the confirmed
+   * state instead — gated on `positionKnown` so we never teach a fabricated 0,0.
+   * The operator jogs the stage onto the reference (each move updates the
+   * confirmed position), then clicks Set Center to store that exact position.
    */
   async setCenter(): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
     // eslint-disable-next-line no-console
     console.log(`[xyz-set-center] commandId=${commandId} phase=request`);
     await this.ensureCenterLoaded();
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-position-query] commandId=${commandId} phase=set-center`);
-    const pos = await this.getPosition();
-    if (!pos.ok) return pos;
-    if (!pos.position) {
-      // Current position is unknown — refuse to teach a center from a fabricated
-      // 0,0. (req 6 exact operator message.)
-      const message = 'Cannot set center because current stage position is unknown.';
+    if (!this.state.positionKnown) {
+      // No confirmed RX position yet — refuse to teach a center from a fabricated
+      // 0,0. Tell the operator how to get a confirmed position first.
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-set-center] commandId=${commandId} bail=position-unknown source=state`);
+      const message = 'Jog or query position first, then set center.';
       this.setState({ lastError: message });
       return { ok: false, error: 'XYZ_STAGE_NO_POSITION', message, commandId };
     }
-    this.centerX = pos.position.x;
-    this.centerY = pos.position.y;
+    const currentX = this.state.position.x;
+    const currentY = this.state.position.y;
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-set-center] commandId=${commandId} currentX=${currentX} currentY=${currentY} source=state`);
+    this.centerX = currentX;
+    this.centerY = currentY;
     // Mirror into state BEFORE persist so persistConfig writes the new center.
     this.setState({
       centerX: this.centerX,
@@ -1705,8 +2165,8 @@ class XyzPlatformSerialService extends EventEmitter {
     });
     this.persistConfig();
     // eslint-disable-next-line no-console
-    console.log(`[xyz-center-save] commandId=${commandId} centerX=${this.centerX} centerY=${this.centerY} source=hardware-rx`);
-    return pos;
+    console.log(`[xyz-center-saved] commandId=${commandId} centerX=${this.centerX} centerY=${this.centerY} source=state`);
+    return { ok: true, position: { x: currentX, y: currentY, z: this.state.position.z }, commandId };
   }
 
   /**
@@ -1734,6 +2194,8 @@ class XyzPlatformSerialService extends EventEmitter {
     // eslint-disable-next-line no-console
     console.log(`[xyz-home-settle] commandId=${commandId} settleMs=${HOME_QUERY_DELAY_MS}`);
     // eslint-disable-next-line no-console
+    console.log(`[xyz-home-query] commandId=${commandId} tx="#10!"`);
+    // eslint-disable-next-line no-console
     console.log(`[xyz-position-query] commandId=${commandId} phase=after-home`);
     const pos = await this.getPosition();
     if (!pos.ok) return pos;
@@ -1757,15 +2219,20 @@ class XyzPlatformSerialService extends EventEmitter {
         this.centerX = row.centerX;
         this.centerY = row.centerY;
         const patch: Partial<XyzStageState> = { centerX: row.centerX, centerY: row.centerY };
-        // Restore the persisted speed mode into state. The hardware registers are
-        // (re)applied by connectStage — load itself stays a pure state read.
-        if (row.xySpeed) patch.xySpeed = row.xySpeed;
+        // Restore the persisted speed mode into state, normalizing any legacy
+        // alias (mid/ultra) so the canonical tier is what gets applied. The
+        // hardware registers are (re)applied by connectStage — load itself stays
+        // a pure state read.
+        if (row.xySpeed) {
+          const mode = normalizeXySpeed(row.xySpeed);
+          if (mode) patch.xySpeed = mode;
+        }
         // eslint-disable-next-line no-console
-        console.log(`[xyz-center-offset] action=load centerX=${row.centerX} centerY=${row.centerY} xySpeed=${row.xySpeed ?? 'unset'}`);
+        console.log(`[xyz-center-load] rowId=${row.id} centerX=${row.centerX} centerY=${row.centerY} xySpeed=${row.xySpeed ?? 'unset'} source=db`);
         this.setState(patch);
       } else {
         // eslint-disable-next-line no-console
-        console.log('[xyz-center-offset] action=load result=not-configured');
+        console.log('[xyz-center-load] result=not-configured source=db');
       }
       // Mark loaded only after a successful read so a transient DB error retries
       // on the next call instead of permanently reporting "not configured".
@@ -1870,34 +2337,164 @@ class XyzPlatformSerialService extends EventEmitter {
     }
   }
 
-  // --- Z surface (no confirmed protocol — all fail safely) -------------------
+  // --- Z surface (REAL hardware via the dedicated z-axis serial service) -----
+  //
+  // The Z axis is a SEPARATE physical connection (its own port/baud/queue) owned
+  // by zAxisSerialService. The facade only delegates and merges the resulting Z
+  // state into the single state broadcast the UI consumes. Every Z state change
+  // is driven by a real TX/RX — no optimistic update, no simulated motion.
 
-  moveZ(_direction: ZDirection, _speed: ZSpeed): Promise<XyzCommandResult> {
-    return this.zNotConfigured('moveZ');
+  /** Map a Z service result to the unified XyzCommandResult shape (+ friendly message). */
+  private toXyzResult(r: ZCommandResult): XyzCommandResult {
+    if (r.ok) return { ok: true, rx: r.reply, commandId: r.commandId };
+    return {
+      ok: false,
+      error: r.error,
+      message: r.message ?? friendlyXyzMessage(r.error),
+      commandId: r.commandId,
+    };
   }
 
+  /** Mirror the dedicated Z service's live state into the unified broadcast. */
+  private syncZState(extra?: Partial<XyzStageState>): void {
+    const z = zAxisSerialService.getZState();
+    this.setState({
+      zConnected: z.connected,
+      zPort: z.port,
+      zLocked: z.locked,
+      zMoving: z.moving,
+      ...(extra ?? {}),
+    });
+  }
+
+  /** Z operator CONFIG singleton (reverseDirection, pulsePerMm, stepDistanceMm). */
+  private async loadZSettings(): Promise<{ reverseDirection: boolean; pulsePerMm: number; stepDistanceMm: number }> {
+    const s = await zSettingsService.get();
+    return {
+      reverseDirection: s.reverseDirection,
+      pulsePerMm: s.pulsePerMm,
+      stepDistanceMm: s.stepDistanceMm,
+    };
+  }
+
+  async connectZ(opts: ConnectZOptions): Promise<XyzStageState> {
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-z] action=connect port=${opts.port} baudRate=${opts.baudRate ?? 'default'}`);
+    try {
+      await zAxisSerialService.connect(opts);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.syncZState({ lastError: friendlyXyzMessage(error) });
+      throw err;
+    }
+    // Restore the UI's current Z speed tier onto the controller so the mode shown
+    // is the one actually in effect (best-effort — logged, never fakes success).
+    const applied = await zAxisSerialService.setSpeed(zSpeedRegisterValue(this.state.zSpeed));
+    if (!applied.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-z] action=restore-speed result=failed error=${JSON.stringify(applied.error)}`);
+    }
+    this.syncZState({ lastAction: 'Z axis connected.', lastError: undefined });
+    return this.getState();
+  }
+
+  async disconnectZ(): Promise<XyzStageState> {
+    await zAxisSerialService.disconnect();
+    this.syncZState({ lastAction: 'Z axis disconnected.' });
+    return this.getState();
+  }
+
+  async lockZ(): Promise<XyzCommandResult> {
+    // #LK# enables the Z drive; on the OK_LK ACK the Z service flips locked=true.
+    const result = await zAxisSerialService.lock();
+    this.syncZState(result.ok ? { lastAction: 'Z axis locked.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    return this.toXyzResult(result);
+  }
+
+  async unlockZ(): Promise<XyzCommandResult> {
+    const result = await zAxisSerialService.unlock();
+    this.syncZState(result.ok ? { lastAction: 'Z axis unlocked.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    return this.toXyzResult(result);
+  }
+
+  async setZSpeed(speed: ZSpeed): Promise<XyzCommandResult> {
+    const registerValue = zSpeedRegisterValue(speed);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-z] action=set-speed mode=${speed} registerValue=${registerValue} note=controller-units-uncalibrated`);
+    const result = await zAxisSerialService.setSpeed(registerValue);
+    if (result.ok) {
+      this.syncZState({ lastAction: `Z speed ${speed}.`, lastError: undefined });
+      this.setState({ zSpeed: speed });
+    } else {
+      this.syncZState({ lastError: result.message ?? friendlyXyzMessage(result.error) });
+    }
+    return this.toXyzResult(result);
+  }
+
+  /** Quick-tap STEP: one configured stepDistanceMm, RX-gated. Movement requires Z locked. */
+  async moveZ(direction: ZDirection, _speed: ZSpeed): Promise<XyzCommandResult> {
+    if (!zAxisSerialService.isConnected()) {
+      this.syncZState({ lastError: friendlyXyzMessage('XYZ_Z_NOT_CONNECTED') });
+      return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId: this.nextCommandId() };
+    }
+    // #LK# enables the drive — movement requires Z LOCKED (mirrors the X/Y rule).
+    if (!this.state.zLocked) {
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-z] action=move-step blocked=z-unlocked direction=${direction}`);
+      this.syncZState({ lastError: friendlyXyzMessage('XYZ_Z_UNLOCKED') });
+      return { ok: false, error: 'XYZ_Z_UNLOCKED', commandId: this.nextCommandId() };
+    }
+    const z = await this.loadZSettings();
+    const sign = resolveZSign(direction, z.reverseDirection);
+    const pulses = Math.max(1, zMmToPulses(z.stepDistanceMm, z.pulsePerMm));
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-z] action=move-step direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign} stepMm=${z.stepDistanceMm} pulsePerMm=${z.pulsePerMm} pulses=${pulses}`);
+    const result = await zAxisSerialService.moveStep(sign, pulses);
+    this.syncZState(result.ok ? { lastAction: `Z step ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    return this.toXyzResult(result);
+  }
+
+  /** Press-and-hold jog START (#+S#/#-S#). Movement requires Z locked. */
+  async startZJog(direction: ZDirection): Promise<XyzCommandResult> {
+    if (!zAxisSerialService.isConnected()) {
+      this.syncZState({ lastError: friendlyXyzMessage('XYZ_Z_NOT_CONNECTED') });
+      return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId: this.nextCommandId() };
+    }
+    if (!this.state.zLocked) {
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-z] action=jog-start blocked=z-unlocked direction=${direction}`);
+      this.syncZState({ lastError: friendlyXyzMessage('XYZ_Z_UNLOCKED') });
+      return { ok: false, error: 'XYZ_Z_UNLOCKED', commandId: this.nextCommandId() };
+    }
+    const z = await this.loadZSettings();
+    const sign = resolveZSign(direction, z.reverseDirection);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-z] action=jog-start direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign}`);
+    const result = await zAxisSerialService.startJog(sign);
+    this.syncZState(result.ok ? { lastAction: `Z jog ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    return this.toXyzResult(result);
+  }
+
+  /** Press-and-hold jog STOP — conservative poll/stop/poll in the Z service. */
+  async stopZJog(): Promise<XyzCommandResult> {
+    const result = await zAxisSerialService.stopJog();
+    this.syncZState(result.ok ? { lastAction: 'Z jog stopped.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    return this.toXyzResult(result);
+  }
+
+  // Legacy single-shot Z stop (kept for API symmetry) routes to the jog stop.
   stopZ(): Promise<XyzCommandResult> {
-    return this.zNotConfigured('stopZ');
+    return this.stopZJog();
   }
 
-  // Z lock/unlock is SOFTWARE-OWNED state only — the Z serial protocol is not yet
-  // mapped, so no bytes are sent and nothing is faked as a hardware reply. The
-  // backend owns `zLocked`; the UI renders it from the state broadcast. When the
-  // real Z lock command is confirmed, send it here and gate on its RX.
-  lockZ(): Promise<XyzCommandResult> {
-    // eslint-disable-next-line no-console
-    console.log('[xyz-z-lock] source=software-state');
-    return Promise.resolve(this.softwareCommand({ zLocked: true }, 'Z axis locked.', 'z-lock'));
+  async pollZStatus(): Promise<XyzCommandResult> {
+    const result = await zAxisSerialService.pollStatus();
+    this.syncZState(result.ok ? { lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    return this.toXyzResult(result);
   }
 
-  unlockZ(): Promise<XyzCommandResult> {
-    // eslint-disable-next-line no-console
-    console.log('[xyz-z-unlock] source=software-state');
-    return Promise.resolve(this.softwareCommand({ zLocked: false }, 'Z axis unlocked.', 'z-unlock'));
-  }
-
-  setZSpeed(_speed: ZSpeed): Promise<XyzCommandResult> {
-    return this.zNotConfigured('setZSpeed');
+  diagnoseZ(opts?: { includeJog?: boolean; speedRegisterValue?: number }): Promise<ZDiagnoseResult> {
+    return zAxisSerialService.diagnose(opts);
   }
 }
 

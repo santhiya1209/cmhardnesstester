@@ -16,7 +16,20 @@ export const XyzDirectionSchema = z.enum([
 ]);
 
 export const ZDirectionSchema = z.enum(['up', 'down']);
-export const XySpeedSchema = z.enum(['slow', 'mid', 'fast', 'ultra']);
+// Four operator XY speed tiers. Values written by the (reverted) six-tier
+// expansion are reverse-normalized before validation so old clients/data never
+// break: medium→mid; veryFast/superFast/ultraFast→ultra. ZSpeed is a separate
+// axis enum and is intentionally left unchanged.
+const XY_SPEED_REVERSE_ALIASES: Record<string, string> = {
+  medium: 'mid',
+  veryFast: 'ultra',
+  superFast: 'ultra',
+  ultraFast: 'ultra',
+};
+export const XySpeedSchema = z.preprocess(
+  (v) => (typeof v === 'string' && XY_SPEED_REVERSE_ALIASES[v] ? XY_SPEED_REVERSE_ALIASES[v] : v),
+  z.enum(['slow', 'mid', 'fast', 'ultra'])
+);
 export const ZSpeedSchema = z.enum(['ultra', 'fast', 'slow']);
 
 export const ConnectStageSchema = z.object({
@@ -35,6 +48,13 @@ export const MoveStageSchema = z.object({
 });
 export type MoveStageInput = z.infer<typeof MoveStageSchema>;
 
+// Quick-tap step: direction only. The per-tier step distance is backend-owned
+// config (speedProfiles[tier].stepDistanceMm), never passed per move.
+export const MoveStepSchema = z.object({
+  direction: XyzDirectionSchema,
+});
+export type MoveStepInput = z.infer<typeof MoveStepSchema>;
+
 // Relocation accepts an optional, default-OFF flag to home (#12!) first.
 export const RelocateSchema = z.object({
   homeBeforeRelocation: z.boolean().optional(),
@@ -46,6 +66,28 @@ export const MoveZSchema = z.object({
   speed: ZSpeedSchema,
 });
 export type MoveZInput = z.infer<typeof MoveZSchema>;
+
+// Z-axis connect: operator-selected zPortName from Serial Port Setting — NEVER a
+// hardcoded/fallback COM. Baud defaults to the legacy 57600 in the service.
+export const ConnectZSchema = z.object({
+  port: z.string().min(1),
+  baudRate: z.number().int().positive().optional(),
+  dataBits: z.union([z.literal(5), z.literal(6), z.literal(7), z.literal(8)]).optional(),
+  stopBits: z.union([z.literal(1), z.literal(1.5), z.literal(2)]).optional(),
+  parity: z.enum(['none', 'even', 'odd', 'mark', 'space']).optional(),
+});
+export type ConnectZInput = z.infer<typeof ConnectZSchema>;
+
+// Press-and-hold Z jog: direction only (speed is backend-owned, set via setZSpeed).
+export const JogZSchema = z.object({ direction: ZDirectionSchema });
+export type JogZInput = z.infer<typeof JogZSchema>;
+
+// Optional diagnoseZ flags. includeJog gates the MOTION-causing #+S#/#-S# probes.
+export const DiagnoseZSchema = z.object({
+  includeJog: z.boolean().optional(),
+  speedRegisterValue: z.number().int().nonnegative().optional(),
+});
+export type DiagnoseZInput = z.infer<typeof DiagnoseZSchema>;
 
 export const SetXySpeedSchema = z.object({ speed: XySpeedSchema });
 export type SetXySpeedInput = z.infer<typeof SetXySpeedSchema>;

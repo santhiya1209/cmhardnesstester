@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/services/xyz-platform-protocol.test.ts",
+    "test": "tsx --test src/lib/services/xyz-platform-protocol.test.ts src/lib/services/z-axis-protocol.test.ts",
     "start": "node dist/index.js",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "db:inspect": "tsx src/scripts/db-inspect.ts"

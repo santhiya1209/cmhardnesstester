@@ -30,12 +30,19 @@ type Props = { open: boolean; onClose: () => void };
 
 const SECTION_TITLE_SX: SxProps<Theme> = { fontWeight: 600, mt: 2, mb: 1 };
 const NUM_SX: SxProps<Theme> = { width: 96 };
-// Speed grid: mode label + 5 numeric columns.
+// Speed grid: mode label + 3 editable register columns + 1 read-only mm/s label.
 const SPEED_GRID_SX: SxProps<Theme> = {
   display: 'grid',
-  gridTemplateColumns: '64px repeat(5, 1fr)',
+  gridTemplateColumns: '88px repeat(4, 1fr)',
   gap: 1,
   alignItems: 'center',
+};
+// Human-readable labels for the four operator speed modes.
+const SPEED_MODE_LABELS: Record<XySpeedMode, string> = {
+  slow: 'Slow',
+  mid: 'Mid',
+  fast: 'Fast',
+  ultra: 'Ultra',
 };
 const GRID_HEAD_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary' };
 
@@ -46,12 +53,11 @@ const EMPTY_TRIP_FIELDS: Array<[keyof XyzEmptyTrip, string]> = [
   ['rightward', 'Rightward'],
 ];
 
-const PROFILE_FIELDS: Array<[keyof XyzSpeedProfile, string, number | 'any']> = [
-  ['stepDistanceMm', 'Step (mm)', 'any'],
-  ['beginSpeedMmS', 'Begin (mm/s)', 'any'],
-  ['accelerationMmS2', 'Accel (mm/s²)', 'any'],
-  ['finalSpeedMmS', 'Final (mm/s)', 'any'],
-  ['registerValue', 'Register', 1],
+// Editable register columns written to #05–#0A (controller units, integers).
+const PROFILE_FIELDS: Array<[keyof XyzSpeedProfile, string]> = [
+  ['beginRegisterValue', 'Begin'],
+  ['accelerationRegisterValue', 'Accel'],
+  ['finalRegisterValue', 'Final'],
 ];
 
 function NumberField({
@@ -234,27 +240,30 @@ function XYPlatformSettingsDialogImpl({ open, onClose }: Props) {
               {label}
             </Typography>
           ))}
+          <Typography sx={GRID_HEAD_SX}>~mm/s</Typography>
           {XY_SPEED_MODES.map((mode) => (
             <Box key={mode} sx={{ display: 'contents' }}>
-              <Typography sx={{ textTransform: 'capitalize', fontSize: 13 }}>{mode}</Typography>
-              {PROFILE_FIELDS.map(([key, , step]) => (
+              <Typography sx={{ fontSize: 13 }}>{SPEED_MODE_LABELS[mode]}</Typography>
+              {PROFILE_FIELDS.map(([key]) => (
                 <NumberField
                   key={key}
                   label=""
                   value={form.speedProfiles[mode][key]}
-                  step={step}
-                  onChange={(n) =>
-                    setProfile(mode, key, key === 'registerValue' ? Math.round(n) : n)
-                  }
+                  step={1}
+                  onChange={(n) => setProfile(mode, key, Math.round(n))}
                 />
               ))}
+              <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>
+                ~{form.speedProfiles[mode].approxMmS.toFixed(2)}
+              </Typography>
             </Box>
           ))}
         </Box>
 
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
-          mm/s values are configuration only — physical speed is not calibrated. The Register value
-          (controller units) is what is written to the speed registers.
+          Begin / Accel / Final are controller-unit register values written to #05–#0A (verified
+          old-software defaults). The ~mm/s figure is a reference label only — physical speed depends
+          on hardware calibration.
         </Typography>
 
         {error ? (

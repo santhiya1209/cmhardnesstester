@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -103,7 +103,6 @@ const TEXT_BTN_SX: SxProps<Theme> = {
   borderColor: 'grey.500',
   color: 'text.primary',
 };
-const CENTER_ACTIONS_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 0.5 };
 const HOME_FIRST_SX: SxProps<Theme> = {
   m: 0,
   '& .MuiFormControlLabel-label': { fontSize: 11, color: 'text.secondary' },
@@ -120,7 +119,7 @@ const COORD_SX: SxProps<Theme> = { fontSize: 11, color: 'text.primary', fontFami
 const ALERT_SX: SxProps<Theme> = { mt: 0.5, py: 0, fontSize: 11 };
 
 function formatCoordinate(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  return value.toFixed(3);
 }
 
 // Map a raw service error CODE to an operator-facing sentence. The backend now
@@ -131,7 +130,9 @@ function friendlyXyzError(raw?: string | null): string | undefined {
   if (!raw) return undefined;
   switch (raw) {
     case 'XYZ_STAGE_PREEMPTED':
-      return 'Previous stage command was stopped to run the new command.';
+      // Expected jog control flow (a #0B stop interrupting an in-flight command) —
+      // never an operator-facing error. Traced internally via [xyz-preempt].
+      return undefined;
     case 'XYZ_STAGE_XY_UNLOCKED':
       return 'Lock the X/Y stage before moving.';
     case 'XYZ_STAGE_NOT_CONNECTED':
@@ -158,9 +159,11 @@ function XYZPlatformTabImpl() {
   // open-state mirror, no second mount.
   const { setActiveDialog } = useDialog();
 
-  // Operator-selected X/Y port from Serial Port Setting — the single source for
-  // which COM the stage connects on. No hardcoded COM number here.
+  // Operator-selected stage ports from Serial Port Setting — the single source for
+  // which COM each axis connects on. No hardcoded COM number here. Z is a SEPARATE
+  // connection on its own configured port.
   const savedXyPort = serialSetting?.xyPortName?.trim() || null;
+  const savedZPort = serialSetting?.zPortName?.trim() || null;
 
   const isBusy = hardware.busy;
   const errorMessage = friendlyXyzError(hardware.error ?? live.lastError ?? undefined);
@@ -219,63 +222,278 @@ function XYZPlatformTabImpl() {
     [hardware, persistSpeedPref]
   );
 
-  // Press-and-hold JOG. `joggingRef` is UI-ONLY press tracking (a ref, never
-  // rendered) so we send exactly one move on press and one stop on release —
-  // it is NOT movement state (the authoritative `moving`/position come only from
-  // the backend `xyz-platform:state` broadcast).
-  const joggingRef = useRef<XyzDirection | null>(null);
+  // Arrow gesture = TAP vs HOLD. A press shorter than HOLD_THRESHOLD_MS is a quick
+  // TAP (one configured step → moveStep). A press held past the threshold becomes a
+  // continuous JOG (moveStage), stopped by #0B on release. `pressRef` is UI-ONLY
+  // press tracking (a ref, never rendered) — NOT movement state; the authoritative
+  // `moving`/position come only from the backend `xyz-platform:state` broadcast.
+  const HOLD_THRESHOLD_MS = 250;
+  const pressRef = useRef<{
+    pointerId: number;
+    direction: XyzDirection;
+    target: Element;
+    startedAt: number;
+    holdTimer: ReturnType<typeof setTimeout> | null;
+    jogStarted: boolean;
+    completed: boolean;
+  } | null>(null);
 
-  const startJog = useCallback(
-    (direction: XyzDirection) => {
-      if (joggingRef.current) return; // one jog at a time; ignore repeat presses
+  // STABILITY REFS. `useXyzPlatformHardware()` returns a FRESH object every render,
+  // so a handler that closed over `hardware`/`live` directly would be recreated on
+  // every state broadcast — which would re-run the safety effect below and fire its
+  // cleanup (endPress) the instant the jog's own `moving=true` broadcast arrived,
+  // stopping the jog immediately. Reading the latest values through refs lets the
+  // handlers stay STABLE (empty deps), so the effect mounts once and the jog holds.
+  const hardwareRef = useRef(hardware);
+  hardwareRef.current = hardware;
+  const xyLockedRef = useRef(live.xyLocked);
+  xyLockedRef.current = live.xyLocked;
+
+  // End the active press exactly once (`completed` guard makes duplicate/safety calls
+  // a no-op). If the jog actually started → ONE stopStage (#0B). If it never started
+  // → a quick TAP (one moveStep), unless this is an ABORT (blur/unmount/direction-
+  // change) where intent is unclear, in which case NOTHING is sent.
+  const endPress = useCallback((reason: string) => {
+    const active = pressRef.current;
+    if (!active || active.completed) return;
+    active.completed = true;
+    pressRef.current = null;
+    if (active.holdTimer) clearTimeout(active.holdTimer);
+    try {
+      if (active.target.hasPointerCapture(active.pointerId)) {
+        active.target.releasePointerCapture(active.pointerId);
+      }
+    } catch {
+      // capture may already be gone (element lost the pointer) — ignore
+    }
+    const durationMs = Date.now() - active.startedAt;
+    if (active.jogStarted) {
       // eslint-disable-next-line no-console
-      console.log(`[xyz-ui-action] action=jog-start direction=${direction} speed=${live.xySpeed}`);
-      joggingRef.current = direction;
-      void hardware.moveStage(direction);
+      console.log(`[xyz-jog-stop-ui] direction=${active.direction} reason=${reason} durationMs=${durationMs}`);
+      void hardwareRef.current.stopStage(); // exactly one #0B!; position updates from RX only
+      return;
+    }
+    // Jog never started → this was a quick tap (or an abort). Never send stopStage.
+    if (reason === 'blur' || reason === 'unmount' || reason === 'direction-change') {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-stop-suppressed] reason=${reason}`);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-tap] direction=${active.direction} durationMs=${durationMs}`);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-stop-suppressed] reason=quick-tap-no-jog`);
+    void hardwareRef.current.moveStep(active.direction); // one configured step; position from RX only
+  }, []);
+
+  const startPress = useCallback(
+    (direction: XyzDirection, event: ReactPointerEvent<HTMLButtonElement>) => {
+      // Defense-in-depth: arrows are already disabled while unlocked, but never
+      // dispatch a move unless the servo is engaged — movement requires xyLocked.
+      if (!xyLockedRef.current) {
+        // eslint-disable-next-line no-console
+        console.warn(`[xyz-jog-blocked] reason=xy-unlocked direction=${direction}`);
+        return;
+      }
+      // Any press already active (different pointer/direction) → end it first so two
+      // gestures are never in flight at once.
+      if (pressRef.current) endPress('direction-change');
+      // Capture the pointer so a release OUTSIDE the small arrow button still
+      // delivers pointerup/pointercancel here — no missed stop, no mid-hold stop.
+      const target = event.currentTarget;
+      const pointerId = event.pointerId;
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {
+        // capture unsupported/failed — the global safety listeners still end it
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-pointer-down] direction=${direction} pointerId=${pointerId}`);
+      // DO NOT move yet. Only after the hold threshold elapses with the pointer still
+      // down does this become a jog (moveStage). A release before then is a tap.
+      const holdTimer = setTimeout(() => {
+        const current = pressRef.current;
+        if (!current || current.completed || current.pointerId !== pointerId) return;
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-hold-threshold] direction=${current.direction}`);
+        current.jogStarted = true;
+        current.holdTimer = null;
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-jog-start-ui] direction=${current.direction}`);
+        void hardwareRef.current.moveStage(current.direction); // continuous jog (large move + #0B on release)
+      }, HOLD_THRESHOLD_MS);
+      pressRef.current = {
+        pointerId,
+        direction,
+        target,
+        startedAt: Date.now(),
+        holdTimer,
+        jogStarted: false,
+        completed: false,
+      };
     },
-    [hardware, live.xySpeed]
+    [endPress]
   );
 
-  const stopJog = useCallback(() => {
-    if (!joggingRef.current) return;
-    joggingRef.current = null;
-    void hardware.stopStage();
-  }, [hardware]);
-
-  // Safety stops for a missed button release: any global pointer-up/cancel,
-  // window blur, key-up, and unmount all halt an in-flight jog. (The backend
-  // also runs an independent watchdog that sends #0B if no stop arrives.)
+  // Safety ends for a missed release: a global pointerup/pointercancel, window blur,
+  // and unmount. `endPress` is STABLE (empty deps via refs), so this effect mounts
+  // ONCE and its cleanup runs only on real unmount — never on a re-render, which is
+  // what previously stopped the jog the moment it started.
   useEffect(() => {
-    const onStop = () => stopJog();
-    window.addEventListener('pointerup', onStop);
-    window.addEventListener('pointercancel', onStop);
-    window.addEventListener('blur', onStop);
-    window.addEventListener('keyup', onStop);
+    const onSafetyEnd = () => endPress('safety');
+    const onBlurEnd = () => endPress('blur');
+    window.addEventListener('pointerup', onSafetyEnd);
+    window.addEventListener('pointercancel', onSafetyEnd);
+    window.addEventListener('blur', onBlurEnd);
     return () => {
-      window.removeEventListener('pointerup', onStop);
-      window.removeEventListener('pointercancel', onStop);
-      window.removeEventListener('blur', onStop);
-      window.removeEventListener('keyup', onStop);
-      stopJog(); // halt on unmount
+      window.removeEventListener('pointerup', onSafetyEnd);
+      window.removeEventListener('pointercancel', onSafetyEnd);
+      window.removeEventListener('blur', onBlurEnd);
+      endPress('unmount');
     };
-  }, [stopJog]);
+  }, [endPress]);
 
-  // Per-arrow handlers: mousedown starts the jog, mouseup/leave/cancel stops it.
+  // Per-arrow pointer handlers. pointerdown starts the press; pointerup/cancel end it
+  // (tap or stop). pointerleave ends ONLY a jog that already started (and only when
+  // capture is inactive) — a leave during a pending press is ignored so normal
+  // movement inside the button is never mistaken for a stop.
   const jogHandlers = useCallback(
     (direction: XyzDirection) => ({
-      onMouseDown: () => startJog(direction),
-      onMouseUp: stopJog,
-      onMouseLeave: stopJog,
-      onPointerCancel: stopJog,
+      onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => startPress(direction, event),
+      onPointerUp: () => {
+        const active = pressRef.current;
+        if (active) {
+          // eslint-disable-next-line no-console
+          console.log(`[xyz-pointer-up] direction=${active.direction} jogStarted=${active.jogStarted}`);
+        }
+        endPress('release');
+      },
+      onPointerCancel: () => endPress('cancel'),
+      onPointerLeave: (event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const active = pressRef.current;
+        if (active && active.jogStarted) endPress('leave');
+      },
     }),
-    [startJog, stopJog]
+    [startPress, endPress]
   );
 
-  const handleZMove = useCallback(
-    (direction: ZDirection) => {
-      void hardware.moveZ(direction, live.zSpeed);
+  // Z arrow gesture mirrors X/Y: a quick TAP (<HOLD_THRESHOLD_MS) sends one
+  // configured step (moveZ → #±Z nnnn#); a HOLD becomes a continuous jog
+  // (startZJog → #±S#) stopped by stopZJog on release. Refs keep the handlers
+  // STABLE (see the X/Y note above) so the safety effect mounts once. Z movement
+  // requires the drive LOCKED (#LK# enables motion) — gated in startZPress.
+  const zLockedRef = useRef(live.zLocked);
+  zLockedRef.current = live.zLocked;
+  const zSpeedRef = useRef(live.zSpeed);
+  zSpeedRef.current = live.zSpeed;
+  const zPressRef = useRef<{
+    pointerId: number;
+    direction: ZDirection;
+    target: Element;
+    startedAt: number;
+    holdTimer: ReturnType<typeof setTimeout> | null;
+    jogStarted: boolean;
+    completed: boolean;
+  } | null>(null);
+
+  const endZPress = useCallback((reason: string) => {
+    const active = zPressRef.current;
+    if (!active || active.completed) return;
+    active.completed = true;
+    zPressRef.current = null;
+    if (active.holdTimer) clearTimeout(active.holdTimer);
+    try {
+      if (active.target.hasPointerCapture(active.pointerId)) {
+        active.target.releasePointerCapture(active.pointerId);
+      }
+    } catch {
+      // capture may already be gone — ignore
+    }
+    const durationMs = Date.now() - active.startedAt;
+    if (active.jogStarted) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-z-jog-stop-ui] direction=${active.direction} reason=${reason} durationMs=${durationMs}`);
+      void hardwareRef.current.stopZJog();
+      return;
+    }
+    if (reason === 'blur' || reason === 'unmount' || reason === 'direction-change') {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-z-stop-suppressed] reason=${reason}`);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-z-tap] direction=${active.direction} durationMs=${durationMs}`);
+    void hardwareRef.current.moveZ(active.direction, zSpeedRef.current);
+  }, []);
+
+  const startZPress = useCallback(
+    (direction: ZDirection, event: ReactPointerEvent<HTMLButtonElement>) => {
+      // #LK# enables Z motion — never dispatch unless the drive is locked.
+      if (!zLockedRef.current) {
+        // eslint-disable-next-line no-console
+        console.warn(`[xyz-z-jog-blocked] reason=z-unlocked direction=${direction}`);
+        return;
+      }
+      if (zPressRef.current) endZPress('direction-change');
+      const target = event.currentTarget;
+      const pointerId = event.pointerId;
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {
+        // capture unsupported/failed — global safety listeners still end it
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-z-pointer-down] direction=${direction} pointerId=${pointerId}`);
+      const holdTimer = setTimeout(() => {
+        const current = zPressRef.current;
+        if (!current || current.completed || current.pointerId !== pointerId) return;
+        current.jogStarted = true;
+        current.holdTimer = null;
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-z-jog-start-ui] direction=${current.direction}`);
+        void hardwareRef.current.startZJog(current.direction);
+      }, HOLD_THRESHOLD_MS);
+      zPressRef.current = {
+        pointerId,
+        direction,
+        target,
+        startedAt: Date.now(),
+        holdTimer,
+        jogStarted: false,
+        completed: false,
+      };
     },
-    [hardware, live.zSpeed]
+    [endZPress]
+  );
+
+  // Safety ends for a missed Z release — mirrors the X/Y safety effect.
+  useEffect(() => {
+    const onSafetyEnd = () => endZPress('safety');
+    const onBlurEnd = () => endZPress('blur');
+    window.addEventListener('pointerup', onSafetyEnd);
+    window.addEventListener('pointercancel', onSafetyEnd);
+    window.addEventListener('blur', onBlurEnd);
+    return () => {
+      window.removeEventListener('pointerup', onSafetyEnd);
+      window.removeEventListener('pointercancel', onSafetyEnd);
+      window.removeEventListener('blur', onBlurEnd);
+      endZPress('unmount');
+    };
+  }, [endZPress]);
+
+  const zJogHandlers = useCallback(
+    (direction: ZDirection) => ({
+      onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => startZPress(direction, event),
+      onPointerUp: () => endZPress('release'),
+      onPointerCancel: () => endZPress('cancel'),
+      onPointerLeave: (event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const active = zPressRef.current;
+        if (active && active.jogStarted) endZPress('leave');
+      },
+    }),
+    [startZPress, endZPress]
   );
 
   const handleXyLock = useCallback(
@@ -325,9 +543,9 @@ function XYZPlatformTabImpl() {
   // to the camera center first, then clicks Set Center).
   const handleSetCenter = useCallback(() => {
     // eslint-disable-next-line no-console
-    console.log('[xyz-ui-action] action=set-center');
+    console.log(`[xyz-set-center-click] uiX=${live.positionKnown ? live.position.x : 'unknown'} uiY=${live.positionKnown ? live.position.y : 'unknown'} uiCenterX=${live.centerX ?? 'unset'} uiCenterY=${live.centerY ?? 'unset'}`);
     void hardware.setCenter();
-  }, [hardware]);
+  }, [hardware, live.positionKnown, live.position.x, live.position.y, live.centerX, live.centerY]);
 
   // Dedicated hardware home (#12!) — the controller's zero, separate from
   // Relocation so homing is an explicit, deliberate action.
@@ -337,21 +555,40 @@ function XYZPlatformTabImpl() {
     void hardware.home();
   }, [hardware]);
 
-  // Connect/disconnect ONLY fire the IPC bridge (COM4); the connected/error
-  // state shown below comes from the service via the live subscription.
+  // Connect/disconnect fire the IPC bridge for BOTH axes (each on its own
+  // configured port); the connected/error state shown below comes from the service
+  // via the live subscription. Each connect is independent — one may succeed while
+  // the other has no port configured.
   const handleConnect = useCallback(() => {
-    void hardware.connect(savedXyPort ?? '');
-  }, [hardware, savedXyPort]);
+    if (savedXyPort) void hardware.connect(savedXyPort);
+    if (savedZPort) void hardware.connectZ(savedZPort);
+  }, [hardware, savedXyPort, savedZPort]);
 
   const handleDisconnect = useCallback(() => {
     void hardware.disconnect();
+    void hardware.disconnectZ();
   }, [hardware]);
 
-  const pos = live.position;
+  // Displayed coordinates are MILLIMETRES — the backend-converted positionMm (pulses
+  // / pulsePerMm) from the real #11 RX frame. Never the raw pulses, never computed here.
+  const pos = live.positionMm;
   // X/Y movement requires the stage to be LOCKED (servo engaged): locked ⇒ arrows
   // enabled + movement allowed; unlocked ⇒ arrows greyed + movement blocked.
   const xyMoveDisabled = movementDisabled || !live.xyLocked;
-  const zMoveDisabled = movementDisabled || live.zLocked;
+  // Z is a SEPARATE connection: gate on zConnected (NOT the X/Y `connected`). Per
+  // the Z controller, #LK# (Lock) ENABLES motion — so arrows are live only when the
+  // Z drive is connected AND locked.
+  const zMoveDisabled = isBusy || !live.zConnected || !live.zLocked;
+  const zLockDisabled = isBusy || !live.zConnected;
+
+  // Connect/Disconnect drive BOTH axes (each on its own port). Connect is enabled
+  // while at least one configured port is still unconnected; Disconnect while at
+  // least one axis is connected.
+  const xyConnectDone = !savedXyPort || live.connected;
+  const zConnectDone = !savedZPort || live.zConnected;
+  const connectDisabled = isBusy || (!savedXyPort && !savedZPort) || (xyConnectDone && zConnectDone);
+  const disconnectDisabled = isBusy || (!live.connected && !live.zConnected);
+  const zConnectionStatus = live.zConnected ? `Connected (${live.zPort ?? savedZPort})` : savedZPort ? 'Disconnected' : 'not configured';
 
   return (
     <Box sx={SECTION_SX}>
@@ -359,13 +596,15 @@ function XYZPlatformTabImpl() {
           can fail, so a manual fallback + honest status stays). */}
       <Box sx={CONNECT_ROW_SX}>
         <Typography sx={STATUS_TEXT_SX}>
-          {savedXyPort ? `Port: ${savedXyPort}` : 'X/Y port is not configured'}
+          {savedXyPort ? `X/Y: ${savedXyPort}` : 'X/Y port is not configured'}
+          {' · '}
+          {savedZPort ? `Z: ${savedZPort}` : 'Z port not configured'}
         </Typography>
         <Button
           variant="contained"
           size="small"
           sx={CONNECT_BTN_SX}
-          disabled={isBusy || live.connected || !savedXyPort}
+          disabled={connectDisabled}
           onClick={handleConnect}
         >
           Connect
@@ -374,13 +613,39 @@ function XYZPlatformTabImpl() {
           variant="outlined"
           size="small"
           sx={CONNECT_BTN_SX}
-          disabled={isBusy || !live.connected}
+          disabled={disconnectDisabled}
           onClick={handleDisconnect}
         >
           Disconnect
         </Button>
-        <Typography sx={STATUS_TEXT_SX}>Status: {connectionStatus}</Typography>
+        <Typography sx={STATUS_TEXT_SX}>
+          X/Y: {connectionStatus} · Z: {zConnectionStatus}
+        </Typography>
         <Box sx={{ flex: 1 }} />
+        {/* Utility controls not part of the reference's two groups, kept here so no
+            functionality is lost. Set Center teaches the optical center Relocation
+            targets (#10!); Home is the controller zero (#12!); Z Settings opens the
+            shared Z Axis dialog. All keep their existing IPC wiring. */}
+        <Button variant="outlined" size="small" sx={CONNECT_BTN_SX} disabled={movementDisabled} onClick={handleSetCenter}>
+          Set Center
+        </Button>
+        <Button variant="outlined" size="small" sx={CONNECT_BTN_SX} disabled={movementDisabled} onClick={handleHome}>
+          Home
+        </Button>
+        <Button variant="outlined" size="small" sx={CONNECT_BTN_SX} onClick={() => setActiveDialog('zAxis')}>
+          Z Settings…
+        </Button>
+        <FormControlLabel
+          sx={HOME_FIRST_SX}
+          control={
+            <Checkbox
+              size="small"
+              checked={homeBeforeRelocation}
+              onChange={(event) => setHomeBeforeRelocation(event.target.checked)}
+            />
+          }
+          label="Home before relocation"
+        />
         <IconButton
           size="small"
           onClick={() => setActiveDialog('xyPlatform')}
@@ -460,40 +725,9 @@ function XYZPlatformTabImpl() {
             </Button>
           </Box>
 
-          {/* Teach + hardware-home row. Set Center captures the current position
-              as the optical center; Home (#12!) goes to the controller's zero —
-              kept distinct from Relocation. Both only need a live connection. */}
-          <Box sx={CENTER_ACTIONS_ROW_SX}>
-            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={movementDisabled} onClick={handleSetCenter}>
-              Set Center
-            </Button>
-            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={movementDisabled} onClick={handleHome}>
-              Home
-            </Button>
-          </Box>
-
-          {/* Optional: home (#12!) before relocating to center. Default off. */}
-          <FormControlLabel
-            sx={HOME_FIRST_SX}
-            control={
-              <Checkbox
-                size="small"
-                checked={homeBeforeRelocation}
-                onChange={(event) => setHomeBeforeRelocation(event.target.checked)}
-              />
-            }
-            label="Home before relocation"
-          />
-
           <Box sx={COORD_ROW_SX}>
             <Typography sx={COORD_SX}>X: {live.positionKnown ? formatCoordinate(pos.x) : '--'}</Typography>
             <Typography sx={COORD_SX}>Y: {live.positionKnown ? formatCoordinate(pos.y) : '--'}</Typography>
-            <Typography sx={COORD_SX}>
-              Center:{' '}
-              {live.centerX !== null && live.centerY !== null
-                ? `(${formatCoordinate(live.centerX)}, ${formatCoordinate(live.centerY)})`
-                : '--'}
-            </Typography>
           </Box>
         </Box>
 
@@ -511,16 +745,16 @@ function XYZPlatformTabImpl() {
           </RadioGroup>
 
           <Box sx={Z_GRID_SX}>
-            {/* Row 1: Lock | Unlock */}
+            {/* Row 1: Lock | Unlock (require the Z connection; #LK# enables motion) */}
             <Button
               variant={live.zLocked ? 'contained' : 'outlined'}
               sx={TEXT_BTN_SX}
-              disabled={isBusy}
+              disabled={zLockDisabled}
               onClick={() => handleZLock(true)}
             >
               Lock
             </Button>
-            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={isBusy} onClick={() => handleZLock(false)}>
+            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={zLockDisabled} onClick={() => handleZLock(false)}>
               Unlock
             </Button>
 
@@ -533,7 +767,7 @@ function XYZPlatformTabImpl() {
             >
               Cfocus
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} onClick={() => handleZMove('up')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('up')}>
               <ArrowUpwardIcon />
             </Button>
 
@@ -546,14 +780,10 @@ function XYZPlatformTabImpl() {
             >
               Ffocus
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} onClick={() => handleZMove('down')}>
+            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('down')}>
               <ArrowDownwardIcon />
             </Button>
           </Box>
-
-          <Button variant="outlined" sx={TEXT_BTN_SX} onClick={() => setActiveDialog('zAxis')}>
-            Z Settings…
-          </Button>
         </Box>
       </Box>
 

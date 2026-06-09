@@ -1,7 +1,19 @@
 import { z } from 'zod';
 import { EntityIdSchema, IsoDateTimeSchema, NonEmptyStringSchema } from './common';
 
-export const XySpeedSchema = z.enum(['slow', 'mid', 'fast', 'ultra']);
+// Four operator XY speed tiers. Values written by the (reverted) six-tier
+// expansion are reverse-normalized so old persisted rows still validate at load:
+// medium→mid; veryFast/superFast/ultraFast→ultra. ZSpeed unchanged.
+const XY_SPEED_REVERSE_ALIASES: Record<string, string> = {
+  medium: 'mid',
+  veryFast: 'ultra',
+  superFast: 'ultra',
+  ultraFast: 'ultra',
+};
+export const XySpeedSchema = z.preprocess(
+  (v) => (typeof v === 'string' && XY_SPEED_REVERSE_ALIASES[v] ? XY_SPEED_REVERSE_ALIASES[v] : v),
+  z.enum(['slow', 'mid', 'fast', 'ultra'])
+);
 export const ZSpeedSchema = z.enum(['ultra', 'fast', 'slow']);
 export const FocusModeSchema = z.enum(['manual', 'cFocus', 'fFocus']);
 

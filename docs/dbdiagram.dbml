@@ -1,0 +1,428 @@
+// ===========================================================================
+//  Hardness Tester — PROPOSED relational schema (DBDiagram.io / DBML)
+// ===========================================================================
+//  Paste this whole file into https://dbdiagram.io to render the diagram.
+//
+//  STATUS: PROPOSAL ONLY. The current production database does NOT look like
+//  this. Today every table is stored as (id TEXT PK, json TEXT) — see
+//  backend/src/lib/sqlite.ts. This file documents the TARGET normalized
+//  shape for review. No migration has been written. See docs/db-schema-audit.md.
+//
+//  Conventions used below:
+//   - All `id` columns are TEXT (UUID v4), matching the existing EntityIdSchema.
+//   - created_at / updated_at are TEXT ISO-8601 datetimes today; modeled as
+//     `datetime` here for diagram clarity.
+//   - Enums are modeled as DBML enums to mirror the zod z.enum() definitions.
+//   - `boolean` here = stored as INTEGER 0/1 in SQLite.
+//   - Tables marked [SINGLETON] only ever hold one row in practice.
+//   - Tables/columns marked NEW do not exist today and are part of the proposal.
+// ===========================================================================
+
+
+// ─── Enums (mirror the zod schemas) ────────────────────────────────────────
+
+Enum measurement_method { Manual Auto "Auto (Adjusted)" }
+Enum measurement_unit { um px }
+Enum depth_source { device manual }
+Enum qualified_flag { YES NO }
+
+Enum calibration_type { hardness length }
+Enum length_mode { linear plane }
+
+Enum hardness_test_mode { HV HK }
+
+Enum line_color { Purple Yellow Red Green Blue White Black }
+
+Enum language { English Tamil Hindi Chinese Japanese }
+
+Enum image_type { "HBW-A" "HBW-B" "HBW-C" "HBW-EX" "HV-1" "HV-2" "HV-3" }
+Enum objective_for_measure { "5X" "10X" "20X" "40X" "50X" }
+Enum threshold_mode { otsu adaptive manual }
+
+Enum pattern_shape { Line Rectangle Circle Custom }
+Enum pattern_mode {
+  "Horizontal Mode"
+  "Vertical Mode"
+  "Case Depth Mode"
+  "Free Mode"
+  "Matrix Mode"
+  "Circle Mode"
+  "Midpoint Mode"
+  "Equidistant Multipoint Mode"
+  "Equidistant Three Point Mode"
+  "Equidistant Triangle Mode"
+  "Multiline Composite Pattern"
+  "Vertical Line Free Points Mode"
+}
+Enum impress_mode { indenting onePass twoPass }
+
+Enum xy_speed { slow mid fast ultra }
+Enum z_speed { ultra fast slow }
+Enum focus_mode { manual cFocus fFocus }
+
+
+// ===========================================================================
+//  MULTI-ROW TABLES (real collections)
+// ===========================================================================
+
+Table measurements {
+  id text [pk]
+  d1 real [not null]
+  d2 real [not null]
+  average real [not null]
+  hv real
+  depth_mm real
+  depth_source depth_source
+  device_depth_mm real
+  manual_depth_mm real
+  method measurement_method [not null, default: 'Manual']
+  unit measurement_unit [not null, default: 'um']
+  d1_px real
+  d2_px real
+  d1_um real
+  d2_um real
+  average_um real
+  average_mm real
+  micron_per_pixel real
+  calibration_name text
+  objective text
+  test_force_kgf real
+  x_mm real
+  y_mm real
+  qualified qualified_flag
+  hardness_type text
+  convert_type text
+  convert_value real
+  image_id text [ref: > images.id, note: 'NEW: was inline base64 imageDataUrl']
+  timestamp datetime [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Multi-row. Largest growth table. imageDataUrl base64 currently embedded inline — proposed to move to images table.'
+}
+
+Table test_records {
+  id text [pk]
+  sample_name text [not null]
+  test_method text [not null]
+  target_min_hv real
+  target_max_hv real
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Multi-row. The "report"/sample grouping entity. measurementIds[] array is normalized into test_record_measurements.'
+}
+
+Table test_record_measurements {
+  test_record_id text [ref: > test_records.id]
+  measurement_id text [ref: > measurements.id]
+  position integer [note: 'order within the test record']
+
+  indexes {
+    (test_record_id, measurement_id) [pk]
+  }
+  Note: 'NEW junction table. Replaces the embedded measurementIds string[] inside test_records.json. Resolves the existing M:N relationship.'
+}
+
+Table album_items {
+  id text [pk]
+  title text [not null]
+  preview_label text [not null]
+  hardness_image boolean [not null]
+  measurement_id text [ref: > measurements.id, note: 'optional soft ref (exists today)']
+  image_id text [ref: > images.id, note: 'NEW: was inline base64 imageDataUrl']
+  captured_at datetime [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Multi-row. measurementId is an existing optional reference to measurements.'
+}
+
+Table pattern_programs {
+  id text [pk]
+  pattern_name text [not null]
+  pattern pattern_shape [not null]
+  mode pattern_mode [not null]
+  ref_x real
+  ref_y real
+  interval real
+  offset real
+  first_offset real
+  number integer
+  point_count integer [not null]
+  multiset boolean [not null]
+  focus_all boolean [not null]
+  impress_mode impress_mode [not null]
+  checked boolean [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Multi-row.'
+}
+
+Table calibrations {
+  id text [pk]
+  zoom_time text [not null, note: 'objective label e.g. 10X/40X']
+  force text [not null]
+  hardness_level text [not null]
+  pixel_length_x real [not null]
+  pixel_length_y real [not null]
+  hardness real [not null]
+  calibration_type calibration_type [not null]
+  length_mode length_mode
+  real_distance_x real
+  real_distance_y real
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Multi-row (one per objective/condition).'
+}
+
+Table calibration_settings {
+  id text [pk]
+  objective text [not null]
+  normalized_objective text
+  pixel_to_micron real [not null]
+  um_per_pixel real
+  pixel_per_mm real
+  active boolean [not null, default: false]
+  calibration_date datetime [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Multi-row (one active per objective). Distinct from calibrations.'
+}
+
+Table toolbar_states {
+  id text [pk]
+  last_action text [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: 'Currently (id, json). Observed 2 rows in live DB though conceptually a "last action" marker — see open questions.'
+}
+
+Table images {
+  id text [pk]
+  data_url text [not null, note: 'base64 data: URL']
+  created_at datetime [not null]
+
+  Note: 'NEW (does not exist today). Extracts inline base64 imageDataUrl out of measurements / album_items to keep hot tables small. Optional part of the proposal.'
+}
+
+
+// ===========================================================================
+//  SINGLETON TABLES (config / live state — exactly one row)
+// ===========================================================================
+
+Table machine_settings {
+  id text [pk]
+  force text [not null]
+  lightness real [not null]
+  load_time real [not null]
+  objective text [not null]
+  hardness_level text [not null]
+  objective_brightness_map text [note: 'JSON map {"10X":n,"40X":n} — stays JSON, dynamic keys']
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: '[SINGLETON] Currently (id, json). objectiveBrightnessMap kept as JSON (open-ended keys).'
+}
+
+Table micrometer_config {
+  id text [pk]
+  enabled boolean [not null, default: true]
+  com_port text
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table auto_measure_settings {
+  id text [pk]
+  smoothing integer [not null, default: 15]
+  threshold integer [not null, default: 134]
+  turret_after_impress boolean [not null, default: true]
+  measure_after_impress boolean [not null, default: true]
+  objective_for_measure objective_for_measure [not null, default: '40X']
+  image_type image_type [not null, default: 'HV-2']
+  threshold_mode threshold_mode [not null, default: 'manual']
+  manual_threshold integer [not null, default: 134]
+  morphology_kernel_size integer [not null, default: 11]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table line_color_settings {
+  id text [pk]
+  line_color line_color [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json). Note: no created_at in model.'
+}
+
+Table camera_settings {
+  id text [pk]
+  analog_gain real [not null]
+  exposure_time_ms real [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table generic_settings {
+  id text [pk]
+  case_depth_hardness real [not null]
+  hardness_test_mode hardness_test_mode [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table other_settings {
+  id text [pk]
+  language language [not null]
+  hardness_value_accuracy integer [not null]
+  conversion_value_accuracy integer [not null]
+  hardness_convert_table text [not null]
+  trim_fast integer [not null]
+  trim_slow integer [not null]
+  history_image_count integer [not null]
+  history_image_size_mb integer [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table report_header_settings {
+  id text [pk]
+  sample_name text
+  sample_serial_number text
+  inspection_company text
+  tester text
+  reviewer text
+  hardness_min real
+  hardness_max real
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table serial_port_settings {
+  id text [pk]
+  machine_com_port text
+  xy_port_name text
+  z_port_name text
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table depth_image_settings {
+  id text [pk]
+  hardness_image boolean [not null]
+  preview_label text [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+Table xyz_platform_states {
+  id text [pk]
+  xy_speed xy_speed [not null]
+  z_speed z_speed [not null]
+  platform_x real [not null]
+  platform_y real [not null]
+  platform_z real [not null]
+  xy_locked boolean [not null]
+  z_locked boolean [not null]
+  focus_mode focus_mode [not null]
+  last_action text [not null]
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json). Live platform state (high-frequency writes via upsertRows).'
+}
+
+Table xyz_center_calibration {
+  id text [pk]
+  center_x real
+  center_y real
+  xy_speed xy_speed
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json). Taught optical center (controller pulses).'
+}
+
+Table xyz_platform_settings {
+  id text [pk]
+  running_by_new_thread boolean [not null]
+  has_empty_trip boolean [not null]
+  reverse_x_axis boolean [not null]
+  reverse_y_axis boolean [not null]
+  pulse_per_mm integer [not null]
+
+  empty_trip_forward real [not null]
+  empty_trip_backward real [not null]
+  empty_trip_leftward real [not null]
+  empty_trip_rightward real [not null]
+
+  slow_begin_register_value integer [not null]
+  slow_acceleration_register_value integer [not null]
+  slow_final_register_value integer [not null]
+  slow_approx_mm_s real [not null]
+
+  mid_begin_register_value integer [not null]
+  mid_acceleration_register_value integer [not null]
+  mid_final_register_value integer [not null]
+  mid_approx_mm_s real [not null]
+
+  fast_begin_register_value integer [not null]
+  fast_acceleration_register_value integer [not null]
+  fast_final_register_value integer [not null]
+  fast_approx_mm_s real [not null]
+
+  ultra_begin_register_value integer [not null]
+  ultra_acceleration_register_value integer [not null]
+  ultra_final_register_value integer [not null]
+  ultra_approx_mm_s real [not null]
+
+  created_at datetime [not null]
+  updated_at datetime [not null]
+
+  Note: '[SINGLETON] Currently (id, json) with nested emptyTrip + speedProfiles{slow,mid,fast,ultra}. WARNING: live DB blob uses an OLDER profile shape (stepDistanceMm/beginSpeedMmS/registerValue) than the current model. Backfill must reconcile both shapes — see open questions.'
+}
+
+Table z_axis_settings {
+  id text [pk]
+  reverse_direction boolean [not null]
+  pulse_per_mm integer [not null]
+  step_distance_mm real [not null]
+  has_empty_trip boolean [not null]
+  upward_empty_trip_mm real [not null]
+  downward_empty_trip_mm real [not null]
+  image_selection integer [not null, note: 'one of 30,40,50,60,70,80,90,100']
+  created_at datetime [not null]
+  updated_at datetime [not null]
+  Note: '[SINGLETON] Currently (id, json).'
+}
+
+
+// ===========================================================================
+//  RELATIONSHIPS
+// ===========================================================================
+//  Confirmed (exist today as soft UUID references inside JSON; no FK enforced
+//  because storage is a JSON blob):
+//
+//    test_record_measurements.test_record_id > test_records.id   (NEW junction)
+//    test_record_measurements.measurement_id > measurements.id   (NEW junction)
+//      └─ replaces test_records.json.measurementIds: string[]
+//    album_items.measurement_id              > measurements.id   (optional, exists)
+//
+//  Proposed-with-NEW-table (clearly intended by the task's example refs):
+//    measurements.image_id                   > images.id
+//    album_items.image_id                    > images.id
+//
+//  Inline ref blocks above declare these so dbdiagram draws the lines.
+//  Uncertain / weak relationships are intentionally NOT drawn — see
+//  docs/db-schema-audit.md "Uncertain relationships".
+// ===========================================================================

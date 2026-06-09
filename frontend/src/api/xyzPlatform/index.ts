@@ -11,6 +11,7 @@ import type {
   XyzProbeOptions,
   XyzProbeResult,
   XyzStageState,
+  XyzZDiagnoseResult,
   XySpeed,
   ZDirection,
   ZSpeed,
@@ -108,6 +109,10 @@ export const xyzProbe = (commandText: string, options?: XyzProbeOptions): Promis
 export const xyzMoveStage = (direction: XyzDirection): Promise<XyzCommandResult> =>
   bridge()?.moveStage(direction) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
+/** Quick tap: one finite configured step move, RX-gated. */
+export const xyzMoveStep = (direction: XyzDirection): Promise<XyzCommandResult> =>
+  bridge()?.moveStep(direction) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
 export const xyzStopStage = (): Promise<XyzCommandResult> =>
   bridge()?.stopStage() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
@@ -116,6 +121,44 @@ export const xyzMoveZ = (direction: ZDirection, speed: ZSpeed): Promise<XyzComma
 
 export const xyzStopZ = (): Promise<XyzCommandResult> =>
   bridge()?.stopZ() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+/** Open the dedicated Z serial connection on the configured Z port (no fallback). */
+export const xyzConnectZ = (opts: { port: string; baudRate?: number }): Promise<XyzConnectResult> => {
+  const b = bridge();
+  if (!b) return Promise.resolve(BRIDGE_UNAVAILABLE_CONNECT);
+  return b.connectZ(opts).then((res) => ({ ok: res.ok, error: res.error, message: res.message }));
+};
+
+export const xyzDisconnectZ = (): Promise<XyzConnectResult> => {
+  const b = bridge();
+  if (!b) return Promise.resolve(BRIDGE_UNAVAILABLE_CONNECT);
+  return b.disconnectZ().then((res) => ({ ok: res.ok, error: res.error, message: res.message }));
+};
+
+export const xyzStartZJog = (direction: ZDirection): Promise<XyzCommandResult> =>
+  bridge()?.startZJog(direction) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+export const xyzStopZJog = (): Promise<XyzCommandResult> =>
+  bridge()?.stopZJog() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+export const xyzPollZStatus = (): Promise<XyzCommandResult> =>
+  bridge()?.pollZStatus() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
+const BRIDGE_UNAVAILABLE_Z_DIAGNOSE: XyzZDiagnoseResult = {
+  ok: false,
+  error: 'XYZ_BRIDGE_UNAVAILABLE',
+  port: null,
+  baudRate: null,
+  anyRx: false,
+  probes: [],
+  summary: 'XYZ platform hardware bridge is unavailable (not running in Electron).',
+};
+
+/** Dev diagnostic for the Z axis — runs the legacy command sequence; inspect [z-*] logs. */
+export const xyzDiagnoseZ = (
+  options?: { includeJog?: boolean; speedRegisterValue?: number }
+): Promise<XyzZDiagnoseResult> =>
+  bridge()?.diagnoseZ(options) ?? Promise.resolve(BRIDGE_UNAVAILABLE_Z_DIAGNOSE);
 
 export const xyzLockZ = (): Promise<XyzCommandResult> =>
   bridge()?.lockZ() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
