@@ -4,7 +4,6 @@ import {
   buildZFrame,
   buildZLockCommand,
   buildZLoosenCommand,
-  buildZStopCommand,
   buildZJogUpCommand,
   buildZJogDownCommand,
   buildZMoveUpCommand,
@@ -46,13 +45,6 @@ test('loosen builds #LS# and expects OK_LS', () => {
   assert.equal(cmd.expect, 'OK_LS');
 });
 
-test('stop builds #SSS# and expects UP', () => {
-  const cmd = buildZStopCommand();
-  assert.equal(cmd.visible, '#SSS#');
-  assert.deepEqual(cmd.frame, ascii('#SSS#'));
-  assert.equal(cmd.expect, 'UP');
-});
-
 test('jog up builds #+S# and expects SOK', () => {
   const cmd = buildZJogUpCommand();
   assert.equal(cmd.visible, '#+S#');
@@ -77,10 +69,10 @@ test('step move up/down keep a LITERAL space between Z and pulses; magnitude onl
   assert.equal(buildZMoveDownCommand(15).expect, '>Z:');
 });
 
-test('set speed builds #VZ <rate># with a LITERAL space and expects OK_ZFinalSpeed', () => {
+test('set speed builds #VZnnnn# with NO space and expects OK_ZFinalSpeed', () => {
   const cmd = buildZSetSpeedCommand(1000);
-  assert.equal(cmd.visible, '#VZ 1000#');
-  assert.deepEqual(cmd.frame, ascii('#VZ 1000#'));
+  assert.equal(cmd.visible, '#VZ1000#');
+  assert.deepEqual(cmd.frame, ascii('#VZ1000#'));
   assert.equal(cmd.expect, 'OK_ZFinalSpeed');
 });
 
@@ -96,7 +88,6 @@ test('no command frame carries a checksum byte (0x21 "!" or trailing digits)', (
   for (const cmd of [
     buildZLockCommand(),
     buildZLoosenCommand(),
-    buildZStopCommand(),
     buildZJogUpCommand(),
     buildZJogDownCommand(),
     buildZMoveUpCommand(15),
@@ -122,6 +113,11 @@ test('zMmToPulses rounds mm*pulsePerMm', () => {
   assert.equal(zMmToPulses(0.001, 15000), 15);
   assert.equal(zMmToPulses(1, 15000), 15000);
   assert.equal(zMmToPulses(0.0005, 15000), 8); // 7.5 → 8
+});
+
+test('focus-mode step sizes: FFocus 0.001mm→15 pulses, CFocus 0.010mm→150 pulses', () => {
+  assert.equal(zMmToPulses(0.001, 15000), 15); // FFocus fine step
+  assert.equal(zMmToPulses(0.01, 15000), 150); // CFocus coarse step
 });
 
 // --- speed register config --------------------------------------------------

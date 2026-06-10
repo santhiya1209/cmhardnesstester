@@ -5,7 +5,7 @@ module.exports = {
     name: 'VickersMeasurementSoftware',
     executableName: 'VickersMeasurementSoftware',
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
-    icon: path.resolve(__dirname, "frontend/public/icon.ico"),
+    icon: path.resolve(__dirname, "frontend/public/icon"),
     asar: true,
     extraResource: [
       'drivers/opencv',

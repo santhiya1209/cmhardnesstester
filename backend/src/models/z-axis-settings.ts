@@ -26,7 +26,10 @@ export const ZAxisSettingsPayloadSchema = z.object({
   // Z axis
   reverseDirection: z.boolean(),
   pulsePerMm: z.number().int().positive(), // > 0
-  stepDistanceMm: z.number().finite().positive(), // > 0
+  stepDistanceMm: z.number().finite().positive(), // > 0 — FFocus (fine) step
+  // CFocus (coarse) step. Optional so existing rows/clients without it fall back
+  // to the 0.010 mm default. pulses = coarseStepDistanceMm * pulsePerMm.
+  coarseStepDistanceMm: z.number().finite().positive().optional(),
   // Empty trip (backlash compensation, mm). Stored as config only — no confirmed
   // empty-trip Z serial command exists, so these are never sent to the controller.
   hasEmptyTrip: z.boolean(),
@@ -55,6 +58,7 @@ export const DEFAULT_Z_AXIS_SETTINGS: ZAxisSettingsPayload = {
   reverseDirection: true,
   pulsePerMm: 15000,
   stepDistanceMm: 0.001,
+  coarseStepDistanceMm: 0.01,
   hasEmptyTrip: true,
   upwardEmptyTripMm: 0.0005,
   downwardEmptyTripMm: 0.0005,

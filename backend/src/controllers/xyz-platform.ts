@@ -133,7 +133,7 @@ export async function probeZAxis(req: Request, res: Response): Promise<void> {
 }
 
 export async function diagnoseStopZAxis(_req: Request, res: Response): Promise<void> {
-  res.json({ ok: true, probes: await xyzPlatformSerialService.diagnoseStopZ() });
+  res.json({ ok: true, diagnosis: await xyzPlatformSerialService.diagnoseStopZ() });
 }
 
 export async function diagnoseZAxis(req: Request, res: Response): Promise<void> {

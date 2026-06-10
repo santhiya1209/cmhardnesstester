@@ -9,7 +9,6 @@ import {
   buildZMoveCommand,
   buildZProbeCommand,
   buildZSetSpeedCommand,
-  buildZStopCommand,
   classifyZLine,
   normalizeZLine,
   replyMatchesExpect,
@@ -29,7 +28,14 @@ import {
 //
 // Hardware truth only: UI/state changes are driven from real TX/RX. No optimistic
 // updates, no simulated motion, no fabricated replies. Continuous jog is held by
-// REPEATED #+S#/#-S# frames (each gated on a real SOK) and stopped by #SSS#→UP.
+// REPEATED #+S#/#-S# frames (each gated on a real SOK).
+//
+// STOP IS UNRESOLVED (hardware-verified): "#SSS# -> ERROR" repeats consistently, so
+// #SSS# is NOT a stop command. There is no verified stop frame. Until one is found,
+// stop is handled by the diagnostic toggle-same-command strategy: re-send the exact
+// active jog frame (#+S#/#-S#) and observe. A reply only proves the frame was
+// accepted, NOT that the stage halted — so stop is never reported as confirmed and
+// moving is never cleared on a PLC ERROR.
 
 // Defensive require so the backend keeps booting even if `serialport` is not
 // rebuilt for the current Node ABI yet — mirrors the X/Y + machine services.
@@ -78,19 +84,52 @@ export function __setZSerialPortLibForTests(lib: { SerialPort: SerialPortCtor } 
 // Z line settings come from the old software: 57600 8N1, no flow control. This is
 // the DEFAULT only — the actual value is parameterizable per connect() call.
 const Z_DEFAULT_BAUD = 57600;
+// Short ACK window for NON-motion commands (lock/unlock/jog/status/speed): the
+// controller answers these within a few hundred ms.
 const Z_TX_TIMEOUT_MS = 5000;
+// Motion (moveZ #+Z n# / #-Z n#) emits its completion frame (>Z:) only when the
+// physical step FINISHES, which can exceed the 5s ACK window — the controller has
+// been observed replying >Z: after 5s, landing as a stale "pending=none" line once
+// the short timeout already fired. A single bounded Z step gets this longer ceiling
+// so a slow-but-normal move is never falsely timed out. Bounded (not infinite) so a
+// stage that never completes still fails honestly. No retry, no poll, no fake done.
+const Z_MOVE_TIMEOUT_MS = 30000;
 // Continuous-jog repeat cadence. The old software re-sends the jog frame while the
 // button is held; we mirror that, each frame gated on a real SOK reply.
 const Z_JOG_REPEAT_MS = 150;
 // Backend safety watchdog: if no stopJog arrives within this window after a jog
 // starts (release event missed / IPC dropped), the service runs the stop itself.
 const Z_JOG_WATCHDOG_MS = 10_000;
-// Default stop payload, sent as "#SSS#". Configurable via Serial settings
-// (zStopPayload) and passed in by the facade; this is only the fallback.
-const Z_DEFAULT_STOP_PAYLOAD = 'SSS';
 // Candidate stop payloads for diagnoseStop() — used to find the real stop command
-// on hardware when the configured stop is rejected with ERROR.
+// on hardware. #SSS# is included ONLY so the probe can re-confirm it returns ERROR;
+// it is NOT used as a stop command anywhere in the jog path.
 const Z_STOP_PROBE_CANDIDATES = ['SSS', 'S', 'STOP', 'ST', 'UP'];
+// How a jog stop is attempted while the real stop command is unknown:
+//  - 'toggle-same-command' (default): re-send the exact active jog frame (#+S#/#-S#)
+//    and observe whether the controller treats a second identical jog as a stop.
+//  - 'poll-only': send NO motion frame; just stop the repeat loop and poll #sss#.
+// Neither can CONFIRM a halt yet — both are hardware-discovery strategies.
+export type ZStopStrategy = 'toggle-same-command' | 'poll-only';
+const Z_DEFAULT_STOP_STRATEGY: ZStopStrategy = 'toggle-same-command';
+
+/** Result of the diagnostic stop sequence (window.xyzPlatform.diagnoseStopZ()). */
+export interface ZStopDiagnosis {
+  strategy: ZStopStrategy;
+  /** The jog frame used to start motion, e.g. "#+S#". */
+  startCommand: string;
+  /** The frame sent to attempt the stop (toggle: same jog frame; poll-only: "#sss#"). */
+  stopCommand: string;
+  /** Raw RX to the stop attempt (the SOK/ERROR line, or null on timeout). */
+  stopReply: string | null;
+  /** Raw RX to the trailing #sss# status poll, or null. */
+  finalStatus: string | null;
+  /**
+   * Whether the stage is CONFIRMED stopped. Always false for now — no verified stop
+   * token exists, so a halt cannot be proven from any reply. Captured replies are
+   * for human/hardware analysis, never an optimistic success.
+   */
+  stopped: boolean;
+}
 
 export type ZCommandResult =
   | { ok: true; reply?: string; commandId: string }
@@ -166,8 +205,12 @@ export class ZAxisSerialService extends EventEmitter {
   private rxBuffer = '';
   private commandSequence = 0;
   private jogRepeatMs = Z_JOG_REPEAT_MS;
-  // Active stop payload (configurable; set by the facade from Serial settings).
-  private stopPayload = Z_DEFAULT_STOP_PAYLOAD;
+  // Jog-stop strategy while the verified stop command is unknown (see ZStopStrategy).
+  private stopStrategy: ZStopStrategy = Z_DEFAULT_STOP_STRATEGY;
+  // The exact jog frame (#+S#/#-S#) of the jog currently in flight, captured on
+  // startJog so the toggle-same-command stop can re-send the SAME frame. null when
+  // no jog is active.
+  private activeJogCommand: ZBuiltCommand | null = null;
 
   // Single in-flight waiter (the per-port queue guarantees one command at a time).
   private pending: {
@@ -187,6 +230,17 @@ export class ZAxisSerialService extends EventEmitter {
   /** TEST SEAM: shorten the jog repeat cadence so the loop can be unit-tested quickly. */
   setJogRepeatMsForTests(ms: number): void {
     this.jogRepeatMs = ms;
+  }
+
+  /** Select the jog-stop discovery strategy (default 'toggle-same-command'). */
+  setStopStrategy(strategy: ZStopStrategy): void {
+    this.stopStrategy = strategy;
+    // eslint-disable-next-line no-console
+    console.log(`[z-stop-test] action=set-strategy strategy=${strategy}`);
+  }
+
+  getStopStrategy(): ZStopStrategy {
+    return this.stopStrategy;
   }
 
   getZState(): ZServiceState {
@@ -341,7 +395,9 @@ export class ZAxisSerialService extends EventEmitter {
   }
 
   async disconnect(): Promise<ZServiceState> {
-    // If a jog is active, send #SSS# to halt motion BEFORE tearing down the port.
+    // If a jog is active, attempt the stop (toggle strategy) BEFORE tearing down the
+    // port. The stop is unverified, so this is best-effort — the port close below is
+    // the hard backstop that ceases all jog frames regardless.
     if (this.jogActive && this.connected) {
       // eslint-disable-next-line no-console
       console.log('[z-jog-stop] phase=safe-stop-before-disconnect');
@@ -420,14 +476,14 @@ export class ZAxisSerialService extends EventEmitter {
    * always releasing the queue lock and clearing the pending waiter. Returns the
    * matched RX line; throws on timeout / write error.
    */
-  private async transmit(commandId: string, built: ZBuiltCommand): Promise<string> {
+  private async transmit(commandId: string, built: ZBuiltCommand, timeoutMs: number = Z_TX_TIMEOUT_MS): Promise<string> {
     if (!this.port || !this.connected) {
       throw new Error('XYZ_Z_NOT_CONNECTED');
     }
     const hex = hexSpaced(built.frame);
     this.lastTx = built.visible;
     // eslint-disable-next-line no-console
-    console.log(`[z-tx] commandId=${commandId} key=${built.key} visible=${JSON.stringify(built.visible)} hex=${JSON.stringify(hex)} expect=${built.expect}`);
+    console.log(`[z-tx] commandId=${commandId} key=${built.key} visible=${JSON.stringify(built.visible)} hex=${JSON.stringify(hex)} expect=${built.expect} timeoutMs=${timeoutMs}`);
 
     const queue = getSerialQueue(this.portName as string);
     return queue.enqueue(
@@ -445,9 +501,9 @@ export class ZAxisSerialService extends EventEmitter {
               }
               const timer = setTimeout(() => {
                 // eslint-disable-next-line no-console
-                console.error(`[z-timeout] commandId=${commandId} key=${built.key} expect=${built.expect} afterMs=${Z_TX_TIMEOUT_MS}`);
+                console.error(`[z-timeout] commandId=${commandId} key=${built.key} expect=${built.expect} afterMs=${timeoutMs}`);
                 this.resolvePending(null, new Error('XYZ_Z_TIMEOUT'));
-              }, Z_TX_TIMEOUT_MS);
+              }, timeoutMs);
               this.pending = { resolve, reject, timer, built, commandId };
             });
           });
@@ -455,15 +511,17 @@ export class ZAxisSerialService extends EventEmitter {
     );
   }
 
-  /** Run a reply-gated command and map the outcome to a ZCommandResult. */
-  private async runCommand(built: ZBuiltCommand, action: string): Promise<ZCommandResult> {
+  /** Run a reply-gated command and map the outcome to a ZCommandResult. The
+   *  timeout defaults to the short Z_TX_TIMEOUT_MS (jog/lock/unlock/status/speed);
+   *  motion (moveZ) passes the longer Z_MOVE_TIMEOUT_MS for physical travel. */
+  private async runCommand(built: ZBuiltCommand, action: string, timeoutMs: number = Z_TX_TIMEOUT_MS): Promise<ZCommandResult> {
     const commandId = this.nextCommandId();
     if (!this.connected) {
       this.lastError = 'XYZ_Z_NOT_CONNECTED';
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId };
     }
     try {
-      const reply = await this.transmit(commandId, built);
+      const reply = await this.transmit(commandId, built, timeoutMs);
       this.lastError = null;
       // eslint-disable-next-line no-console
       console.log(`[z-confirm] commandId=${commandId} action=${JSON.stringify(action)} reply=${JSON.stringify(reply)}`);
@@ -529,7 +587,10 @@ export class ZAxisSerialService extends EventEmitter {
     // flight, cleared after the real >Z: reply (or on failure) via finally.
     this.setMoving(true);
     try {
-      return await this.runCommand(buildZMoveCommand(sign, pulses), `Z step ${sign}Z ${pulses}.`);
+      // moveZ waits for the physical step's >Z: completion, which can arrive after
+      // the short ACK window — use the longer motion ceiling so a normal move isn't
+      // timed out before the controller replies.
+      return await this.runCommand(buildZMoveCommand(sign, pulses), `Z step ${sign}Z ${pulses}.`, Z_MOVE_TIMEOUT_MS);
     } finally {
       this.setMoving(false);
     }
@@ -540,8 +601,7 @@ export class ZAxisSerialService extends EventEmitter {
    * waits for the real SOK; only then is `moving` set true and the 150 ms repeat
    * loop scheduled. A safety watchdog fires stopJog if the release is missed.
    */
-  async startJog(sign: '+' | '-', stopPayload?: string): Promise<ZCommandResult> {
-    if (typeof stopPayload === 'string' && stopPayload.length > 0) this.stopPayload = stopPayload;
+  async startJog(sign: '+' | '-'): Promise<ZCommandResult> {
     if (!this.connected) {
       this.lastError = 'XYZ_Z_NOT_CONNECTED';
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId: this.nextCommandId() };
@@ -552,11 +612,14 @@ export class ZAxisSerialService extends EventEmitter {
     }
     const built = buildZJogCommand(sign);
     this.jogActive = true;
+    // Remember the EXACT jog frame so the toggle stop can re-send the same command.
+    this.activeJogCommand = built;
     // eslint-disable-next-line no-console
     console.log(`[z-jog-start] sign=${sign} visible=${JSON.stringify(built.visible)} repeatMs=${this.jogRepeatMs}`);
     const first = await this.runCommand(built, `Z jog start ${built.visible}.`);
     if (!first.ok) {
       this.jogActive = false;
+      this.activeJogCommand = null;
       // eslint-disable-next-line no-console
       console.error(`[z-jog-start] result=failed error=${JSON.stringify(first.error)}`);
       return first;
@@ -591,44 +654,131 @@ export class ZAxisSerialService extends EventEmitter {
   }
 
   /**
-   * Stop a press-and-hold jog. Cancels the repeat loop IMMEDIATELY, then sends the
-   * high-priority stop frame #SSS# and waits for the real UP reply. `moving` is
-   * cleared ONLY on that UP — if the controller never confirms, we surface the
-   * failure honestly rather than faking a stop.
+   * Stop a press-and-hold jog. ALWAYS cancels the repeat loop immediately (no more
+   * jog frames are scheduled). The actual stop is UNRESOLVED in the protocol —
+   * #SSS# is rejected with ERROR — so we apply the configured discovery strategy:
+   *
+   *  - 'toggle-same-command' (default): re-send the EXACT active jog frame
+   *    (#+S#/#-S#) and observe. A SOK reply only proves the frame was accepted, not
+   *    that the stage halted, so we never claim a confirmed stop.
+   *  - 'poll-only': send NO motion frame; just poll #sss# and report status.
+   *
+   * HARDWARE TRUTH: on a PLC ERROR (or no active jog) we do NOT clear `moving` —
+   * backend state must reflect that the stop is unconfirmed (no fake success). On a
+   * SOK reply to the toggle we clear `moving` because the repeat loop has ceased and
+   * the controller accepted the frame; the unverified physical halt is logged via
+   * [z-stop-test] for hardware confirmation.
    */
-  async stopJog(stopPayload?: string): Promise<ZCommandResult> {
-    if (typeof stopPayload === 'string' && stopPayload.length > 0) this.stopPayload = stopPayload;
+  async stopJog(): Promise<ZCommandResult> {
     const commandId = this.nextCommandId();
     const wasJogging = this.jogActive;
+    const active = this.activeJogCommand;
     // Stop the loop from scheduling further frames before anything else.
     this.jogActive = false;
     this.clearJogTimer();
     this.clearJogWatchdog();
     if (!this.connected) {
       this.setMoving(false);
+      this.activeJogCommand = null;
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId };
     }
-    const built = buildZStopCommand(this.stopPayload);
-    // eslint-disable-next-line no-console
-    console.log(`[z-jog-stop] wasJogging=${wasJogging} send=${JSON.stringify(built.visible)}`);
-    const result = await this.runCommand(built, `Z stop (${built.visible}).`);
-    if (result.ok) {
-      this.setMoving(false); // idle confirmed by the real UP reply
-      return result;
-    }
-    // A real PLC ERROR is a DEFINITIVE response, NOT a hang. Clear the software jog
-    // state immediately so the next step move isn't blocked, and surface the PLC
-    // error honestly. We do NOT keep waiting for a UP that will never arrive.
-    if (result.error === 'Z_STAGE_PROTOCOL_ERROR') {
-      this.setMoving(false);
-      this.jogActive = false;
-      this.lastError = 'Z stop returned ERROR from PLC';
+
+    // POLL-ONLY, or nothing to toggle: send NO motion frame, just read status. We
+    // cannot confirm a halt, so surface it honestly without clearing `moving`.
+    if (this.stopStrategy === 'poll-only' || !active) {
+      const poll = await this.runCommand(buildPollZStatusCommand(), 'Z stop poll (#sss#).');
+      const rx = poll.ok ? (poll.reply ?? null) : (poll.error ?? null);
       // eslint-disable-next-line no-console
-      console.warn(`[z-jog-stop] result=plc-error cleared=moving,jogActive lastError=${JSON.stringify(this.lastError)} commandId=${commandId}`);
-      return { ok: false, error: 'Z_STOP_PLC_ERROR', message: this.lastError, commandId };
+      console.log(
+        `[z-stop-test] strategy=${this.stopStrategy} start=${JSON.stringify(active?.visible ?? null)} stop="#sss#" stopReply=${JSON.stringify(rx)} wasJogging=${wasJogging} note=stop-unconfirmed`
+      );
+      this.activeJogCommand = null;
+      this.lastError = 'Z stop command is unverified; motion stop not confirmed by hardware.';
+      return { ok: false, error: 'XYZ_Z_STOP_UNRESOLVED', message: this.lastError, commandId };
     }
-    // Timeout / write error: genuinely unknown — surface honestly, leave moving.
-    return result;
+
+    // TOGGLE-SAME-COMMAND: re-send the EXACT active jog frame and observe.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[z-stop-test] strategy=toggle-same-command start=${JSON.stringify(active.visible)} stop=${JSON.stringify(active.visible)} wasJogging=${wasJogging}`
+    );
+    const result = await this.runCommand(active, `Z stop test (re-send ${active.visible}).`);
+    const rx = result.ok ? (result.reply ?? null) : (result.error ?? null);
+    // eslint-disable-next-line no-console
+    console.log(`[z-stop-test] strategy=toggle-same-command stop=${JSON.stringify(active.visible)} stopReply=${JSON.stringify(rx)}`);
+    this.activeJogCommand = null;
+
+    if (!result.ok) {
+      // A real PLC ERROR (or timeout) — stop is NOT confirmed. Per hardware-truth,
+      // do NOT clear `moving`: the stage may still be moving. A lock/loosen forces a
+      // known-idle state when the operator needs to recover.
+      this.lastError =
+        result.error === 'Z_STAGE_PROTOCOL_ERROR'
+          ? 'Z stop toggle returned ERROR from PLC — stop not confirmed.'
+          : (result.message ?? result.error);
+      // eslint-disable-next-line no-console
+      console.warn(`[z-stop-test] strategy=toggle-same-command result=failed error=${JSON.stringify(result.error)} moving=unchanged commandId=${commandId}`);
+      return { ok: false, error: result.error, message: this.lastError, commandId };
+    }
+    // SOK reply: frame accepted and the repeat loop has ceased. The physical halt is
+    // still unverified (logged above) but the backend is no longer driving motion.
+    this.setMoving(false);
+    return { ok: true, reply: result.reply, commandId };
+  }
+
+  /**
+   * Diagnostic stop sequence for hardware discovery (window.xyzPlatform.diagnoseStopZ()):
+   * start a jog, let it run ~2s, attempt the configured stop strategy, capture the
+   * raw RX, then poll #sss# for the final status. Returns every observed reply so
+   * the real stop protocol can be identified. NEVER claims `stopped` — there is no
+   * verified stop token, and this sequence DOES cause real motion (the stage may
+   * still be moving when it returns; the operator must physically confirm).
+   */
+  async diagnoseStopStrategy(sign: '+' | '-' = '+'): Promise<ZStopDiagnosis> {
+    const strategy = this.stopStrategy;
+    const startCmd = buildZJogCommand(sign);
+    const startCommand = startCmd.visible;
+    if (!this.connected) {
+      // eslint-disable-next-line no-console
+      console.error(`[z-stop-test] phase=abort error=XYZ_Z_NOT_CONNECTED`);
+      return { strategy, startCommand, stopCommand: '', stopReply: null, finalStatus: null, stopped: false };
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`[z-stop-test] phase=start strategy=${strategy} start=${JSON.stringify(startCommand)} note=causes-real-motion`);
+    const start = await this.runCommand(startCmd, `Z stop-test jog start ${startCommand}.`);
+    // eslint-disable-next-line no-console
+    console.log(`[z-stop-test] phase=start-reply rx=${JSON.stringify(start.ok ? start.reply : start.error)}`);
+
+    // Let the jog run so a stop has something to act on.
+    await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+
+    let stopCommand: string;
+    let stopResult: ZCommandResult;
+    if (strategy === 'poll-only') {
+      const poll = buildPollZStatusCommand();
+      stopCommand = poll.visible;
+      stopResult = await this.runCommand(poll, `Z stop-test poll ${poll.visible}.`);
+    } else {
+      stopCommand = startCommand;
+      // eslint-disable-next-line no-console
+      console.log(`[z-stop-test] phase=stop strategy=${strategy} stop=${JSON.stringify(stopCommand)}`);
+      stopResult = await this.runCommand(buildZJogCommand(sign), `Z stop-test re-send ${stopCommand}.`);
+    }
+    const stopReply = stopResult.ok ? (stopResult.reply ?? null) : (stopResult.error ?? null);
+    // eslint-disable-next-line no-console
+    console.log(`[z-stop-test] phase=stop-reply strategy=${strategy} stop=${JSON.stringify(stopCommand)} rx=${JSON.stringify(stopReply)}`);
+
+    // Trailing status poll (#sss#) to capture whatever the controller reports.
+    const pollCmd = buildPollZStatusCommand();
+    const poll = await this.runCommand(pollCmd, `Z stop-test final poll ${pollCmd.visible}.`);
+    const finalStatus = poll.ok ? (poll.reply ?? null) : (poll.error ?? null);
+    // No verified stop token exists, so a halt cannot be proven — always false.
+    const stopped = false;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[z-stop-test] strategy=${strategy} start=${JSON.stringify(startCommand)} stop=${JSON.stringify(stopCommand)} stopReply=${JSON.stringify(stopReply)} finalStatus=${JSON.stringify(finalStatus)} stopped=${stopped} note=stop-unconfirmed-hardware-discovery`
+    );
+    return { strategy, startCommand, stopCommand, stopReply, finalStatus, stopped };
   }
 
   /**
@@ -711,8 +861,8 @@ export class ZAxisSerialService extends EventEmitter {
   /**
    * Send the Z command sequence and report exactly what (if anything) the
    * controller replies with. By default sends only the non-continuous commands
-   * (#LK#, #LS#, #VZ <r>#, #+Z 15#, #-Z 15#, #SSS#); the continuous jog probes
-   * (#+S#/#-S#) run ONLY when includeJog is explicitly true (they cause motion).
+   * (#LK#, #LS#, #VZ <r>#, #+Z 15#, #-Z 15#, #sss# status poll); the continuous jog
+   * probes (#+S#/#-S#) run ONLY when includeJog is explicitly true (they cause motion).
    */
   async diagnose(opts?: { includeJog?: boolean; speedRegisterValue?: number }): Promise<ZDiagnoseResult> {
     if (!this.connected || !this.portName) {
@@ -722,13 +872,15 @@ export class ZAxisSerialService extends EventEmitter {
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', port: this.portName, baudRate: this.connected ? this.baudRate : null, anyRx: false, probes: [], summary };
     }
     const speedValue = opts?.speedRegisterValue ?? 1000;
+    // Verify sequence: #LK#, #LS#, #VZ1000#, #+Z 15#, #-Z 15#, #sss# (poll). The
+    // poll (#sss#) — NOT the stop (#SSS#) — is the safe last probe for diagnostics.
     const sequence: ZBuiltCommand[] = [
       buildZLockCommand(),
       buildZLoosenCommand(),
       buildZSetSpeedCommand(speedValue),
       buildZMoveCommand('+', 15),
       buildZMoveCommand('-', 15),
-      buildZStopCommand(),
+      buildPollZStatusCommand(),
     ];
     if (opts?.includeJog) {
       sequence.push(buildZJogCommand('+'), buildZJogCommand('-'));

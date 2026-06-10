@@ -7,9 +7,11 @@ import {
 } from './z-axis-serial.service';
 
 // Drive the Z service against a FAKE serial port so the continuous-jog repeat loop
-// and the #SSS# stop can be verified without hardware. The fake auto-replies to
-// each TX frame with the matching LF-terminated token (SOK / UP / >Z: / OK_*),
-// mirroring the verified Z protocol (no checksum).
+// and the toggle-same-command stop can be verified without hardware. The fake
+// auto-replies to each TX frame with the matching LF-terminated token (SOK / >Z: /
+// OK_*), mirroring the verified Z protocol (no checksum). `errorOnNthJog` makes the
+// Nth (and later) #+S#/#-S# frame reply ERROR, so the no-fake-success stop path can
+// be tested.
 
 interface FakePort {
   port: {
@@ -24,12 +26,13 @@ interface FakePort {
   writes: string[];
 }
 
-function makeFakePort(opts?: { stopReply?: string; stopMatch?: string; defaultReply?: string }): FakePort {
+function makeFakePort(opts?: { stopReply?: string; stopMatch?: string; defaultReply?: string; errorOnNthJog?: number }): FakePort {
   const handlers: Record<string, (...args: unknown[]) => void> = {};
   const writes: string[] = [];
   const stopReply = opts?.stopReply ?? 'UP\n';
   const stopMatch = opts?.stopMatch ?? 'SSS';
   const defaultReply = opts?.defaultReply ?? null;
+  let jogCount = 0;
   const port = {
     isOpen: false,
     open(cb: (err: Error | null) => void) {
@@ -49,7 +52,10 @@ function makeFakePort(opts?: { stopReply?: string; stopMatch?: string; defaultRe
       // Reply AFTER the service arms its pending waiter (write cb → drain → timer).
       setTimeout(() => {
         let reply: string | null = null;
-        if (s.includes('+S#') || s.includes('-S#')) reply = 'SOK\n';
+        if (s.includes('+S#') || s.includes('-S#')) {
+          jogCount += 1;
+          reply = opts?.errorOnNthJog && jogCount >= opts.errorOnNthJog ? 'ERROR\n' : 'SOK\n';
+        }
         else if (s.includes(stopMatch)) reply = stopReply;
         else if (s.includes('VZ')) reply = 'OK_ZFinalSpeed\n';
         else if (s.includes('Z ')) reply = '>Z:0\n';
@@ -161,40 +167,57 @@ test('lock clears a stale moving=true so step movement is unblocked again', asyn
   await svc.disconnect();
 });
 
-test('stopJog handles a PLC ERROR on #SSS# without hanging and unblocks movement', async () => {
-  const fake = makeFakePort({ stopReply: 'ERROR\n' });
-  const svc = await connectedService(fake, 'COM-Z-STOPERR');
+test('stopJog (toggle) re-sends the active jog frame, never #SSS#, and clears moving on SOK', async () => {
+  const fake = makeFakePort();
+  const svc = await connectedService(fake, 'COM-Z-TOGGLE');
+  svc.setJogRepeatMsForTests(10000); // suppress the repeat loop so writes are deterministic
   await svc.lock();
   await svc.startJog('+');
   assert.equal(svc.getZState().moving, true);
 
   const stop = await svc.stopJog();
-  // ERROR is a real PLC response — definitive failure, not a timeout/hang.
-  assert.equal(stop.ok, false);
-  assert.equal(stop.ok ? '' : stop.error, 'Z_STOP_PLC_ERROR');
-  assert.ok(fake.writes.includes('#SSS#'));
-
-  // Software jog state cleared immediately.
+  assert.equal(stop.ok, true); // the re-sent jog frame was accepted (SOK)
+  // The stop re-sends the SAME jog frame (start + toggle = two #+S#) — never #SSS#.
+  assert.equal(fake.writes.filter((w) => w === '#+S#').length, 2, JSON.stringify(fake.writes));
+  assert.equal(fake.writes.includes('#SSS#'), false);
+  // Loop ceased + frame accepted → moving cleared (physical halt logged for HW check).
   assert.equal(svc.getZState().moving, false);
-  assert.equal(svc.getZState().lastError, 'Z stop returned ERROR from PLC');
 
-  // Future step movement must NOT be blocked by "Z axis is already moving".
+  // A subsequent step is NOT blocked by a stale moving=true.
   const step = await svc.moveStep('-', 15);
   assert.equal(step.ok, true);
   await svc.disconnect();
 });
 
-test('stopJog uses the configured stop payload (#STOP# instead of #SSS#)', async () => {
-  // Fake answers the configured stop frame (#STOP#) with UP.
-  const fake = makeFakePort({ stopMatch: 'STOP' });
-  const svc = await connectedService(fake, 'COM-Z-STOPCFG');
+test('stopJog (toggle) does NOT clear moving when the PLC rejects the stop with ERROR', async () => {
+  // 1st jog (start) → SOK; 2nd jog (the toggle stop) → ERROR.
+  const fake = makeFakePort({ errorOnNthJog: 2 });
+  const svc = await connectedService(fake, 'COM-Z-TOGGLE-ERR');
+  svc.setJogRepeatMsForTests(10000);
   await svc.lock();
-  await svc.startJog('+', 'STOP'); // facade passes the configured payload
-  const stop = await svc.stopJog('STOP');
-  assert.equal(stop.ok, true);
-  assert.ok(fake.writes.includes('#STOP#'), JSON.stringify(fake.writes));
-  assert.equal(fake.writes.includes('#SSS#'), false); // never the default once configured
-  assert.equal(svc.getZState().moving, false);
+  await svc.startJog('+');
+  assert.equal(svc.getZState().moving, true);
+
+  const stop = await svc.stopJog();
+  // ERROR is a real PLC response — the stop is NOT confirmed.
+  assert.equal(stop.ok, false);
+  assert.equal(stop.ok ? '' : stop.error, 'Z_STAGE_PROTOCOL_ERROR');
+  assert.equal(fake.writes.includes('#SSS#'), false);
+  // Hardware truth: an unconfirmed stop must NOT clear moving (no fake success).
+  assert.equal(svc.getZState().moving, true);
+  await svc.disconnect();
+});
+
+test('diagnoseStopStrategy returns the observed start/stop/finalStatus without claiming stopped', async () => {
+  const fake = makeFakePort();
+  const svc = await connectedService(fake, 'COM-Z-STOPDIAG2');
+  svc.setJogRepeatMsForTests(10000);
+  const d = await svc.diagnoseStopStrategy('+');
+  assert.equal(d.strategy, 'toggle-same-command');
+  assert.equal(d.startCommand, '#+S#');
+  assert.equal(d.stopCommand, '#+S#'); // toggle re-sends the same jog frame
+  assert.equal(d.stopReply, 'SOK'); // accepted, but NOT a confirmed halt
+  assert.equal(d.stopped, false); // never optimistic — stop is unverified
   await svc.disconnect();
 });
 
@@ -208,7 +231,7 @@ test('diagnoseStop probes the candidate stop payloads', async () => {
   await svc.disconnect();
 });
 
-test('continuous jog UP repeatedly sends #+S# and #SSS# on release', async () => {
+test('continuous jog UP repeatedly sends #+S# and re-sends #+S# (toggle) on release, never #SSS#', async () => {
   const fake = makeFakePort();
   const svc = await connectedService(fake, 'COM-Z-UP');
 
@@ -225,8 +248,9 @@ test('continuous jog UP repeatedly sends #+S# and #SSS# on release', async () =>
 
   const stop = await svc.stopJog();
   assert.equal(stop.ok, true);
-  assert.ok(fake.writes.includes('#SSS#'));
-  assert.equal(svc.getZState().moving, false); // idle only after the real UP reply
+  // Stop re-sends the SAME jog frame (toggle strategy) — #SSS# is never sent.
+  assert.equal(fake.writes.includes('#SSS#'), false);
+  assert.equal(svc.getZState().moving, false); // loop ceased + toggle frame accepted
 
   // The loop must not keep firing after release.
   const afterStop = fake.writes.length;
@@ -235,7 +259,7 @@ test('continuous jog UP repeatedly sends #+S# and #SSS# on release', async () =>
   await svc.disconnect();
 });
 
-test('continuous jog DOWN repeatedly sends #-S# and #SSS# on release', async () => {
+test('continuous jog DOWN repeatedly sends #-S# and re-sends #-S# (toggle) on release, never #SSS#', async () => {
   const fake = makeFakePort();
   const svc = await connectedService(fake, 'COM-Z-DOWN');
 
@@ -250,7 +274,7 @@ test('continuous jog DOWN repeatedly sends #-S# and #SSS# on release', async () 
 
   const stop = await svc.stopJog();
   assert.equal(stop.ok, true);
-  assert.ok(fake.writes.includes('#SSS#'));
+  assert.equal(fake.writes.includes('#SSS#'), false); // toggle re-sends #-S#, never #SSS#
   assert.equal(svc.getZState().moving, false);
   await svc.disconnect();
 });

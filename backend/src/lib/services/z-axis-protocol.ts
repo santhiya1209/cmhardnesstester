@@ -16,9 +16,9 @@
 // Protocol table (action | tx | reply must CONTAIN):
 //   lock / enable Z   | #LK#        | OK_LK
 //   loosen / release  | #LS#        | OK_LS
-//   stop motion       | #SSS#       | UP
 //   continuous jog up | #+S#        | SOK
 //   continuous jog dn | #-S#        | SOK
+//   stop motion       | UNRESOLVED  | —    (see note below)
 //   step move up      | #+Z <n>#    | >Z:        (LITERAL space between Z and n)
 //   step move down    | #-Z <n>#    | >Z:        (LITERAL space between Z and n)
 //   set final speed   | #VZ <r>#    | OK_ZFinalSpeed (LITERAL space between VZ and r)
@@ -26,6 +26,12 @@
 // Replies are matched by SUBSTRING (the controller may append extra text, e.g.
 // ">Z:12345"). Matching is case-sensitive against the verified tokens above. An
 // RX line that contains none of the expected tokens is never treated as success.
+//
+// STOP IS UNRESOLVED. Hardware logs show "#SSS# -> ERROR" consistently, so #SSS#
+// is NOT the stop command and there is no verified stop frame yet. The stop
+// behaviour is being discovered via the toggle-same-command strategy (re-send the
+// active #+S#/#-S# jog frame) in z-axis-serial.service.ts. Do NOT reintroduce a
+// hardcoded stop frame here until one is verified from hardware.
 
 import { Buffer } from 'node:buffer';
 import type { ZDirection, ZSpeed } from './xyz-platform-protocol';
@@ -79,16 +85,6 @@ export function buildZLoosenCommand(): ZBuiltCommand {
   return makeZCommand('loosenZ', 'LS', 'OK_LS');
 }
 
-/**
- * Stop motion. The payload is configurable (Serial settings → zStopPayload,
- * default 'SSS') because the verified stop token is still being confirmed on
- * hardware; the expected reply remains 'UP'. A PLC 'ERROR' is handled by the
- * service as a definitive response, not a timeout.
- */
-export function buildZStopCommand(payload: string = 'SSS'): ZBuiltCommand {
-  return makeZCommand('stopZ', payload, 'UP');
-}
-
 export function buildZJogUpCommand(): ZBuiltCommand {
   return makeZCommand('jogZ', '+S', 'SOK');
 }
@@ -107,9 +103,10 @@ export function buildZMoveDownCommand(pulses: number): ZBuiltCommand {
   return makeZCommand('moveZ', `-Z ${magnitude(pulses)}`, '>Z:');
 }
 
-/** Set the Z final speed. `rate` is the controller speed register value (NOT mm/s). */
+/** Set the Z final speed. `rate` is the controller speed register value (NOT mm/s).
+ *  Format is "#VZnnnn#" — NO space between VZ and the value (unlike the +Z/-Z moves). */
 export function buildZSetSpeedCommand(rate: number): ZBuiltCommand {
-  return makeZCommand('setZSpeed', `VZ ${register(rate)}`, 'OK_ZFinalSpeed');
+  return makeZCommand('setZSpeed', `VZ${register(rate)}`, 'OK_ZFinalSpeed');
 }
 
 /** Build the Z move command for a pre-resolved physical sign. */
@@ -195,7 +192,17 @@ export function classifyZLine(line: string): ZLineKind {
   if (line.includes('OK_LK') || line.includes('OK_LS') || line.includes('OK_ZFinalSpeed')) {
     return 'ack';
   }
-  if (line.includes('SOK') || line.includes('UP') || line.includes('>Z:')) return 'status';
   if (/\bERR(OR)?\b/i.test(line)) return 'error';
+  // Poll (#sss#) status words plus the jog SOK / step >Z: motion replies.
+  if (
+    line.includes('SOK') ||
+    line.includes('UP') ||
+    line.includes('DOWN') ||
+    line.includes('STOP') ||
+    line.includes('IDLE') ||
+    line.includes('>Z:')
+  ) {
+    return 'status';
+  }
   return 'unknown';
 }

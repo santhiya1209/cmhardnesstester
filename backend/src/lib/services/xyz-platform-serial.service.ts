@@ -37,6 +37,7 @@ import {
   type ZCommandResult,
   type ZDiagnoseResult,
   type ZProbeResult,
+  type ZStopDiagnosis,
 } from './z-axis-serial.service';
 import { resolveZSign, zMmToPulses, zSpeedRegisterValue } from './z-axis-protocol';
 import { zSettingsService } from './z-settings.service';
@@ -200,6 +201,14 @@ const MOVE_NOT_CONFIRMED = 'XYZ_STAGE_COMMAND_NOT_CONFIRMED';
 // issued mid-home returns a misleading idle frame at the pre-home position). A
 // stage that never homes fails honestly when this ceiling elapses.
 const HOME_TIMEOUT_MS = 60000;
+// Center / Relocation traversal to the physical center is a full-travel absolute
+// move (#11/#0C/#0E) that can take far longer than the default 5s ACK window to
+// physically complete — the controller only emits its final idle position frame
+// when motion finishes. Give that move the same long ceiling as home so the
+// waiter doesn't reject with XYZ_STAGE_ACK_TIMEOUT while the stage is still
+// moving. Only long-running motion uses this; lock/unlock/speed/getPosition keep
+// the short TX_TIMEOUT_MS.
+const MOVE_TIMEOUT_MS = 60000;
 // Settle poll for move-class commands (#0C/#0E/#11): after a busy ('-') position
 // frame, re-query #10! this often to elicit the final idle ('+') frame that
 // completes the move. Small and conservative; the move's existing TX_TIMEOUT_MS
@@ -1476,6 +1485,16 @@ class XyzPlatformSerialService extends EventEmitter {
     // eslint-disable-next-line no-console
     console.log(`[xyz-tx] commandId=${commandId} visible=${JSON.stringify(built.visible)} hex=${JSON.stringify(hex)}`);
     this.setState({ lastTx: built.visible, lastCommandId: commandId });
+    // Long-running motion only (move-class #0C/#0E/#11 + home #12) — surface the
+    // exact timeout this command runs under so a relocation/center/home timeout is
+    // traceable to its real ceiling, not the short default. Non-motion commands
+    // (lock/unlock/speed/getPosition) are intentionally not logged here.
+    const isMotion = isMoveClassCommand(built.key) || built.key === 'home';
+    const startedAt = Date.now();
+    if (isMotion) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-timeout-config] command=${built.visible} timeoutMs=${timeoutMs}`);
+    }
 
     const waitForRx = new Promise<XyzPosition | null>((resolve, reject) => {
       this.pendingResolve = resolve;
@@ -1529,7 +1548,17 @@ class XyzPlatformSerialService extends EventEmitter {
           resolve();
         });
       });
-    }).then(() => waitForRx);
+    })
+      .then(() => waitForRx)
+      .then((position) => {
+        // Fires ONLY on a real RX resolution (a timeout rejects and skips this) —
+        // so elapsedMs measures actual hardware completion, never a faked success.
+        if (isMotion) {
+          // eslint-disable-next-line no-console
+          console.log(`[xyz-move-complete] command=${built.visible} commandId=${commandId} elapsedMs=${Date.now() - startedAt}`);
+        }
+        return position;
+      });
   }
 
   /**
@@ -2076,7 +2105,9 @@ class XyzPlatformSerialService extends EventEmitter {
         console.log(`[${logPrefix}-command] commandId=${commandId} key=${cmd.key} visible=${JSON.stringify(cmd.visible)} dx=${dx} dy=${dy}`);
         return cmd;
       },
-      `Move to physical center (dx ${dx}, dy ${dy}).`
+      `Move to physical center (dx ${dx}, dy ${dy}).`,
+      false,
+      MOVE_TIMEOUT_MS
     );
     if (!moved.ok) {
       // eslint-disable-next-line no-console
@@ -2368,14 +2399,14 @@ class XyzPlatformSerialService extends EventEmitter {
     });
   }
 
-  /** Z operator CONFIG singleton (reverseDirection, pulsePerMm, stepDistanceMm). */
-  private async loadZSettings(): Promise<{ reverseDirection: boolean; pulsePerMm: number; stepDistanceMm: number; zStopPayload: string }> {
+  /** Z operator CONFIG singleton (reverseDirection, pulsePerMm, fine + coarse step). */
+  private async loadZSettings(): Promise<{ reverseDirection: boolean; pulsePerMm: number; stepDistanceMm: number; coarseStepDistanceMm: number }> {
     const s = await zSettingsService.get();
     return {
       reverseDirection: s.reverseDirection,
       pulsePerMm: s.pulsePerMm,
       stepDistanceMm: s.stepDistanceMm,
-      zStopPayload: s.zStopPayload ?? 'SSS',
+      coarseStepDistanceMm: s.coarseStepDistanceMm ?? 0.01,
     };
   }
 
@@ -2433,7 +2464,12 @@ class XyzPlatformSerialService extends EventEmitter {
     return this.toXyzResult(result);
   }
 
-  /** Quick-tap STEP: one configured stepDistanceMm, RX-gated. Movement requires Z locked. */
+  /**
+   * Quick-tap STEP, RX-gated. The step size is chosen by the SOFTWARE focus mode
+   * (no focus serial command exists): CFocus → coarseStepDistanceMm (0.010 mm =
+   * 150 pulses), FFocus/manual → stepDistanceMm (0.001 mm = 15 pulses). Movement
+   * requires Z connected AND locked.
+   */
   async moveZ(direction: ZDirection, _speed: ZSpeed): Promise<XyzCommandResult> {
     if (!zAxisSerialService.isConnected()) {
       this.syncZState({ lastError: friendlyXyzMessage('XYZ_Z_NOT_CONNECTED') });
@@ -2448,9 +2484,12 @@ class XyzPlatformSerialService extends EventEmitter {
     }
     const z = await this.loadZSettings();
     const sign = resolveZSign(direction, z.reverseDirection);
-    const pulses = Math.max(1, zMmToPulses(z.stepDistanceMm, z.pulsePerMm));
+    // Coarse step only for CFocus; FFocus and manual both use the fine step.
+    const focusMode = this.state.focusMode;
+    const stepMm = focusMode === 'cFocus' ? z.coarseStepDistanceMm : z.stepDistanceMm;
+    const pulses = Math.max(1, zMmToPulses(stepMm, z.pulsePerMm));
     // eslint-disable-next-line no-console
-    console.log(`[xyz-z] action=move-step direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign} stepMm=${z.stepDistanceMm} pulsePerMm=${z.pulsePerMm} pulses=${pulses}`);
+    console.log(`[xyz-z] action=move-step direction=${direction} focusMode=${focusMode} reverseDirection=${z.reverseDirection} sign=${sign} stepMm=${stepMm} pulsePerMm=${z.pulsePerMm} pulses=${pulses}`);
     const result = await zAxisSerialService.moveStep(sign, pulses);
     this.syncZState(result.ok ? { lastAction: `Z step ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
@@ -2471,19 +2510,19 @@ class XyzPlatformSerialService extends EventEmitter {
     const z = await this.loadZSettings();
     const sign = resolveZSign(direction, z.reverseDirection);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-z] action=jog-start direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign} stopPayload=${z.zStopPayload}`);
-    const result = await zAxisSerialService.startJog(sign, z.zStopPayload);
+    console.log(`[xyz-z] action=jog-start direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign}`);
+    const result = await zAxisSerialService.startJog(sign);
     this.syncZState(result.ok ? { lastAction: `Z jog ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
   }
 
-  /** Press-and-hold jog STOP — cancels the repeat loop, sends the configured stop
-   * payload (#SSS# default), RX-gated on UP. A PLC ERROR clears jog state instead
-   * of hanging. */
+  /** Press-and-hold jog STOP — cancels the repeat loop, then applies the stop
+   * discovery strategy (default: re-send the active jog frame). The verified stop
+   * command is UNRESOLVED, so a SOK reply does not prove the stage halted and a PLC
+   * ERROR is surfaced honestly without clearing the moving state. */
   async stopZJog(): Promise<XyzCommandResult> {
-    const z = await this.loadZSettings();
-    const result = await zAxisSerialService.stopJog(z.zStopPayload);
-    this.syncZState(result.ok ? { lastAction: 'Z jog stopped.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
+    const result = await zAxisSerialService.stopJog();
+    this.syncZState(result.ok ? { lastAction: 'Z jog stop attempted.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
   }
 
@@ -2492,9 +2531,14 @@ class XyzPlatformSerialService extends EventEmitter {
     return zAxisSerialService.probe(payload);
   }
 
-  /** Diagnostic: probe candidate stop payloads (#SSS#/#S#/#STOP#/#ST#/#UP#). */
-  diagnoseStopZ(): Promise<ZProbeResult[]> {
-    return zAxisSerialService.diagnoseStop();
+  /**
+   * Diagnostic stop discovery: start a jog, run ~2s, attempt the stop strategy,
+   * capture the raw RX, then poll #sss# for status. Returns the full observation
+   * (strategy/start/stop/stopReply/finalStatus/stopped) so the real stop protocol
+   * can be identified from hardware. NEVER claims a confirmed stop.
+   */
+  diagnoseStopZ(): Promise<ZStopDiagnosis> {
+    return zAxisSerialService.diagnoseStopStrategy();
   }
 
   // Legacy single-shot Z stop (kept for API symmetry) routes to the jog stop.
