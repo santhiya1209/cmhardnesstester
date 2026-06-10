@@ -184,13 +184,13 @@ export const xyzSetZSpeed = (speed: ZSpeed): Promise<XyzCommandResult> =>
 export const xyzGetPosition = (): Promise<XyzCommandResult> =>
   bridge()?.getPosition() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
-/** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
-export const xyzMoveToCenter = (opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult> =>
-  bridge()?.moveToCenter(opts) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+/** ⊕ Center: move to the taught optical center from the current position (no home). */
+export const xyzMoveToCenter = (): Promise<XyzCommandResult> =>
+  bridge()?.moveToCenter() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
-/** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
-export const xyzLocateCenter = (opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult> =>
-  bridge()?.locateCenter(opts) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+/** Relocation: home (#12!) first, then move to the taught optical center. */
+export const xyzLocateCenter = (): Promise<XyzCommandResult> =>
+  bridge()?.locateCenter() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
 /** Teach: capture the current position as the optical center and persist it. */
 export const xyzSetCenter = (): Promise<XyzCommandResult> =>

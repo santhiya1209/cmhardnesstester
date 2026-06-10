@@ -19,6 +19,7 @@ import {
   buildJogMoveCommand,
   isBusyResponseToken,
   isMoveClassCommand,
+  isSettleGatedCommand,
   normalizeXySpeed,
   parseXyzFrame,
   positionFrameCompletesCommand,
@@ -219,19 +220,30 @@ test('settle-gate C: getPosition completes on first frame even if busy', () => {
   assert.equal(positionFrameCompletesCommand('getPosition', false), true);
 });
 
-// Non-move consumers (stop/home/lock/speed) are not settle-gated either.
-test('settle-gate: stop/home/lock/speed are not move-class (first frame completes)', () => {
+// Non-settle-gated consumers (stop/lock/speed/getPosition) complete on the first
+// frame. Home is excluded here — it is settle-gated (see the home-specific test).
+test('settle-gate: stop/lock/speed are not move-class (first frame completes)', () => {
   for (const key of [
     'stopXy',
-    'home',
     'lockXy',
     'unlockXy',
     'getPosition',
     'setXBeginSpeed',
   ] as XyzCommandKey[]) {
     assert.equal(isMoveClassCommand(key), false, `${key} not move-class`);
+    assert.equal(isSettleGatedCommand(key), false, `${key} not settle-gated`);
     assert.equal(positionFrameCompletesCommand(key, true), true, `${key} completes on first frame`);
   }
+});
+
+// Home (#12!) is settle-gated — it completes ONLY on an idle frame (its homing-
+// complete position), never on a busy/in-progress frame — but is NOT move-class,
+// so it is never #10!-polled (its idle frame arrives unsolicited).
+test('settle-gate: home waits for the idle frame but is not move-class', () => {
+  assert.equal(isMoveClassCommand('home'), false, 'home is not move-class (no #10! poll)');
+  assert.equal(isSettleGatedCommand('home'), true, 'home is settle-gated');
+  assert.equal(positionFrameCompletesCommand('home', true), false, 'home busy -> wait');
+  assert.equal(positionFrameCompletesCommand('home', false), true, 'home idle -> complete');
 });
 
 // Scenario D — ERRt! during a move settle is a transient busy response: recognized,

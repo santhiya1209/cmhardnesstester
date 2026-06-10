@@ -287,12 +287,25 @@ export function buildHomeCommand(): XyzBuiltCommand {
 // position consumer (get-position #10!, stop #0B) resolves on the first reply.
 
 /**
- * Move-class commands (#0C move X, #0E move Y, #11 move XY) — the ONLY commands
- * whose completion is settle-gated (must wait for an idle position frame). Stop,
- * get-position, lock/unlock, speed and home are NOT move-class.
+ * Move-class commands (#0C move X, #0E move Y, #11 move XY) — the relative moves
+ * whose completion is settle-gated AND whose settle is driven by a #10! re-query.
+ * Stop, get-position, lock/unlock, speed and home are NOT move-class. Home is
+ * settle-gated too (see isSettleGatedCommand) but must NOT be #10!-polled — a #10!
+ * issued mid-home returns a misleading idle frame at the pre-home position.
  */
 export function isMoveClassCommand(key: XyzCommandKey): boolean {
   return key === 'moveX' || key === 'moveY' || key === 'moveXy';
+}
+
+/**
+ * Commands that complete ONLY on an idle ('+') position frame. The relative moves
+ * (#0C/#0E/#11) plus home (#12!): the controller's #12! homing cycle emits a single
+ * position frame when it FINISHES, and an in-progress/busy frame must never be
+ * accepted as complete. Unlike move-class, home is NOT re-queried with #10! — its
+ * idle frame arrives unsolicited from the controller, so the service just waits.
+ */
+export function isSettleGatedCommand(key: XyzCommandKey): boolean {
+  return isMoveClassCommand(key) || key === 'home';
 }
 
 /**
@@ -306,12 +319,13 @@ export function isBusyResponseToken(raw: string): boolean {
 }
 
 /**
- * Whether a parsed position frame should COMPLETE the pending command. Move-class
- * commands complete ONLY on an idle frame (busy === false); all other position
- * consumers (#10! get-position, #0B stop) complete on the first valid frame.
+ * Whether a parsed position frame should COMPLETE the pending command. Settle-gated
+ * commands (relative moves + home) complete ONLY on an idle frame (busy === false);
+ * all other position consumers (#10! get-position, #0B stop) complete on the first
+ * valid frame.
  */
 export function positionFrameCompletesCommand(key: XyzCommandKey, busy: boolean): boolean {
-  return isMoveClassCommand(key) ? !busy : true;
+  return isSettleGatedCommand(key) ? !busy : true;
 }
 
 /** Whether each physical axis is inverted relative to operator intent. */

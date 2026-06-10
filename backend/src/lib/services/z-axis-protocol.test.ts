@@ -1,15 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildLockZCommand,
-  buildUnlockZCommand,
-  buildSetZSpeedCommand,
-  buildMoveZCommand,
-  buildJogZCommand,
-  buildPollZStatusCommand,
-  parseZReply,
+  buildZFrame,
+  buildZLockCommand,
+  buildZLoosenCommand,
+  buildZStopCommand,
+  buildZJogUpCommand,
+  buildZJogDownCommand,
+  buildZMoveUpCommand,
+  buildZMoveDownCommand,
+  buildZSetSpeedCommand,
+  buildZMoveCommand,
+  buildZJogCommand,
+  classifyZLine,
+  normalizeZLine,
   replyMatchesExpect,
   resolveZSign,
+  splitZLines,
   zMmToPulses,
   zSpeedRegisterValue,
   Z_SPEED_REGISTER_VALUES,
@@ -17,39 +24,89 @@ import {
 
 const ascii = (s: string): Buffer => Buffer.from(s, 'ascii');
 
-// --- TX builders: exact visible string + on-wire bytes (no checksum) --------
-test('lock/unlock/poll build the exact "#...#" frames', () => {
-  assert.equal(buildLockZCommand().visible, '#LK#');
-  assert.deepEqual(buildLockZCommand().frame, ascii('#LK#'));
-  assert.equal(buildLockZCommand().ackToken, 'OK_LK');
-
-  assert.equal(buildUnlockZCommand().visible, '#LS#');
-  assert.equal(buildUnlockZCommand().ackToken, 'OK_LS');
-
-  assert.equal(buildPollZStatusCommand().visible, '#sss#');
-  assert.equal(buildPollZStatusCommand().expect, 'status');
+// --- buildZFrame: pure "#payload#" wrapper, no checksum ---------------------
+test('buildZFrame wraps a payload in #...# with no checksum', () => {
+  assert.equal(buildZFrame('LK'), '#LK#');
+  assert.equal(buildZFrame('+Z 15'), '#+Z 15#');
+  assert.equal(buildZFrame(''), '##');
 });
 
-test('set speed builds #VZnnnn# and expects OK_ZFinalSpeed', () => {
-  const cmd = buildSetZSpeedCommand(1000);
-  assert.equal(cmd.visible, '#VZ1000#');
-  assert.deepEqual(cmd.frame, ascii('#VZ1000#'));
-  assert.equal(cmd.ackToken, 'OK_ZFinalSpeed');
+// --- Each command builder: exact visible string + on-wire bytes -------------
+test('lock builds #LK# and expects OK_LK', () => {
+  const cmd = buildZLockCommand();
+  assert.equal(cmd.visible, '#LK#');
+  assert.deepEqual(cmd.frame, ascii('#LK#'));
+  assert.equal(cmd.expect, 'OK_LK');
 });
 
-test('relative move keeps the LITERAL space and magnitude (sign pre-resolved)', () => {
-  assert.equal(buildMoveZCommand('+', 15).visible, '#+Z 15#');
-  assert.equal(buildMoveZCommand('-', 15).visible, '#-Z 15#');
-  // magnitude only — the sign argument is authoritative, never a negative number.
-  assert.equal(buildMoveZCommand('+', -15).visible, '#+Z 15#');
-  assert.deepEqual(buildMoveZCommand('+', 15).frame, ascii('#+Z 15#'));
-  assert.equal(buildMoveZCommand('+', 15).expect, 'status');
+test('loosen builds #LS# and expects OK_LS', () => {
+  const cmd = buildZLoosenCommand();
+  assert.equal(cmd.visible, '#LS#');
+  assert.deepEqual(cmd.frame, ascii('#LS#'));
+  assert.equal(cmd.expect, 'OK_LS');
 });
 
-test('continuous jog builds #+S#/#-S# and expects no reply', () => {
-  assert.equal(buildJogZCommand('+').visible, '#+S#');
-  assert.equal(buildJogZCommand('-').visible, '#-S#');
-  assert.equal(buildJogZCommand('+').expect, 'none');
+test('stop builds #SSS# and expects UP', () => {
+  const cmd = buildZStopCommand();
+  assert.equal(cmd.visible, '#SSS#');
+  assert.deepEqual(cmd.frame, ascii('#SSS#'));
+  assert.equal(cmd.expect, 'UP');
+});
+
+test('jog up builds #+S# and expects SOK', () => {
+  const cmd = buildZJogUpCommand();
+  assert.equal(cmd.visible, '#+S#');
+  assert.deepEqual(cmd.frame, ascii('#+S#'));
+  assert.equal(cmd.expect, 'SOK');
+});
+
+test('jog down builds #-S# and expects SOK', () => {
+  const cmd = buildZJogDownCommand();
+  assert.equal(cmd.visible, '#-S#');
+  assert.deepEqual(cmd.frame, ascii('#-S#'));
+  assert.equal(cmd.expect, 'SOK');
+});
+
+test('step move up/down keep a LITERAL space between Z and pulses; magnitude only', () => {
+  assert.equal(buildZMoveUpCommand(15).visible, '#+Z 15#');
+  assert.equal(buildZMoveDownCommand(15).visible, '#-Z 15#');
+  // magnitude only — a negative input is never written as a negative number.
+  assert.equal(buildZMoveUpCommand(-15).visible, '#+Z 15#');
+  assert.deepEqual(buildZMoveUpCommand(15).frame, ascii('#+Z 15#'));
+  assert.equal(buildZMoveUpCommand(15).expect, '>Z:');
+  assert.equal(buildZMoveDownCommand(15).expect, '>Z:');
+});
+
+test('set speed builds #VZ <rate># with a LITERAL space and expects OK_ZFinalSpeed', () => {
+  const cmd = buildZSetSpeedCommand(1000);
+  assert.equal(cmd.visible, '#VZ 1000#');
+  assert.deepEqual(cmd.frame, ascii('#VZ 1000#'));
+  assert.equal(cmd.expect, 'OK_ZFinalSpeed');
+});
+
+test('sign-dispatch builders pick up/down correctly', () => {
+  assert.equal(buildZMoveCommand('+', 15).visible, '#+Z 15#');
+  assert.equal(buildZMoveCommand('-', 15).visible, '#-Z 15#');
+  assert.equal(buildZJogCommand('+').visible, '#+S#');
+  assert.equal(buildZJogCommand('-').visible, '#-S#');
+});
+
+// --- No checksum anywhere on the wire ---------------------------------------
+test('no command frame carries a checksum byte (0x21 "!" or trailing digits)', () => {
+  for (const cmd of [
+    buildZLockCommand(),
+    buildZLoosenCommand(),
+    buildZStopCommand(),
+    buildZJogUpCommand(),
+    buildZJogDownCommand(),
+    buildZMoveUpCommand(15),
+    buildZMoveDownCommand(15),
+    buildZSetSpeedCommand(1000),
+  ]) {
+    // Frame is exactly "#...#": starts and ends with '#', no '!' checksum delimiter.
+    assert.ok(cmd.visible.startsWith('#') && cmd.visible.endsWith('#'), cmd.visible);
+    assert.ok(!cmd.visible.includes('!'), cmd.visible);
+  }
 });
 
 // --- reverseDirection mapping -----------------------------------------------
@@ -60,7 +117,7 @@ test('resolveZSign maps up→+/down→- and swaps when reversed', () => {
   assert.equal(resolveZSign('down', true), '+');
 });
 
-// --- mm → pulses (15000 pulses/mm; 0.001 mm = 15 pulses) --------------------
+// --- mm → pulses ------------------------------------------------------------
 test('zMmToPulses rounds mm*pulsePerMm', () => {
   assert.equal(zMmToPulses(0.001, 15000), 15);
   assert.equal(zMmToPulses(1, 15000), 15000);
@@ -74,31 +131,53 @@ test('speed register values are ordered slow < fast < ultra', () => {
   assert.equal(zSpeedRegisterValue('fast'), Z_SPEED_REGISTER_VALUES.fast);
 });
 
-// --- RX parser --------------------------------------------------------------
-test('parseZReply recognises ACK tokens (CRLF-trimmed, case-insensitive)', () => {
-  assert.deepEqual(parseZReply('OK_LK\r\n'), { kind: 'ack', token: 'OK_LK', raw: 'OK_LK' });
-  assert.deepEqual(parseZReply('ok_ls'), { kind: 'ack', token: 'OK_LS', raw: 'ok_ls' });
-  assert.deepEqual(parseZReply('OK_ZFinalSpeed\n'), {
-    kind: 'ack',
-    token: 'OK_ZFinalSpeed',
-    raw: 'OK_ZFinalSpeed',
-  });
+// --- LF line parser: split on LF ONLY, tolerate stray CR --------------------
+test('splitZLines splits on LF only and buffers the trailing partial line', () => {
+  const { lines, rest } = splitZLines('OK_LK\nSOK\n>Z:12');
+  assert.deepEqual(lines, ['OK_LK', 'SOK']);
+  assert.equal(rest, '>Z:12'); // no trailing LF yet → kept as remainder
 });
 
-test('parseZReply recognises status words and ERROR; unknown is preserved', () => {
-  assert.equal(parseZReply('UP\r\n').kind, 'status');
-  assert.equal(parseZReply('STOP').kind, 'status');
-  assert.equal(parseZReply('ERROR').kind, 'error');
-  assert.equal(parseZReply('ERR').kind, 'error');
-  const unknown = parseZReply('WAT?');
-  assert.equal(unknown.kind, 'unknown');
-  assert.equal(unknown.raw, 'WAT?');
+test('splitZLines does NOT split on a bare CR (LF is the only terminator)', () => {
+  const { lines, rest } = splitZLines('UP\rSOK\n');
+  assert.deepEqual(lines, ['UP\rSOK']);
+  assert.equal(rest, '');
 });
 
-test('replyMatchesExpect gates ack token and status, never matches unknown', () => {
-  assert.equal(replyMatchesExpect(parseZReply('OK_LK'), 'ack', 'OK_LK'), true);
-  assert.equal(replyMatchesExpect(parseZReply('OK_LS'), 'ack', 'OK_LK'), false);
-  assert.equal(replyMatchesExpect(parseZReply('UP'), 'status'), true);
-  assert.equal(replyMatchesExpect(parseZReply('OK_LK'), 'status'), false);
-  assert.equal(replyMatchesExpect(parseZReply('WAT?'), 'status'), false);
+test('normalizeZLine trims a trailing CR (CRLF tolerance) and whitespace', () => {
+  assert.equal(normalizeZLine('OK_LK\r'), 'OK_LK');
+  assert.equal(normalizeZLine('  UP  '), 'UP');
+});
+
+// --- substring matching, NOT exact/checksum ---------------------------------
+test('replyMatchesExpect matches by SUBSTRING for each token', () => {
+  assert.equal(replyMatchesExpect('OK_LK', 'OK_LK'), true);
+  assert.equal(replyMatchesExpect('OK_LS', 'OK_LS'), true);
+  assert.equal(replyMatchesExpect('SOK', 'SOK'), true);
+  assert.equal(replyMatchesExpect('UP', 'UP'), true);
+  assert.equal(replyMatchesExpect('OK_ZFinalSpeed', 'OK_ZFinalSpeed'), true);
+  // controller may append extra characters — substring still matches.
+  assert.equal(replyMatchesExpect('>Z:12345', '>Z:'), true);
+  assert.equal(replyMatchesExpect('SOK done', 'SOK'), true);
+});
+
+test('replyMatchesExpect rejects a non-matching reply (never fake success)', () => {
+  assert.equal(replyMatchesExpect('SOK', 'UP'), false); // jog ack ≠ stop ack
+  assert.equal(replyMatchesExpect('OK_LK', 'OK_LS'), false);
+  assert.equal(replyMatchesExpect('WAT?', '>Z:'), false);
+});
+
+test('replyMatchesExpect with "any" accepts any line (probe)', () => {
+  assert.equal(replyMatchesExpect('anything', 'any'), true);
+  assert.equal(replyMatchesExpect('', 'any'), true);
+});
+
+test('classifyZLine labels lines for diagnostics', () => {
+  assert.equal(classifyZLine('OK_LK'), 'ack');
+  assert.equal(classifyZLine('OK_ZFinalSpeed'), 'ack');
+  assert.equal(classifyZLine('SOK'), 'status');
+  assert.equal(classifyZLine('UP'), 'status');
+  assert.equal(classifyZLine('>Z:42'), 'status');
+  assert.equal(classifyZLine('ERROR'), 'error');
+  assert.equal(classifyZLine('???'), 'unknown');
 });

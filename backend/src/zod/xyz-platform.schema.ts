@@ -55,12 +55,6 @@ export const MoveStepSchema = z.object({
 });
 export type MoveStepInput = z.infer<typeof MoveStepSchema>;
 
-// Relocation accepts an optional, default-OFF flag to home (#12!) first.
-export const RelocateSchema = z.object({
-  homeBeforeRelocation: z.boolean().optional(),
-});
-export type RelocateInput = z.infer<typeof RelocateSchema>;
-
 export const MoveZSchema = z.object({
   direction: ZDirectionSchema,
   speed: ZSpeedSchema,
@@ -88,6 +82,14 @@ export const DiagnoseZSchema = z.object({
   speedRegisterValue: z.number().int().nonnegative().optional(),
 });
 export type DiagnoseZInput = z.infer<typeof DiagnoseZSchema>;
+
+// Manual Z probe (dev-console only). `payload` is the inner Z frame text (without
+// the surrounding '#'), sent as "#payload#". Bounded so a stray paste can't flood
+// serial; no allowlist by design — it is gated behind a connected Z port.
+export const ProbeZSchema = z.object({
+  payload: z.string().min(1).max(64),
+});
+export type ProbeZInput = z.infer<typeof ProbeZSchema>;
 
 export const SetXySpeedSchema = z.object({ speed: XySpeedSchema });
 export type SetXySpeedInput = z.infer<typeof SetXySpeedSchema>;

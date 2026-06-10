@@ -172,14 +172,8 @@ export function useXyzPlatformHardware() {
   const setXySpeed = useCallback((speed: XySpeed) => run(() => xyzSetXySpeed(speed)), [run]);
   const setZSpeed = useCallback((speed: ZSpeed) => run(() => xyzSetZSpeed(speed)), [run]);
   const getPosition = useCallback(() => run(() => xyzGetPosition()), [run]);
-  const moveToCenter = useCallback(
-    (opts?: { homeBeforeRelocation?: boolean }) => run(() => xyzMoveToCenter(opts)),
-    [run]
-  );
-  const locateCenter = useCallback(
-    (opts?: { homeBeforeRelocation?: boolean }) => run(() => xyzLocateCenter(opts)),
-    [run]
-  );
+  const moveToCenter = useCallback(() => run(() => xyzMoveToCenter()), [run]);
+  const locateCenter = useCallback(() => run(() => xyzLocateCenter()), [run]);
   const setCenter = useCallback(() => run(() => xyzSetCenter()), [run]);
   const home = useCallback(() => run(() => xyzHome()), [run]);
 

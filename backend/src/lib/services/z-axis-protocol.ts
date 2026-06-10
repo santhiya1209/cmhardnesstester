@@ -5,50 +5,44 @@
 // zPortName) — never hardcoded — and is a SEPARATE physical connection from the
 // X/Y stage port and the hardness-machine/turret port.
 //
-// SOURCE: the legacy ("old software") Z-axis command set shown in the reference
-// screen. This is a DIFFERENT controller and a DIFFERENT framing from the X/Y
-// stage (which uses the checksum "#xx!" → "#xxOK" protocol in
-// xyz-platform-protocol.ts). NOTHING here is shared with the X/Y protocol.
+// SOURCE: the old (working) software's Z-axis command set. This is a DIFFERENT
+// controller and a DIFFERENT framing from the X/Y stage (which uses the checksum
+// "#xx!" → "#xxOK" protocol in xyz-platform-protocol.ts). NOTHING here is shared
+// with the X/Y protocol — in particular there is NO checksum on the Z link.
 //
-// ⚠ NEEDS HARDWARE VERIFICATION: these frames/replies are transcribed from the
-// legacy software, not yet confirmed against the live Z controller. The exact
-// #VZ speed-register width and the stop behaviour (see Z_JOG_STOP_STRATEGY in the
-// service) in particular are unverified. Use diagnoseZ() to confirm on hardware.
+// TX framing (PC → PLC):  "#" + payload + "#"      (plain ASCII, NO checksum)
+// RX framing (PLC → PC):  payload + "\n"           (LF-terminated, NO checksum)
 //
-// TX framing: "#" + payload + "#". Plain ASCII, NO checksum. The visible command
-// strings below already include both '#' delimiters, so the on-wire frame is the
-// visible string verbatim.
+// Protocol table (action | tx | reply must CONTAIN):
+//   lock / enable Z   | #LK#        | OK_LK
+//   loosen / release  | #LS#        | OK_LS
+//   stop motion       | #SSS#       | UP
+//   continuous jog up | #+S#        | SOK
+//   continuous jog dn | #-S#        | SOK
+//   step move up      | #+Z <n>#    | >Z:        (LITERAL space between Z and n)
+//   step move down    | #-Z <n>#    | >Z:        (LITERAL space between Z and n)
+//   set final speed   | #VZ <r>#    | OK_ZFinalSpeed (LITERAL space between VZ and r)
 //
-// Protocol table (action | tx | expected reply):
-//   lock / enable Z   | #LK#         | OK_LK
-//   loosen / release  | #LS#         | OK_LS
-//   set final speed   | #VZnnnn#     | OK_ZFinalSpeed
-//   relative move up  | #+Z nnnn#    | status word (note the LITERAL space)
-//   relative move dn  | #-Z nnnn#    | status word (note the LITERAL space)
-//   continuous jog up | #+S#         | (continuous motion — no immediate reply)
-//   continuous jog dn | #-S#         | (continuous motion — no immediate reply)
-//   poll status       | #sss#        | status word (e.g. UP / DOWN / STOP / IDLE)
-//
-// Replies are plain ASCII words, usually CRLF-terminated. parseZReply trims the
-// terminator and classifies; an unrecognised reply is returned as 'unknown'
-// (logged by the caller), never silently dropped and never treated as success.
+// Replies are matched by SUBSTRING (the controller may append extra text, e.g.
+// ">Z:12345"). Matching is case-sensitive against the verified tokens above. An
+// RX line that contains none of the expected tokens is never treated as success.
 
 import { Buffer } from 'node:buffer';
 import type { ZDirection, ZSpeed } from './xyz-platform-protocol';
 
 export type ZCommandKey =
   | 'lockZ'
-  | 'unlockZ'
-  | 'setZSpeed'
-  | 'moveZ'
+  | 'loosenZ'
+  | 'stopZ'
   | 'jogZ'
-  | 'pollZStatus';
+  | 'moveZ'
+  | 'setZSpeed'
+  | 'pollZStatus'
+  | 'probeZ';
 
-/** What RX a Z command waits for: an ACK token, a status word, or nothing. */
-export type ZExpect = 'ack' | 'status' | 'none';
-
-/** Recognised ACK tokens (the only replies that confirm a config command). */
-export type ZAckToken = 'OK_LK' | 'OK_LS' | 'OK_ZFinalSpeed';
+/** The verified RX substrings a command waits for. `any` = the probe (accept any line). */
+export type ZExpectToken = 'OK_LK' | 'OK_LS' | 'SOK' | 'UP' | '>Z:' | 'OK_ZFinalSpeed';
+export type ZExpect = ZExpectToken | 'any';
 
 export interface ZBuiltCommand {
   key: ZCommandKey;
@@ -56,66 +50,86 @@ export interface ZBuiltCommand {
   visible: string;
   /** Exact bytes written to the wire (the visible string as ASCII). */
   frame: Buffer;
-  /** RX kind this command waits for. */
+  /** RX substring this command waits for ('any' for the probe). */
   expect: ZExpect;
-  /** For 'ack' commands, the exact token that confirms success. */
-  ackToken?: ZAckToken;
 }
 
-// --- TX builders ------------------------------------------------------------
+// --- TX framing -------------------------------------------------------------
 
-function makeZCommand(
-  key: ZCommandKey,
-  visible: string,
-  expect: ZExpect,
-  ackToken?: ZAckToken
-): ZBuiltCommand {
-  if (!visible.startsWith('#') || !visible.endsWith('#')) {
-    throw new Error(`Invalid Z visible command (must be "#...#"): ${JSON.stringify(visible)}`);
-  }
-  return { key, visible, frame: Buffer.from(visible, 'ascii'), expect, ackToken };
+/** Wrap a payload as a Z frame: "#" + payload + "#". Pure, no checksum. */
+export function buildZFrame(payload: string): string {
+  return `#${payload}#`;
 }
 
-export function buildLockZCommand(): ZBuiltCommand {
-  return makeZCommand('lockZ', '#LK#', 'ack', 'OK_LK');
+function makeZCommand(key: ZCommandKey, payload: string, expect: ZExpect): ZBuiltCommand {
+  const visible = buildZFrame(payload);
+  return { key, visible, frame: Buffer.from(visible, 'ascii'), expect };
 }
 
-export function buildUnlockZCommand(): ZBuiltCommand {
-  return makeZCommand('unlockZ', '#LS#', 'ack', 'OK_LS');
+const magnitude = (pulses: number): number => Math.abs(Math.trunc(pulses));
+const register = (rate: number): number => Math.max(0, Math.trunc(rate));
+
+// --- Pure command builders (the spec's public API) --------------------------
+
+export function buildZLockCommand(): ZBuiltCommand {
+  return makeZCommand('lockZ', 'LK', 'OK_LK');
 }
 
-/**
- * Set the Z final speed. `value` is the controller speed register value (NOT
- * mm/s). The width/padding of nnnn is not yet hardware-confirmed — we send the
- * plain decimal value; if the controller needs a fixed width, adjust here once
- * verified (TODO hardware).
- */
-export function buildSetZSpeedCommand(value: number): ZBuiltCommand {
-  const n = Math.max(0, Math.trunc(value));
-  return makeZCommand('setZSpeed', `#VZ${n}#`, 'ack', 'OK_ZFinalSpeed');
+export function buildZLoosenCommand(): ZBuiltCommand {
+  return makeZCommand('loosenZ', 'LS', 'OK_LS');
 }
 
 /**
- * Relative Z move by `pulses` (already sign-resolved via resolveZSign). `sign`
- * is the PHYSICAL '+'/'-' to send. Note the LITERAL space between Z and the
- * number, e.g. "#+Z 15#" (0.001 mm at 15000 pulses/mm).
+ * Stop motion. The payload is configurable (Serial settings → zStopPayload,
+ * default 'SSS') because the verified stop token is still being confirmed on
+ * hardware; the expected reply remains 'UP'. A PLC 'ERROR' is handled by the
+ * service as a definitive response, not a timeout.
  */
-export function buildMoveZCommand(sign: '+' | '-', pulses: number): ZBuiltCommand {
-  const mag = Math.abs(Math.trunc(pulses));
-  return makeZCommand('moveZ', `#${sign}Z ${mag}#`, 'status');
+export function buildZStopCommand(payload: string = 'SSS'): ZBuiltCommand {
+  return makeZCommand('stopZ', payload, 'UP');
 }
 
-/**
- * Continuous press-and-hold jog. `sign` is the PHYSICAL direction. There is no
- * immediate reply — motion continues until the stop strategy runs (see the
- * service). Sent fire-and-forget.
- */
-export function buildJogZCommand(sign: '+' | '-'): ZBuiltCommand {
-  return makeZCommand('jogZ', `#${sign}S#`, 'none');
+export function buildZJogUpCommand(): ZBuiltCommand {
+  return makeZCommand('jogZ', '+S', 'SOK');
 }
 
+export function buildZJogDownCommand(): ZBuiltCommand {
+  return makeZCommand('jogZ', '-S', 'SOK');
+}
+
+/** Step move up by `pulses` (magnitude only). Note the LITERAL space: "#+Z 15#". */
+export function buildZMoveUpCommand(pulses: number): ZBuiltCommand {
+  return makeZCommand('moveZ', `+Z ${magnitude(pulses)}`, '>Z:');
+}
+
+/** Step move down by `pulses` (magnitude only). Note the LITERAL space: "#-Z 15#". */
+export function buildZMoveDownCommand(pulses: number): ZBuiltCommand {
+  return makeZCommand('moveZ', `-Z ${magnitude(pulses)}`, '>Z:');
+}
+
+/** Set the Z final speed. `rate` is the controller speed register value (NOT mm/s). */
+export function buildZSetSpeedCommand(rate: number): ZBuiltCommand {
+  return makeZCommand('setZSpeed', `VZ ${register(rate)}`, 'OK_ZFinalSpeed');
+}
+
+/** Build the Z move command for a pre-resolved physical sign. */
+export function buildZMoveCommand(sign: '+' | '-', pulses: number): ZBuiltCommand {
+  return sign === '+' ? buildZMoveUpCommand(pulses) : buildZMoveDownCommand(pulses);
+}
+
+/** Build the Z jog command for a pre-resolved physical sign. */
+export function buildZJogCommand(sign: '+' | '-'): ZBuiltCommand {
+  return sign === '+' ? buildZJogUpCommand() : buildZJogDownCommand();
+}
+
+/** Legacy status poll (#sss#). Diagnostic only — NOT one of the verified motion commands. */
 export function buildPollZStatusCommand(): ZBuiltCommand {
-  return makeZCommand('pollZStatus', '#sss#', 'status');
+  return makeZCommand('pollZStatus', 'sss', 'any');
+}
+
+/** Wrap an arbitrary operator-supplied payload for the manual Z probe (accepts any reply). */
+export function buildZProbeCommand(payload: string): ZBuiltCommand {
+  return makeZCommand('probeZ', payload, 'any');
 }
 
 // --- Direction / unit helpers (pure) ----------------------------------------
@@ -137,12 +151,9 @@ export function zMmToPulses(mm: number, pulsePerMm: number): number {
   return Math.round(mm * pulsePerMm);
 }
 
-// Z final-speed REGISTER values per UI tier, sent as the nnnn in "#VZnnnn#".
-// TODO(hardware): the exact legacy values are unknown — these are SAFE, clearly
-// ordered placeholders (slow < fast < ultra). They are controller register units,
-// NOT mm/s, and must be confirmed against the real Z controller before they can
-// be trusted. The values are never used to fabricate a reply; the controller's
-// OK_ZFinalSpeed ACK is still required.
+// Z final-speed REGISTER values per UI tier, sent as <r> in "#VZ <r>#". These are
+// controller register units, NOT mm/s. The controller's OK_ZFinalSpeed ACK is
+// always required — these values are never used to fabricate a reply.
 export const Z_SPEED_REGISTER_VALUES: Record<ZSpeed, number> = {
   slow: 200,
   fast: 1000,
@@ -153,41 +164,38 @@ export function zSpeedRegisterValue(speed: ZSpeed): number {
   return Z_SPEED_REGISTER_VALUES[speed];
 }
 
-// --- RX parser --------------------------------------------------------------
-
-export type ParsedZReply =
-  | { kind: 'ack'; token: ZAckToken; raw: string }
-  | { kind: 'status'; token: 'UP' | 'DOWN' | 'STOP' | 'IDLE'; raw: string }
-  | { kind: 'error'; raw: string }
-  | { kind: 'unknown'; raw: string };
+// --- RX parser (LF-framed, substring match, NO checksum) --------------------
 
 /**
- * Parse ONE already-line-framed Z reply. Trailing CR/LF is trimmed. Matching is
- * case-insensitive on the token but the raw text is preserved for logs. An
- * unrecognised reply is 'unknown' (logged by the caller) — never dropped, never
- * treated as success.
+ * Split an accumulated RX buffer into complete lines on LF (0x0A) ONLY. Any
+ * trailing partial line (no LF yet) is returned as `rest` to be buffered until
+ * the next chunk. A stray CR before the LF is tolerated by {@link normalizeZLine}.
  */
-export function parseZReply(raw: string): ParsedZReply {
-  const trimmed = raw.replace(/[\r\n]+$/, '').trim();
-  const u = trimmed.toUpperCase();
-  if (u === 'OK_LK') return { kind: 'ack', token: 'OK_LK', raw: trimmed };
-  if (u === 'OK_LS') return { kind: 'ack', token: 'OK_LS', raw: trimmed };
-  if (u === 'OK_ZFINALSPEED') return { kind: 'ack', token: 'OK_ZFinalSpeed', raw: trimmed };
-  if (u === 'UP') return { kind: 'status', token: 'UP', raw: trimmed };
-  if (u === 'DOWN') return { kind: 'status', token: 'DOWN', raw: trimmed };
-  if (u === 'STOP') return { kind: 'status', token: 'STOP', raw: trimmed };
-  if (u === 'IDLE') return { kind: 'status', token: 'IDLE', raw: trimmed };
-  if (/^ERR(OR)?$/.test(u)) return { kind: 'error', raw: trimmed };
-  return { kind: 'unknown', raw: trimmed };
+export function splitZLines(buffer: string): { lines: string[]; rest: string } {
+  const parts = buffer.split('\n');
+  const rest = parts.pop() ?? '';
+  return { lines: parts, rest };
 }
 
-/** Whether a parsed reply satisfies a command's `expect` (+ ackToken). */
-export function replyMatchesExpect(
-  parsed: ParsedZReply,
-  expect: ZExpect,
-  ackToken?: ZAckToken
-): boolean {
-  if (expect === 'ack') return parsed.kind === 'ack' && (!ackToken || parsed.token === ackToken);
-  if (expect === 'status') return parsed.kind === 'status';
-  return false;
+/** Trim a trailing CR (CRLF tolerance) and surrounding whitespace from one RX line. */
+export function normalizeZLine(raw: string): string {
+  return raw.replace(/\r$/, '').trim();
+}
+
+/** Does an RX line satisfy a command's expectation? Substring match; `any` accepts all. */
+export function replyMatchesExpect(line: string, expect: ZExpect): boolean {
+  if (expect === 'any') return true;
+  return line.includes(expect);
+}
+
+export type ZLineKind = 'ack' | 'status' | 'error' | 'unknown';
+
+/** Classify an RX line for diagnostics/logging (not used to gate command success). */
+export function classifyZLine(line: string): ZLineKind {
+  if (line.includes('OK_LK') || line.includes('OK_LS') || line.includes('OK_ZFinalSpeed')) {
+    return 'ack';
+  }
+  if (line.includes('SOK') || line.includes('UP') || line.includes('>Z:')) return 'status';
+  if (/\bERR(OR)?\b/i.test(line)) return 'error';
+  return 'unknown';
 }

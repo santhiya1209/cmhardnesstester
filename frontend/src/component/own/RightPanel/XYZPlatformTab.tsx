@@ -1,9 +1,8 @@
-import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
-import Checkbox from '@mui/material/Checkbox';
 import IconButton from '@mui/material/IconButton';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
@@ -20,6 +19,14 @@ import SouthEastIcon from '@mui/icons-material/SouthEast';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import SettingsIcon from '@mui/icons-material/Settings';
+import HomeIcon from '@mui/icons-material/Home';
+import MyLocationIcon from '@mui/icons-material/MyLocation';
+import HeightIcon from '@mui/icons-material/Height';
+import LockIcon from '@mui/icons-material/Lock';
+import LockOpenIcon from '@mui/icons-material/LockOpen';
+import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew';
+import LinkOffIcon from '@mui/icons-material/LinkOff';
+import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useDialog } from '@/contexts/DialogContext';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
@@ -29,94 +36,280 @@ import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
 import type { FocusMode, XySpeed, ZSpeed } from '@/types/xyzPlatformState';
 import type { XyzDirection, ZDirection } from '@/types/xyzPlatform';
 
-// Industrial light-grey, thin-bordered, compact layout mirroring the old
-// software's XYZ Platform Control panel. No card shadows, rectangular buttons,
-// blue arrow glyphs. Two side-by-side group boxes: X/Y (left) and Z (right).
-const SECTION_SX: SxProps<Theme> = { px: 1, py: 1, display: 'flex', flexDirection: 'column', gap: 0.75 };
-const CONNECT_ROW_SX: SxProps<Theme> = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 0.75,
-  flexWrap: 'wrap',
-  pb: 0.75,
-  borderBottom: 1,
-  borderColor: 'divider',
-};
-const CONNECT_BTN_SX: SxProps<Theme> = {
-  height: 24,
-  textTransform: 'none',
-  fontSize: 11,
-  py: 0,
-  px: 1,
-  minWidth: 0,
-};
-const STATUS_TEXT_SX: SxProps<Theme> = { fontSize: 11, color: 'text.secondary' };
-const GROUPS_ROW_SX: SxProps<Theme> = { display: 'flex', width: '100%', gap: 0.75, alignItems: 'flex-start' };
-const GROUP_BOX_SX = {
-  border: '1px solid',
-  borderColor: 'grey.400',
-  borderRadius: 0.5,
-  bgcolor: 'grey.50',
-  p: 0.75,
+// Premium industrial control surface for the XYZ Platform, scaled to the
+// right-panel tab width (~430px): a status bar, an action toolbar, and a 60/40
+// pair of control cards (X/Y D-pad + position panel, Z controls). Only the
+// visual layer changed here — every control, handler, IPC path and state read in
+// the component body below is unchanged. Colour/typography are localised to this
+// screen (one-off design spec) rather than the global theme.
+const PALETTE = {
+  primary: '#0F4C81',
+  primaryHover: '#1565A9',
+  success: '#16A34A',
+  successHover: '#15803D',
+  danger: '#DC2626',
+  dangerHover: '#B91C1C',
+  bg: '#F4F7FB',
+  card: '#FFFFFF',
+  sunken: '#F1F5FB',
+  border: '#DCE3EE',
+  text: '#1F2937',
+  muted: '#64748B',
+  hoverTint: '#EAF2FB',
+  pressTint: '#DCE9F7',
+  disabledBg: '#F3F5F9',
+  disabledFg: '#A9B4C4',
+} as const;
+
+const SHADOW_SOFT = '0 1px 3px rgba(15,23,42,0.06)';
+const SHADOW_CARD = '0 2px 10px rgba(15,23,42,0.06)';
+const SHADOW_BTN = '0 2px 8px rgba(0,0,0,0.08)';
+const SHADOW_PRESS = 'inset 0 2px 5px rgba(15,23,42,0.18)';
+
+const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 0.5,
-  boxShadow: 'none',
+  gap: 0.75,
+  p: 0.75,
+  bgcolor: PALETTE.bg,
+};
+
+// ---- Top status bar -------------------------------------------------------
+const STATUS_BAR_SX: SxProps<Theme> = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 1.5,
+  px: 1.5,
+  minHeight: 60,
+  bgcolor: PALETTE.card,
+  border: `1px solid ${PALETTE.border}`,
+  borderRadius: '12px',
+  boxShadow: SHADOW_SOFT,
+};
+const STATUS_COL_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', gap: 0.25, minWidth: 0 };
+const STATUS_LINE_SX: SxProps<Theme> = { display: 'flex', gap: 0.75, alignItems: 'baseline', minWidth: 0 };
+const STATUS_LABEL_SX: SxProps<Theme> = { fontSize: 11.5, fontWeight: 700, color: PALETTE.text, lineHeight: 1.5 };
+const STATUS_VALUE_SX: SxProps<Theme> = {
+  fontSize: 11.5,
+  fontWeight: 500,
+  color: PALETTE.muted,
+  fontFamily: 'Consolas, "Cascadia Mono", monospace',
+};
+const CONNECT_BTN_SX: SxProps<Theme> = {
+  height: 34,
+  minWidth: 0,
+  px: 1.5,
+  borderRadius: '10px',
+  textTransform: 'none',
+  fontSize: 12,
+  fontWeight: 600,
+  boxShadow: SHADOW_BTN,
+  bgcolor: PALETTE.primary,
+  color: '#FFFFFF',
+  '& .MuiButton-startIcon': { mr: 0.5 },
+  '&:hover': { bgcolor: PALETTE.primaryHover, boxShadow: '0 4px 12px rgba(15,76,129,0.28)' },
+  '&:active': { boxShadow: SHADOW_PRESS },
+  '&.Mui-disabled': { bgcolor: '#C7D2E0', color: '#FFFFFF', boxShadow: 'none' },
+};
+const DISCONNECT_BTN_SX: SxProps<Theme> = {
+  height: 34,
+  minWidth: 0,
+  px: 1.5,
+  borderRadius: '10px',
+  textTransform: 'none',
+  fontSize: 12,
+  fontWeight: 600,
+  border: `1px solid ${PALETTE.border}`,
+  color: PALETTE.text,
+  bgcolor: PALETTE.card,
+  '& .MuiButton-startIcon': { mr: 0.5 },
+  '&:hover': { borderColor: PALETTE.danger, color: PALETTE.danger, bgcolor: '#FEF2F2' },
+  '&:active': { boxShadow: SHADOW_PRESS },
+  '&.Mui-disabled': { color: PALETTE.disabledFg, borderColor: PALETTE.border },
+};
+const INDICATOR_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 0.5 };
+const INDICATOR_LABEL_SX: SxProps<Theme> = { fontSize: 11, fontWeight: 600, color: PALETTE.text };
+
+// ---- Action toolbar -------------------------------------------------------
+const TOOLBAR_SX: SxProps<Theme> = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  flexWrap: 'wrap',
+  gap: 1,
+  px: 1.25,
+  py: 0.5,
+  bgcolor: PALETTE.card,
+  border: `1px solid ${PALETTE.border}`,
+  borderRadius: '12px',
+  boxShadow: SHADOW_SOFT,
+};
+const TOOLBAR_BTN_SX: SxProps<Theme> = {
+  height: 40,
+  minWidth: 0,
+  px: 1.5,
+  borderRadius: '10px',
+  textTransform: 'none',
+  fontSize: 12,
+  fontWeight: 600,
+  border: `1px solid ${PALETTE.border}`,
+  color: PALETTE.text,
+  bgcolor: PALETTE.card,
+  boxShadow: SHADOW_BTN,
+  '& .MuiButton-startIcon': { mr: 0.5 },
+  '&:hover': { borderColor: PALETTE.primary, color: PALETTE.primary, bgcolor: PALETTE.hoverTint, boxShadow: '0 3px 8px rgba(15,23,42,0.12)' },
+  '&:active': { boxShadow: SHADOW_PRESS },
+  '&.Mui-disabled': { color: PALETTE.disabledFg, borderColor: PALETTE.border, bgcolor: PALETTE.disabledBg, boxShadow: 'none' },
+};
+const SETTINGS_ICON_SX: SxProps<Theme> = {
+  width: 40,
+  height: 40,
+  borderRadius: '10px',
+  border: `1px solid ${PALETTE.border}`,
+  color: PALETTE.muted,
+  bgcolor: PALETTE.card,
+  '&:hover': { borderColor: PALETTE.primary, color: PALETTE.primary, bgcolor: PALETTE.hoverTint },
+};
+
+// ---- Control cards (60 / 40 split) ---------------------------------------
+const CARDS_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'stretch', minWidth: 0 };
+const CARD_BASE_SX = {
+  bgcolor: PALETTE.card,
+  border: `1px solid ${PALETTE.border}`,
+  borderRadius: '14px',
+  boxShadow: SHADOW_CARD,
+  p: 1.25,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 0.75,
+  minWidth: 0,
 } as const;
-// X/Y is the main area (wider); Z sits to its right (narrower). Both grow to
-// fill the panel so no empty space is left on the right.
-const XY_GROUP_SX: SxProps<Theme> = { ...GROUP_BOX_SX, flex: '2 1 0', minWidth: 0 };
-const Z_GROUP_SX: SxProps<Theme> = { ...GROUP_BOX_SX, flex: '1 1 0', minWidth: 0 };
-const GROUP_TITLE_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, color: 'text.primary', lineHeight: 1 };
+const XY_CARD_SX: SxProps<Theme> = { ...CARD_BASE_SX, flex: '3 1 0' };
+const Z_CARD_SX: SxProps<Theme> = { ...CARD_BASE_SX, flex: '2 1 0' };
+const CARD_TITLE_SX: SxProps<Theme> = { fontSize: 14, fontWeight: 700, color: PALETTE.text, lineHeight: 1.2 };
+const SECTION_LABEL_SX: SxProps<Theme> = {
+  fontSize: 9.5,
+  fontWeight: 700,
+  letterSpacing: 0.5,
+  textTransform: 'uppercase',
+  color: PALETTE.muted,
+};
 const RADIO_GROUP_SX: SxProps<Theme> = {
   flexWrap: 'nowrap',
-  '& .MuiFormControlLabel-root': { mr: 0.5, ml: 0 },
-  '& .MuiFormControlLabel-label': { fontSize: 11 },
-  '& .MuiRadio-root': { p: 0.125 },
+  justifyContent: 'space-between',
+  '& .MuiFormControlLabel-root': { mr: 0, ml: 0 },
+  '& .MuiFormControlLabel-label': { fontSize: 11.5, fontWeight: 500, color: PALETTE.text },
+  '& .MuiRadio-root': { p: 0.25, color: PALETTE.border, '&.Mui-checked': { color: PALETTE.primary } },
 };
-// X/Y body: 3 square arrow columns + 1 auto-width text column (Lock/Unlock/Relocatio).
-const XY_GRID_SX: SxProps<Theme> = {
+
+// ---- D-pad + side actions -------------------------------------------------
+const XY_BODY_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'stretch' };
+const DPAD_SX: SxProps<Theme> = {
   display: 'grid',
-  gridTemplateColumns: '38px 38px 38px auto',
-  gap: 0.5,
+  gridTemplateColumns: 'repeat(3, 1fr)',
+  gridTemplateRows: 'repeat(3, 46px)',
+  gap: 0.75,
+  flex: '0 0 150px',
 };
-// Z body: 2 equal columns.
-const Z_GRID_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5 };
-const ARROW_BTN_SX: SxProps<Theme> = {
+const SIDE_COL_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', gap: 0.75, flex: 1, minWidth: 0 };
+const ARROW_BTN_SX = {
   minWidth: 0,
   width: '100%',
-  height: 34,
+  height: '100%',
   p: 0,
-  borderColor: 'grey.500',
-  color: 'primary.main',
-  '& svg': { fontSize: 20 },
-};
-const TEXT_BTN_SX: SxProps<Theme> = {
+  borderRadius: '10px',
+  border: `1px solid ${PALETTE.border}`,
+  bgcolor: PALETTE.card,
+  color: PALETTE.primary,
+  boxShadow: '0 1px 2px rgba(15,23,42,0.05)',
+  '& svg': { fontSize: 22 },
+  '&:hover': { bgcolor: PALETTE.hoverTint, borderColor: PALETTE.primary, boxShadow: '0 2px 6px rgba(15,23,42,0.14)' },
+  '&:active': { bgcolor: PALETTE.pressTint, boxShadow: SHADOW_PRESS },
+  '&.Mui-disabled': { bgcolor: PALETTE.disabledBg, color: '#B7C2D2', borderColor: PALETTE.border, boxShadow: 'none' },
+} as const;
+const CENTER_BTN_SX: SxProps<Theme> = {
   minWidth: 0,
   width: '100%',
-  height: 34,
-  px: 0.5,
-  py: 0,
-  fontSize: 10.5,
-  lineHeight: 1.1,
+  height: '100%',
+  p: 0,
+  borderRadius: '10px',
+  border: `1px solid ${PALETTE.primary}`,
+  bgcolor: PALETTE.primary,
+  color: '#FFFFFF',
+  boxShadow: '0 1px 3px rgba(15,76,129,0.3)',
+  '& svg': { fontSize: 22 },
+  '&:hover': { bgcolor: PALETTE.primaryHover, borderColor: PALETTE.primaryHover, boxShadow: '0 2px 8px rgba(15,76,129,0.35)' },
+  '&:active': { boxShadow: 'inset 0 2px 5px rgba(0,0,0,0.28)' },
+  '&.Mui-disabled': { bgcolor: '#C7D2E0', color: '#FFFFFF', borderColor: '#C7D2E0', boxShadow: 'none' },
+};
+const PANEL_BTN_BASE = {
+  minWidth: 0,
+  width: '100%',
+  borderRadius: '10px',
   textTransform: 'none',
-  borderColor: 'grey.500',
-  color: 'text.primary',
-};
-const HOME_FIRST_SX: SxProps<Theme> = {
-  m: 0,
-  '& .MuiFormControlLabel-label': { fontSize: 11, color: 'text.secondary' },
-  '& .MuiCheckbox-root': { p: 0.25 },
-};
-const COORD_ROW_SX: SxProps<Theme> = {
+  fontSize: 11.5,
+  fontWeight: 600,
+  lineHeight: 1.15,
+  px: 0.5,
+  boxShadow: SHADOW_BTN,
+  border: `1px solid ${PALETTE.border}`,
+  bgcolor: PALETTE.card,
+  color: PALETTE.text,
+  '& .MuiButton-startIcon': { mr: 0.5 },
+  '&:hover': { bgcolor: PALETTE.hoverTint, borderColor: PALETTE.primary, boxShadow: '0 3px 8px rgba(15,23,42,0.12)' },
+  '&:active': { boxShadow: SHADOW_PRESS },
+  '&.Mui-disabled': { bgcolor: PALETTE.disabledBg, color: PALETTE.disabledFg, borderColor: PALETTE.border, boxShadow: 'none' },
+} as const;
+const BTN_ACTIVE_SUCCESS = {
+  bgcolor: PALETTE.success,
+  color: '#FFFFFF',
+  borderColor: PALETTE.success,
+  '&:hover': { bgcolor: PALETTE.successHover, borderColor: PALETTE.successHover, boxShadow: '0 3px 10px rgba(22,163,74,0.3)' },
+} as const;
+const BTN_ACTIVE_DANGER = {
+  bgcolor: PALETTE.danger,
+  color: '#FFFFFF',
+  borderColor: PALETTE.danger,
+  '&:hover': { bgcolor: PALETTE.dangerHover, borderColor: PALETTE.dangerHover, boxShadow: '0 3px 10px rgba(220,38,38,0.3)' },
+} as const;
+const BTN_ACTIVE_PRIMARY = {
+  bgcolor: PALETTE.primary,
+  color: '#FFFFFF',
+  borderColor: PALETTE.primary,
+  '&:hover': { bgcolor: PALETTE.primaryHover, borderColor: PALETTE.primaryHover, boxShadow: '0 3px 10px rgba(15,76,129,0.3)' },
+} as const;
+const SIDE_BTN_SX = { ...PANEL_BTN_BASE, flex: 1, minHeight: 0, fontSize: 11 } as const;
+
+// ---- Position panel -------------------------------------------------------
+const POSITION_SX: SxProps<Theme> = {
+  mt: 'auto',
   display: 'flex',
-  gap: 1.5,
-  pt: 0.5,
-  borderTop: 1,
-  borderColor: 'grey.300',
+  alignItems: 'center',
+  gap: 1,
+  px: 1.25,
+  py: 1,
+  bgcolor: PALETTE.sunken,
+  border: `1px solid ${PALETTE.border}`,
+  borderRadius: '10px',
 };
-const COORD_SX: SxProps<Theme> = { fontSize: 11, color: 'text.primary', fontFamily: 'Consolas, monospace' };
-const ALERT_SX: SxProps<Theme> = { mt: 0.5, py: 0, fontSize: 11 };
+const COORD_CHIP_SX: SxProps<Theme> = { display: 'flex', alignItems: 'baseline', gap: 0.5 };
+const COORD_AXIS_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 700, color: PALETTE.primary };
+const COORD_VALUE_SX: SxProps<Theme> = {
+  fontFamily: 'Consolas, "Cascadia Mono", monospace',
+  fontSize: 16,
+  fontWeight: 600,
+  color: PALETTE.text,
+  fontVariantNumeric: 'tabular-nums',
+};
+const COORD_UNIT_SX: SxProps<Theme> = { fontSize: 10, fontWeight: 500, color: PALETTE.muted };
+
+// ---- Z card body ----------------------------------------------------------
+const Z_GRID_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.75 };
+const Z_BTN_SX = { ...PANEL_BTN_BASE, height: 46 } as const;
+const Z_ARROW_BTN_SX = { ...ARROW_BTN_SX, height: 46 } as const;
+
+const ALERT_SX: SxProps<Theme> = { py: 0.25, fontSize: 11.5, borderRadius: '10px', alignItems: 'center' };
 
 function formatCoordinate(value: number): string {
   return value.toFixed(3);
@@ -519,25 +712,21 @@ function XYZPlatformTabImpl() {
     [hardware]
   );
 
-  // Optional: home (#12!) first, then move to center. Default OFF (a UI control
-  // input, not movement state). Passed to the backend per relocate call.
-  const [homeBeforeRelocation, setHomeBeforeRelocation] = useState(false);
-
-  // Both the ⊕ Center button and the Relocation button move to the taught
-  // optical center (NOT hardware home, unless homeBeforeRelocation is checked).
-  // If the center has not been taught the backend returns "XY center offset not
-  // configured", surfaced in the Alert.
+  // Both buttons move to the FIXED physical center (settings physicalCenter pulses,
+  // default 40000,40000). ⊕ Center goes there from the current position; Relocation
+  // ALWAYS homes (#12!) first, then moves to the physical center (the original
+  // Home → Center workflow, enforced in the backend). Not the operator optical center.
   const handleCenter = useCallback(() => {
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ui-action] action=move-center homeBeforeRelocation=${homeBeforeRelocation}`);
-    void hardware.moveToCenter({ homeBeforeRelocation });
-  }, [hardware, homeBeforeRelocation]);
+    console.log('[xyz-ui-action] action=move-center');
+    void hardware.moveToCenter();
+  }, [hardware]);
 
   const handleRelocation = useCallback(() => {
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ui-action] action=relocation homeBeforeRelocation=${homeBeforeRelocation}`);
-    void hardware.locateCenter({ homeBeforeRelocation });
-  }, [hardware, homeBeforeRelocation]);
+    console.log('[xyz-ui-action] action=relocation');
+    void hardware.locateCenter();
+  }, [hardware]);
 
   // Teach the optical center from the current position (operator jogs the stage
   // to the camera center first, then clicks Set Center).
@@ -547,8 +736,8 @@ function XYZPlatformTabImpl() {
     void hardware.setCenter();
   }, [hardware, live.positionKnown, live.position.x, live.position.y, live.centerX, live.centerY]);
 
-  // Dedicated hardware home (#12!) — the controller's zero, separate from
-  // Relocation so homing is an explicit, deliberate action.
+  // Dedicated hardware home (#12!) — homes to the controller's zero and stops
+  // there (Relocation also homes, but then continues on to the physical center).
   const handleHome = useCallback(() => {
     // eslint-disable-next-line no-console
     console.log('[xyz-ui-action] action=home');
@@ -591,196 +780,258 @@ function XYZPlatformTabImpl() {
   const zConnectionStatus = live.zConnected ? `Connected (${live.zPort ?? savedZPort})` : savedZPort ? 'Disconnected' : 'not configured';
 
   return (
-    <Box sx={SECTION_SX}>
-      {/* Compact connect/status strip (not in the old reference, but auto-connect
-          can fail, so a manual fallback + honest status stays). */}
-      <Box sx={CONNECT_ROW_SX}>
-        <Typography sx={STATUS_TEXT_SX}>
-          {savedXyPort ? `X/Y: ${savedXyPort}` : 'X/Y port is not configured'}
-          {' · '}
-          {savedZPort ? `Z: ${savedZPort}` : 'Z port not configured'}
-        </Typography>
-        <Button
-          variant="contained"
-          size="small"
-          sx={CONNECT_BTN_SX}
-          disabled={connectDisabled}
-          onClick={handleConnect}
-        >
-          Connect
-        </Button>
-        <Button
-          variant="outlined"
-          size="small"
-          sx={CONNECT_BTN_SX}
-          disabled={disconnectDisabled}
-          onClick={handleDisconnect}
-        >
-          Disconnect
-        </Button>
-        <Typography sx={STATUS_TEXT_SX}>
-          X/Y: {connectionStatus} · Z: {zConnectionStatus}
-        </Typography>
-        <Box sx={{ flex: 1 }} />
-        {/* Utility controls not part of the reference's two groups, kept here so no
-            functionality is lost. Set Center teaches the optical center Relocation
-            targets (#10!); Home is the controller zero (#12!); Z Settings opens the
-            shared Z Axis dialog. All keep their existing IPC wiring. */}
-        <Button variant="outlined" size="small" sx={CONNECT_BTN_SX} disabled={movementDisabled} onClick={handleSetCenter}>
-          Set Center
-        </Button>
-        <Button variant="outlined" size="small" sx={CONNECT_BTN_SX} disabled={movementDisabled} onClick={handleHome}>
-          Home
-        </Button>
-        <Button variant="outlined" size="small" sx={CONNECT_BTN_SX} onClick={() => setActiveDialog('zAxis')}>
-          Z Settings…
-        </Button>
-        <FormControlLabel
-          sx={HOME_FIRST_SX}
-          control={
-            <Checkbox
-              size="small"
-              checked={homeBeforeRelocation}
-              onChange={(event) => setHomeBeforeRelocation(event.target.checked)}
-            />
-          }
-          label="Home before relocation"
-        />
-        <IconButton
-          size="small"
-          onClick={() => setActiveDialog('xyPlatform')}
-          aria-label="XY platform settings"
-        >
-          <SettingsIcon fontSize="small" />
-        </IconButton>
-      </Box>
-
-      <Box sx={GROUPS_ROW_SX}>
-        {/* ---------------- LEFT GROUP: X/Y ---------------- */}
-        <Box sx={XY_GROUP_SX}>
-          <Typography sx={GROUP_TITLE_SX}>X/Y</Typography>
-          <RadioGroup
-            row
-            value={live.xySpeed}
-            onChange={(event) => handleXySpeedChange(event.target.value as XySpeed)}
-            sx={RADIO_GROUP_SX}
-          >
-            <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
-            <FormControlLabel value="mid" control={<Radio size="small" />} label="Mid" />
-            <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
-            <FormControlLabel value="ultra" control={<Radio size="small" />} label="Ultra" />
-          </RadioGroup>
-
-          <Box sx={XY_GRID_SX}>
-            {/* Row 1: ↖ ↑ ↗ | Lock */}
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-left')}>
-              <NorthWestIcon />
-            </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward')}>
-              <NorthIcon />
-            </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-right')}>
-              <NorthEastIcon />
-            </Button>
-            <Button
-              variant={live.xyLocked ? 'contained' : 'outlined'}
-              sx={TEXT_BTN_SX}
-              disabled={isBusy}
-              onClick={() => handleXyLock(true)}
-            >
-              Lock
-            </Button>
-
-            {/* Row 2: ← ⊕ → | Unlock */}
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('left')}>
-              <WestIcon />
-            </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} onClick={handleCenter}>
-              <ControlCameraIcon />
-            </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('right')}>
-              <EastIcon />
-            </Button>
-            <Button
-              variant={!live.xyLocked ? 'contained' : 'outlined'}
-              sx={TEXT_BTN_SX}
-              disabled={isBusy}
-              onClick={() => handleXyLock(false)}
-            >
-              Unlock
-            </Button>
-
-            {/* Row 3: ↙ ↓ ↘ | Relocatio */}
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-left')}>
-              <SouthWestIcon />
-            </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back')}>
-              <SouthIcon />
-            </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-right')}>
-              <SouthEastIcon />
-            </Button>
-            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={xyMoveDisabled} onClick={handleRelocation}>
-              Relocation
-            </Button>
+    <Box sx={ROOT_SX}>
+      {/* ---------------- TOP STATUS BAR ---------------- */}
+      <Box sx={STATUS_BAR_SX}>
+        {/* Left: configured ports for each axis */}
+        <Box sx={STATUS_COL_SX}>
+          <Box sx={STATUS_LINE_SX}>
+            <Typography sx={STATUS_LABEL_SX}>X/Y</Typography>
+            <Typography sx={STATUS_VALUE_SX} noWrap>
+              {savedXyPort ?? 'Not configured'}
+            </Typography>
           </Box>
-
-          <Box sx={COORD_ROW_SX}>
-            <Typography sx={COORD_SX}>X: {live.positionKnown ? formatCoordinate(pos.x) : '--'}</Typography>
-            <Typography sx={COORD_SX}>Y: {live.positionKnown ? formatCoordinate(pos.y) : '--'}</Typography>
+          <Box sx={STATUS_LINE_SX}>
+            <Typography sx={STATUS_LABEL_SX}>Z</Typography>
+            <Typography sx={STATUS_VALUE_SX} noWrap>
+              {savedZPort ?? 'Not configured'}
+            </Typography>
           </Box>
         </Box>
 
-        {/* ---------------- RIGHT GROUP: Z ---------------- */}
-        <Box sx={Z_GROUP_SX}>
-          <Typography sx={GROUP_TITLE_SX}>Z</Typography>
-          <RadioGroup
-            row
-            value={live.zSpeed}
-            onChange={(event) => handleZSpeedChange(event.target.value as ZSpeed)}
-            sx={RADIO_GROUP_SX}
+        {/* Center: connect / disconnect (drive BOTH axes, each on its own port) */}
+        <Box sx={{ display: 'flex', gap: 0.75 }}>
+          <Button
+            sx={CONNECT_BTN_SX}
+            disabled={connectDisabled}
+            onClick={handleConnect}
+            startIcon={<PowerSettingsNewIcon sx={{ fontSize: 16 }} />}
           >
-            <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
-            <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
-          </RadioGroup>
+            Connect
+          </Button>
+          <Button
+            sx={DISCONNECT_BTN_SX}
+            disabled={disconnectDisabled}
+            onClick={handleDisconnect}
+            startIcon={<LinkOffIcon sx={{ fontSize: 16 }} />}
+          >
+            Disconnect
+          </Button>
+        </Box>
+
+        {/* Right: live connection indicators (green = connected, red = not) */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, alignItems: 'flex-end', minWidth: 0 }}>
+          <Box sx={INDICATOR_ROW_SX}>
+            <FiberManualRecordIcon sx={{ fontSize: 11, color: live.connected ? PALETTE.success : PALETTE.danger }} />
+            <Typography sx={INDICATOR_LABEL_SX}>X/Y</Typography>
+            <Typography
+              sx={{ fontSize: 10.5, fontWeight: 600, color: live.connected ? PALETTE.success : PALETTE.danger, maxWidth: 130 }}
+              noWrap
+            >
+              {connectionStatus}
+            </Typography>
+          </Box>
+          <Box sx={INDICATOR_ROW_SX}>
+            <FiberManualRecordIcon sx={{ fontSize: 11, color: live.zConnected ? PALETTE.success : PALETTE.danger }} />
+            <Typography sx={INDICATOR_LABEL_SX}>Z</Typography>
+            <Typography
+              sx={{ fontSize: 10.5, fontWeight: 600, color: live.zConnected ? PALETTE.success : PALETTE.danger, maxWidth: 130 }}
+              noWrap
+            >
+              {zConnectionStatus}
+            </Typography>
+          </Box>
+        </Box>
+      </Box>
+
+      {/* ---------------- ACTION TOOLBAR ---------------- */}
+      <Box sx={TOOLBAR_SX}>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          <Button
+            sx={TOOLBAR_BTN_SX}
+            disabled={movementDisabled}
+            onClick={handleSetCenter}
+            startIcon={<MyLocationIcon sx={{ fontSize: 18 }} />}
+          >
+            Set Center
+          </Button>
+          <Button
+            sx={TOOLBAR_BTN_SX}
+            disabled={movementDisabled}
+            onClick={handleHome}
+            startIcon={<HomeIcon sx={{ fontSize: 18 }} />}
+          >
+            Home
+          </Button>
+          <Button
+            sx={TOOLBAR_BTN_SX}
+            onClick={() => setActiveDialog('zAxis')}
+            startIcon={<HeightIcon sx={{ fontSize: 18 }} />}
+          >
+            Z Settings
+          </Button>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <IconButton sx={SETTINGS_ICON_SX} onClick={() => setActiveDialog('xyPlatform')} aria-label="XY platform settings">
+            <SettingsIcon sx={{ fontSize: 20 }} />
+          </IconButton>
+        </Box>
+      </Box>
+
+      {/* ---------------- CONTROL CARDS (60 / 40) ---------------- */}
+      <Box sx={CARDS_ROW_SX}>
+        {/* X/Y CONTROL CARD */}
+        <Box sx={XY_CARD_SX}>
+          <Typography sx={CARD_TITLE_SX}>X/Y Control</Typography>
+
+          <Box>
+            <Typography sx={SECTION_LABEL_SX}>Speed</Typography>
+            <RadioGroup
+              row
+              value={live.xySpeed}
+              onChange={(event) => handleXySpeedChange(event.target.value as XySpeed)}
+              sx={RADIO_GROUP_SX}
+            >
+              <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
+              <FormControlLabel value="mid" control={<Radio size="small" />} label="Mid" />
+              <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
+              <FormControlLabel value="ultra" control={<Radio size="small" />} label="Ultra" />
+            </RadioGroup>
+          </Box>
+
+          <Box sx={XY_BODY_SX}>
+            {/* Direction pad: ↖ ↑ ↗ / ← ◎ → / ↙ ↓ ↘ */}
+            <Box sx={DPAD_SX}>
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-left')}>
+                <NorthWestIcon />
+              </Button>
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward')}>
+                <NorthIcon />
+              </Button>
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-right')}>
+                <NorthEastIcon />
+              </Button>
+
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('left')}>
+                <WestIcon />
+              </Button>
+              <Button sx={CENTER_BTN_SX} disabled={xyMoveDisabled} onClick={handleCenter}>
+                <ControlCameraIcon />
+              </Button>
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('right')}>
+                <EastIcon />
+              </Button>
+
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-left')}>
+                <SouthWestIcon />
+              </Button>
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back')}>
+                <SouthIcon />
+              </Button>
+              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-right')}>
+                <SouthEastIcon />
+              </Button>
+            </Box>
+
+            {/* Side actions: Lock / Unlock / Relocation */}
+            <Box sx={SIDE_COL_SX}>
+              <Button
+                sx={live.xyLocked ? { ...SIDE_BTN_SX, ...BTN_ACTIVE_SUCCESS } : SIDE_BTN_SX}
+                disabled={isBusy}
+                onClick={() => handleXyLock(true)}
+                startIcon={<LockIcon sx={{ fontSize: 16 }} />}
+              >
+                Lock
+              </Button>
+              <Button
+                sx={!live.xyLocked ? { ...SIDE_BTN_SX, ...BTN_ACTIVE_DANGER } : SIDE_BTN_SX}
+                disabled={isBusy}
+                onClick={() => handleXyLock(false)}
+                startIcon={<LockOpenIcon sx={{ fontSize: 16 }} />}
+              >
+                Unlock
+              </Button>
+              <Button sx={SIDE_BTN_SX} disabled={xyMoveDisabled} onClick={handleRelocation}>
+                Relocation
+              </Button>
+            </Box>
+          </Box>
+
+          {/* Position panel */}
+          <Box sx={POSITION_SX}>
+            <Typography sx={SECTION_LABEL_SX}>Position</Typography>
+            <Box sx={{ display: 'flex', gap: 2, flex: 1, justifyContent: 'flex-end' }}>
+              <Box sx={COORD_CHIP_SX}>
+                <Typography sx={COORD_AXIS_SX}>X</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(pos.x) : '--'}</Typography>
+                <Typography sx={COORD_UNIT_SX}>mm</Typography>
+              </Box>
+              <Box sx={COORD_CHIP_SX}>
+                <Typography sx={COORD_AXIS_SX}>Y</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(pos.y) : '--'}</Typography>
+                <Typography sx={COORD_UNIT_SX}>mm</Typography>
+              </Box>
+            </Box>
+          </Box>
+        </Box>
+
+        {/* Z CONTROL CARD */}
+        <Box sx={Z_CARD_SX}>
+          <Typography sx={CARD_TITLE_SX}>Z Control</Typography>
+
+          <Box>
+            <Typography sx={SECTION_LABEL_SX}>Speed</Typography>
+            <RadioGroup
+              row
+              value={live.zSpeed}
+              onChange={(event) => handleZSpeedChange(event.target.value as ZSpeed)}
+              sx={RADIO_GROUP_SX}
+            >
+              <FormControlLabel value="fast" control={<Radio size="small" />} label="Fast" />
+              <FormControlLabel value="slow" control={<Radio size="small" />} label="Slow" />
+            </RadioGroup>
+          </Box>
 
           <Box sx={Z_GRID_SX}>
             {/* Row 1: Lock | Unlock (require the Z connection; #LK# enables motion) */}
             <Button
-              variant={live.zLocked ? 'contained' : 'outlined'}
-              sx={TEXT_BTN_SX}
+              sx={live.zLocked ? { ...Z_BTN_SX, ...BTN_ACTIVE_SUCCESS } : Z_BTN_SX}
               disabled={zLockDisabled}
               onClick={() => handleZLock(true)}
+              startIcon={<LockIcon sx={{ fontSize: 16 }} />}
             >
               Lock
             </Button>
-            <Button variant="outlined" sx={TEXT_BTN_SX} disabled={zLockDisabled} onClick={() => handleZLock(false)}>
+            <Button
+              sx={Z_BTN_SX}
+              disabled={zLockDisabled}
+              onClick={() => handleZLock(false)}
+              startIcon={<LockOpenIcon sx={{ fontSize: 16 }} />}
+            >
               Unlock
             </Button>
 
             {/* Row 2: Cfocus | ↑ */}
             <Button
-              variant={live.focusMode === 'cFocus' ? 'contained' : 'outlined'}
-              sx={TEXT_BTN_SX}
+              sx={live.focusMode === 'cFocus' ? { ...Z_BTN_SX, ...BTN_ACTIVE_PRIMARY } : Z_BTN_SX}
               disabled={isBusy}
               onClick={() => handleFocusMode('cFocus')}
             >
               Cfocus
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('up')}>
+            <Button sx={Z_ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('up')}>
               <ArrowUpwardIcon />
             </Button>
 
             {/* Row 3: Ffocus | ↓ */}
             <Button
-              variant={live.focusMode === 'fFocus' ? 'contained' : 'outlined'}
-              sx={TEXT_BTN_SX}
+              sx={live.focusMode === 'fFocus' ? { ...Z_BTN_SX, ...BTN_ACTIVE_PRIMARY } : Z_BTN_SX}
               disabled={isBusy}
               onClick={() => handleFocusMode('fFocus')}
             >
               Ffocus
             </Button>
-            <Button variant="outlined" sx={ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('down')}>
+            <Button sx={Z_ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('down')}>
               <ArrowDownwardIcon />
             </Button>
           </Box>

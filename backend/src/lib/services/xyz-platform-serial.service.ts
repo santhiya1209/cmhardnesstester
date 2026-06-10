@@ -36,6 +36,7 @@ import {
   type ConnectZOptions,
   type ZCommandResult,
   type ZDiagnoseResult,
+  type ZProbeResult,
 } from './z-axis-serial.service';
 import { resolveZSign, zMmToPulses, zSpeedRegisterValue } from './z-axis-protocol';
 import { zSettingsService } from './z-settings.service';
@@ -193,20 +194,18 @@ const JOG_WATCHDOG_MS = 10_000;
 // success, no optimistic update). Set back to false to re-block if needed.
 const MOVE_COMMANDS_CONFIRMED = true;
 const MOVE_NOT_CONFIRMED = 'XYZ_STAGE_COMMAND_NOT_CONFIRMED';
-// Home (#12!) returns no immediate reply — wait this long, then read position.
-const HOME_QUERY_DELAY_MS = 1500;
+// Home (#12!) runs the controller's homing cycle and emits a SINGLE position frame
+// only when homing FINISHES — up to this long later. We wait for that real idle
+// frame as the command's completion (no fire-and-forget, no #10! poll: a #10!
+// issued mid-home returns a misleading idle frame at the pre-home position). A
+// stage that never homes fails honestly when this ceiling elapses.
+const HOME_TIMEOUT_MS = 60000;
 // Settle poll for move-class commands (#0C/#0E/#11): after a busy ('-') position
 // frame, re-query #10! this often to elicit the final idle ('+') frame that
 // completes the move. Small and conservative; the move's existing TX_TIMEOUT_MS
 // is the hard ceiling (the poll never extends it). Only ever ONE poll is in flight
 // and only while the original move command is still pending — no concurrent TX.
 const SETTLE_POLL_MS = 120;
-// Relocation target is the OPERATOR-TAUGHT optical center (absolute pulses). It
-// is distinct from the controller's hardware zero (#12! home). Until taught,
-// Relocation fails honestly with this message — it never homes as a fallback and
-// never reports a fake success.
-const CENTER_NOT_CONFIGURED = 'XY center offset not configured';
-
 // Preemption is a CONTROLLED transition (a new command intentionally superseded
 // an in-flight one), not a hardware failure.
 const PREEMPTED_MESSAGE = 'Previous stage command was stopped to run the new command.';
@@ -214,7 +213,7 @@ const STAGE_COMMAND_FAILED_MESSAGE = 'XYZ stage command failed. Check connection
 
 /**
  * Map an internal error CODE to an operator-facing message. Codes that already
- * carry a human sentence (e.g. CENTER_NOT_CONFIGURED) are returned as-is;
+ * carry a human sentence (e.g. 'Z Axis port not configured') are returned as-is;
  * everything else that isn't explicitly mapped falls back to the generic
  * "command failed" message so a raw token like a serial timeout never reaches
  * the UI. The raw code still travels in `result.error` for logs/diagnostics.
@@ -229,8 +228,8 @@ function friendlyXyzMessage(code: string): string {
       return 'Lock the X/Y stage before moving.';
     case 'XYZ_STAGE_NO_POSITION':
       return 'Cannot read the stage position. Check connection and try again.';
-    case CENTER_NOT_CONFIGURED:
-      return 'Please set center before relocation.';
+    case 'XYZ_STAGE_HOME_TIMEOUT':
+      return 'Homing did not complete. Check the stage and try again.';
     case 'Z Axis port not configured':
       return 'Z Axis port not configured. Set it in Serial Port Setting.';
     case 'XYZ_Z_NOT_CONNECTED':
@@ -1314,7 +1313,11 @@ class XyzPlatformSerialService extends EventEmitter {
           console.log(
             `[xyz-move-settle-wait] commandId=${commandId} action=${JSON.stringify(action)} status=${JSON.stringify(parsed.status)} busy=${parsed.busy} x=${parsed.x} y=${parsed.y}`
           );
-          this.scheduleSettlePoll(commandId);
+          // Only relative moves are nudged toward their idle frame with a #10!
+          // re-query. Home (#12!) is settle-gated too but must NOT be polled — its
+          // idle completion frame arrives unsolicited, and a mid-home #10! would
+          // echo the stale pre-home position. So home just keeps the waiter alive.
+          if (this.isMoveClassPending()) this.scheduleSettlePoll(commandId);
           break;
         }
         // [xyz-move-resolve] — the frame that actually completes the command. For a
@@ -1460,7 +1463,12 @@ class XyzPlatformSerialService extends EventEmitter {
   }
 
   /** Write a frame and wait for the RX position/ack (or time out). */
-  private transmitNow(commandId: string, built: XyzBuiltCommand, label: string): Promise<XyzPosition | null> {
+  private transmitNow(
+    commandId: string,
+    built: XyzBuiltCommand,
+    label: string,
+    timeoutMs: number = TX_TIMEOUT_MS
+  ): Promise<XyzPosition | null> {
     if (!this.port || !this.state.connected) {
       return Promise.reject(new Error('XYZ_STAGE_NOT_CONNECTED'));
     }
@@ -1494,9 +1502,9 @@ class XyzPlatformSerialService extends EventEmitter {
         this.pendingTxHex = null;
         this.pendingStartedAt = null;
         // eslint-disable-next-line no-console
-        console.error(`[xyz-timeout] commandId=${commandId} timeoutMs=${TX_TIMEOUT_MS}`);
+        console.error(`[xyz-timeout] commandId=${commandId} timeoutMs=${timeoutMs}`);
         reject(new Error('XYZ_STAGE_ACK_TIMEOUT'));
-      }, TX_TIMEOUT_MS);
+      }, timeoutMs);
     });
 
     return new Promise<void>((resolve, reject) => {
@@ -1536,7 +1544,8 @@ class XyzPlatformSerialService extends EventEmitter {
     action: string,
     build: () => XyzBuiltCommand,
     lastAction: string,
-    priority = false
+    priority = false,
+    timeoutMs: number = TX_TIMEOUT_MS
   ): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
     // eslint-disable-next-line no-console
@@ -1599,7 +1608,7 @@ class XyzPlatformSerialService extends EventEmitter {
     }
 
     try {
-      const position = await queue.enqueue(() => this.transmitNow(commandId, built, action), { priority });
+      const position = await queue.enqueue(() => this.transmitNow(commandId, built, action, timeoutMs), { priority });
       this.setState({ lastAction, lastError: undefined });
       const status = position ? 'move-confirmed' : 'ack-confirmed';
       // eslint-disable-next-line no-console
@@ -1944,185 +1953,164 @@ class XyzPlatformSerialService extends EventEmitter {
     return this.runCommand('getPosition', () => buildGetPositionCommand(), 'Query position.');
   }
 
-  // Relocation = move to the operator-taught OPTICAL center, NOT the hardware
-  // zero/home. Both the ⊕ Center button (moveToCenter) and the Relocation button
-  // (locateCenter) run the same core. Hardware home (#12!) is a separate action
-  // (`home()`), so relocation never parks at the controller origin.
-  moveToCenter(homeBeforeRelocation = false): Promise<XyzCommandResult> {
-    return this.relocateToOpticalCenter('moveToCenter', homeBeforeRelocation);
+  // Both buttons move to the FIXED geometric/physical center from settings
+  // (physicalCenterXpulses/Ypulses — default 40000,40000 = 25mm,25mm at 1600
+  // pulses/mm), NOT the operator-taught optical center and NOT hardware home (0,0).
+  // ⊕ Center (moveToCenter) goes there from the CURRENT position; Relocation
+  // (locateCenter) ALWAYS homes (#12!) first, then moves to the physical center —
+  // the original AIO_Client Home → Center workflow.
+  moveToCenter(): Promise<XyzCommandResult> {
+    return this.goToPhysicalCenter('moveToCenter', false, 'xyz-center');
   }
 
-  locateCenter(homeBeforeRelocation = false): Promise<XyzCommandResult> {
-    return this.relocateToOpticalCenter('locateCenter', homeBeforeRelocation);
+  locateCenter(): Promise<XyzCommandResult> {
+    return this.goToPhysicalCenter('locateCenter', true, 'xyz-relocation');
   }
 
   /**
-   * Move the stage to the taught optical center. Moves are RELATIVE (#11 by a
-   * pulse delta) while #10! reports ABSOLUTE position, so we read the current
-   * position, move by (center − current), then re-read to confirm. State only
-   * ever changes from a real position reply — no faked success, and if the
-   * center has not been taught it fails honestly (it does NOT home as a
-   * fallback).
+   * Move the stage to the FIXED geometric/physical center taken from settings
+   * (physicalCenterXpulses/Ypulses). Moves are RELATIVE (#11/#0C/#0E by a pulse
+   * delta) while #10! reports ABSOLUTE position, so we establish the start position
+   * (post-home for Relocation, current for ⊕ Center), move by (center − current),
+   * then re-read to confirm. State only ever changes from a real position reply — no
+   * faked success, no optimistic update, no fabricated coordinate. The target is
+   * read from settings, never a duplicated literal. `logPrefix` routes the trace to
+   * the per-button log family (xyz-center / xyz-relocation).
    */
-  private async relocateToOpticalCenter(
+  private async goToPhysicalCenter(
     action: string,
-    homeBeforeRelocation = false
+    homeFirst: boolean,
+    logPrefix: 'xyz-center' | 'xyz-relocation'
   ): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
     // eslint-disable-next-line no-console
-    console.log(`[xyz-relocation-start] commandId=${commandId} action=${action} homeBeforeRelocation=${homeBeforeRelocation}`);
+    console.log(`[${logPrefix}-start] commandId=${commandId} action=${action} homeFirst=${homeFirst}`);
 
-    await this.ensureCenterLoaded();
-    if (this.centerX === null || this.centerY === null) {
-      const message = friendlyXyzMessage(CENTER_NOT_CONFIGURED);
-      // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-error] commandId=${commandId} reason=${JSON.stringify(CENTER_NOT_CONFIGURED)}`);
-      this.setState({ lastError: message });
-      return { ok: false, error: CENTER_NOT_CONFIGURED, message, commandId };
-    }
     if (!this.state.connected) {
       // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-error] commandId=${commandId} reason="XYZ_STAGE_NOT_CONNECTED"`);
+      console.warn(`[${logPrefix}-error] commandId=${commandId} reason="XYZ_STAGE_NOT_CONNECTED"`);
       this.setState({ lastError: 'XYZ_STAGE_NOT_CONNECTED' });
       return { ok: false, error: 'XYZ_STAGE_NOT_CONNECTED', commandId };
     }
     // Movement needs the servo engaged (mirrors moveStage gating).
     if (!this.state.xyLocked) {
       // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-error] commandId=${commandId} reason="XYZ_STAGE_XY_UNLOCKED"`);
+      console.warn(`[${logPrefix}-error] commandId=${commandId} reason="XYZ_STAGE_XY_UNLOCKED"`);
       this.setState({ lastError: 'XYZ_STAGE_XY_UNLOCKED' });
       return { ok: false, error: 'XYZ_STAGE_XY_UNLOCKED', commandId };
     }
 
-    // Optional: establish machine reference first (default OFF). The post-home
-    // position (#10!) becomes the start point for the center delta below.
-    if (homeBeforeRelocation) {
+    // TARGET = fixed geometric/physical center, read from settings (defaults
+    // 40000,40000). loadActiveSettings() also refreshes the pulsePerMm / travel
+    // bound used for the display + RX safety warning. No duplicated literal here.
+    const settings = await this.loadActiveSettings();
+    const targetX = settings.physicalCenterXpulses;
+    const targetY = settings.physicalCenterYpulses;
+    // eslint-disable-next-line no-console
+    console.log(`[${logPrefix}-target] commandId=${commandId} targetX=${targetX} targetY=${targetY}`);
+
+    // Establish the START position. Relocation homes (#12!) first and uses the REAL
+    // home-complete frame as the start point — we do NOT issue a fresh #10! (which
+    // can echo a stale pre-home position on this controller). ⊕ Center skips homing
+    // and reads the current position (#10!). We never compute the delta while the
+    // stage is still homing.
+    let before: XyzCommandResult;
+    if (homeFirst) {
       // eslint-disable-next-line no-console
-      console.log(`[xyz-relocation-home-step] commandId=${commandId}`);
+      console.log(`[${logPrefix}-home-step] commandId=${commandId}`);
       const homed = await this.home();
       if (!homed.ok) {
         // eslint-disable-next-line no-console
-        console.warn(`[xyz-relocation-error] commandId=${commandId} reason=${JSON.stringify(homed.error)} phase=home-before`);
+        console.warn(`[${logPrefix}-error] commandId=${commandId} reason=${JSON.stringify(homed.error)} phase=home-before`);
         return homed;
       }
+      // eslint-disable-next-line no-console
+      console.log(`[${logPrefix}-after-home-position] commandId=${commandId} x=${homed.position?.x ?? 'unknown'} y=${homed.position?.y ?? 'unknown'}`);
+      before = homed;
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-position-query] commandId=${commandId} phase=before`);
+      before = await this.getPosition();
     }
-
-    // 1) Read where we are now (#10!).
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-position-query] commandId=${commandId} phase=before`);
-    const before = await this.getPosition();
     if (!before.ok) {
       // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-error] commandId=${commandId} reason=${JSON.stringify(before.error)}`);
+      console.warn(`[${logPrefix}-error] commandId=${commandId} reason=${JSON.stringify(before.error)}`);
       return before;
     }
     if (!before.position) {
       // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-error] commandId=${commandId} reason="XYZ_STAGE_NO_POSITION"`);
+      console.warn(`[${logPrefix}-error] commandId=${commandId} reason="XYZ_STAGE_NO_POSITION"`);
       this.setState({ lastError: 'XYZ_STAGE_NO_POSITION' });
       return { ok: false, error: 'XYZ_STAGE_NO_POSITION', commandId };
     }
 
-    // Captured before the next serial round-trip so the post-move RX audit can
-    // diff the landing position against this exact start point.
+    // Captured before the next serial round-trip so the post-move RX diff can compare
+    // the landing position against this exact start point.
     const beforePos = before.position;
 
-    // 2) Compute the relative delta to the absolute OPTICAL center (operator-taught,
-    // NOT hardware home 0,0 and NOT the geometric center 40000,40000).
-    const dx = this.centerX - before.position.x;
-    const dy = this.centerY - before.position.y;
+    // Relative delta to the absolute PHYSICAL center (settings target — NOT hardware
+    // home 0,0 and NOT an operator optical center).
+    const dx = targetX - beforePos.x;
+    const dy = targetY - beforePos.y;
     // eslint-disable-next-line no-console
     console.log(
-      `[xyz-relocation-delta] commandId=${commandId} target=optical-center centerX=${this.centerX} centerY=${this.centerY} currentX=${before.position.x} currentY=${before.position.y} dx=${dx} dy=${dy}`
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      `[xyz-center-offset] commandId=${commandId} centerX=${this.centerX} centerY=${this.centerY} currentX=${before.position.x} currentY=${before.position.y} dx=${dx} dy=${dy}`
-    );
-
-    // [xyz-relocation-audit] — DIAGNOSTIC ONLY. Records the requested delta, the
-    // exact TX frame that will be sent, and the configured reverse flags. Relocation
-    // deliberately works in NATIVE controller pulses and does NOT apply reverseX/Y;
-    // logging them here proves no hidden sign flip is in play (the flags are
-    // compared, never applied).
-    const auditSettings = await this.loadActiveSettings();
-    const auditCmd = buildRelocationMoveCommand(dx, dy);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[xyz-relocation-audit] commandId=${commandId} requestedDx=${dx} requestedDy=${dy} txCommand=${JSON.stringify(auditCmd?.visible ?? 'none')} reverseX=${auditSettings.reverseXAxis} reverseY=${auditSettings.reverseYAxis}`
+      `[${logPrefix}-delta] commandId=${commandId} targetX=${targetX} targetY=${targetY} currentX=${beforePos.x} currentY=${beforePos.y} dx=${dx} dy=${dy}`
     );
 
     if (dx === 0 && dy === 0) {
       // eslint-disable-next-line no-console
-      console.log(`[xyz-relocation-arrived] commandId=${commandId} x=${before.position.x} y=${before.position.y} note=already-centered`);
-      // eslint-disable-next-line no-console
-      console.log(`[xyz-relocation-complete] commandId=${commandId} x=${before.position.x} y=${before.position.y} note=already-centered`);
-      this.setState({ lastAction: 'At optical center.', lastError: undefined });
+      console.log(`[${logPrefix}-arrived] commandId=${commandId} x=${beforePos.x} y=${beforePos.y} note=already-centered`);
+      this.setState({ lastAction: 'At physical center.', lastError: undefined });
       return before;
     }
 
-    // 3) Move by the delta with the narrowest command for the axes that change
-    // (#11 both, #0C X-only, #0E Y-only) — RX-gated to a real reply. The
+    // Move by the delta with the narrowest command for the axes that change
+    // (#11 both, #0C X-only, #0E Y-only) — RX-gated to a real idle reply. The
     // dx===0 && dy===0 case already returned above, so a command is always built.
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-relocation-center-step] commandId=${commandId} dx=${dx} dy=${dy}`);
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-center-move-tx] commandId=${commandId} dx=${dx} dy=${dy}`);
     const moved = await this.runCommand(
-      'relocate',
+      action,
       () => {
         const cmd = buildRelocationMoveCommand(dx, dy);
         if (!cmd) throw new Error('XYZ_RELOCATION_NO_DELTA');
         // eslint-disable-next-line no-console
-        console.log(`[xyz-relocation-command] commandId=${commandId} key=${cmd.key} visible=${JSON.stringify(cmd.visible)} dx=${dx} dy=${dy}`);
+        console.log(`[${logPrefix}-command] commandId=${commandId} key=${cmd.key} visible=${JSON.stringify(cmd.visible)} dx=${dx} dy=${dy}`);
         return cmd;
       },
-      `Relocate to optical center (dx ${dx}, dy ${dy}).`
+      `Move to physical center (dx ${dx}, dy ${dy}).`
     );
     if (!moved.ok) {
       // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-error] commandId=${commandId} reason=${JSON.stringify(moved.error)}`);
+      console.warn(`[${logPrefix}-error] commandId=${commandId} reason=${JSON.stringify(moved.error)}`);
       return moved;
     }
 
-    // 4) Confirm the landing position (#10!); state already updated from the RX.
+    // Confirm the landing position (#10!); state already updated from the move RX.
     // eslint-disable-next-line no-console
     console.log(`[xyz-position-query] commandId=${commandId} phase=after`);
     const after = await this.getPosition();
 
-    // [xyz-relocation-rx] / [xyz-relocation-error] — DIAGNOSTIC ONLY. Diff the
-    // landing position the controller actually reported against the requested
-    // delta. `landing` is the after-query position when available, else the
-    // move command's own RX position (the move is RX-gated, so `moved.position`
+    // DIAGNOSTIC: diff the landing position the controller actually reported against
+    // the requested delta. `landing` is the after-query position when available, else
+    // the move command's own RX position (the move is RX-gated, so `moved.position`
     // is a real reply, never fabricated). No coordinate is changed here.
     const landing = after.ok && after.position ? after.position : moved.position;
     if (landing) {
-      const actualDx = landing.x - beforePos.x;
-      const actualDy = landing.y - beforePos.y;
       // eslint-disable-next-line no-console
       console.log(
-        `[xyz-relocation-rx] commandId=${commandId} beforeX=${beforePos.x} beforeY=${beforePos.y} afterX=${landing.x} afterY=${landing.y} actualDx=${actualDx} actualDy=${actualDy}`
-      );
-      // eslint-disable-next-line no-console
-      console.log(
-        `[xyz-relocation-error] commandId=${commandId} expectedDx=${dx} actualDx=${actualDx} expectedDy=${dy} actualDy=${actualDy}`
+        `[${logPrefix}-rx] commandId=${commandId} beforeX=${beforePos.x} beforeY=${beforePos.y} afterX=${landing.x} afterY=${landing.y} actualDx=${landing.x - beforePos.x} actualDy=${landing.y - beforePos.y} expectedDx=${dx} expectedDy=${dy}`
       );
     }
 
     if (!after.ok || !after.position) {
       // The move itself succeeded with a real reply; report it rather than fail.
       // eslint-disable-next-line no-console
-      console.warn(`[xyz-relocation-arrived] commandId=${commandId} note=confirm-query-unavailable`);
-      // eslint-disable-next-line no-console
-      console.log(`[xyz-relocation-complete] commandId=${commandId} note=confirm-query-unavailable`);
-      this.setState({ lastAction: 'Relocated to optical center.', lastError: undefined });
+      console.log(`[${logPrefix}-arrived] commandId=${commandId} note=confirm-query-unavailable`);
+      this.setState({ lastAction: 'Moved to physical center.', lastError: undefined });
       return moved;
     }
     // eslint-disable-next-line no-console
-    console.log(`[xyz-relocation-arrived] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-relocation-complete] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
-    this.setState({ lastAction: 'Relocated to optical center.', lastError: undefined });
+    console.log(`[${logPrefix}-arrived] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
+    this.setState({ lastAction: 'Moved to physical center.', lastError: undefined });
     return after;
   }
 
@@ -2171,8 +2159,13 @@ class XyzPlatformSerialService extends EventEmitter {
 
   /**
    * Dedicated HARDWARE HOME (#12!) — the controller's zero/origin, kept strictly
-   * separate from Relocation. Home returns NO immediate ACK, so we fire it
-   * without waiting, let it settle, then read the resulting position (#10!).
+   * separate from Relocation. #12! runs the homing cycle and emits a SINGLE position
+   * frame only when homing FINISHES (up to HOME_TIMEOUT_MS later). We send it as a
+   * WAITED command and complete on that real idle frame — never fire-and-forget,
+   * never a fixed delay, and never a mid-home #10! poll (which returns a misleading
+   * idle frame at the pre-home position). The completion frame may arrive with no
+   * preceding #10!; it is consumed as the real home result. No coordinate is faked
+   * and home is never assumed to be 0,0.
    */
   async home(): Promise<XyzCommandResult> {
     const commandId = this.nextCommandId();
@@ -2184,24 +2177,32 @@ class XyzPlatformSerialService extends EventEmitter {
     // eslint-disable-next-line no-console
     console.log(`[xyz-home-start] commandId=${commandId} visible="#12!"`);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-home-tx] commandId=${commandId} visible="#12!"`);
-    const sent = await this.sendFireAndForget('home', () => buildHomeCommand(), 'Hardware home (#12!).');
-    if (!sent.ok) return sent;
-    // #12! has NO immediate ACK and the controller establishes X=0/Y=0 against its
-    // limit sensors. We do NOT zero coordinates ourselves — we wait, then read the
-    // real reference position (#10!) and report only that.
-    await new Promise((resolve) => setTimeout(resolve, HOME_QUERY_DELAY_MS));
+    console.log(`[xyz-home-wait-start] commandId=${commandId} timeoutMs=${HOME_TIMEOUT_MS}`);
+    const homed = await this.runCommand(
+      'home',
+      () => {
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-home-tx] commandId=${commandId} visible="#12!"`);
+        return buildHomeCommand();
+      },
+      'Hardware home (#12!).',
+      false,
+      HOME_TIMEOUT_MS
+    );
+    if (!homed.ok) {
+      // A home that never emits its completion frame within HOME_TIMEOUT_MS surfaces
+      // as a generic ACK timeout — remap it to the home-specific code/message so the
+      // operator sees "Homing did not complete" rather than the catch-all failure.
+      if (homed.error === 'XYZ_STAGE_ACK_TIMEOUT') {
+        const message = friendlyXyzMessage('XYZ_STAGE_HOME_TIMEOUT');
+        this.setState({ lastError: message });
+        return { ok: false, error: 'XYZ_STAGE_HOME_TIMEOUT', message, commandId };
+      }
+      return homed;
+    }
     // eslint-disable-next-line no-console
-    console.log(`[xyz-home-settle] commandId=${commandId} settleMs=${HOME_QUERY_DELAY_MS}`);
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-home-query] commandId=${commandId} tx="#10!"`);
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-position-query] commandId=${commandId} phase=after-home`);
-    const pos = await this.getPosition();
-    if (!pos.ok) return pos;
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-home-complete] commandId=${commandId} x=${pos.position?.x ?? 'unknown'} y=${pos.position?.y ?? 'unknown'}`);
-    return pos;
+    console.log(`[xyz-home-complete-frame] commandId=${commandId} x=${homed.position?.x ?? 'unknown'} y=${homed.position?.y ?? 'unknown'}`);
+    return homed;
   }
 
   /**
@@ -2368,12 +2369,13 @@ class XyzPlatformSerialService extends EventEmitter {
   }
 
   /** Z operator CONFIG singleton (reverseDirection, pulsePerMm, stepDistanceMm). */
-  private async loadZSettings(): Promise<{ reverseDirection: boolean; pulsePerMm: number; stepDistanceMm: number }> {
+  private async loadZSettings(): Promise<{ reverseDirection: boolean; pulsePerMm: number; stepDistanceMm: number; zStopPayload: string }> {
     const s = await zSettingsService.get();
     return {
       reverseDirection: s.reverseDirection,
       pulsePerMm: s.pulsePerMm,
       stepDistanceMm: s.stepDistanceMm,
+      zStopPayload: s.zStopPayload ?? 'SSS',
     };
   }
 
@@ -2469,17 +2471,30 @@ class XyzPlatformSerialService extends EventEmitter {
     const z = await this.loadZSettings();
     const sign = resolveZSign(direction, z.reverseDirection);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-z] action=jog-start direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign}`);
-    const result = await zAxisSerialService.startJog(sign);
+    console.log(`[xyz-z] action=jog-start direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign} stopPayload=${z.zStopPayload}`);
+    const result = await zAxisSerialService.startJog(sign, z.zStopPayload);
     this.syncZState(result.ok ? { lastAction: `Z jog ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
   }
 
-  /** Press-and-hold jog STOP — conservative poll/stop/poll in the Z service. */
+  /** Press-and-hold jog STOP — cancels the repeat loop, sends the configured stop
+   * payload (#SSS# default), RX-gated on UP. A PLC ERROR clears jog state instead
+   * of hanging. */
   async stopZJog(): Promise<XyzCommandResult> {
-    const result = await zAxisSerialService.stopJog();
+    const z = await this.loadZSettings();
+    const result = await zAxisSerialService.stopJog(z.zStopPayload);
     this.syncZState(result.ok ? { lastAction: 'Z jog stopped.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
+  }
+
+  /** Manual Z probe (dev console) — wraps payload as #payload# and reports the RX. */
+  probeZ(payload: string): Promise<ZProbeResult> {
+    return zAxisSerialService.probe(payload);
+  }
+
+  /** Diagnostic: probe candidate stop payloads (#SSS#/#S#/#STOP#/#ST#/#UP#). */
+  diagnoseStopZ(): Promise<ZProbeResult[]> {
+    return zAxisSerialService.diagnoseStop();
   }
 
   // Legacy single-shot Z stop (kept for API symmetry) routes to the jog stop.

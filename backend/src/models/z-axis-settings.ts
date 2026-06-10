@@ -32,6 +32,10 @@ export const ZAxisSettingsPayloadSchema = z.object({
   hasEmptyTrip: z.boolean(),
   upwardEmptyTripMm: z.number().finite().nonnegative(), // >= 0
   downwardEmptyTripMm: z.number().finite().nonnegative(), // >= 0
+  // Configurable Z stop command payload, sent as "#<zStopPayload>#" (default
+  // 'SSS'). Optional so existing rows/clients without it fall back to 'SSS'. The
+  // expected stop reply remains 'UP'; a PLC 'ERROR' is handled as a real response.
+  zStopPayload: z.string().min(1).max(16).optional(),
   // Visual image-selection percentage (30–100).
   imageSelection: ImageSelectionSchema,
 });
@@ -54,5 +58,6 @@ export const DEFAULT_Z_AXIS_SETTINGS: ZAxisSettingsPayload = {
   hasEmptyTrip: true,
   upwardEmptyTripMm: 0.0005,
   downwardEmptyTripMm: 0.0005,
+  zStopPayload: 'SSS',
   imageSelection: 40,
 };

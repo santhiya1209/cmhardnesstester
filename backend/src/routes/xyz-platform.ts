@@ -3,6 +3,7 @@ import {
   connectStage,
   connectZAxis,
   diagnoseStage,
+  diagnoseStopZAxis,
   diagnoseZAxis,
   disconnectStage,
   disconnectZAxis,
@@ -18,6 +19,7 @@ import {
   moveZ,
   pollZStatus,
   probeStage,
+  probeZAxis,
   setFocusMode,
   setStageCenter,
   setXySpeed,
@@ -59,6 +61,8 @@ router.post('/disconnect-z', disconnectZAxis);
 router.post('/start-z-jog', startZJog);
 router.post('/stop-z-jog', stopZJog);
 router.post('/poll-z-status', pollZStatus);
+router.post('/probe-z', probeZAxis);
+router.post('/diagnose-stop-z', diagnoseStopZAxis);
 router.post('/diagnose-z', diagnoseZAxis);
 router.post('/lock-z', lockZ);
 router.post('/unlock-z', unlockZ);

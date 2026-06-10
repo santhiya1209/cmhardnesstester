@@ -53,6 +53,8 @@ const ALLOWED_INVOKE = new Set([
   'xyz-platform:start-z-jog',
   'xyz-platform:stop-z-jog',
   'xyz-platform:poll-z-status',
+  'xyz-platform:probe-z',
+  'xyz-platform:diagnose-stop-z',
   'xyz-platform:diagnose-z',
   'xyz-platform:lock-z',
   'xyz-platform:unlock-z',
@@ -201,6 +203,10 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   startZJog: (direction) => ipcRenderer.invoke('xyz-platform:start-z-jog', { direction }),
   stopZJog: () => ipcRenderer.invoke('xyz-platform:stop-z-jog'),
   pollZStatus: () => ipcRenderer.invoke('xyz-platform:poll-z-status'),
+  // Manual Z probe (dev console). probeZ('LK') → sends #LK#; probeZ('+Z 15') → #+Z 15#.
+  probeZ: (payload) => ipcRenderer.invoke('xyz-platform:probe-z', { payload }),
+  // Diagnostic: probe candidate stop payloads to find the real stop command.
+  diagnoseStopZ: () => ipcRenderer.invoke('xyz-platform:diagnose-stop-z'),
   diagnoseZ: (options) => ipcRenderer.invoke('xyz-platform:diagnose-z', options || {}),
   lockZ: () => ipcRenderer.invoke('xyz-platform:lock-z'),
   unlockZ: () => ipcRenderer.invoke('xyz-platform:unlock-z'),
@@ -210,8 +216,8 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   setXySpeed: (speed) => ipcRenderer.invoke('xyz-platform:set-xy-speed', { speed }),
   setZSpeed: (speed) => ipcRenderer.invoke('xyz-platform:set-z-speed', { speed }),
   getPosition: () => ipcRenderer.invoke('xyz-platform:get-position'),
-  moveToCenter: (opts) => ipcRenderer.invoke('xyz-platform:move-center', opts || {}),
-  locateCenter: (opts) => ipcRenderer.invoke('xyz-platform:locate-center', opts || {}),
+  moveToCenter: () => ipcRenderer.invoke('xyz-platform:move-center'),
+  locateCenter: () => ipcRenderer.invoke('xyz-platform:locate-center'),
   setCenter: () => ipcRenderer.invoke('xyz-platform:set-center'),
   home: () => ipcRenderer.invoke('xyz-platform:home'),
   // Z Axis settings — backend-owned config singleton. Read/save/preview/revert

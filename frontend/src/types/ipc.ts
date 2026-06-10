@@ -42,6 +42,7 @@ import type {
   XyzZDiagnoseResult,
   XySpeed,
   ZDirection,
+  ZProbeResult,
   ZSpeed,
 } from './xyzPlatform';
 import type { ImageSelection, ZAxisSettingsPayload, ZAxisSettingsResult } from './zAxisSettings';
@@ -279,14 +280,8 @@ export type IpcInvokeMap = {
   'xyz-platform:set-xy-speed': { request: { speed: XySpeed }; response: XyzCommandResult };
   'xyz-platform:set-z-speed': { request: { speed: ZSpeed }; response: XyzCommandResult };
   'xyz-platform:get-position': { request: void; response: XyzCommandResult };
-  'xyz-platform:move-center': {
-    request: { homeBeforeRelocation?: boolean } | void;
-    response: XyzCommandResult;
-  };
-  'xyz-platform:locate-center': {
-    request: { homeBeforeRelocation?: boolean } | void;
-    response: XyzCommandResult;
-  };
+  'xyz-platform:move-center': { request: void; response: XyzCommandResult };
+  'xyz-platform:locate-center': { request: void; response: XyzCommandResult };
   'xyz-platform:set-center': { request: void; response: XyzCommandResult };
   'xyz-platform:home': { request: void; response: XyzCommandResult };
   'xyz-platform:get-z-settings': { request: void; response: ZAxisSettingsResult };
@@ -359,6 +354,10 @@ export interface XyzPlatformApi {
   stopZJog(): Promise<XyzCommandResult>;
   /** Poll Z status (#sss#). */
   pollZStatus(): Promise<XyzCommandResult>;
+  /** Manual Z probe (dev console). probeZ('LK') → #LK#, probeZ('+Z 15') → #+Z 15#. */
+  probeZ(payload: string): Promise<ZProbeResult>;
+  /** Diagnostic: probe candidate stop payloads (#SSS#/#S#/#STOP#/#ST#/#UP#). */
+  diagnoseStopZ(): Promise<{ ok: boolean; probes: ZProbeResult[] }>;
   /** Dev diagnostic — runs the legacy Z command sequence and reports TX/RX. */
   diagnoseZ(options?: { includeJog?: boolean; speedRegisterValue?: number }): Promise<XyzZDiagnoseResult>;
   lockZ(): Promise<XyzCommandResult>;
@@ -369,10 +368,10 @@ export interface XyzPlatformApi {
   setXySpeed(speed: XySpeed): Promise<XyzCommandResult>;
   setZSpeed(speed: ZSpeed): Promise<XyzCommandResult>;
   getPosition(): Promise<XyzCommandResult>;
-  /** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
-  moveToCenter(opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult>;
-  /** Relocate to the taught optical center. Optional homeBeforeRelocation (default off). */
-  locateCenter(opts?: { homeBeforeRelocation?: boolean }): Promise<XyzCommandResult>;
+  /** ⊕ Center: move to the taught optical center from the current position (no home). */
+  moveToCenter(): Promise<XyzCommandResult>;
+  /** Relocation: home (#12!) first, then move to the taught optical center. */
+  locateCenter(): Promise<XyzCommandResult>;
   /** Teach: capture the current position as the optical center and persist it. */
   setCenter(): Promise<XyzCommandResult>;
   /** Dedicated hardware home (#12!) — the controller's zero, separate from Relocation. */

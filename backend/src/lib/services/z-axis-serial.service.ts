@@ -2,16 +2,20 @@ import { EventEmitter } from 'node:events';
 import { getSerialQueue } from './serial-command-queue';
 import { hardnessMachineSerialService } from './hardness-machine-serial.service';
 import {
-  buildJogZCommand,
-  buildLockZCommand,
-  buildMoveZCommand,
   buildPollZStatusCommand,
-  buildSetZSpeedCommand,
-  buildUnlockZCommand,
-  parseZReply,
+  buildZJogCommand,
+  buildZLockCommand,
+  buildZLoosenCommand,
+  buildZMoveCommand,
+  buildZProbeCommand,
+  buildZSetSpeedCommand,
+  buildZStopCommand,
+  classifyZLine,
+  normalizeZLine,
   replyMatchesExpect,
-  type ParsedZReply,
+  splitZLines,
   type ZBuiltCommand,
+  type ZLineKind,
 } from './z-axis-protocol';
 
 // DEDICATED Z-axis serial connection. INDEPENDENT of the X/Y stage port and the
@@ -20,9 +24,12 @@ import {
 // delegates every Z action here and merges the resulting Z state into the single
 // state broadcast the UI consumes — but the serial connection lives only here.
 //
+// PROTOCOL (see z-axis-protocol.ts): TX "#payload#", RX "payload\n". NO checksum.
+// Replies are matched by SUBSTRING (OK_LK / OK_LS / SOK / UP / >Z: / OK_ZFinalSpeed).
+//
 // Hardware truth only: UI/state changes are driven from real TX/RX. No optimistic
-// updates, no simulated motion, no fabricated replies. See z-axis-protocol.ts for
-// the (legacy-sourced, NEEDS-HARDWARE-VERIFICATION) frame/reply definitions.
+// updates, no simulated motion, no fabricated replies. Continuous jog is held by
+// REPEATED #+S#/#-S# frames (each gated on a real SOK) and stopped by #SSS#→UP.
 
 // Defensive require so the backend keeps booting even if `serialport` is not
 // rebuilt for the current Node ABI yet — mirrors the X/Y + machine services.
@@ -62,23 +69,31 @@ try {
   console.error('[z-error] serialport module not available:', serialPortLoadError);
 }
 
-// Z line settings come from the legacy software: 57600 8N1, no flow control. This
-// is the DEFAULT only — the actual value is parameterizable per connect() call.
+/** TEST SEAM: inject a fake serialport lib so the jog loop / stop can be unit-tested. */
+export function __setZSerialPortLibForTests(lib: { SerialPort: SerialPortCtor } | null): void {
+  SerialPortLib = lib;
+  serialPortLoadError = null;
+}
+
+// Z line settings come from the old software: 57600 8N1, no flow control. This is
+// the DEFAULT only — the actual value is parameterizable per connect() call.
 const Z_DEFAULT_BAUD = 57600;
 const Z_TX_TIMEOUT_MS = 5000;
-// Backend safety watchdog: if no stopZJog arrives within this window after a jog
+// Continuous-jog repeat cadence. The old software re-sends the jog frame while the
+// button is held; we mirror that, each frame gated on a real SOK reply.
+const Z_JOG_REPEAT_MS = 150;
+// Backend safety watchdog: if no stopJog arrives within this window after a jog
 // starts (release event missed / IPC dropped), the service runs the stop itself.
 const Z_JOG_WATCHDOG_MS = 10_000;
-// Conservative Z jog stop. The legacy docs do NOT clearly define a stop command.
-// Strategy: first POLL (#sss#) to read live status, then perform the stop action,
-// then POLL again to confirm. 'toggle' re-sends the same jog command (#+S#/#-S#)
-// to toggle motion off. We NEVER report stop success without a real STOP/IDLE
-// status RX; every step is logged so the true behaviour can be confirmed on
-// hardware (TODO hardware: replace with the verified stop command once known).
-const Z_JOG_STOP_STRATEGY: 'toggle' | 'poll-only' = 'toggle';
+// Default stop payload, sent as "#SSS#". Configurable via Serial settings
+// (zStopPayload) and passed in by the facade; this is only the fallback.
+const Z_DEFAULT_STOP_PAYLOAD = 'SSS';
+// Candidate stop payloads for diagnoseStop() — used to find the real stop command
+// on hardware when the configured stop is rejected with ERROR.
+const Z_STOP_PROBE_CANDIDATES = ['SSS', 'S', 'STOP', 'ST', 'UP'];
 
 export type ZCommandResult =
-  | { ok: true; reply?: string; status?: string; commandId: string }
+  | { ok: true; reply?: string; commandId: string }
   | { ok: false; error: string; message?: string; commandId?: string };
 
 export interface ZServiceState {
@@ -86,19 +101,19 @@ export interface ZServiceState {
   port: string | null;
   locked: boolean;
   moving: boolean;
-  /** Last status word seen (UP/DOWN/STOP/IDLE/...), or null. */
+  /** Last RX line classified as a status word, or null. */
   status: string | null;
   lastTx: string | null;
   lastRx: string | null;
   lastError: string | null;
 }
 
-/** One probe outcome for diagnoseZ — exact TX and whatever (if anything) came back. */
+/** One probe outcome for diagnose()/probe() — exact TX and whatever (if anything) came back. */
 export interface ZProbeResult {
   label: string;
   tx: string;
   rx: string | null;
-  classification: ParsedZReply['kind'] | null;
+  classification: ZLineKind | null;
   error?: string;
 }
 
@@ -136,7 +151,7 @@ function toPrintable(s: string): string {
   });
 }
 
-class ZAxisSerialService extends EventEmitter {
+export class ZAxisSerialService extends EventEmitter {
   private port: SerialPortInstance | null = null;
   private portName: string | null = null;
   private baudRate: number = Z_DEFAULT_BAUD;
@@ -150,22 +165,29 @@ class ZAxisSerialService extends EventEmitter {
 
   private rxBuffer = '';
   private commandSequence = 0;
+  private jogRepeatMs = Z_JOG_REPEAT_MS;
+  // Active stop payload (configurable; set by the facade from Serial settings).
+  private stopPayload = Z_DEFAULT_STOP_PAYLOAD;
 
   // Single in-flight waiter (the per-port queue guarantees one command at a time).
   private pending: {
-    resolve: (reply: ParsedZReply | null) => void;
+    resolve: (line: string) => void;
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
     built: ZBuiltCommand;
     commandId: string;
   } | null = null;
 
-  // True between a startJog TX and its stopZJog. The jog command is fire-and-forget
-  // (continuous motion, no reply) so mid-jog status frames arrive UNSOLICITED — they
-  // update `status` for diagnostics but never resolve a command.
+  // True between startJog and stopJog. While active, a 150 ms loop re-sends the
+  // jog frame; each send still waits for a real SOK before scheduling the next.
   private jogActive = false;
-  private jogSign: '+' | '-' | null = null;
+  private jogTimer: ReturnType<typeof setTimeout> | null = null;
   private jogWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  /** TEST SEAM: shorten the jog repeat cadence so the loop can be unit-tested quickly. */
+  setJogRepeatMsForTests(ms: number): void {
+    this.jogRepeatMs = ms;
+  }
 
   getZState(): ZServiceState {
     return {
@@ -189,11 +211,20 @@ class ZAxisSerialService extends EventEmitter {
     return `z-${this.commandSequence}`;
   }
 
+  // State mutators that log [z-state] only on a real change (RX-driven).
+  private setMoving(value: boolean): void {
+    if (this.moving === value) return;
+    this.moving = value;
+    // eslint-disable-next-line no-console
+    console.log(`[z-state] moving=${value} locked=${this.locked} jogActive=${this.jogActive}`);
+  }
+
   // --- Connection ------------------------------------------------------------
 
   async connect(opts: ConnectZOptions): Promise<ZServiceState> {
     if (this.connected) return this.getZState();
 
+    // Port is operator-selected (Serial Port Setting → zPortName), never hardcoded.
     const port = typeof opts.port === 'string' ? opts.port.trim() : '';
     if (!port) {
       this.lastError = Z_PORT_NOT_CONFIGURED;
@@ -221,6 +252,7 @@ class ZAxisSerialService extends EventEmitter {
       throw new Error(message);
     }
 
+    // Baud comes from the SerialPort settings; default to the legacy 57600 if empty.
     const baudRate = opts.baudRate ?? Z_DEFAULT_BAUD;
     const dataBits = opts.dataBits ?? 8;
     const stopBits = opts.stopBits ?? 1;
@@ -292,10 +324,10 @@ class ZAxisSerialService extends EventEmitter {
     instance.on('close', () => {
       this.port = null;
       this.rxBuffer = '';
+      this.clearJogTimer();
       this.clearJogWatchdog();
       this.jogActive = false;
-      this.jogSign = null;
-      this.moving = false;
+      this.setMoving(false);
       this.connected = false;
     });
 
@@ -309,10 +341,10 @@ class ZAxisSerialService extends EventEmitter {
   }
 
   async disconnect(): Promise<ZServiceState> {
-    // If a jog is active, attempt a safe stop BEFORE tearing down the port.
+    // If a jog is active, send #SSS# to halt motion BEFORE tearing down the port.
     if (this.jogActive && this.connected) {
       // eslint-disable-next-line no-console
-      console.log('[z-close] phase=safe-stop-before-disconnect');
+      console.log('[z-jog-stop] phase=safe-stop-before-disconnect');
       try {
         await this.stopJog();
       } catch (err) {
@@ -325,10 +357,10 @@ class ZAxisSerialService extends EventEmitter {
       this.port = null;
     }
     this.rxBuffer = '';
+    this.clearJogTimer();
     this.clearJogWatchdog();
     this.jogActive = false;
-    this.jogSign = null;
-    this.moving = false;
+    this.setMoving(false);
     this.connected = false;
     // eslint-disable-next-line no-console
     console.log(`[z-close] port=${this.portName}`);
@@ -336,69 +368,59 @@ class ZAxisSerialService extends EventEmitter {
     return this.getZState();
   }
 
-  // --- RX framing (line-based; replies are CRLF-terminated ASCII words) -------
+  // --- RX framing (line-based; replies are LF-terminated ASCII, NO checksum) --
 
   private drainRxLines(): void {
-    // Split on CR, LF, or CRLF; keep the trailing partial line in the buffer.
-    const parts = this.rxBuffer.split(/\r\n|\r|\n/);
-    this.rxBuffer = parts.pop() ?? '';
-    for (const line of parts) {
-      if (line.trim().length === 0) continue;
-      const parsed = parseZReply(line);
-      this.lastRx = parsed.raw;
+    // Split on LF (0x0A) ONLY — the Z reply terminator. A stray CR is trimmed by
+    // normalizeZLine. The trailing partial line stays buffered until its LF.
+    const { lines, rest } = splitZLines(this.rxBuffer);
+    this.rxBuffer = rest;
+    for (const rawLine of lines) {
+      const line = normalizeZLine(rawLine);
+      if (line.length === 0) continue;
+      this.lastRx = line;
+      const kind = classifyZLine(line);
+      if (kind === 'status') this.status = line;
       // eslint-disable-next-line no-console
-      console.log(`[z-rx-frame] kind=${parsed.kind} raw=${JSON.stringify(parsed.raw)}`);
-      if (parsed.kind === 'status') {
-        this.status = parsed.token;
+      console.log(`[z-rx-line] kind=${kind} line=${JSON.stringify(line)} pending=${this.pending?.commandId ?? 'none'}`);
+
+      const pending = this.pending;
+      if (pending && replyMatchesExpect(line, pending.built.expect)) {
         // eslint-disable-next-line no-console
-        console.log(`[z-status] token=${parsed.token} pending=${this.pending?.commandId ?? 'none'} jogActive=${this.jogActive}`);
-      } else if (parsed.kind === 'ack') {
+        console.log(`[z-ack] commandId=${pending.commandId} key=${pending.built.key} expect=${pending.built.expect} matched=${JSON.stringify(line)}`);
+        this.resolvePending(line, null);
+      } else if (pending && kind === 'error') {
+        // A real PLC ERROR is a DEFINITIVE response — end the in-flight command
+        // immediately rather than waiting for the expected token / 5s timeout. The
+        // caller (e.g. stopJog) decides how to clear state. Never a fake success.
         // eslint-disable-next-line no-console
-        console.log(`[z-ack] token=${parsed.token} pending=${this.pending?.commandId ?? 'none'}`);
-      } else if (parsed.kind === 'unknown') {
-        // eslint-disable-next-line no-console
-        console.warn(`[z-rx-frame] kind=unknown raw=${JSON.stringify(parsed.raw)} note=logged-not-ignored`);
+        console.warn(`[z-rx-line] kind=error commandId=${pending.commandId} key=${pending.built.key} note=reject-pending raw=${JSON.stringify(line)}`);
+        this.resolvePending(null, new Error('Z_STAGE_PROTOCOL_ERROR'));
       }
-      this.handleParsedForPending(parsed);
+      // A non-matching / unsolicited line is logged above and intentionally NOT
+      // resolved — we wait for the expected substring or the timeout. Never
+      // resolve on the wrong reply (no fake success).
     }
   }
 
-  private handleParsedForPending(parsed: ParsedZReply): void {
-    const pending = this.pending;
-    if (!pending) return;
-    const { built } = pending;
-    if (parsed.kind === 'error') {
-      this.resolvePending(null, new Error('Z_STAGE_PROTOCOL_ERROR'));
-      return;
-    }
-    if (replyMatchesExpect(parsed, built.expect, built.ackToken)) {
-      this.resolvePending(parsed, null);
-      return;
-    }
-    // A non-matching reply (e.g. unknown, or a status while waiting for an ACK) is
-    // logged above and intentionally NOT resolved — we wait for the expected reply
-    // or the timeout. Never resolve on the wrong reply (no fake success).
-  }
-
-  private resolvePending(reply: ParsedZReply | null, err: Error | null): void {
+  private resolvePending(line: string | null, err: Error | null): void {
     const pending = this.pending;
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pending = null;
     if (err) pending.reject(err);
-    else pending.resolve(reply);
+    else pending.resolve(line ?? '');
   }
 
   // --- Low-level send --------------------------------------------------------
 
   /**
-   * Send a command and wait for its expected reply (ACK/status). For `expect:
-   * 'none'` (jog) it resolves after the OS accepts the bytes (drain) — there is
-   * no reply to wait for. Times out safely, always releasing the queue lock and
-   * clearing the pending waiter. Returns the matched parsed reply (or null for
-   * fire-and-forget).
+   * Send a command and wait for its expected reply substring. Serialized through
+   * the per-port queue (one command in flight at a time). Times out safely,
+   * always releasing the queue lock and clearing the pending waiter. Returns the
+   * matched RX line; throws on timeout / write error.
    */
-  private async transmit(commandId: string, built: ZBuiltCommand): Promise<ParsedZReply | null> {
+  private async transmit(commandId: string, built: ZBuiltCommand): Promise<string> {
     if (!this.port || !this.connected) {
       throw new Error('XYZ_Z_NOT_CONNECTED');
     }
@@ -410,8 +432,7 @@ class ZAxisSerialService extends EventEmitter {
     const queue = getSerialQueue(this.portName as string);
     return queue.enqueue(
       () =>
-        new Promise<ParsedZReply | null>((resolve, reject) => {
-          // Write, then either resolve (no reply expected) or arm the RX waiter.
+        new Promise<string>((resolve, reject) => {
           this.port?.write(built.frame, (writeErr) => {
             if (writeErr) {
               reject(writeErr);
@@ -420,10 +441,6 @@ class ZAxisSerialService extends EventEmitter {
             this.port?.drain((drainErr) => {
               if (drainErr) {
                 reject(drainErr);
-                return;
-              }
-              if (built.expect === 'none') {
-                resolve(null);
                 return;
               }
               const timer = setTimeout(() => {
@@ -438,8 +455,8 @@ class ZAxisSerialService extends EventEmitter {
     );
   }
 
-  /** Run a reply-expecting command and map the outcome to a ZCommandResult. */
-  private async runCommand(built: ZBuiltCommand, lastAction: string): Promise<ZCommandResult> {
+  /** Run a reply-gated command and map the outcome to a ZCommandResult. */
+  private async runCommand(built: ZBuiltCommand, action: string): Promise<ZCommandResult> {
     const commandId = this.nextCommandId();
     if (!this.connected) {
       this.lastError = 'XYZ_Z_NOT_CONNECTED';
@@ -449,14 +466,13 @@ class ZAxisSerialService extends EventEmitter {
       const reply = await this.transmit(commandId, built);
       this.lastError = null;
       // eslint-disable-next-line no-console
-      console.log(`[z-ack] commandId=${commandId} action=${JSON.stringify(lastAction)} status=confirmed reply=${JSON.stringify(reply?.raw ?? null)}`);
-      const status = reply && reply.kind === 'status' ? reply.token : undefined;
-      return { ok: true, reply: reply?.raw, status, commandId };
+      console.log(`[z-confirm] commandId=${commandId} action=${JSON.stringify(action)} reply=${JSON.stringify(reply)}`);
+      return { ok: true, reply, commandId };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       this.lastError = error;
       // eslint-disable-next-line no-console
-      console.error(`[z-error] commandId=${commandId} action=${JSON.stringify(lastAction)} error=${JSON.stringify(error)}`);
+      console.error(`[z-error] commandId=${commandId} action=${JSON.stringify(action)} error=${JSON.stringify(error)}`);
       return { ok: false, error, commandId };
     }
   }
@@ -464,40 +480,68 @@ class ZAxisSerialService extends EventEmitter {
   // --- Public Z command surface ----------------------------------------------
 
   async lock(): Promise<ZCommandResult> {
-    const result = await this.runCommand(buildLockZCommand(), 'Z lock (#LK#).');
-    if (result.ok) this.locked = true; // confirmed only by the OK_LK ACK
+    const result = await this.runCommand(buildZLockCommand(), 'Z lock (#LK#).');
+    // Lock is a DRIVER-STATE command, NOT motion: on the real OK_LK it sets
+    // locked=true and asserts a known-idle state (no jog loop, moving=false). It
+    // must never leave a stale moving=true that would block the next step move.
+    if (result.ok) this.applyDriverState(true);
     return result;
   }
 
   async unlock(): Promise<ZCommandResult> {
-    const result = await this.runCommand(buildUnlockZCommand(), 'Z unlock (#LS#).');
-    if (result.ok) this.locked = false; // confirmed only by the OK_LS ACK
+    const result = await this.runCommand(buildZLoosenCommand(), 'Z loosen (#LS#).');
+    if (result.ok) this.applyDriverState(false);
     return result;
+  }
+
+  /**
+   * Apply a CONFIRMED lock/loosen (driver-state, not motion). Sets `locked` and
+   * forces a known-idle state — cancels any running jog loop/watchdog and clears
+   * `moving`/`jogActive`. This is bookkeeping for a driver handshake, not a faked
+   * motion result: it runs ONLY after the real OK_LK / OK_LS reply.
+   */
+  private applyDriverState(locked: boolean): void {
+    this.clearJogTimer();
+    this.clearJogWatchdog();
+    this.jogActive = false;
+    this.locked = locked;
+    this.moving = false;
+    // eslint-disable-next-line no-console
+    console.log(`[z-state] locked=${locked} moving=false jogActive=false`);
   }
 
   /** Set Z final speed. `registerValue` is the controller speed register units. */
   async setSpeed(registerValue: number): Promise<ZCommandResult> {
-    return this.runCommand(buildSetZSpeedCommand(registerValue), `Z set speed #VZ${registerValue}#.`);
+    return this.runCommand(buildZSetSpeedCommand(registerValue), `Z set speed #VZ ${registerValue}#.`);
   }
 
   /**
-   * Single relative step. `sign` is the PHYSICAL direction (already reverse-
-   * resolved by the caller); `pulses` is the magnitude. RX-gated on a status
-   * reply — position/state changes only from a real RX.
+   * Single relative step (#+Z n# / #-Z n#). `sign` is the PHYSICAL direction
+   * (already reverse-resolved by the caller); `pulses` is the magnitude. Gated on
+   * the >Z: reply — state changes only from a real RX.
    */
   async moveStep(sign: '+' | '-', pulses: number): Promise<ZCommandResult> {
+    // BUSY only on REAL motion/jog state — NEVER on lock/loosen state.
     if (this.jogActive || this.moving) {
       return { ok: false, error: 'XYZ_Z_BUSY', commandId: this.nextCommandId() };
     }
-    return this.runCommand(buildMoveZCommand(sign, pulses), `Z step ${sign}${pulses}.`);
+    // `moving` is owned by the step lifecycle: true while the command is in
+    // flight, cleared after the real >Z: reply (or on failure) via finally.
+    this.setMoving(true);
+    try {
+      return await this.runCommand(buildZMoveCommand(sign, pulses), `Z step ${sign}Z ${pulses}.`);
+    } finally {
+      this.setMoving(false);
+    }
   }
 
   /**
-   * Start a continuous press-and-hold jog. The jog command (#+S#/#-S#) is sent
-   * FIRE-AND-FORGET (no reply); `moving` is set true ONLY after the OS accepts the
-   * TX. A safety watchdog fires stopJog if the release is missed.
+   * Start a continuous press-and-hold jog. Sends the jog frame (#+S#/#-S#) and
+   * waits for the real SOK; only then is `moving` set true and the 150 ms repeat
+   * loop scheduled. A safety watchdog fires stopJog if the release is missed.
    */
-  async startJog(sign: '+' | '-'): Promise<ZCommandResult> {
+  async startJog(sign: '+' | '-', stopPayload?: string): Promise<ZCommandResult> {
+    if (typeof stopPayload === 'string' && stopPayload.length > 0) this.stopPayload = stopPayload;
     if (!this.connected) {
       this.lastError = 'XYZ_Z_NOT_CONNECTED';
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId: this.nextCommandId() };
@@ -506,100 +550,114 @@ class ZAxisSerialService extends EventEmitter {
       // One jog at a time — ignore a repeated press.
       return { ok: true, commandId: this.nextCommandId() };
     }
-    const commandId = this.nextCommandId();
-    try {
-      await this.transmit(commandId, buildJogZCommand(sign));
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      this.lastError = error;
-      // eslint-disable-next-line no-console
-      console.error(`[z-error] commandId=${commandId} action=startJog error=${JSON.stringify(error)}`);
-      return { ok: false, error, commandId };
-    }
+    const built = buildZJogCommand(sign);
     this.jogActive = true;
-    this.jogSign = sign;
-    this.moving = true;
-    this.lastError = null;
-    this.armJogWatchdog();
     // eslint-disable-next-line no-console
-    console.log(`[z-status] action=jog-start sign=${sign} commandId=${commandId} moving=true`);
-    return { ok: true, commandId };
+    console.log(`[z-jog-start] sign=${sign} visible=${JSON.stringify(built.visible)} repeatMs=${this.jogRepeatMs}`);
+    const first = await this.runCommand(built, `Z jog start ${built.visible}.`);
+    if (!first.ok) {
+      this.jogActive = false;
+      // eslint-disable-next-line no-console
+      console.error(`[z-jog-start] result=failed error=${JSON.stringify(first.error)}`);
+      return first;
+    }
+    this.setMoving(true);
+    this.armJogWatchdog();
+    this.scheduleJogTick(built);
+    return first;
+  }
+
+  private scheduleJogTick(built: ZBuiltCommand): void {
+    this.clearJogTimer();
+    this.jogTimer = setTimeout(() => {
+      void this.jogTick(built);
+    }, this.jogRepeatMs);
+  }
+
+  private async jogTick(built: ZBuiltCommand): Promise<void> {
+    if (!this.jogActive) return;
+    // eslint-disable-next-line no-console
+    console.log(`[z-jog-tick] visible=${JSON.stringify(built.visible)}`);
+    const result = await this.runCommand(built, `Z jog tick ${built.visible}.`);
+    if (!this.jogActive) return; // stopped while this tick was in flight
+    if (!result.ok) {
+      // A tick did not get its SOK — stop safely rather than keep firing blind.
+      // eslint-disable-next-line no-console
+      console.error(`[z-jog-tick] result=failed error=${JSON.stringify(result.error)} note=auto-stop`);
+      void this.stopJog();
+      return;
+    }
+    this.scheduleJogTick(built);
   }
 
   /**
-   * Stop a press-and-hold jog. CONSERVATIVE: poll status (#sss#), perform the
-   * configured stop action, then poll again to read the resulting status. `moving`
-   * is set from the REAL final status — STOP/IDLE clears it; if the controller
-   * still reports motion (UP/DOWN) or never answers, we keep moving=true and
-   * surface an honest "stop not confirmed" rather than faking success.
+   * Stop a press-and-hold jog. Cancels the repeat loop IMMEDIATELY, then sends the
+   * high-priority stop frame #SSS# and waits for the real UP reply. `moving` is
+   * cleared ONLY on that UP — if the controller never confirms, we surface the
+   * failure honestly rather than faking a stop.
    */
-  async stopJog(): Promise<ZCommandResult> {
+  async stopJog(stopPayload?: string): Promise<ZCommandResult> {
+    if (typeof stopPayload === 'string' && stopPayload.length > 0) this.stopPayload = stopPayload;
     const commandId = this.nextCommandId();
+    const wasJogging = this.jogActive;
+    // Stop the loop from scheduling further frames before anything else.
+    this.jogActive = false;
+    this.clearJogTimer();
+    this.clearJogWatchdog();
     if (!this.connected) {
-      this.clearJogWatchdog();
-      this.jogActive = false;
-      this.jogSign = null;
-      this.moving = false;
+      this.setMoving(false);
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId };
     }
-    this.clearJogWatchdog();
-    const sign = this.jogSign;
+    const built = buildZStopCommand(this.stopPayload);
     // eslint-disable-next-line no-console
-    console.log(`[z-status] action=jog-stop strategy=${Z_JOG_STOP_STRATEGY} sign=${sign ?? 'none'} commandId=${commandId}`);
-
-    // 1) Poll current status (diagnostic — what is the controller doing now?).
-    const pollBefore = await this.runCommand(buildPollZStatusCommand(), 'Z stop: poll status (before).');
-
-    // 2) Perform the stop action.
-    if (Z_JOG_STOP_STRATEGY === 'toggle' && sign) {
-      // eslint-disable-next-line no-console
-      console.log(`[z-tx] action=jog-stop-toggle resend=#${sign}S#`);
-      try {
-        await this.transmit(this.nextCommandId(), buildJogZCommand(sign));
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[z-error] action=jog-stop-toggle error=${JSON.stringify(err instanceof Error ? err.message : String(err))}`);
-      }
+    console.log(`[z-jog-stop] wasJogging=${wasJogging} send=${JSON.stringify(built.visible)}`);
+    const result = await this.runCommand(built, `Z stop (${built.visible}).`);
+    if (result.ok) {
+      this.setMoving(false); // idle confirmed by the real UP reply
+      return result;
     }
-
-    // 3) Poll again to read the resulting status.
-    const pollAfter = await this.runCommand(buildPollZStatusCommand(), 'Z stop: poll status (after).');
-
-    this.jogActive = false;
-    this.jogSign = null;
-
-    const finalStatus = pollAfter.ok ? pollAfter.status : undefined;
-    const stopped = finalStatus === 'STOP' || finalStatus === 'IDLE';
-    // Reflect REAL status only: STOP/IDLE → stopped; UP/DOWN → still moving;
-    // unknown/no-reply → leave `moving` as-is (we honestly don't know).
-    if (stopped) this.moving = false;
-    else if (finalStatus === 'UP' || finalStatus === 'DOWN') this.moving = true;
-
-    if (stopped) {
+    // A real PLC ERROR is a DEFINITIVE response, NOT a hang. Clear the software jog
+    // state immediately so the next step move isn't blocked, and surface the PLC
+    // error honestly. We do NOT keep waiting for a UP that will never arrive.
+    if (result.error === 'Z_STAGE_PROTOCOL_ERROR') {
+      this.setMoving(false);
+      this.jogActive = false;
+      this.lastError = 'Z stop returned ERROR from PLC';
       // eslint-disable-next-line no-console
-      console.log(`[z-status] action=jog-stop result=confirmed-stopped status=${finalStatus} commandId=${commandId}`);
-      this.lastError = null;
-      return { ok: true, status: finalStatus, commandId };
+      console.warn(`[z-jog-stop] result=plc-error cleared=moving,jogActive lastError=${JSON.stringify(this.lastError)} commandId=${commandId}`);
+      return { ok: false, error: 'Z_STOP_PLC_ERROR', message: this.lastError, commandId };
     }
-    // Not confirmed: do not pretend success. Surface honestly; diagnostics above
-    // show poll-before/after so the real stop behaviour can be identified.
-    const message = 'Z jog stop not confirmed by status reply';
-    this.lastError = message;
-    // eslint-disable-next-line no-console
-    console.warn(`[z-status] action=jog-stop result=unconfirmed before=${JSON.stringify(pollBefore.ok ? pollBefore.status ?? pollBefore.reply : pollBefore.error)} after=${JSON.stringify(pollAfter.ok ? pollAfter.status ?? pollAfter.reply : pollAfter.error)} moving=${this.moving} commandId=${commandId}`);
-    return { ok: false, error: 'XYZ_Z_STOP_UNCONFIRMED', message, commandId };
+    // Timeout / write error: genuinely unknown — surface honestly, leave moving.
+    return result;
+  }
+
+  /**
+   * Probe candidate stop payloads (#SSS#, #S#, #STOP#, #ST#, #UP#) and report the
+   * raw RX for each — used to discover the real stop command on hardware when the
+   * configured stop is rejected with ERROR. Each probe accepts ANY reply, so an
+   * ERROR is reported (not retried) and nothing hangs.
+   */
+  async diagnoseStop(): Promise<ZProbeResult[]> {
+    const results: ZProbeResult[] = [];
+    for (const payload of Z_STOP_PROBE_CANDIDATES) {
+      // eslint-disable-next-line no-console
+      console.log(`[z-stop-probe] candidate=${JSON.stringify(payload)}`);
+      results.push(await this.probe(payload));
+    }
+    return results;
   }
 
   async pollStatus(): Promise<ZCommandResult> {
-    const result = await this.runCommand(buildPollZStatusCommand(), 'Z poll status (#sss#).');
-    return result;
+    // Diagnostic only — #sss# is NOT one of the verified motion commands.
+    return this.runCommand(buildPollZStatusCommand(), 'Z poll status (#sss#).');
   }
 
   private armJogWatchdog(): void {
     this.clearJogWatchdog();
     this.jogWatchdog = setTimeout(() => {
+      this.jogWatchdog = null;
       // eslint-disable-next-line no-console
-      console.warn(`[z-status] action=jog-watchdog fired afterMs=${Z_JOG_WATCHDOG_MS} note=auto-stop`);
+      console.warn(`[z-jog-stop] action=jog-watchdog fired afterMs=${Z_JOG_WATCHDOG_MS} note=auto-stop`);
       void this.stopJog();
     }, Z_JOG_WATCHDOG_MS);
   }
@@ -611,12 +669,49 @@ class ZAxisSerialService extends EventEmitter {
     }
   }
 
+  private clearJogTimer(): void {
+    if (this.jogTimer) {
+      clearTimeout(this.jogTimer);
+      this.jogTimer = null;
+    }
+  }
+
+  // --- Manual probe ----------------------------------------------------------
+
+  /**
+   * Manual Z probe (window.xyzPlatform.probeZ). Wraps the operator-supplied
+   * payload as "#payload#" and reports whatever line (if any) the controller
+   * sends back. e.g. probe('LK') → #LK#, probe('+Z 15') → #+Z 15#. Accepts ANY
+   * reply line — it never asserts success, it just shows the RX.
+   */
+  async probe(payload: string): Promise<ZProbeResult> {
+    const built = buildZProbeCommand(payload);
+    if (!this.connected || !this.portName) {
+      // eslint-disable-next-line no-console
+      console.error(`[z-error] action=probe error=${JSON.stringify('XYZ_Z_NOT_CONNECTED')} tx=${JSON.stringify(built.visible)}`);
+      return { label: built.visible, tx: built.visible, rx: null, classification: null, error: 'XYZ_Z_NOT_CONNECTED' };
+    }
+    const commandId = this.nextCommandId();
+    try {
+      const reply = await this.transmit(commandId, built);
+      return {
+        label: built.visible,
+        tx: built.visible,
+        rx: reply,
+        classification: reply ? classifyZLine(reply) : null,
+      };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      return { label: built.visible, tx: built.visible, rx: null, classification: null, error };
+    }
+  }
+
   // --- Diagnostics -----------------------------------------------------------
 
   /**
-   * Send the legacy Z command sequence and report exactly what (if anything) the
+   * Send the Z command sequence and report exactly what (if anything) the
    * controller replies with. By default sends only the non-continuous commands
-   * (#LK#, #LS#, #VZ#, #+Z 15#, #-Z 15#, #sss#); the continuous jog probes
+   * (#LK#, #LS#, #VZ <r>#, #+Z 15#, #-Z 15#, #SSS#); the continuous jog probes
    * (#+S#/#-S#) run ONLY when includeJog is explicitly true (they cause motion).
    */
   async diagnose(opts?: { includeJog?: boolean; speedRegisterValue?: number }): Promise<ZDiagnoseResult> {
@@ -628,19 +723,19 @@ class ZAxisSerialService extends EventEmitter {
     }
     const speedValue = opts?.speedRegisterValue ?? 1000;
     const sequence: ZBuiltCommand[] = [
-      buildLockZCommand(),
-      buildUnlockZCommand(),
-      buildSetZSpeedCommand(speedValue),
-      buildMoveZCommand('+', 15),
-      buildMoveZCommand('-', 15),
-      buildPollZStatusCommand(),
+      buildZLockCommand(),
+      buildZLoosenCommand(),
+      buildZSetSpeedCommand(speedValue),
+      buildZMoveCommand('+', 15),
+      buildZMoveCommand('-', 15),
+      buildZStopCommand(),
     ];
     if (opts?.includeJog) {
-      sequence.push(buildJogZCommand('+'), buildJogZCommand('-'));
+      sequence.push(buildZJogCommand('+'), buildZJogCommand('-'));
     }
 
     // eslint-disable-next-line no-console
-    console.log(`[z-status] action=diagnose port=${this.portName} baudRate=${this.baudRate} includeJog=${!!opts?.includeJog}`);
+    console.log(`[z-state] action=diagnose port=${this.portName} baudRate=${this.baudRate} includeJog=${!!opts?.includeJog}`);
 
     const probes: ZProbeResult[] = [];
     for (const built of sequence) {
@@ -650,8 +745,8 @@ class ZAxisSerialService extends EventEmitter {
         probes.push({
           label: built.visible,
           tx: built.visible,
-          rx: reply?.raw ?? (built.expect === 'none' ? '(no reply expected)' : null),
-          classification: reply?.kind ?? null,
+          rx: reply,
+          classification: reply ? classifyZLine(reply) : null,
         });
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
@@ -659,12 +754,12 @@ class ZAxisSerialService extends EventEmitter {
       }
     }
 
-    const anyRx = probes.some((p) => p.rx !== null && p.rx !== '(no reply expected)');
+    const anyRx = probes.some((p) => p.rx !== null);
     const summary = anyRx
-      ? `Z controller answered on ${this.portName} @ ${this.baudRate} 8N1. Inspect each probe's rx/classification to confirm the legacy command mapping.`
-      : `No RX from Z controller on ${this.portName} @ ${this.baudRate} 8N1. Likely wrong port, wrong baud/framing, or the legacy command set differs. Check [z-rx-raw] lines.`;
+      ? `Z controller answered on ${this.portName} @ ${this.baudRate} 8N1. Inspect each probe's rx/classification.`
+      : `No RX from Z controller on ${this.portName} @ ${this.baudRate} 8N1. Likely wrong port or wrong baud/framing. Check [z-rx-raw] lines.`;
     // eslint-disable-next-line no-console
-    console.log(`[z-status] action=diagnose-summary anyRx=${anyRx} result=${JSON.stringify(summary)}`);
+    console.log(`[z-state] action=diagnose-summary anyRx=${anyRx} result=${JSON.stringify(summary)}`);
     return { ok: true, port: this.portName, baudRate: this.baudRate, anyRx, probes, summary };
   }
 }

@@ -710,6 +710,29 @@ function registerIpc() {
     return machineBackendRequest('/api/xyz-platform/poll-z-status', { method: 'POST', body: {} });
   });
 
+  ipcMain.handle('xyz-platform:probe-z', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    // PROBE MODE: the payload is the inner Z frame text (sent as "#payload#").
+    // Renderer input is untrusted — require a non-empty string, bound the length.
+    const payloadText = payload && typeof payload.payload === 'string' ? payload.payload : '';
+    if (payloadText.length === 0) {
+      return { label: '', tx: '', rx: null, classification: null, error: 'XYZ_Z_PROBE_EMPTY' };
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=probeZ payload=${JSON.stringify(payloadText)}`);
+    return machineBackendRequest('/api/xyz-platform/probe-z', {
+      method: 'POST',
+      body: { payload: payloadText },
+    });
+  });
+
+  ipcMain.handle('xyz-platform:diagnose-stop-z', async () => {
+    startXyzPlatformEventBridge();
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ipc] method=diagnoseStopZ');
+    return machineBackendRequest('/api/xyz-platform/diagnose-stop-z', { method: 'POST', body: {} });
+  });
+
   ipcMain.handle('xyz-platform:diagnose-z', async (_e, payload) => {
     startXyzPlatformEventBridge();
     const body = {};
@@ -784,22 +807,14 @@ function registerIpc() {
     return machineBackendRequest('/api/xyz-platform/position');
   });
 
-  ipcMain.handle('xyz-platform:move-center', async (_e, payload) => {
+  ipcMain.handle('xyz-platform:move-center', async () => {
     startXyzPlatformEventBridge();
-    const homeBeforeRelocation = !!(payload && payload.homeBeforeRelocation);
-    return machineBackendRequest('/api/xyz-platform/move-center', {
-      method: 'POST',
-      body: { homeBeforeRelocation },
-    });
+    return machineBackendRequest('/api/xyz-platform/move-center', { method: 'POST', body: {} });
   });
 
-  ipcMain.handle('xyz-platform:locate-center', async (_e, payload) => {
+  ipcMain.handle('xyz-platform:locate-center', async () => {
     startXyzPlatformEventBridge();
-    const homeBeforeRelocation = !!(payload && payload.homeBeforeRelocation);
-    return machineBackendRequest('/api/xyz-platform/locate-center', {
-      method: 'POST',
-      body: { homeBeforeRelocation },
-    });
+    return machineBackendRequest('/api/xyz-platform/locate-center', { method: 'POST', body: {} });
   });
 
   ipcMain.handle('xyz-platform:set-center', async () => {
