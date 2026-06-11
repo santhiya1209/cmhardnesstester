@@ -61,6 +61,16 @@ export const MoveZSchema = z.object({
 });
 export type MoveZInput = z.infer<typeof MoveZSchema>;
 
+// Absolute point move for Multipoint pattern execution. x/y are mm OFFSETS from
+// the taught optical center (the service converts mm→pulses and computes the
+// relative delta). Finite numbers only — no fabricated/NaN coordinate reaches
+// the relocation engine.
+export const MoveToPointSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+export type MoveToPointInput = z.infer<typeof MoveToPointSchema>;
+
 // Z-axis connect: operator-selected zPortName from Serial Port Setting — NEVER a
 // hardcoded/fallback COM. Baud defaults to the legacy 57600 in the service.
 export const ConnectZSchema = z.object({

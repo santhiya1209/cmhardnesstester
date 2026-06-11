@@ -113,6 +113,10 @@ export const xyzMoveStage = (direction: XyzDirection): Promise<XyzCommandResult>
 export const xyzMoveStep = (direction: XyzDirection): Promise<XyzCommandResult> =>
   bridge()?.moveStep(direction) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
+/** Absolute point move: x/y are mm offsets from the taught optical center, RX-gated. */
+export const xyzMoveToPoint = (x: number, y: number): Promise<XyzCommandResult> =>
+  bridge()?.moveToPoint(x, y) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
 export const xyzStopStage = (): Promise<XyzCommandResult> =>
   bridge()?.stopStage() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 

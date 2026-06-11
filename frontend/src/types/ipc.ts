@@ -266,6 +266,10 @@ export type IpcInvokeMap = {
     request: { direction: XyzDirection };
     response: XyzCommandResult;
   };
+  'xyz-platform:move-to-point': {
+    request: { x: number; y: number };
+    response: XyzCommandResult;
+  };
   'xyz-platform:stop-stage': { request: void; response: XyzCommandResult };
   'xyz-platform:move-z': {
     request: { direction: ZDirection; speed: ZSpeed };
@@ -342,6 +346,8 @@ export interface XyzPlatformApi {
   moveStage(direction: XyzDirection): Promise<XyzCommandResult>;
   /** Quick tap: move exactly the configured per-tier step distance once (RX-gated). */
   moveStep(direction: XyzDirection): Promise<XyzCommandResult>;
+  /** Absolute point move: x/y are mm offsets from the taught optical center (RX-gated). */
+  moveToPoint(x: number, y: number): Promise<XyzCommandResult>;
   stopStage(): Promise<XyzCommandResult>;
   /** Quick-tap Z step (one configured stepDistanceMm, RX-gated). */
   moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;

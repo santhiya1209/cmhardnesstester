@@ -12,6 +12,7 @@ import {
   ManualProbeSchema,
   MoveStageSchema,
   MoveStepSchema,
+  MoveToPointSchema,
   MoveZSchema,
   ProbeZSchema,
   SetFocusModeSchema,
@@ -71,6 +72,15 @@ export async function moveStep(req: Request, res: Response): Promise<void> {
 
 export async function stopStage(_req: Request, res: Response): Promise<void> {
   sendResult(res, await xyzPlatformSerialService.stopStage());
+}
+
+export async function moveStageToPoint(req: Request, res: Response): Promise<void> {
+  const parsed = MoveToPointSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.moveToPoint(parsed.data.x, parsed.data.y));
 }
 
 export async function moveZ(req: Request, res: Response): Promise<void> {

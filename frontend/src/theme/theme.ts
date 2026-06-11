@@ -66,6 +66,11 @@ export const tokens = {
     autoMeasureLine: '#FFFF00',
     d1d2MeasureLine: '#800080',
     measureAngleLine: '#E040FB',
+    // Multipoint pattern overlay (live stage position + generated points).
+    patternPoint: '#0EA5E9',
+    patternPointSelected: '#FFC107',
+    patternPointActive: '#69F0AE',
+    livePosition: '#FF5252',
   },
 } as const;
 

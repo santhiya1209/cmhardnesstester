@@ -22,6 +22,14 @@ const NullableFiniteNumberSchema = z.number().finite().nullable();
 const NullableNonNegativeNumberSchema = z.number().finite().nonnegative().nullable();
 const NullableNonNegativeIntegerSchema = z.number().int().nonnegative().nullable();
 
+// A captured / entered coordinate pair, persisted verbatim for Free and
+// Vertical-Line-Free modes so the point list round-trips exactly.
+export const FreePointSchema = z.object({
+  id: z.string().min(1),
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+
 export const PatternProgramPayloadSchema = z.object({
   pattern: PatternSchema,
   mode: PatternModeSchema,
@@ -31,6 +39,19 @@ export const PatternProgramPayloadSchema = z.object({
   offset: NullableNonNegativeNumberSchema,
   firstOffset: NullableNonNegativeNumberSchema,
   number: NullableNonNegativeIntegerSchema,
+  // Per-mode generation inputs — persisted so every PatternMode reconstructs
+  // its exact geometry on Load (see the per-mode audit in useMultipoint).
+  intervalY: NullableNonNegativeNumberSchema,
+  rows: NullableNonNegativeIntegerSchema,
+  columns: NullableNonNegativeIntegerSchema,
+  refX2: NullableFiniteNumberSchema,
+  refY2: NullableFiniteNumberSchema,
+  radius: NullableNonNegativeNumberSchema,
+  freePoints: z.array(FreePointSchema),
+  // Case Depth inputs — persisted so the traverse round-trips on Load. Range
+  // checks (angle 0–360 etc.) live in utils/patternGeneration.ts, not here.
+  referencePoints: z.array(FreePointSchema),
+  angle: NullableFiniteNumberSchema,
   multiset: z.boolean(),
   focusAll: z.boolean(),
   impressMode: ImpressModeSchema,

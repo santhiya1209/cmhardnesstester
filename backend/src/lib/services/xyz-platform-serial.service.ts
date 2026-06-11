@@ -237,6 +237,10 @@ function friendlyXyzMessage(code: string): string {
       return 'Lock the X/Y stage before moving.';
     case 'XYZ_STAGE_NO_POSITION':
       return 'Cannot read the stage position. Check connection and try again.';
+    case 'XYZ_STAGE_NO_CENTER':
+      return 'Set the optical center (Set Center) before running a pattern.';
+    case 'XYZ_STAGE_INVALID_TARGET':
+      return 'The target point is invalid.';
     case 'XYZ_STAGE_HOME_TIMEOUT':
       return 'Homing did not complete. Check the stage and try again.';
     case 'Z Axis port not configured':
@@ -1980,6 +1984,84 @@ class XyzPlatformSerialService extends EventEmitter {
 
   getPosition(): Promise<XyzCommandResult> {
     return this.runCommand('getPosition', () => buildGetPositionCommand(), 'Query position.');
+  }
+
+  /**
+   * Move to an absolute target derived from the operator-taught OPTICAL CENTER:
+   * target(pulses) = center + (offsetMm * pulsePerMm). Reuses the SAME relative-
+   * delta relocation engine (getPosition → buildRelocationMoveCommand → RX-gated
+   * runCommand → re-read) as ⊕ Center / Relocation — NO new serial protocol, NO
+   * optimistic update, NO fabricated coordinate. Requires connection, servo lock,
+   * and a taught center; fails honestly otherwise. Used by Multipoint pattern
+   * execution: each generated point is an mm offset from the optical center.
+   */
+  async moveToPoint(offsetXmm: number, offsetYmm: number): Promise<XyzCommandResult> {
+    const commandId = this.nextCommandId();
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-move-to-point-start] commandId=${commandId} offsetXmm=${offsetXmm} offsetYmm=${offsetYmm}`);
+    if (!this.state.connected) {
+      this.setState({ lastError: 'XYZ_STAGE_NOT_CONNECTED' });
+      return { ok: false, error: 'XYZ_STAGE_NOT_CONNECTED', message: friendlyXyzMessage('XYZ_STAGE_NOT_CONNECTED'), commandId };
+    }
+    if (!this.state.xyLocked) {
+      this.setState({ lastError: 'XYZ_STAGE_XY_UNLOCKED' });
+      return { ok: false, error: 'XYZ_STAGE_XY_UNLOCKED', message: friendlyXyzMessage('XYZ_STAGE_XY_UNLOCKED'), commandId };
+    }
+    if (this.centerX === null || this.centerY === null) {
+      this.setState({ lastError: 'XYZ_STAGE_NO_CENTER' });
+      return { ok: false, error: 'XYZ_STAGE_NO_CENTER', message: friendlyXyzMessage('XYZ_STAGE_NO_CENTER'), commandId };
+    }
+    if (!Number.isFinite(offsetXmm) || !Number.isFinite(offsetYmm)) {
+      this.setState({ lastError: 'XYZ_STAGE_INVALID_TARGET' });
+      return { ok: false, error: 'XYZ_STAGE_INVALID_TARGET', message: friendlyXyzMessage('XYZ_STAGE_INVALID_TARGET'), commandId };
+    }
+
+    // TARGET = taught optical center + offset, converted with the active pulsePerMm.
+    const settings = await this.loadActiveSettings();
+    const targetX = Math.round(this.centerX + offsetXmm * settings.pulsePerMm);
+    const targetY = Math.round(this.centerY + offsetYmm * settings.pulsePerMm);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-move-to-point-target] commandId=${commandId} centerX=${this.centerX} centerY=${this.centerY} pulsePerMm=${settings.pulsePerMm} targetX=${targetX} targetY=${targetY}`);
+
+    // Relative moves need the current absolute position to compute the delta.
+    const before = await this.getPosition();
+    if (!before.ok) return before;
+    if (!before.position) {
+      this.setState({ lastError: 'XYZ_STAGE_NO_POSITION' });
+      return { ok: false, error: 'XYZ_STAGE_NO_POSITION', message: friendlyXyzMessage('XYZ_STAGE_NO_POSITION'), commandId };
+    }
+    const dx = targetX - before.position.x;
+    const dy = targetY - before.position.y;
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-move-to-point-delta] commandId=${commandId} currentX=${before.position.x} currentY=${before.position.y} dx=${dx} dy=${dy}`);
+    if (dx === 0 && dy === 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-to-point-arrived] commandId=${commandId} note=already-there x=${before.position.x} y=${before.position.y}`);
+      return before;
+    }
+
+    const moved = await this.runCommand(
+      'moveToPoint',
+      () => {
+        const cmd = buildRelocationMoveCommand(dx, dy);
+        if (!cmd) throw new Error('XYZ_RELOCATION_NO_DELTA');
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-move-to-point-command] commandId=${commandId} key=${cmd.key} visible=${JSON.stringify(cmd.visible)} dx=${dx} dy=${dy}`);
+        return cmd;
+      },
+      `Move to point (dx ${dx}, dy ${dy}).`,
+      false,
+      MOVE_TIMEOUT_MS
+    );
+    if (!moved.ok) return moved;
+
+    const after = await this.getPosition();
+    if (after.ok && after.position) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-to-point-arrived] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
+      return after;
+    }
+    return moved;
   }
 
   // Both buttons move to the FIXED geometric/physical center from settings

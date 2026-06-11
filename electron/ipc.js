@@ -640,6 +640,21 @@ function registerIpc() {
     return machineBackendRequest('/api/xyz-platform/stop-stage', { method: 'POST', body: {} });
   });
 
+  // Absolute point move (Multipoint execution). x/y are mm offsets from the taught
+  // optical center; renderer input is untrusted so require finite numbers before
+  // forwarding to the zod-validated controller.
+  ipcMain.handle('xyz-platform:move-to-point', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const x = Number(payload && payload.x);
+    const y = Number(payload && payload.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return { ok: false, error: 'XYZ_INVALID_TARGET', message: 'move-to-point requires finite x and y' };
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=moveToPoint x=${x} y=${y}`);
+    return machineBackendRequest('/api/xyz-platform/move-to-point', { method: 'POST', body: { x, y } });
+  });
+
   ipcMain.handle('xyz-platform:move-z', async (_e, payload) => {
     startXyzPlatformEventBridge();
     const body = validateXyzZMovePayload(payload);

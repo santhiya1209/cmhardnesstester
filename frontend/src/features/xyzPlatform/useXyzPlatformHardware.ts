@@ -12,6 +12,7 @@ import {
   xyzMoveStage,
   xyzMoveStep,
   xyzMoveToCenter,
+  xyzMoveToPoint,
   xyzMoveZ,
   xyzPollZStatus,
   xyzSetCenter,
@@ -173,6 +174,9 @@ export function useXyzPlatformHardware() {
   const setZSpeed = useCallback((speed: ZSpeed) => run(() => xyzSetZSpeed(speed)), [run]);
   const getPosition = useCallback(() => run(() => xyzGetPosition()), [run]);
   const moveToCenter = useCallback(() => run(() => xyzMoveToCenter()), [run]);
+  // Absolute point move (Multipoint execution): x/y are mm offsets from the taught
+  // optical center. RX-gated by the backend relocation engine — no optimistic update.
+  const moveToPoint = useCallback((x: number, y: number) => run(() => xyzMoveToPoint(x, y)), [run]);
   const locateCenter = useCallback(() => run(() => xyzLocateCenter()), [run]);
   const setCenter = useCallback(() => run(() => xyzSetCenter()), [run]);
   const home = useCallback(() => run(() => xyzHome()), [run]);
@@ -201,6 +205,7 @@ export function useXyzPlatformHardware() {
     setZSpeed,
     getPosition,
     moveToCenter,
+    moveToPoint,
     locateCenter,
     setCenter,
     home,

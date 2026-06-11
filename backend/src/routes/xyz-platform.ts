@@ -15,6 +15,7 @@ import {
   lockZ,
   moveStage,
   moveStageToCenter,
+  moveStageToPoint,
   moveStep,
   moveZ,
   pollZStatus,
@@ -53,6 +54,7 @@ router.post('/probe', probeStage);
 router.post('/disconnect', disconnectStage);
 router.post('/move-stage', moveStage);
 router.post('/move-step', moveStep);
+router.post('/move-to-point', moveStageToPoint);
 router.post('/stop-stage', stopStage);
 router.post('/move-z', moveZ);
 router.post('/stop-z', stopZ);

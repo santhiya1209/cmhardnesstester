@@ -20,6 +20,7 @@ import ImageOverlay from '@/component/own/ImageOverlay';
 import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
 import MagnifierLens from '@/component/own/MagnifierLens';
 import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
+import PatternOverlay from '@/component/own/PatternOverlay';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { CameraPixelFormat } from '@/types/camera';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
@@ -798,6 +799,7 @@ function CameraWindowImpl(
           onMeasurementUpdated={onManualMeasurementUpdated}
           strokeWidth={lineStrokeWidth}
         />
+        <PatternOverlay imageSize={imageSize} umPerPixel={umPerPixel} />
         {magnifierEnabled ? (
           <MagnifierLens
             source={frozen ? freezeCanvasRef.current : canvasRef.current}

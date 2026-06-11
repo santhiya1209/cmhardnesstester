@@ -156,14 +156,7 @@ function renderTab(
       );
     case 1: return <XYZPlatformTab />;
     case 2:
-      return (
-        <MultipointTab
-          patternPrograms={patternPrograms}
-          patternProgramsError={patternProgramsError}
-          patternProgramsLoading={patternProgramsLoading}
-          refetchPatternPrograms={refetchPatternPrograms}
-        />
-      );
+      return <MultipointTab />;
     case 3:
       return (
         <PatternListTab
