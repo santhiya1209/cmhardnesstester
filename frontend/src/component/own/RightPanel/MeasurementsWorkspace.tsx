@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -131,16 +131,6 @@ function MeasurementsWorkspaceImpl({
 
   useEffect(() => {
   }, []);
-
-  const lastSeenMeasurementIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    const latest = measurements[0];
-    if (!latest) return;
-    if (lastSeenMeasurementIdRef.current === latest.id) return;
-    lastSeenMeasurementIdRef.current = latest.id;
-    if (typeof latest.hv === 'number' && Number.isFinite(latest.hv)) {
-    }
-  }, [measurements]);
 
   const selectedMeasurement = useMemo(
     () => measurements.find((measurement) => measurement.id === selectedMeasurementId) ?? null,

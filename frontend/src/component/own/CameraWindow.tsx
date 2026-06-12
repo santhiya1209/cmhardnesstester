@@ -799,7 +799,11 @@ function CameraWindowImpl(
           onMeasurementUpdated={onManualMeasurementUpdated}
           strokeWidth={lineStrokeWidth}
         />
-        <PatternOverlay imageSize={imageSize} umPerPixel={umPerPixel} />
+        <PatternOverlay
+          imageSize={imageSize}
+          umPerPixel={umPerPixel}
+          active={activeTool !== 'manualMeasure'}
+        />
         {magnifierEnabled ? (
           <MagnifierLens
             source={frozen ? freezeCanvasRef.current : canvasRef.current}

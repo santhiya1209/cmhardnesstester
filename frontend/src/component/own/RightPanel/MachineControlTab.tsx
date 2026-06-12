@@ -786,6 +786,7 @@ function MachineControlTabImpl({
   }, []);
 
   const handleIndentClick = useCallback(() => {
+    console.log('[IMPRESS] button clicked / handler fired'); // [IMPRESS-DIAG] temporary
     if (impressAutoCloseTimerRef.current !== null) {
       clearTimeout(impressAutoCloseTimerRef.current);
       impressAutoCloseTimerRef.current = null;
@@ -886,6 +887,22 @@ function MachineControlTabImpl({
   const indentStatus: IndentStatus = machineIndentStatus;
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
   const isBusy = setBusy || indentBusy || turretBusy;
+
+  // [IMPRESS-DIAG] temporary — remove after diagnosis
+  useEffect(() => {
+    const disabled = !connected || isIndentInFlight || isBusy || impressPopup.open;
+    console.log('[IMPRESS] gate', {
+      disabled,
+      connected,
+      isIndentInFlight,
+      indentStatus,
+      isBusy,
+      setBusy,
+      indentBusy,
+      turretBusy,
+      impressPopupOpen: impressPopup.open,
+    });
+  }, [connected, isIndentInFlight, isBusy, indentStatus, setBusy, indentBusy, turretBusy, impressPopup.open]);
 
   const recovered =
     !!connected &&
@@ -1060,7 +1077,7 @@ function MachineControlTabImpl({
           <Box sx={KPI_CARD_SX}>
             <Box sx={kpiStripSx('info.main')} />
             <Box sx={KPI_BODY_SX}>
-              <Typography sx={kpiLabelSx('info.main')}>HV</Typography>
+              <Typography sx={kpiLabelSx('info.main')}>Hardness (HV)</Typography>
               <Box sx={KPI_VALUE_ROW_SX} title={bottomHvDisplay}>
                 <Typography component="span" sx={kpiValueSx}>
                   {bottomHvDisplay}

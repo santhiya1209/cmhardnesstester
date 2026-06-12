@@ -5,6 +5,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useAppSelector } from '@/store/hooks';
 import {
   selectActivePointId,
+  selectCompletedPointIds,
   selectGeneratedPoints,
   selectSelectedPointIds,
 } from '@/store/slices/multipoint.selectors';
@@ -14,8 +15,10 @@ import { tokens } from '@/theme/theme';
 
 /**
  * Live multipoint overlay painted on top of the camera image. It draws:
- *  - the generated pattern points (cyan dots; selected = amber; the point being
- *    moved to during Start = green ring), and
+ *  - connecting lines along the generated execution order,
+ *  - the generated pattern points as numbered dots in their execution tri-state
+ *    (current = red, completed = green, pending = white; an amber ring marks a
+ *    preview-table selection), and
  *  - a distinct "current stage position" marker.
  *
  * Coordinate model — the optical axis is FIXED and the sample moves on the XY
@@ -62,11 +65,18 @@ type Props = {
   imageSize: ImageSize | null;
   /** Active objective calibration in microns per IMAGE pixel; null when uncalibrated. */
   umPerPixel?: number | null;
+  /**
+   * When false the pattern dots are not drawn (the canvas is wiped) so the
+   * multipoint overlay never mixes with an exclusive measurement mode such as
+   * Manual Measure. The generated pattern stays in Redux — only the paint is
+   * suppressed — so returning to the Multipoint tab shows it again.
+   */
+  active?: boolean;
 };
 
 let lastDiagKey = '';
 
-function PatternOverlayImpl({ imageSize, umPerPixel = null }: Props) {
+function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [resizeTick, setResizeTick] = useState(0);
@@ -74,6 +84,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null }: Props) {
   const points = useAppSelector(selectGeneratedPoints);
   const selectedIds = useAppSelector(selectSelectedPointIds);
   const activePointId = useAppSelector(selectActivePointId);
+  const completedIds = useAppSelector(selectCompletedPointIds);
   const { positionMm, positionKnown } = useXyzStageState();
 
   // DPR-aware backing store, matching ImageOverlay so dots stay crisp and the
@@ -110,6 +121,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null }: Props) {
     const hCss = canvas.height / dpr;
     ctx.clearRect(0, 0, wCss, hCss);
 
+    if (!active) return;
     if (!positionKnown || !imageSize || imageSize.width <= 0 || imageSize.height <= 0) return;
     const placement = getImagePlacement(wCss, hCss, imageSize);
     if (!placement) return;
@@ -130,26 +142,72 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null }: Props) {
     let firstScreen: { x: number; y: number } | null = null;
     if (dispPxPerMm !== null) {
       const selected = new Set(selectedIds);
-      for (const p of points) {
-        const sx = centerX + STAGE_X_TO_SCREEN * (p.x - positionMm.x) * dispPxPerMm;
-        const sy = centerY + STAGE_Y_TO_SCREEN * (p.y - positionMm.y) * dispPxPerMm;
-        if (firstScreen === null) firstScreen = { x: sx, y: sy };
+      const completed = new Set(completedIds);
+      const screen = points.map((p) => ({
+        p,
+        x: centerX + STAGE_X_TO_SCREEN * (p.x - positionMm.x) * dispPxPerMm,
+        y: centerY + STAGE_Y_TO_SCREEN * (p.y - positionMm.y) * dispPxPerMm,
+      }));
+      if (screen.length > 0) firstScreen = { x: screen[0].x, y: screen[0].y };
 
+      ctx.font = '10px sans-serif';
+      ctx.textBaseline = 'middle';
+
+      // Connectors grouped by source line, drawn first so the dots sit on top.
+      // Points with no `line` (every non-multiline mode) share one group, so the
+      // single-polyline behaviour is preserved; MultiLine Composite breaks the
+      // path between lines and tags each line head with an "L<n>" label.
+      let groupStart = 0;
+      while (groupStart < screen.length) {
+        const lineId = screen[groupStart].p.line;
+        let groupEnd = groupStart + 1;
+        while (groupEnd < screen.length && screen[groupEnd].p.line === lineId) groupEnd += 1;
+        if (groupEnd - groupStart > 1) {
+          ctx.beginPath();
+          ctx.moveTo(screen[groupStart].x, screen[groupStart].y);
+          for (let k = groupStart + 1; k < groupEnd; k += 1) ctx.lineTo(screen[k].x, screen[k].y);
+          ctx.strokeStyle = tokens.overlay.patternConnector;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        if (lineId !== undefined) {
+          ctx.fillStyle = tokens.overlay.patternPointPending;
+          ctx.fillText(`L${lineId}`, screen[groupStart].x - 20, screen[groupStart].y);
+        }
+        groupStart = groupEnd;
+      }
+      for (const { p, x: sx, y: sy } of screen) {
         const isActive = p.id === activePointId;
+        // Execution tri-state: current (red) overrides completed (green) overrides pending (white).
+        const fill = isActive
+          ? tokens.overlay.patternPointCurrent
+          : completed.has(p.id)
+            ? tokens.overlay.patternPointCompleted
+            : tokens.overlay.patternPointPending;
+
         ctx.beginPath();
         ctx.arc(sx, sy, POINT_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = selected.has(p.id)
-          ? tokens.overlay.patternPointSelected
-          : tokens.overlay.patternPoint;
+        ctx.fillStyle = fill;
         ctx.fill();
 
-        if (isActive) {
+        // Amber ring marks a preview-table selection; red ring marks the current point.
+        if (selected.has(p.id)) {
           ctx.beginPath();
           ctx.arc(sx, sy, ACTIVE_RING_RADIUS, 0, Math.PI * 2);
-          ctx.strokeStyle = tokens.overlay.patternPointActive;
+          ctx.strokeStyle = tokens.overlay.patternPointSelected;
           ctx.lineWidth = 2;
           ctx.stroke();
         }
+        if (isActive) {
+          ctx.beginPath();
+          ctx.arc(sx, sy, ACTIVE_RING_RADIUS, 0, Math.PI * 2);
+          ctx.strokeStyle = tokens.overlay.patternPointCurrent;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = tokens.overlay.patternPointPending;
+        ctx.fillText(String(p.no), sx + POINT_RADIUS + 2, sy - POINT_RADIUS - 2);
       }
     }
 
@@ -187,7 +245,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null }: Props) {
         `[pattern-overlay] points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)}) umPerPixel=${umPerPixel ?? 'null'} dispPxPerMm=${dispPxPerMm?.toFixed(3) ?? 'n/a'} center=(${Math.round(centerX)},${Math.round(centerY)}) firstPx=${firstScreen ? `(${Math.round(firstScreen.x)},${Math.round(firstScreen.y)})` : 'none'} canvas=${Math.round(wCss)}x${Math.round(hCss)} active=${activePointId ?? 'none'}`
       );
     }
-  }, [points, selectedIds, activePointId, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
+  }, [active, points, selectedIds, activePointId, completedIds, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
 
   return (
     <Box ref={wrapRef} sx={ROOT_SX}>

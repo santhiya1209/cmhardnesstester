@@ -19,15 +19,12 @@ import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import { useMachineConnection } from '@/features/machine/useMachineConnection';
 import { useMicrometerAutoRestore } from '@/features/machine/useMicrometerAutoRestore';
 import { useXyzAutoConnect } from '@/features/xyzPlatform/useXyzAutoConnect';
-import { measureVickersAuto } from '@/api/system';
 import { useCameraLifecycle } from '@/features/camera/useCameraLifecycle';
 import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRestore';
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
-  OBJECTIVE_FOR_MEASURE_OPTIONS,
   normalizeAutoMeasureSettings,
   type AutoMeasureSettingsPayload,
-  type ObjectiveForMeasure,
 } from '@/types/autoMeasureSettings';
 import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
@@ -103,7 +100,6 @@ import {
   waitForOverlayPaint,
   type DepthSavePayload,
 } from '@/features/measurement/measurementRowHelpers';
-import { useCalibration } from '@/features/calibration/useCalibration';
 import { useUmPerPixelForObjective } from '@/features/calibration/useUmPerPixelForObjective';
 import { useTurretMotionGate } from '@/features/machine/useTurretMotionGate';
 import { useObjectiveSyncGate } from '@/features/autoMeasure/useObjectiveSyncGate';
@@ -341,6 +337,7 @@ function App() {
     turretMoving,
     objectiveChangeInProgress,
     activeObjective,
+    activeTool,
   });
   const { clearAutoMeasureOverlay } = useAutoMeasureSessionLifecycle({
     setCommittedAutoMeasureOverlay,
@@ -460,32 +457,24 @@ function App() {
         return null;
       }
       const settings = normalizeAutoMeasureSettings(autoMeasureSettings);
-      const candidate = String(objective ?? '').trim().toUpperCase();
-      const liveObjectiveForNative: ObjectiveForMeasure =
-        (OBJECTIVE_FOR_MEASURE_OPTIONS as readonly string[]).includes(candidate)
-          ? (candidate as ObjectiveForMeasure)
-          : settings.objectiveForMeasure;
       const minConfidence =
         settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
-      const calibSmoothing = settings.smoothing;
-      const calibThreshold = settings.threshold;
       committedAutoMeasureFrameRef.current = cloneCapturedFrame(frame);
-      const result = await measureVickersAuto({
-        smoothing: calibSmoothing,
-        threshold: calibThreshold,
-        objectiveForMeasure: liveObjectiveForNative,
-        frameBuffer: frame.buffer,
-        width: frame.width,
-        height: frame.height,
-        pixelFormat: frame.pixelFormat,
-        bits: frame.bits,
-        source: frame.source,
-        micronPerPixel: null,
-        pxPerMm: null,
-        testForceKgf: null,
+      // Calibration Auto Measure runs the SAME native detection core as Normal
+      // Auto Measure (runNativeDetection). The only mode difference is config:
+      // calibration is pixels-only (no µm/px calibration, no test force) at the
+      // detection step — objective/smoothing/threshold resolution and the
+      // measureVickersAuto invocation are shared, not duplicated.
+      const { nativeResult: result } = await runNativeDetection({
+        preview: false,
+        callSource: 'auto-click',
+        settings,
+        objectiveForCalibration: objective,
+        displayedFrame: frame,
+        capturedFrameIdForRun: getLastPaintedFrameId(),
+        calibration: null,
+        forceKgf: null,
         minConfidence,
-        timeoutMs: 4000,
-        maxFrameAgeMs: 1200,
       });
       if (!result.ok || !hasValidAutoMeasureCorners(result)) {
         const reason = result.ok ? 'invalid corner coordinates' : result.reason;
@@ -500,25 +489,6 @@ function App() {
     },
     [autoMeasureSettings, setActiveTool, setCalibrationMeasureMode]
   );
-
-  const { handleCalibrationAutoCreateRow } = useCalibration({
-    activeObjectiveRef,
-    calibrationMeasureModeRef,
-    manualMeasurementIdRef,
-    autoMeasurementIdRef,
-    activeMeasurementMethodRef,
-    calibrationSettingsList,
-    cameraRef,
-    setUnavailableMsg,
-    setStatusMessage,
-    setCommittedAutoMeasureOverlay,
-    setPreviewAutoMeasureOverlay,
-    setManualMeasureResetKey,
-    getActiveMeasurementId,
-    setActiveMeasurement,
-    saveManualMeasurement,
-    refetchMeasurements,
-  });
 
   const umPerPixelForActiveObjective = useUmPerPixelForObjective({
     activeObjective,
@@ -1850,9 +1820,17 @@ function App() {
       const mappedTool = TOOL_ACTION_TO_TOOL[action];
 
       if (action === 'tools:manualMeasure') {
-        if (committedAutoMeasureOverlay || previewAutoMeasureOverlay) {
-          clearAutoMeasureOverlay('manual-mode-switch');
-        }
+        // Manual Measure must always start from a clean, isolated overlay state.
+        // Dispose every other overlay's geometry so nothing stale survives into
+        // the fresh session: auto-measure overlay + detection state, the length/
+        // angle annotation shapes, and the prior manual guides. The multipoint
+        // dots are hidden (not destroyed) via CameraWindow's PatternOverlay gate.
+        clearAutoMeasureOverlay('enter-manual-measure');
+        setAutoMeasureClearNonce((n) => n + 1);
+        overlay.clearByKind('length');
+        overlay.clearByKind('angle');
+        manualMeasurementIdRef.current = null;
+        resetManualMeasure();
       }
 
       if (activeTool === 'measureLength' && mappedTool !== 'measureLength' && !openingConfigPanel) {
@@ -1878,11 +1856,12 @@ function App() {
       activeTool,
       buildSharedCtx,
       clearAutoMeasureOverlay,
-      committedAutoMeasureOverlay,
       magnifierEnabled,
+      manualMeasurementIdRef,
       overlay,
       persistToolbarAction,
-      previewAutoMeasureOverlay,
+      resetManualMeasure,
+      setAutoMeasureClearNonce,
       setActiveTool,
     ]
   );
@@ -1929,13 +1908,13 @@ function App() {
     setCalibrationMeasureMode,
     setManualMeasureResetKey,
     setAutoMeasureSessionActive,
+    setActiveTool,
     clearAutoMeasureOverlay,
     closeDialog,
     setStatusMessage,
     refetchCalibrations,
     onRequestAutoMeasure: handleCalibrationAutoMeasure,
     onRequestManualMeasure: handleCalibrationManualMeasure,
-    onAutoCreateMeasurementRow: handleCalibrationAutoCreateRow,
   });
 
   return (

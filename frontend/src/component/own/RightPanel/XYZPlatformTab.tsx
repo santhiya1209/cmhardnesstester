@@ -67,11 +67,15 @@ const SHADOW_BTN = '0 2px 8px rgba(0,0,0,0.08)';
 const SHADOW_PRESS = 'inset 0 2px 5px rgba(15,23,42,0.18)';
 
 const ROOT_SX: SxProps<Theme> = {
+  flex: 1,
+  minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
   gap: 0.75,
   p: 0.75,
   bgcolor: PALETTE.bg,
+  overflowY: 'auto',
+  overflowX: 'hidden',
 };
 
 // ---- Top status bar -------------------------------------------------------

@@ -18,7 +18,7 @@ import type { PatternProgram, PatternProgramPayload } from '@/types/patternProgr
 
 const COLUMNS = ['#', 'Pattern Name', 'Number Of Points', 'Checked'];
 
-const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1 };
+const SECTION_SX: SxProps<Theme> = { flex: 1, minHeight: 0, px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto', overflowX: 'hidden' };
 const TABLE_WRAP_SX: SxProps<Theme> = {
   flex: 1,
   minHeight: 180,
@@ -67,6 +67,8 @@ function toPayload(program: PatternProgram, checked: boolean): PatternProgramPay
     freePoints: program.freePoints,
     referencePoints: program.referencePoints,
     angle: program.angle,
+    lines: program.lines ?? [],
+    triangles: program.triangles ?? [],
     multiset: program.multiset,
     focusAll: program.focusAll,
     impressMode: program.impressMode,

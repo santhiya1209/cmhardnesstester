@@ -67,9 +67,14 @@ export const tokens = {
     d1d2MeasureLine: '#800080',
     measureAngleLine: '#E040FB',
     // Multipoint pattern overlay (live stage position + generated points).
-    patternPoint: '#0EA5E9',
     patternPointSelected: '#FFC107',
-    patternPointActive: '#69F0AE',
+    // Execution tri-state for the pattern points: the point being processed
+    // (current) is red, already-visited points are green, not-yet-visited are
+    // white. Connector links consecutive points to show the execution path.
+    patternPointCurrent: '#FF5252',
+    patternPointCompleted: '#4CAF50',
+    patternPointPending: '#FFFFFF',
+    patternConnector: 'rgba(255,255,255,0.45)',
     livePosition: '#FF5252',
   },
 } as const;

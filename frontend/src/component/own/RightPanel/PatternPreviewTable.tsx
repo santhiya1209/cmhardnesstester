@@ -25,12 +25,22 @@ type Props = {
   points: PatternPoint[];
   selectedIds: string[];
   onToggleSelect: (id: string, selected: boolean) => void;
+  onToggleSelectAll: (selected: boolean) => void;
   onDeleteSelected: () => void;
   onClear: () => void;
 };
 
-function PatternPreviewTableImpl({ points, selectedIds, onToggleSelect, onDeleteSelected, onClear }: Props) {
+function PatternPreviewTableImpl({
+  points,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+  onDeleteSelected,
+  onClear,
+}: Props) {
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allSelected = points.length > 0 && selectedIds.length === points.length;
+  const someSelected = selectedIds.length > 0 && !allSelected;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
@@ -58,7 +68,16 @@ function PatternPreviewTableImpl({ points, selectedIds, onToggleSelect, onDelete
         <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
-              <TableCell sx={HEAD_CELL_SX} padding="checkbox" />
+              <TableCell sx={HEAD_CELL_SX} padding="checkbox">
+                <Checkbox
+                  size="small"
+                  checked={allSelected}
+                  indeterminate={someSelected}
+                  disabled={points.length === 0}
+                  onChange={(event) => onToggleSelectAll(event.target.checked)}
+                />
+              </TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Line</TableCell>
               <TableCell sx={HEAD_CELL_SX}>No</TableCell>
               <TableCell sx={HEAD_CELL_SX}>X (mm)</TableCell>
               <TableCell sx={HEAD_CELL_SX}>Y (mm)</TableCell>
@@ -67,7 +86,7 @@ function PatternPreviewTableImpl({ points, selectedIds, onToggleSelect, onDelete
           <TableBody>
             {points.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} sx={EMPTY_CELL_SX}>No generated points. Use Generate to preview.</TableCell>
+                <TableCell colSpan={5} sx={EMPTY_CELL_SX}>No generated points. Use Generate to preview.</TableCell>
               </TableRow>
             ) : (
               points.map((point) => (
@@ -79,6 +98,7 @@ function PatternPreviewTableImpl({ points, selectedIds, onToggleSelect, onDelete
                       onChange={(event) => onToggleSelect(point.id, event.target.checked)}
                     />
                   </TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{point.line ?? '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{point.no}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{point.x.toFixed(3)}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{point.y.toFixed(3)}</TableCell>

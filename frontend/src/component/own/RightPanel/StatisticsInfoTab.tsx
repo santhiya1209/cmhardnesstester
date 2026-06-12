@@ -5,7 +5,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 import { getHardnessColor } from '@/utils/hardnessColor';
 
-const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 2, display: 'flex', flexDirection: 'column', gap: 1 };
+const SECTION_SX: SxProps<Theme> = { flex: 1, minHeight: 0, px: 1.5, py: 2, display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto', overflowX: 'hidden' };
 const GRID_SX: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: '1fr 1fr 1fr 1fr',

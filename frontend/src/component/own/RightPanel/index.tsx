@@ -37,6 +37,7 @@ const TAB_ITEMS = [
 const PANEL_SX: SxProps<Theme> = {
   flex: 1,
   minWidth: 0,
+  minHeight: 0,
   position: 'relative',
   display: 'flex',
   flexDirection: 'column',

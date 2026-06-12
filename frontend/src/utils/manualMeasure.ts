@@ -316,7 +316,21 @@ export function resolveManualCalibration({
             (typeof item.realDistanceY === 'number' && item.realDistanceY > 0))
       )
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
-    const legacy = legacyForObjective[0];
+    // Per-force restoration: when the active force is known, prefer the
+    // calibration saved for THAT force (and hardness level) instead of the
+    // most-recent row for the objective. Falls back to most-recent so an
+    // uncalibrated force still resolves something. `legacyForObjective` is
+    // sorted newest-first, so .find returns the newest matching row.
+    const wantForce = parseForceKgf(machineState?.force);
+    const wantLevel = machineState?.hardnessLevel ?? null;
+    const legacy =
+      (wantForce !== null
+        ? legacyForObjective.find(
+            (item) =>
+              parseForceKgf(item.force) === wantForce &&
+              (wantLevel === null || item.hardnessLevel === wantLevel)
+          ) ?? legacyForObjective.find((item) => parseForceKgf(item.force) === wantForce)
+        : undefined) ?? legacyForObjective[0];
     if (!legacy) {
       return null;
     }

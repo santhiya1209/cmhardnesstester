@@ -1,4 +1,4 @@
-import { ConflictError } from '../errors';
+import { ConflictError, InvalidReferenceError } from '../errors';
 import type { MeasurementPayload } from '../../models/measurement';
 import { MeasurementModel, type Measurement } from '../../models/measurement';
 import { createCrudService } from './create-crud.service';
@@ -26,6 +26,21 @@ export const measurementsService = createCrudService<
   resourceName: 'Measurement',
   schema: MeasurementModel,
   createEntity: (input, { id, now }) => {
+    // [calibration-pixel-isolation] Measurements may ONLY originate from a real
+    // detection source. `method` is the source discriminator; its zod enum has
+    // no 'Calibration' value, so calibration-derived pixels cannot be shaped
+    // into a measurement insert. This guard makes that invariant explicit at the
+    // DB edge and rejects anything that is not a real auto/manual measurement.
+    const source = input.method ?? 'Manual';
+    if (source !== 'Manual' && source !== 'Auto' && source !== 'Auto (Adjusted)') {
+      throw new InvalidReferenceError(
+        `Measurement insert rejected: invalid source "${source}". Only real auto/manual measurements may be stored.`
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[MEASURE_SAVE] source=${source} d1Px=${input.d1Px ?? 'null'} d2Px=${input.d2Px ?? 'null'} umPerPixel=${input.micronPerPixel ?? 'null'} hv=${input.hv ?? 'null'}`
+    );
     const timestamp = input.timestamp ?? now;
     const d1Px = input.d1Px ?? (input.unit === 'px' ? input.d1 : null);
     const d2Px = input.d2Px ?? (input.unit === 'px' ? input.d2 : null);
@@ -55,6 +70,7 @@ export const measurementsService = createCrudService<
       averageMm,
       micronPerPixel: input.micronPerPixel ?? null,
       calibrationName: input.calibrationName ?? null,
+      calibrationId: input.calibrationId ?? null,
       objective: input.objective ?? null,
       testForceKgf: input.testForceKgf ?? null,
       timestamp,

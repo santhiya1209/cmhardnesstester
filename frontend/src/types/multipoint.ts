@@ -27,6 +27,8 @@ export interface MultipointState {
   programMeta: ProgramMeta;
   /** Id of the point currently being moved to during Start execution; null when idle. */
   activePointId: string | null;
+  /** Ids of points already visited in the current Start run — drives the green "completed" overlay state. */
+  completedPointIds: string[];
 }
 
 /** Impress mode in the wire form the machine-control layer expects. */

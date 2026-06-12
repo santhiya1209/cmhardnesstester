@@ -1,9 +1,87 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, screen } = require('electron');
 
 const APP_TITLE = 'Vickers Measurement Software';
+
+// Window sizing. The UI targets a fixed minimum work area (no responsive
+// breakpoints — desktop-only) and must still fit screens smaller than the
+// default, so initial bounds are always clamped to the target display's work
+// area. Last bounds are restored only when they sit fully inside a connected
+// display's work area (a monitor that was unplugged must not strand the window
+// off-screen).
+const MIN_WIDTH = 1280;
+const MIN_HEIGHT = 720;
+const DEFAULT_WIDTH = 1280;
+const DEFAULT_HEIGHT = 800;
+
+function boundsFilePath() {
+  try {
+    return path.join(app.getPath('userData'), 'window-bounds.json');
+  } catch {
+    return path.join(os.tmpdir(), 'vickers-window-bounds.json');
+  }
+}
+
+function readSavedBounds() {
+  try {
+    const b = JSON.parse(fs.readFileSync(boundsFilePath(), 'utf8'));
+    if (
+      b &&
+      Number.isFinite(b.x) &&
+      Number.isFinite(b.y) &&
+      Number.isFinite(b.width) &&
+      Number.isFinite(b.height)
+    ) {
+      return b;
+    }
+  } catch {
+    // No saved bounds yet (first launch) or unreadable — fall back to default.
+  }
+  return null;
+}
+
+function saveBounds(win) {
+  if (!win || win.isDestroyed()) return;
+  // Persist only normal-state bounds; restoring a minimized/maximized rect would
+  // reopen the window at a wrong size.
+  if (win.isMinimized() || win.isMaximized() || win.isFullScreen()) return;
+  try {
+    fs.writeFileSync(boundsFilePath(), JSON.stringify(win.getBounds()));
+  } catch {
+    // Bounds persistence is best-effort; never break the window lifecycle.
+  }
+}
+
+// Resolve the window's initial bounds: restore saved bounds when they lie inside
+// a current display's work area, otherwise center a default window. Width/height
+// are always clamped to the work area so the window fits e.g. a 1366x768 screen.
+function resolveInitialBounds() {
+  const saved = readSavedBounds();
+  const display = saved ? screen.getDisplayMatching(saved) : screen.getPrimaryDisplay();
+  const area = display.workArea;
+
+  const width = Math.min(saved?.width ?? DEFAULT_WIDTH, area.width);
+  const height = Math.min(saved?.height ?? DEFAULT_HEIGHT, area.height);
+
+  const savedInside =
+    saved &&
+    saved.x >= area.x &&
+    saved.y >= area.y &&
+    saved.x + saved.width <= area.x + area.width &&
+    saved.y + saved.height <= area.y + area.height;
+
+  if (savedInside) {
+    return { x: saved.x, y: saved.y, width, height };
+  }
+  return {
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + Math.round((area.height - height) / 2),
+    width,
+    height,
+  };
+}
 // Resolve the app icon. In dev we look under <repo>/build/icon.ico; in the
 // packaged app we look next to the executable and in resources. If none of
 // the candidates exist, Electron falls back to its default icon — the title
@@ -163,9 +241,14 @@ async function startEmbeddedBackend() {
 
 async function createWindow() {
   const iconPath = resolveAppIcon();
+  const { x, y, width, height } = resolveInitialBounds();
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    x,
+    y,
+    width,
+    height,
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     title: APP_TITLE,
     icon: iconPath ?? undefined,
     webPreferences: {
@@ -212,6 +295,12 @@ async function createWindow() {
     cameraService.attach(mainWindow.webContents);
     micrometerService.attach(mainWindow.webContents);
   });
+
+  // Remember the window's normal-state bounds for the next launch.
+  const persistBounds = () => saveBounds(mainWindow);
+  mainWindow.on('resize', persistBounds);
+  mainWindow.on('move', persistBounds);
+  mainWindow.on('close', persistBounds);
 
   const wcRef = mainWindow.webContents;
   mainWindow.on('closed', () => {

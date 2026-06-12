@@ -38,7 +38,7 @@ function readPersistedAxis<T extends string>(key: string, allowed: readonly T[],
   return fallback;
 }
 
-const SECTION_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 280 };
+const SECTION_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' };
 const PREVIEW_SX: SxProps<Theme> = {
   flex: 1,
   minHeight: 260,

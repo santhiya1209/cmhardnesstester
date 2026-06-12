@@ -21,6 +21,7 @@ const COLUMNS = [
   'Davg(um)',
   'Hardness',
   'Objective',
+  'Calibration',
   'HvType',
   'Convert Type',
   'Convert Value',
@@ -30,8 +31,9 @@ const COLUMNS = [
 
 const TABLE_WRAP_SX: SxProps<Theme> = {
   flex: 1,
-  minHeight: 200,
+  minHeight: 0,
   maxHeight: 260,
+  overflow: 'auto',
   borderTop: 1,
   borderBottom: 1,
   borderColor: 'divider',
@@ -415,6 +417,7 @@ function MeasurementsTableImpl({
                       <span>{measurement.objective ?? '-'}</span>
                     </Box>
                   </TableCell>
+                  <TableCell sx={BODY_CELL_SX}>{formatBlank(measurement.calibrationName) || '-'}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
                   <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>

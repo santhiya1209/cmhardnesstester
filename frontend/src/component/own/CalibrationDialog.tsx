@@ -3,8 +3,13 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import IconButton from '@mui/material/IconButton';
 import CloseIcon from '@mui/icons-material/Close';
+import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
@@ -30,7 +35,6 @@ import { useCreateCalibration } from '@/hooks/mutations/useCreateCalibration';
 import { useDeleteCalibration } from '@/hooks/mutations/useDeleteCalibration';
 import { getApiErrorMessage } from '@/utils/getApiErrorMessage';
 import type {
-  Calibration,
   CalibrationSavePayload,
   CalibrationType,
   LengthMode,
@@ -115,16 +119,6 @@ type Props = {
    * dialog, the `autoFillPixelLength*` props provide the captured values.
    */
   onRequestManualMeasure?: () => void;
-  /**
-   * Fired immediately after a successful Add Calibration. Receives the saved
-   * calibration and the payload that produced it. The parent uses this to
-   * commit a measurement row from the CURRENT D1/D2 line pixels
-   * (payload.pixelLengthX/Y) so the table is populated automatically.
-   */
-  onAutoCreateMeasurementRow?: (args: {
-    savedCalibration: Calibration;
-    payload: CalibrationSavePayload;
-  }) => Promise<void> | void;
 };
 
 function nonNeg(value: string): number | null {
@@ -206,7 +200,6 @@ function CalibrationDialogImpl({
   defaultForce,
   onRequestAutoMeasure,
   onRequestManualMeasure,
-  onAutoCreateMeasurementRow,
 }: Props) {
   const { data: items, error: loadError, loading, refetch } = useCalibrations();
   const { saveCalibration, saving } = useCreateCalibration();
@@ -220,6 +213,10 @@ function CalibrationDialogImpl({
   const [selectionStatus, setSelectionStatus] = useState<
     { mode: 'update' | 'insert'; message: string } | null
   >(null);
+  // Holds the payload awaiting overwrite confirmation. Non-null = the confirm
+  // modal is shown and NOTHING has been saved yet. Cleared on cancel (abort) or
+  // after the user confirms and the save runs.
+  const [pendingOverwrite, setPendingOverwrite] = useState<CalibrationSavePayload | null>(null);
   const panelLoggedOpenRef = useRef(false);
   const lastLivePixelLogRef = useRef<string | null>(null);
   const lastSelectionKeyRef = useRef<string | null>(null);
@@ -266,9 +263,9 @@ function CalibrationDialogImpl({
     setSelectedIds([]);
     setValidationError(null);
     setActionError(null);
-    const hasMeasuredPixels =
-      pxX !== DEFAULT_FORM_STATE.pixelLengthX || pxY !== DEFAULT_FORM_STATE.pixelLengthY;
-    setTab(hasMeasuredPixels ? 'length' : 'hardness');
+    setPendingOverwrite(null);
+    // Always open on Hardness Calibration; the user can switch to Length manually.
+    setTab('hardness');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -386,6 +383,39 @@ function CalibrationDialogImpl({
     []
   );
 
+  const performSave = useCallback(async (payload: CalibrationSavePayload) => {
+    setValidationError(null);
+    setActionError(null);
+    try {
+      await saveCalibration(payload);
+      const umPerPixel =
+        payload.pixelLengthX > 0 && (payload.realDistanceX ?? 0) > 0
+          ? (payload.realDistanceX as number) / payload.pixelLengthX
+          : 0;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[calibration-save] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} umPerPixel=${umPerPixel.toFixed(4)}`
+      );
+      await refetch();
+      onChanged?.();
+      onStatusChange?.('Calibration saved.');
+
+      // [calibration-pixel-isolation] Calibration writes ONLY to the calibration
+      // table (saveCalibration above). It never creates or mutates a measurement
+      // row. payload.pixelLengthX/Y are the calibration *reference* diagonals that
+      // DEFINE µm/pixel; HV derived from them is self-referential and must never
+      // enter the measurement table. Hardness is recorded solely by a real
+      // Auto/Manual measurement using freshly detected indent diagonals.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[MEASURE_SOURCE] source=calibration d1Px=${payload.pixelLengthX} d2Px=${payload.pixelLengthY} action=skipped-no-measurement-row`
+      );
+    } catch (e) {
+      console.error(`[calibration] save failed: ${getApiErrorMessage(e, 'Failed to save calibration.')}`);
+      setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
+    }
+  }, [onChanged, onStatusChange, refetch, saveCalibration]);
+
   const handleAdd = useCallback(async () => {
     const pixelX = Number(form.pixelLengthX);
     const pixelY = Number(form.pixelLengthY);
@@ -414,50 +444,36 @@ function CalibrationDialogImpl({
       setValidationError('Please fill all fields with valid values.');
       return;
     }
-    setValidationError(null);
-    setActionError(null);
-    try {
-      const savedCalibration = await saveCalibration(payload);
-      const umPerPixel =
-        payload.pixelLengthX > 0 && (payload.realDistanceX ?? 0) > 0
-          ? (payload.realDistanceX as number) / payload.pixelLengthX
-          : 0;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[calibration-save] objective=${payload.zoomTime} force=${payload.force} hardnessLevel=${payload.hardnessLevel} umPerPixel=${umPerPixel.toFixed(4)}`
-      );
-      await refetch();
-      onChanged?.();
-      onStatusChange?.('Calibration saved.');
-
-      const currentD1Px = payload.pixelLengthX;
-      const currentD2Px = payload.pixelLengthY;
-      if (
-        !Number.isFinite(currentD1Px) ||
-        !Number.isFinite(currentD2Px) ||
-        currentD1Px <= 0 ||
-        currentD2Px <= 0
-      ) {
-        setActionError(
-          'Calibration saved, but D1/D2 line pixels are zero â€” no measurement row was created. Run Manual or Auto Measure first, then Add Calibration.'
-        );
-      } else if (onAutoCreateMeasurementRow) {
-        try {
-          await onAutoCreateMeasurementRow({ savedCalibration, payload });
-        } catch (rowErr) {
-          console.error(
-            `[calibration] auto-row failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`
-          );
-          setActionError(
-            `Calibration saved, but creating the measurement row failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`
-          );
-        }
-      }
-    } catch (e) {
-      console.error(`[calibration] save failed: ${getApiErrorMessage(e, 'Failed to save calibration.')}`);
-      setActionError(getApiErrorMessage(e, 'Failed to save calibration.'));
+    // Overwrite = a row with the SAME upsert key (objective + force +
+    // hardnessLevel) already exists; saving would replace it, not append.
+    // Re-checked against the latest `items` on every click, so repeated edits
+    // always re-evaluate the condition.
+    const isOverwrite = items.some(
+      (it) =>
+        it.zoomTime === payload.zoomTime &&
+        it.force === payload.force &&
+        it.hardnessLevel === payload.hardnessLevel
+    );
+    if (isOverwrite) {
+      // Do NOT save yet — hold the payload and ask for confirmation.
+      setValidationError(null);
+      setPendingOverwrite(payload);
+      return;
     }
-  }, [form, objective, force, onAutoCreateMeasurementRow, onChanged, onStatusChange, refetch, saveCalibration, tab]);
+    await performSave(payload);
+  }, [form, objective, force, items, performSave, tab]);
+
+  const handleConfirmOverwrite = useCallback(async () => {
+    const payload = pendingOverwrite;
+    if (!payload) return;
+    setPendingOverwrite(null);
+    await performSave(payload);
+  }, [pendingOverwrite, performSave]);
+
+  const handleCancelOverwrite = useCallback(() => {
+    // Cancel fully aborts: no save, form/table state left untouched.
+    setPendingOverwrite(null);
+  }, []);
 
   const handleManual = useCallback(() => {
     if (!onRequestManualMeasure) {
@@ -534,7 +550,25 @@ function CalibrationDialogImpl({
 
   if (!open) return null;
 
+  // Calibration produces a SCALE (µm/pixel), never a hardness measurement.
+  // Derived from the KNOWN reference hardness + measured line pixels, purely for
+  // operator feedback. Not persisted, not a measurement.
+  const calibrationScaleDisplay = (() => {
+    const px = nonNeg(form.pixelLengthX);
+    const py = nonNeg(form.pixelLengthY);
+    const h = nonNeg(form.hardness);
+    const forceKgf = parseForceKgfFromLabel(force);
+    if (px === null || py === null || h === null || forceKgf === null || px <= 0 || py <= 0) {
+      return '—';
+    }
+    const diagonalUm = diagonalUmFromHv(forceKgf, h);
+    if (diagonalUm === null) return '—';
+    const scale = (diagonalUm / px + diagonalUm / py) / 2;
+    return `${scale.toFixed(5)} µm/pixel`;
+  })();
+
   return (
+    <>
     <Box
       sx={{
         flex: 1,
@@ -735,7 +769,7 @@ function CalibrationDialogImpl({
           </Grid>
 
           <Grid size={{ xs: 4 }}>
-            <Typography variant="caption">Hardness Value</Typography>
+            <Typography variant="caption">Reference Block Hardness (HV)</Typography>
             <TextField
               fullWidth
               size="small"
@@ -744,6 +778,18 @@ function CalibrationDialogImpl({
               onChange={handleInputChange('hardness')}
               disabled={busy}
               slotProps={NUMBER_SLOT_PROPS}
+              helperText="Known certified value — defines scale, NOT a measured result"
+            />
+          </Grid>
+
+          <Grid size={{ xs: 8 }}>
+            <Typography variant="caption">Calibration Scale Factor (µm/pixel)</Typography>
+            <TextField
+              fullWidth
+              size="small"
+              value={calibrationScaleDisplay}
+              slotProps={{ input: { readOnly: true } }}
+              helperText="Calibration produces SCALE only. Hardness (HV) comes solely from a real Auto/Manual measurement."
             />
           </Grid>
         </Grid>
@@ -782,6 +828,34 @@ function CalibrationDialogImpl({
         </Button>
       </Box>
     </Box>
+
+    <Dialog
+      open={pendingOverwrite !== null}
+      onClose={saving ? undefined : handleCancelOverwrite}
+      maxWidth="xs"
+      fullWidth
+    >
+      <DialogTitle sx={{ bgcolor: tokens.accent.base, color: '#FFFFFF', py: 1.25 }}>
+        Overwrite Calibration
+      </DialogTitle>
+      <DialogContent dividers>
+        <Stack direction="row" spacing={2} sx={{ alignItems: 'center', py: 1 }}>
+          <WarningAmberOutlinedIcon sx={{ fontSize: 40, color: tokens.status.warning }} />
+          <Typography variant="body1">
+            A calibration entry for this force already exists. Do you want to overwrite it?
+          </Typography>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button variant="contained" onClick={() => void handleConfirmOverwrite()} disabled={saving}>
+          Confirm
+        </Button>
+        <Button onClick={handleCancelOverwrite} disabled={saving}>
+          Cancel
+        </Button>
+      </DialogActions>
+    </Dialog>
+    </>
   );
 }
 

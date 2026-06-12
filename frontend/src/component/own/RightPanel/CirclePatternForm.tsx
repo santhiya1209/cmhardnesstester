@@ -7,8 +7,8 @@ import { toNumberOrNull } from '@/utils/inputNumber';
 import type { FreePoint, PatternGenerationRequest } from '@/types/patternProgram';
 import ReferenceSlotRow from './ReferenceSlotRow';
 
-const ORIGIN = 0;
-const DIRECTION = 1;
+const CENTER = 0;
+const EDGE = 1;
 
 const HEADER_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, color: 'text.secondary', mt: 0.5 };
 const TWO_COL_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 96px 1fr', alignItems: 'center', gap: 1 };
@@ -20,55 +20,67 @@ type Props = {
   config: PatternGenerationRequest;
   disabled: boolean;
   stageReady: boolean;
-  onCaptureReference: (slot: number) => void;
+  onCaptureCircle: (slot: number) => void;
   onReferenceChange: (slot: number, patch: Partial<FreePoint>) => void;
   onConfigChange: (patch: Partial<PatternGenerationRequest>) => void;
 };
 
-function CaseDepthPatternFormImpl({
+// Circle Mode form. The circle is defined by its Center plus one Reference point
+// on the circumference (radius = distance between them); `Number` indents are
+// placed starting at `Angle`° and stepped by `Interval`° around it. Center/edge
+// reuse the shared referencePoints capture rows ([0]=center, [1]=edge).
+function CirclePatternFormImpl({
   config,
   disabled,
   stageReady,
-  onCaptureReference,
+  onCaptureCircle,
   onReferenceChange,
   onConfigChange,
 }: Props) {
   const referencePoints = config.referencePoints ?? [];
-  const origin = referencePoints[ORIGIN];
-  const direction = referencePoints[DIRECTION];
+  const center = referencePoints[CENTER];
+  const edge = referencePoints[EDGE];
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-      <Typography sx={HEADER_SX}>Reference</Typography>
+      <Typography sx={HEADER_SX}>Circle</Typography>
 
       <ReferenceSlotRow
-        key={origin?.id ?? 'origin-empty'}
-        slot={ORIGIN}
-        label="Origin Point"
-        point={origin}
+        key={center?.id ?? 'center-empty'}
+        slot={CENTER}
+        label="Circle Center"
+        point={center}
         disabled={disabled}
         canCapture={stageReady}
-        onCapture={onCaptureReference}
+        onCapture={onCaptureCircle}
         onChange={onReferenceChange}
       />
       <ReferenceSlotRow
-        key={direction?.id ?? 'direction-empty'}
-        slot={DIRECTION}
-        label="Direction Point"
-        point={direction}
+        key={edge?.id ?? 'edge-empty'}
+        slot={EDGE}
+        label="Reference"
+        point={edge}
         disabled={disabled}
-        canCapture={stageReady && origin !== undefined}
-        onCapture={onCaptureReference}
+        canCapture={stageReady && center !== undefined}
+        onCapture={onCaptureCircle}
         onChange={onReferenceChange}
       />
 
       {!stageReady ? (
         <Typography sx={HINT_SX}>Stage position unknown — connect/home the platform to capture.</Typography>
-      ) : origin === undefined ? (
-        <Typography sx={HINT_SX}>Capture the Origin point, then the Direction point, to set the traverse line.</Typography>
+      ) : center === undefined ? (
+        <Typography sx={HINT_SX}>Capture the Circle Center, then a Reference point on the rim to set the radius.</Typography>
       ) : null}
 
       <Box sx={TWO_COL_SX}>
+        <Typography sx={LABEL_SX}>Angle</Typography>
+        <TextField
+          size="small"
+          sx={FIELD_SX}
+          defaultValue={config.angle ?? ''}
+          disabled={disabled}
+          onChange={(event) => onConfigChange({ angle: toNumberOrNull(event.target.value) })}
+        />
         <Typography sx={LABEL_SX}>Interval</Typography>
         <TextField
           size="small"
@@ -77,25 +89,9 @@ function CaseDepthPatternFormImpl({
           disabled={disabled}
           onChange={(event) => onConfigChange({ interval: toNumberOrNull(event.target.value) })}
         />
-        <Typography sx={LABEL_SX}>Offset</Typography>
-        <TextField
-          size="small"
-          sx={FIELD_SX}
-          defaultValue={config.offset ?? ''}
-          disabled={disabled}
-          onChange={(event) => onConfigChange({ offset: toNumberOrNull(event.target.value) })}
-        />
       </Box>
 
       <Box sx={TWO_COL_SX}>
-        <Typography sx={LABEL_SX}>First Offset</Typography>
-        <TextField
-          size="small"
-          sx={FIELD_SX}
-          defaultValue={config.firstOffset ?? ''}
-          disabled={disabled}
-          onChange={(event) => onConfigChange({ firstOffset: toNumberOrNull(event.target.value) })}
-        />
         <Typography sx={LABEL_SX}>Number</Typography>
         <TextField
           size="small"
@@ -110,4 +106,4 @@ function CaseDepthPatternFormImpl({
   );
 }
 
-export default memo(CaseDepthPatternFormImpl);
+export default memo(CirclePatternFormImpl);

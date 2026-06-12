@@ -20,6 +20,7 @@ export type MeasurementPayload = {
   averageMm: number | null;
   micronPerPixel: number | null;
   calibrationName: string | null;
+  calibrationId: string | null;
   objective: string | null;
   testForceKgf: number | null;
   timestamp: string;
@@ -50,6 +51,7 @@ export type MeasurementSavePayload = {
   averageMm?: number | null;
   micronPerPixel?: number | null;
   calibrationName?: string | null;
+  calibrationId?: string | null;
   objective?: string | null;
   testForceKgf?: number | null;
   timestamp?: string;

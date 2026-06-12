@@ -8,12 +8,13 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Measurement } from '@/types/measurement';
 
 const SECTION_SX: SxProps<Theme> = {
+  flex: 1,
+  minHeight: 0,
   px: 1.5,
   py: 1.5,
   display: 'flex',
   flexDirection: 'column',
   gap: 1,
-  minHeight: 220,
 };
 const GRID_WRAP_SX: SxProps<Theme> = {
   flex: 1,

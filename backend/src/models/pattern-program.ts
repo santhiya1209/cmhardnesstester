@@ -30,6 +30,23 @@ export const FreePointSchema = z.object({
   y: z.number().finite(),
 });
 
+export const CompositeMoveSchema = z.enum(['Horizontal', 'Vertical', 'Diagonal', 'Custom']);
+
+// One MultiLine Composite line, persisted verbatim so the multi-line layout
+// round-trips on Load. Generation semantics (Start→End span ÷ interval) live in
+// utils/patternGeneration.ts, not here.
+export const CompositeLineSchema = z.object({
+  id: z.string().min(1),
+  move: CompositeMoveSchema,
+  startX: z.number().finite(),
+  startY: z.number().finite(),
+  endX: z.number().finite(),
+  endY: z.number().finite(),
+  interval: z.number().finite().nonnegative(),
+  offset: z.number().finite().nonnegative(),
+  firstOffset: z.number().finite().nonnegative(),
+});
+
 export const PatternProgramPayloadSchema = z.object({
   pattern: PatternSchema,
   mode: PatternModeSchema,
@@ -52,6 +69,9 @@ export const PatternProgramPayloadSchema = z.object({
   // checks (angle 0–360 etc.) live in utils/patternGeneration.ts, not here.
   referencePoints: z.array(FreePointSchema),
   angle: NullableFiniteNumberSchema,
+  // MultiLine Composite per-line definitions. Defaulted so programs saved
+  // before this mode existed still load (they parse to an empty line list).
+  lines: z.array(CompositeLineSchema).default([]),
   multiset: z.boolean(),
   focusAll: z.boolean(),
   impressMode: ImpressModeSchema,

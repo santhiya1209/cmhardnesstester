@@ -17,17 +17,29 @@ import type { ImpressMode, PatternMode, PatternOption } from '@/types/patternPro
 import LinearPatternForm from './LinearPatternForm';
 import MatrixPatternForm from './MatrixPatternForm';
 import CaseDepthPatternForm from './CaseDepthPatternForm';
+import CirclePatternForm from './CirclePatternForm';
+import EquidistantMultipointForm from './EquidistantMultipointForm';
+import EquidistantThreePointForm from './EquidistantThreePointForm';
 import FreePatternForm from './FreePatternForm';
+import VerticalLineFreePointsForm from './VerticalLineFreePointsForm';
+import MultiLineCompositeForm from './MultiLineCompositeForm';
+import EquidistantTriangleForm from './EquidistantTriangleForm';
 import PatternPreviewTable from './PatternPreviewTable';
 
 const PATTERN_OPTIONS: PatternOption[] = ['Line', 'Rectangle', 'Circle', 'Custom'];
-// Engine supports all 12 PatternMode members; the UI exposes only these 5 for now.
+// Engine supports all 12 PatternMode members; the UI exposes this subset.
 const MODE_OPTIONS: PatternMode[] = [
   'Vertical Mode',
   'Horizontal Mode',
   'Matrix Mode',
   'Free Mode',
   'Case Depth Mode',
+  'Circle Mode',
+  'Equidistant Multipoint Mode',
+  'Equidistant Three Point Mode',
+  'Vertical Line Free Points Mode',
+  'Multiline Composite Pattern',
+  'Equidistant Triangle Mode',
 ];
 const IMPRESS_MODE_OPTIONS: ImpressMode[] = ['indenting', 'onePass', 'twoPass'];
 const IMPRESS_LABELS: Record<ImpressMode, string> = {
@@ -36,7 +48,7 @@ const IMPRESS_LABELS: Record<ImpressMode, string> = {
   twoPass: 'Two Pass Impress',
 };
 
-const SECTION_SX: SxProps<Theme> = { px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25 };
+const SECTION_SX: SxProps<Theme> = { flex: 1, minHeight: 0, px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25, overflowY: 'auto', overflowX: 'hidden' };
 const TWO_COL_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 96px 1fr', alignItems: 'center', gap: 1 };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const BTN_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'center' };
@@ -112,6 +124,75 @@ function MultipointTabImpl() {
           onReferenceChange={m.updateReferencePoint}
           onConfigChange={m.updateConfig}
         />
+      ) : m.mode === 'Circle Mode' ? (
+        <CirclePatternForm
+          key={formKey}
+          config={config}
+          disabled={m.isBusy}
+          stageReady={m.stageReady}
+          onCaptureCircle={m.captureCirclePoint}
+          onReferenceChange={m.updateReferencePoint}
+          onConfigChange={m.updateConfig}
+        />
+      ) : m.mode === 'Equidistant Multipoint Mode' ? (
+        <EquidistantMultipointForm
+          key={formKey}
+          config={config}
+          disabled={m.isBusy}
+          stageReady={m.stageReady}
+          multiset={programMeta.multiset}
+          onCaptureReference={m.captureReferenceSlot}
+          onReferenceChange={m.setReferenceSlot}
+          onAddReference={m.addReferenceSlot}
+          onConfigChange={m.updateConfig}
+        />
+      ) : m.mode === 'Equidistant Three Point Mode' ? (
+        <EquidistantThreePointForm
+          key={formKey}
+          config={config}
+          disabled={m.isBusy}
+          multiset={programMeta.multiset}
+          onAddRow={m.addThreePointRow}
+          onUpdateCell={m.updateThreePointCell}
+          onDeleteRow={m.deleteThreePointRow}
+          onClear={m.clearThreePointRows}
+          onConfigChange={m.updateConfig}
+        />
+      ) : m.mode === 'Vertical Line Free Points Mode' ? (
+        <VerticalLineFreePointsForm
+          points={config.freePoints ?? []}
+          disabled={m.isBusy}
+          stageReady={m.stageReady}
+          alignmentOverride={m.alignmentOverride}
+          onAddPoint={m.addFreePoint}
+          onCapture={m.captureFreePoint}
+          onUpdate={m.updateFreePoint}
+          onDelete={m.deleteFreePoint}
+          onClear={m.clearFreePoints}
+          onAlignmentOverrideChange={m.setAlignmentOverride}
+        />
+      ) : m.mode === 'Multiline Composite Pattern' ? (
+        <MultiLineCompositeForm
+          lines={config.lines ?? []}
+          disabled={m.isBusy}
+          onAddLine={m.addCompositeLine}
+          onUpdateLine={m.updateCompositeLine}
+          onDeleteLine={m.deleteCompositeLine}
+          onMoveLine={m.moveCompositeLine}
+        />
+      ) : m.mode === 'Equidistant Triangle Mode' ? (
+        <EquidistantTriangleForm
+          key={formKey}
+          triangles={config.triangles ?? []}
+          interval={config.interval}
+          disabled={m.isBusy}
+          multiset={programMeta.multiset}
+          onAddTriangle={m.addTriangle}
+          onUpdateTriangle={m.updateTriangle}
+          onDeleteTriangles={m.deleteTriangles}
+          onClearTriangles={m.clearTriangles}
+          onConfigChange={m.updateConfig}
+        />
       ) : (
         <LinearPatternForm key={formKey} config={config} disabled={m.isBusy} onConfigChange={m.updateConfig} />
       )}
@@ -170,6 +251,7 @@ function MultipointTabImpl() {
         points={m.generatedPoints}
         selectedIds={m.selectedPointIds}
         onToggleSelect={m.toggleSelect}
+        onToggleSelectAll={m.toggleSelectAll}
         onDeleteSelected={m.removeSelected}
         onClear={m.clearPoints}
       />

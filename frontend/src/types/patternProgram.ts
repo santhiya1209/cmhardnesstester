@@ -39,6 +39,12 @@ export type PatternProgramPayload = {
   // used by generation (the bearing comes from the two reference points).
   referencePoints: FreePoint[];
   angle: number | null;
+  // MultiLine Composite: the per-line definitions. Persisted verbatim so the
+  // whole multi-line layout round-trips on Load. Empty for every other mode.
+  lines: CompositeLine[];
+  // Equidistant Triangle: the per-triangle vertex definitions. Empty for every
+  // other mode. Incomplete triangles are dropped on Save (see toPayload).
+  triangles: TriangleDefinition[];
   multiset: boolean;
   focusAll: boolean;
   impressMode: ImpressMode;
@@ -60,6 +66,43 @@ export type PatternProgram = PatternProgramPayload & {
  */
 export type FreePoint = { id: string; x: number; y: number };
 
+/** Travel direction for a MultiLine Composite line; constrains which axis varies. */
+export type CompositeMove = 'Horizontal' | 'Vertical' | 'Diagonal' | 'Custom';
+
+/**
+ * One line of a MultiLine Composite pattern. Points run from Start toward End in
+ * `interval`-mm steps (count derived from the Start→End span, not entered). For
+ * Horizontal/Vertical the relevant End axis sets the extent; for Diagonal/Custom
+ * the full Start→End vector is used. `offset` + `firstOffset` push the first
+ * point away from Start along the travel direction.
+ */
+export type CompositeLine = {
+  id: string;
+  move: CompositeMove;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  interval: number;
+  offset: number;
+  firstOffset: number;
+};
+
+/**
+ * One triangle of an Equidistant Triangle pattern, defined by three explicit
+ * vertices (mm). Edited as a single table row (X1/Y1/X2/Y2/X3/Y3); the stable
+ * `id` tracks row selection independent of array position.
+ */
+export type TriangleDefinition = {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  x3: number;
+  y3: number;
+};
+
 /** A single generated indentation coordinate, in millimetres. */
 export type PatternPoint = {
   /** Stable id for preview-table selection and deletion. */
@@ -68,6 +111,10 @@ export type PatternPoint = {
   no: number;
   x: number;
   y: number;
+  /** 1-based source line number — set only by MultiLine Composite generation. */
+  line?: number;
+  /** 1-based source triangle number — set only by Equidistant Triangle generation. */
+  triangle?: number;
 };
 
 /**
@@ -99,6 +146,10 @@ export type PatternGenerationRequest = {
   referencePoints: FreePoint[];
   /** Reserved/persisted Case Depth field — not used by generation (bearing comes from referencePoints). */
   angle: number | null;
+  /** MultiLine Composite per-line definitions; empty for every other mode. */
+  lines: CompositeLine[];
+  /** Equidistant Triangle per-triangle vertex definitions; empty for every other mode. */
+  triangles: TriangleDefinition[];
 };
 
 export type PatternGenerationResult = {

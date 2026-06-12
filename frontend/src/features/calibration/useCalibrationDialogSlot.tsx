@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import CalibrationDialog from '@/component/own/CalibrationDialog';
 import type { CalibrationMeasureMode } from '@/features/manualMeasure/useCalibrationManualMeasure';
+import type { ToolId } from '@/types/tool';
 
 type CalibrationDialogProps = React.ComponentProps<typeof CalibrationDialog>;
 
@@ -14,6 +15,7 @@ export type UseCalibrationDialogSlotArgs = {
   setCalibrationMeasureMode: (next: CalibrationMeasureMode, reason: string) => void;
   setManualMeasureResetKey: React.Dispatch<React.SetStateAction<number>>;
   setAutoMeasureSessionActive: (active: boolean) => void;
+  setActiveTool: (tool: ToolId) => void;
   clearAutoMeasureOverlay: (reason: string) => void;
   closeDialog: () => void;
   setStatusMessage: (message: string) => void;
@@ -21,7 +23,6 @@ export type UseCalibrationDialogSlotArgs = {
 
   onRequestAutoMeasure: NonNullable<CalibrationDialogProps['onRequestAutoMeasure']>;
   onRequestManualMeasure: NonNullable<CalibrationDialogProps['onRequestManualMeasure']>;
-  onAutoCreateMeasurementRow: NonNullable<CalibrationDialogProps['onAutoCreateMeasurementRow']>;
 };
 
 export type UseCalibrationDialogSlotResult = {
@@ -37,13 +38,13 @@ export function useCalibrationDialogSlot({
   setCalibrationMeasureMode,
   setManualMeasureResetKey,
   setAutoMeasureSessionActive,
+  setActiveTool,
   clearAutoMeasureOverlay,
   closeDialog,
   setStatusMessage,
   refetchCalibrations,
   onRequestAutoMeasure,
   onRequestManualMeasure,
-  onAutoCreateMeasurementRow,
 }: UseCalibrationDialogSlotArgs): UseCalibrationDialogSlotResult {
   const handleDialogStatusChange = useCallback(
     (message: string) => setStatusMessage(`System Status: ${message}`),
@@ -57,6 +58,9 @@ export function useCalibrationDialogSlot({
     setAutoMeasureSessionActive(false);
     clearAutoMeasureOverlay('calibration-closed');
     setCalibrationMeasureMode('none', 'panel-closed');
+    // Leave any calibration Manual Measure tool state behind — return to the
+    // normal pointer view so no overlay (auto or manual) lingers on close.
+    setActiveTool('pointer');
     closeDialog();
   }, [
     calibrationManualModeRef,
@@ -64,6 +68,7 @@ export function useCalibrationDialogSlot({
     setAutoMeasureSessionActive,
     clearAutoMeasureOverlay,
     setCalibrationMeasureMode,
+    setActiveTool,
     closeDialog,
   ]);
   const handleCalibrationChanged = useCallback(() => {
@@ -89,7 +94,6 @@ export function useCalibrationDialogSlot({
         defaultForce={calibrationDefaultForce}
         onRequestAutoMeasure={onRequestAutoMeasure}
         onRequestManualMeasure={onRequestManualMeasure}
-        onAutoCreateMeasurementRow={onAutoCreateMeasurementRow}
       />
     ),
     [
@@ -103,7 +107,6 @@ export function useCalibrationDialogSlot({
       calibrationDefaultForce,
       onRequestAutoMeasure,
       onRequestManualMeasure,
-      onAutoCreateMeasurementRow,
     ]
   );
 

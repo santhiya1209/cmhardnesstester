@@ -195,6 +195,7 @@ export function useManualMeasure({
             qualified: deriveQualifiedForRow(values.hv),
             micronPerPixel: values.umPerPixel,
             calibrationName: values.calibrationName,
+            calibrationId: values.calibrationId || null,
             objective: values.normalizedObjective,
             testForceKgf: values.forceKgf,
             ...depthPayload,
@@ -208,10 +209,20 @@ export function useManualMeasure({
             manualMeasurementIdRef.current ?? getActiveMeasurementId();
           if (manualReuseId && manualMeasurementIdRef.current === null) {
           }
+          // [MEASURE_SOURCE] temporary — remove after verification
+          // eslint-disable-next-line no-console
+          console.log(
+            `[MEASURE_SOURCE] source=manual_measure d1Px=${rowPayload.d1Px} d2Px=${rowPayload.d2Px}`
+          );
           const saved = await saveManualMeasurement({
             id: manualReuseId ?? undefined,
             values: rowPayload,
           });
+          // [MEASURE_SAVE] temporary — remove after verification
+          // eslint-disable-next-line no-console
+          console.log(
+            `[MEASURE_SAVE] source=manual_measure id=${saved.id} d1Px=${saved.d1Px} d2Px=${saved.d2Px} micronPerPixel=${saved.micronPerPixel} hv=${saved.hv}`
+          );
           const savedManualMethod = saved.method ?? 'Manual';
           if (isNewManualMeasurement && manualDepthCapture) {
           } else if (!isNewManualMeasurement) {

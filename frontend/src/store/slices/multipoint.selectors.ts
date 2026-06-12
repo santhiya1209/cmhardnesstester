@@ -14,3 +14,4 @@ export const selectSelectedPointIds = (state: RootState): string[] => state.mult
 export const selectIsGenerating = (state: RootState): boolean => state.multipoint.isGenerating;
 export const selectProgramMeta = (state: RootState): ProgramMeta => state.multipoint.programMeta;
 export const selectActivePointId = (state: RootState): string | null => state.multipoint.activePointId;
+export const selectCompletedPointIds = (state: RootState): string[] => state.multipoint.completedPointIds;

@@ -221,6 +221,11 @@ export function useAutoMeasure({
                   convertValue: preservedConvertValue,
                 }
               : {};
+            // [MEASURE_SOURCE] temporary — remove after verification
+            // eslint-disable-next-line no-console
+            console.log(
+              `[MEASURE_SOURCE] source=auto_measure d1Px=${values.d1Px} d2Px=${values.d2Px}`
+            );
             const saved = await saveManualMeasurement({
               id: targetId,
               values: {
@@ -237,6 +242,7 @@ export function useAutoMeasure({
                 qualified: deriveQualifiedForRow(values.hv),
                 micronPerPixel: values.umPerPixel,
                 calibrationName: values.calibrationName,
+                calibrationId: values.calibrationId || null,
                 objective: values.normalizedObjective,
                 testForceKgf: values.forceKgf,
                 ...preserveFields,
@@ -248,6 +254,11 @@ export function useAutoMeasure({
             });
             autoMeasurementIdRef.current = saved.id;
             manualMeasurementIdRef.current = saved.id;
+            // [MEASURE_SAVE] temporary — remove after verification
+            // eslint-disable-next-line no-console
+            console.log(
+              `[MEASURE_SAVE] source=auto_measure id=${saved.id} d1Px=${saved.d1Px} d2Px=${saved.d2Px} micronPerPixel=${saved.micronPerPixel} hv=${saved.hv}`
+            );
             // eslint-disable-next-line no-console
             console.warn(`[measurement-add] objective=${saved.objective ?? values.normalizedObjective ?? 'null'}`);
             {

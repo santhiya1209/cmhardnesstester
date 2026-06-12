@@ -36,6 +36,11 @@ export const MeasurementPayloadSchema = z.object({
   averageMm: NullablePositiveNumberSchema,
   micronPerPixel: NullablePositiveNumberSchema,
   calibrationName: NullableTextSchema,
+  // Soft reference to the calibration record used to convert this measurement
+  // (calibration-settings id for live measures, calibrations id when the row
+  // was created from the Add Calibration flow). Nullable for legacy rows and
+  // measures taken before any calibration was matched.
+  calibrationId: NullableTextSchema,
   objective: NullableTextSchema,
   testForceKgf: NullablePositiveNumberSchema,
   timestamp: IsoDateTimeSchema,

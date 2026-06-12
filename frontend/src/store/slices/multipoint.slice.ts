@@ -19,6 +19,8 @@ const INITIAL_CONFIG: PatternGenerationRequest = {
   freePoints: [],
   referencePoints: [],
   angle: null,
+  lines: [],
+  triangles: [],
 };
 
 const INITIAL_STATE: MultipointState = {
@@ -29,6 +31,7 @@ const INITIAL_STATE: MultipointState = {
   isGenerating: false,
   programMeta: { pattern: 'Line', multiset: false, focusAll: false, impressMode: 'indenting' },
   activePointId: null,
+  completedPointIds: [],
 };
 
 // Editing any generation input invalidates the previous preview, so points +
@@ -37,6 +40,7 @@ function clearGenerated(state: MultipointState): void {
   state.generatedPoints = [];
   state.selectedPointIds = [];
   state.activePointId = null;
+  state.completedPointIds = [];
 }
 
 const multipointSlice = createSlice({
@@ -63,9 +67,24 @@ const multipointSlice = createSlice({
       state.selectedPointIds = [];
       state.isGenerating = false;
       state.activePointId = null;
+      state.completedPointIds = [];
     },
     setActivePoint(state, action: PayloadAction<string | null>) {
       state.activePointId = action.payload;
+    },
+    // Reset the per-run execution markers at the start of a Start run, leaving the
+    // generated points + selection intact (unlike clearPoints which wipes them).
+    resetExecutionProgress(state) {
+      state.activePointId = null;
+      state.completedPointIds = [];
+    },
+    markPointCompleted(state, action: PayloadAction<string>) {
+      if (!state.completedPointIds.includes(action.payload)) {
+        state.completedPointIds.push(action.payload);
+      }
+    },
+    setSelectedPointIds(state, action: PayloadAction<string[]>) {
+      state.selectedPointIds = action.payload;
     },
     deletePoint(state, action: PayloadAction<string>) {
       state.generatedPoints = state.generatedPoints.filter((point) => point.id !== action.payload);
@@ -100,6 +119,9 @@ export const {
   setGenerating,
   setGeneratedPoints,
   setActivePoint,
+  resetExecutionProgress,
+  markPointCompleted,
+  setSelectedPointIds,
   deletePoint,
   deletePoints,
   clearPoints,

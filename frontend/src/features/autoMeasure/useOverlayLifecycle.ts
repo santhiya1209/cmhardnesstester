@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { DialogKey } from '@/contexts/DialogContext';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
+import type { ToolId } from '@/types/tool';
 
 type UseOverlayLifecycleParams = {
   cameraOpen: boolean;
@@ -8,6 +9,15 @@ type UseOverlayLifecycleParams = {
   turretMoving: boolean;
   objectiveChangeInProgress: boolean;
   activeObjective: string | null;
+  /**
+   * Active toolbar tool. The Auto/Calibration overlay and the Manual Measure
+   * overlay are separate canvas layers; this gate makes them mutually
+   * exclusive. While Manual Measure is the active tool the auto/calibration
+   * overlay must never paint, so a lingering committed overlay (e.g. one whose
+   * imperative clear was skipped by the paint-pending guard) can't mix with the
+   * manual measurement lines.
+   */
+  activeTool: ToolId;
 };
 
 type UseOverlayLifecycleResult = {
@@ -32,6 +42,7 @@ export function useOverlayLifecycle({
   turretMoving,
   objectiveChangeInProgress,
   activeObjective,
+  activeTool,
 }: UseOverlayLifecycleParams): UseOverlayLifecycleResult {
   const [committedAutoMeasureOverlay, setCommittedAutoMeasureOverlay] =
     useState<AutoMeasureGraphics | null>(null);
@@ -54,6 +65,11 @@ export function useOverlayLifecycle({
   const lastOverlayRenderLogRef = useRef<string | null>(null);
   const displayedAutoMeasureGraphics = (() => {
     if (!cameraOpen) return null;
+    if (activeTool === 'manualMeasure') {
+      // Manual Measure owns the overlay layer; never paint the auto/calibration
+      // lines on top of it.
+      return null;
+    }
     if (turretMoving) {
       return null;
     }
