@@ -9,6 +9,7 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
+import ScatterPlotOutlinedIcon from '@mui/icons-material/ScatterPlotOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { PatternPoint } from '@/types/patternProgram';
 
@@ -86,7 +87,12 @@ function PatternPreviewTableImpl({
           <TableBody>
             {points.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} sx={EMPTY_CELL_SX}>No generated points. Use Generate to preview.</TableCell>
+                <TableCell colSpan={5} sx={EMPTY_CELL_SX}>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                    <ScatterPlotOutlinedIcon sx={{ fontSize: 32, color: 'text.disabled', opacity: 0.6 }} />
+                    No generated points. Use Generate to preview.
+                  </Box>
+                </TableCell>
               </TableRow>
             ) : (
               points.map((point) => (

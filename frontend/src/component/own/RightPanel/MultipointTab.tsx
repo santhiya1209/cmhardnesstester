@@ -11,6 +11,15 @@ import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
+import InputAdornment from '@mui/material/InputAdornment';
+import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
+import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import ShowChartRoundedIcon from '@mui/icons-material/ShowChartRounded';
+import SwapHorizRoundedIcon from '@mui/icons-material/SwapHorizRounded';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useMultipoint } from '@/hooks/useMultipoint';
 import type { ImpressMode, PatternMode, PatternOption } from '@/types/patternProgram';
@@ -27,12 +36,13 @@ import EquidistantTriangleForm from './EquidistantTriangleForm';
 import PatternPreviewTable from './PatternPreviewTable';
 
 const PATTERN_OPTIONS: PatternOption[] = ['Line', 'Rectangle', 'Circle', 'Custom'];
-// Engine supports all 12 PatternMode members; the UI exposes this subset.
+// The UI exposes every PatternMode member the engine supports.
 const MODE_OPTIONS: PatternMode[] = [
   'Vertical Mode',
   'Horizontal Mode',
   'Matrix Mode',
   'Free Mode',
+  'Midpoint Mode',
   'Case Depth Mode',
   'Circle Mode',
   'Equidistant Multipoint Mode',
@@ -48,15 +58,20 @@ const IMPRESS_LABELS: Record<ImpressMode, string> = {
   twoPass: 'Two Pass Impress',
 };
 
-const SECTION_SX: SxProps<Theme> = { flex: 1, minHeight: 0, px: 1.5, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25, overflowY: 'auto', overflowX: 'hidden' };
+// Grey base behind the floating form card (matches the panel's `background.default`).
+const SCROLL_SX: SxProps<Theme> = { flex: 1, minHeight: 0, p: 1, bgcolor: 'background.default', overflowY: 'auto', overflowX: 'hidden' };
+// White form card with the design-reference soft shadow.
+const CARD_SX: SxProps<Theme> = { display: 'flex', flexDirection: 'column', gap: 1.25, p: 2, borderRadius: 2, border: 1, borderColor: 'divider', bgcolor: 'background.paper', boxShadow: '0 6px 20px rgba(0,0,0,0.06)' };
 const TWO_COL_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 96px 1fr', alignItems: 'center', gap: 1 };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const BTN_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'center' };
 const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
+const ADORN_ICON_SX: SxProps<Theme> = { fontSize: 16, color: 'text.disabled' };
 const OPTION_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' };
 const RADIO_SX: SxProps<Theme> = { '& .MuiFormControlLabel-label': { fontSize: 12 } };
 const INFO_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' };
 const INFO_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
+const INFO_LINK_SX: SxProps<Theme> = { fontSize: 12, color: 'primary.main', fontWeight: 500 };
 
 function MultipointTabImpl() {
   const m = useMultipoint();
@@ -64,13 +79,19 @@ function MultipointTabImpl() {
   const formKey = `${m.mode}-${m.formRevision}`;
 
   return (
-    <Box sx={SECTION_SX}>
+    <Box sx={SCROLL_SX}>
+      <Box sx={CARD_SX}>
       <Box sx={TWO_COL_SX}>
         <Typography sx={LABEL_SX}>Pattern</Typography>
         <FormControl size="small">
           <Select
             value={programMeta.pattern}
             disabled={m.isBusy}
+            startAdornment={
+              <InputAdornment position="start">
+                <ShowChartRoundedIcon sx={ADORN_ICON_SX} />
+              </InputAdornment>
+            }
             onChange={(event) => m.updateProgramMeta({ pattern: event.target.value as PatternOption })}
           >
             {PATTERN_OPTIONS.map((option) => (
@@ -83,6 +104,11 @@ function MultipointTabImpl() {
           <Select
             value={m.mode}
             disabled={m.isBusy}
+            startAdornment={
+              <InputAdornment position="start">
+                <SwapHorizRoundedIcon sx={ADORN_ICON_SX} />
+              </InputAdornment>
+            }
             onChange={(event) => m.setMode(event.target.value as PatternMode)}
           >
             {MODE_OPTIONS.map((option) => (
@@ -93,17 +119,17 @@ function MultipointTabImpl() {
       </Box>
 
       <Box sx={BTN_ROW_SX}>
-        <Button variant="outlined" size="small" sx={BTN_SX} disabled={m.isBusy} onClick={() => void m.save()}>
-          Save Program
+        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<SaveOutlinedIcon />} disabled={m.isBusy} onClick={() => void m.save()}>
+          Save
         </Button>
-        <Button variant="outlined" size="small" sx={BTN_SX} disabled={m.isBusy} onClick={m.load}>
-          Load Program
+        <Button variant="outlined" size="small" sx={BTN_SX} startIcon={<FolderOpenOutlinedIcon />} disabled={m.isBusy} onClick={m.load}>
+          Load
         </Button>
       </Box>
 
       {m.mode === 'Matrix Mode' ? (
         <MatrixPatternForm key={formKey} config={config} disabled={m.isBusy} onConfigChange={m.updateConfig} />
-      ) : m.mode === 'Free Mode' ? (
+      ) : m.mode === 'Free Mode' || m.mode === 'Midpoint Mode' ? (
         <FreePatternForm
           points={config.freePoints ?? []}
           disabled={m.isBusy}
@@ -140,7 +166,6 @@ function MultipointTabImpl() {
           config={config}
           disabled={m.isBusy}
           stageReady={m.stageReady}
-          multiset={programMeta.multiset}
           onCaptureReference={m.captureReferenceSlot}
           onReferenceChange={m.setReferenceSlot}
           onAddReference={m.addReferenceSlot}
@@ -198,8 +223,8 @@ function MultipointTabImpl() {
       )}
 
       <Box sx={BTN_ROW_SX}>
-        <Button variant="outlined" size="small" sx={BTN_SX} disabled={m.isBusy} onClick={() => void m.start()}>Start</Button>
-        <Button variant="outlined" size="small" sx={BTN_SX} disabled={m.isBusy || m.isGenerating} onClick={m.generatePattern}>
+        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<PlayArrowRoundedIcon />} disabled={m.isBusy} onClick={() => void m.start()}>Start</Button>
+        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<AutoAwesomeOutlinedIcon />} disabled={m.isBusy || m.isGenerating} onClick={m.generatePattern}>
           Generate
         </Button>
         <FormControlLabel
@@ -244,7 +269,7 @@ function MultipointTabImpl() {
           label="FocusAll"
           sx={RADIO_SX}
         />
-        <Button variant="outlined" size="small" sx={BTN_SX} disabled={m.isBusy} onClick={m.reset}>Reset</Button>
+        <Button variant="outlined" color="error" size="small" sx={BTN_SX} startIcon={<RefreshRoundedIcon />} disabled={m.isBusy} onClick={m.reset}>Reset</Button>
       </Box>
 
       <PatternPreviewTable
@@ -257,18 +282,19 @@ function MultipointTabImpl() {
       />
 
       <Box sx={INFO_ROW_SX}>
-        <Typography sx={INFO_TEXT_SX}>
+        <Typography sx={INFO_LINK_SX}>
           {m.loadedProgram
             ? `Active Program: ${m.loadedProgram.patternName} (${m.loadedProgram.pointCount} point(s))`
             : 'Active Program: Unsaved values'}
         </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {m.isBusy ? <CircularProgress size={12} /> : null}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          {m.isBusy ? <CircularProgress size={12} /> : <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled' }} />}
           <Typography sx={INFO_TEXT_SX}>{m.statusMessage}</Typography>
         </Box>
       </Box>
 
       {m.errorMessage ? <Alert severity="error">{m.errorMessage}</Alert> : null}
+      </Box>
     </Box>
   );
 }

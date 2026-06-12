@@ -202,14 +202,44 @@ function generateCircle(req: PatternGenerationRequest): PatternGenerationResult 
   return ok(points);
 }
 
-/** Single point: the midpoint of reference 1 and reference 2. */
+/**
+ * Midpoint Mode: midpoint interpolation over the operator's point list
+ * (`req.freePoints`, the editable XY table).
+ *
+ *  - With points: the original points are preserved in order and the midpoint of
+ *    every consecutive pair is inserted between them, so N points yield 2N−1
+ *    (e.g. P1, M12, P2, M23, P3…). A single point is emitted unchanged.
+ *  - With no points: a default 10 mm square test pattern (4 corners) is emitted
+ *    so Generate always produces a runnable pattern.
+ *
+ * Incomplete rows (non-finite X or Y from a blank "Add Point" slot) are filtered
+ * out first, matching the other point-list generators.
+ */
 function generateMidpoint(req: PatternGenerationRequest): PatternGenerationResult {
-  const ref = requireRef(req);
-  if (!ref) return fail('Midpoint Mode needs reference point 1 (X and Y).');
-  if (req.refX2 === null || req.refX2 === undefined || req.refY2 === null || req.refY2 === undefined) {
-    return fail('Midpoint Mode needs reference point 2 (X and Y).');
+  const pts = (req.freePoints ?? []).filter(
+    (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)
+  );
+
+  if (pts.length === 0) {
+    const square: Array<[number, number]> = [
+      [0, 0],
+      [10, 0],
+      [10, 10],
+      [0, 10],
+    ];
+    return ok(square.map(([x, y], i) => point(i + 1, x, y)));
   }
-  return ok([point(1, (ref.x + req.refX2) / 2, (ref.y + req.refY2) / 2)]);
+
+  const points: PatternPoint[] = [];
+  let no = 1;
+  points.push(point(no++, pts[0].x, pts[0].y));
+  for (let i = 0; i + 1 < pts.length; i += 1) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    points.push(point(no++, (a.x + b.x) / 2, (a.y + b.y) / 2));
+    points.push(point(no++, b.x, b.y));
+  }
+  return ok(points);
 }
 
 

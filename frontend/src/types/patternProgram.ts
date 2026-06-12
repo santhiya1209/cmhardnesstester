@@ -135,7 +135,7 @@ export type PatternGenerationRequest = {
   intervalY: number | null;
   rows: number | null;
   columns: number | null;
-  /** Second reference point for two-point modes (Case Depth, Midpoint, Equidistant*). */
+  /** Second reference point for two-point modes (Case Depth, Equidistant*). */
   refX2: number | null;
   refY2: number | null;
   /** Circle / triangle circumradius. */

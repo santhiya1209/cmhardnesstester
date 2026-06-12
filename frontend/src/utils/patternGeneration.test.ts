@@ -698,3 +698,72 @@ describe('Case Depth save/load round-trip', () => {
     expect(after.points).toEqual(before.points);
   });
 });
+
+function midpointConfig(freePoints: FreePoint[]): PatternGenerationRequest {
+  return {
+    mode: 'Midpoint Mode',
+    refX: null,
+    refY: null,
+    interval: null,
+    offset: null,
+    firstOffset: null,
+    number: null,
+    intervalY: null,
+    rows: null,
+    columns: null,
+    refX2: null,
+    refY2: null,
+    radius: null,
+    freePoints,
+    referencePoints: [],
+    angle: null,
+    lines: [],
+    triangles: [],
+  };
+}
+
+describe('Midpoint generation', () => {
+  it('preserves the original points and inserts the midpoint of each consecutive pair', () => {
+    const result = generatePattern(
+      midpointConfig([ref('a', 0, 0), ref('b', 10, 0), ref('c', 10, 10)])
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.points).toEqual([
+      { id: '1', no: 1, x: 0, y: 0 },
+      { id: '2', no: 2, x: 5, y: 0 },
+      { id: '3', no: 3, x: 10, y: 0 },
+      { id: '4', no: 4, x: 10, y: 5 },
+      { id: '5', no: 5, x: 10, y: 10 },
+    ]);
+  });
+
+  it('emits a single point unchanged when only one point exists', () => {
+    const result = generatePattern(midpointConfig([ref('a', 3, 4)]));
+    expect(result.success).toBe(true);
+    expect(result.points).toEqual([{ id: '1', no: 1, x: 3, y: 4 }]);
+  });
+
+  it('ignores incomplete (blank) rows before interpolating', () => {
+    const result = generatePattern(
+      midpointConfig([ref('a', 0, 0), ref('blank', Number.NaN, Number.NaN), ref('b', 4, 0)])
+    );
+    expect(result.success).toBe(true);
+    expect(result.points).toEqual([
+      { id: '1', no: 1, x: 0, y: 0 },
+      { id: '2', no: 2, x: 2, y: 0 },
+      { id: '3', no: 3, x: 4, y: 0 },
+    ]);
+  });
+
+  it('falls back to a 4-corner square test pattern when no points exist', () => {
+    const result = generatePattern(midpointConfig([]));
+    expect(result.success).toBe(true);
+    expect(result.points).toEqual([
+      { id: '1', no: 1, x: 0, y: 0 },
+      { id: '2', no: 2, x: 10, y: 0 },
+      { id: '3', no: 3, x: 10, y: 10 },
+      { id: '4', no: 4, x: 0, y: 10 },
+    ]);
+  });
+});
