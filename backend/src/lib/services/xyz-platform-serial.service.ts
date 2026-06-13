@@ -318,7 +318,7 @@ export interface ConnectStageOptions {
 }
 
 export type XyzCommandResult =
-  | { ok: true; position?: XyzPosition; rx?: string; commandId: string }
+  | { ok: true; position?: XyzPosition; positionMm?: XyzPosition; rx?: string; commandId: string }
   | {
       ok: false;
       error: string;
@@ -1976,7 +1976,11 @@ class XyzPlatformSerialService extends EventEmitter {
   }
 
   // Focus mode — software state only (no focus command exists in the protocol).
+  // CFocus/FFocus ONLY change which step the next manual Z move uses; they NEVER
+  // move the Z axis themselves.
   setFocusMode(focusMode: FocusMode): Promise<XyzCommandResult> {
+    // eslint-disable-next-line no-console
+    console.log(`[focus-mode] mode=${focusMode}`);
     return Promise.resolve(
       this.softwareCommand({ focusMode }, `Focus mode ${focusMode}.`, `focus-${focusMode}`)
     );
@@ -2060,6 +2064,69 @@ class XyzPlatformSerialService extends EventEmitter {
       // eslint-disable-next-line no-console
       console.log(`[xyz-move-to-point-arrived] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
       return after;
+    }
+    return moved;
+  }
+
+  /**
+   * Nudge the stage by a RELATIVE mm delta from the CURRENT position — used by
+   * the camera-click point-selection workflow to bring a clicked feature to the
+   * objective. Unlike moveToPoint (which anchors to the taught optical center),
+   * this anchors to wherever the stage is now, so it needs NO taught center.
+   * Reuses the SAME relative-delta relocation engine (buildRelocationMoveCommand
+   * → RX-gated runCommand → re-read) — NO new serial protocol, NO optimistic
+   * update. Returns the real post-move position in pulses AND mm so the caller
+   * stores the actual landed coordinate, never the theoretical target.
+   */
+  async moveByOffsetMm(deltaXmm: number, deltaYmm: number): Promise<XyzCommandResult> {
+    const commandId = this.nextCommandId();
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-move-by-offset-start] commandId=${commandId} deltaXmm=${deltaXmm} deltaYmm=${deltaYmm}`);
+    if (!this.state.connected) {
+      this.setState({ lastError: 'XYZ_STAGE_NOT_CONNECTED' });
+      return { ok: false, error: 'XYZ_STAGE_NOT_CONNECTED', message: friendlyXyzMessage('XYZ_STAGE_NOT_CONNECTED'), commandId };
+    }
+    if (!this.state.xyLocked) {
+      this.setState({ lastError: 'XYZ_STAGE_XY_UNLOCKED' });
+      return { ok: false, error: 'XYZ_STAGE_XY_UNLOCKED', message: friendlyXyzMessage('XYZ_STAGE_XY_UNLOCKED'), commandId };
+    }
+    if (!Number.isFinite(deltaXmm) || !Number.isFinite(deltaYmm)) {
+      this.setState({ lastError: 'XYZ_STAGE_INVALID_TARGET' });
+      return { ok: false, error: 'XYZ_STAGE_INVALID_TARGET', message: friendlyXyzMessage('XYZ_STAGE_INVALID_TARGET'), commandId };
+    }
+
+    const settings = await this.loadActiveSettings();
+    const dx = Math.round(deltaXmm * settings.pulsePerMm);
+    const dy = Math.round(deltaYmm * settings.pulsePerMm);
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-move-by-offset-delta] commandId=${commandId} pulsePerMm=${settings.pulsePerMm} dx=${dx} dy=${dy}`);
+    if (dx === 0 && dy === 0) {
+      const here = await this.getPosition();
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-by-offset-arrived] commandId=${commandId} note=zero-delta x=${here.ok && here.position ? here.position.x : 'unknown'} y=${here.ok && here.position ? here.position.y : 'unknown'}`);
+      return here.ok && here.position ? { ...here, positionMm: { ...this.state.positionMm } } : here;
+    }
+
+    const moved = await this.runCommand(
+      'moveByOffset',
+      () => {
+        const cmd = buildRelocationMoveCommand(dx, dy);
+        if (!cmd) throw new Error('XYZ_RELOCATION_NO_DELTA');
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-move-by-offset-command] commandId=${commandId} key=${cmd.key} dx=${dx} dy=${dy}`);
+        return cmd;
+      },
+      `Move by offset (dx ${dx}, dy ${dy}).`,
+      false,
+      MOVE_TIMEOUT_MS
+    );
+    if (!moved.ok) return moved;
+
+    const after = await this.getPosition();
+    if (after.ok && after.position) {
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-move-by-offset-arrived] commandId=${commandId} x=${after.position.x} y=${after.position.y}`);
+      return { ...after, positionMm: { ...this.state.positionMm } };
     }
     return moved;
   }
@@ -2572,6 +2639,8 @@ class XyzPlatformSerialService extends EventEmitter {
     const pulses = Math.max(1, zMmToPulses(stepMm, z.pulsePerMm));
     // eslint-disable-next-line no-console
     console.log(`[xyz-z] action=move-step direction=${direction} focusMode=${focusMode} reverseDirection=${z.reverseDirection} sign=${sign} stepMm=${stepMm} pulsePerMm=${z.pulsePerMm} pulses=${pulses}`);
+    // eslint-disable-next-line no-console
+    console.log(`[z-move] focusMode=${focusMode} stepMm=${stepMm} pulses=${pulses}`);
     const result = await zAxisSerialService.moveStep(sign, pulses);
     this.syncZState(result.ok ? { lastAction: `Z step ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
@@ -2591,9 +2660,17 @@ class XyzPlatformSerialService extends EventEmitter {
     }
     const z = await this.loadZSettings();
     const sign = resolveZSign(direction, z.reverseDirection);
+    // Cfocus = Coarse (fast) jog, Ffocus/manual = Fine (slow) jog. The active jog
+    // speed is the operator-selected zSpeed tier the focus button set; this label
+    // is for the [ZFOCUS] diagnostics only.
+    const focusLabel = this.state.focusMode === 'cFocus' ? 'Coarse' : 'Fine';
     // eslint-disable-next-line no-console
     console.log(`[xyz-z] action=jog-start direction=${direction} reverseDirection=${z.reverseDirection} sign=${sign}`);
     const result = await zAxisSerialService.startJog(sign);
+    if (result.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[ZFOCUS] ${focusLabel} Focus Started direction=${direction}`);
+    }
     this.syncZState(result.ok ? { lastAction: `Z jog ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
   }
@@ -2603,7 +2680,10 @@ class XyzPlatformSerialService extends EventEmitter {
    * command is UNRESOLVED, so a SOK reply does not prove the stage halted and a PLC
    * ERROR is surfaced honestly without clearing the moving state. */
   async stopZJog(): Promise<XyzCommandResult> {
+    const focusLabel = this.state.focusMode === 'cFocus' ? 'Coarse' : 'Fine';
     const result = await zAxisSerialService.stopJog();
+    // eslint-disable-next-line no-console
+    console.log(`[ZFOCUS] ${focusLabel} Focus Stopped`);
     this.syncZState(result.ok ? { lastAction: 'Z jog stop attempted.', lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
   }

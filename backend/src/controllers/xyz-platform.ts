@@ -10,6 +10,7 @@ import {
   DiagnoseZSchema,
   JogZSchema,
   ManualProbeSchema,
+  MoveByOffsetSchema,
   MoveStageSchema,
   MoveStepSchema,
   MoveToPointSchema,
@@ -81,6 +82,15 @@ export async function moveStageToPoint(req: Request, res: Response): Promise<voi
     return;
   }
   sendResult(res, await xyzPlatformSerialService.moveToPoint(parsed.data.x, parsed.data.y));
+}
+
+export async function moveStageByOffset(req: Request, res: Response): Promise<void> {
+  const parsed = MoveByOffsetSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
+    return;
+  }
+  sendResult(res, await xyzPlatformSerialService.moveByOffsetMm(parsed.data.dx, parsed.data.dy));
 }
 
 export async function moveZ(req: Request, res: Response): Promise<void> {

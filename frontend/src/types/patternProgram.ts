@@ -117,6 +117,9 @@ export type PatternPoint = {
   triangle?: number;
 };
 
+/** Per-point execution state shown in the preview table's Move column. */
+export type MoveStatus = 'Pending' | 'Moving' | 'Done' | 'Failed';
+
 /**
  * Input to the pattern generation engine, and the full set of generation inputs
  * a saved program persists. Every field is required (nullable where a mode does

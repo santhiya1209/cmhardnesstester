@@ -9,8 +9,10 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import MyLocationIcon from '@mui/icons-material/MyLocation';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { FreePoint } from '@/types/patternProgram';
+import type { CameraPointPhase } from '@/types/multipoint';
 
 const BTN_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' };
 const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
@@ -84,8 +86,14 @@ type Props = {
   points: FreePoint[];
   disabled: boolean;
   stageReady: boolean;
+  /** Camera-click point-selection phase (drives the Pick/Cancel button). Free/Midpoint only. */
+  pickPhase?: CameraPointPhase;
   onAddPoint: () => void;
   onCapture: () => void;
+  /** Arm camera-click point selection. When omitted (e.g. Vertical-Line-Free), the Pick button is hidden. */
+  onPickOnCamera?: () => void;
+  /** Cancel an in-flight camera point selection. */
+  onCancelPick?: () => void;
   onUpdate: (id: string, patch: Partial<FreePoint>) => void;
   onDelete: (id: string) => void;
   onClear: () => void;
@@ -95,12 +103,17 @@ function FreePatternFormImpl({
   points,
   disabled,
   stageReady,
+  pickPhase = 'idle',
   onAddPoint,
   onCapture,
+  onPickOnCamera,
+  onCancelPick,
   onUpdate,
   onDelete,
   onClear,
 }: Props) {
+  const picking = pickPhase === 'selecting';
+  const pickMoving = pickPhase === 'moving';
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Selection lives locally (screen-scoped UI state, per CLAUDE §10.6) but is
   // derived against the Redux point list, so resetMultipoint / clear implicitly
@@ -152,6 +165,19 @@ function FreePatternFormImpl({
         >
           Capture Position
         </Button>
+        {onPickOnCamera ? (
+          <Button
+            variant={picking ? 'contained' : 'outlined'}
+            color={picking ? 'warning' : 'primary'}
+            size="small"
+            sx={BTN_SX}
+            startIcon={<MyLocationIcon />}
+            disabled={pickMoving || (pickPhase === 'idle' && (disabled || !stageReady))}
+            onClick={picking ? onCancelPick : onPickOnCamera}
+          >
+            {picking ? 'Cancel Pick' : 'Pick on Camera'}
+          </Button>
+        ) : null}
         <Button
           variant="outlined"
           size="small"

@@ -655,6 +655,21 @@ function registerIpc() {
     return machineBackendRequest('/api/xyz-platform/move-to-point', { method: 'POST', body: { x, y } });
   });
 
+  // Relative nudge from the current position (camera-click point selection).
+  // dx/dy are mm deltas; renderer input is untrusted so require finite numbers
+  // before forwarding to the zod-validated controller.
+  ipcMain.handle('xyz-platform:move-by-offset', async (_e, payload) => {
+    startXyzPlatformEventBridge();
+    const dx = Number(payload && payload.dx);
+    const dy = Number(payload && payload.dy);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+      return { ok: false, error: 'XYZ_INVALID_TARGET', message: 'move-by-offset requires finite dx and dy' };
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[xyz-ipc] method=moveByOffset dx=${dx} dy=${dy}`);
+    return machineBackendRequest('/api/xyz-platform/move-by-offset', { method: 'POST', body: { dx, dy } });
+  });
+
   ipcMain.handle('xyz-platform:move-z', async (_e, payload) => {
     startXyzPlatformEventBridge();
     const body = validateXyzZMovePayload(payload);

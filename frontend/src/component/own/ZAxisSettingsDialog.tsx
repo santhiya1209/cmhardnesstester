@@ -42,6 +42,7 @@ type FormState = {
   reverseDirection: boolean;
   pulsePerMm: string;
   stepDistanceMm: string;
+  coarseStepDistanceMm: string;
   hasEmptyTrip: boolean;
   upwardEmptyTripMm: string;
   downwardEmptyTripMm: string;
@@ -53,6 +54,7 @@ function toFormState(settings: ZAxisSettings): FormState {
     reverseDirection: settings.reverseDirection,
     pulsePerMm: String(settings.pulsePerMm),
     stepDistanceMm: String(settings.stepDistanceMm),
+    coarseStepDistanceMm: String(settings.coarseStepDistanceMm ?? 0.01),
     hasEmptyTrip: settings.hasEmptyTrip,
     upwardEmptyTripMm: String(settings.upwardEmptyTripMm),
     downwardEmptyTripMm: String(settings.downwardEmptyTripMm),
@@ -65,6 +67,7 @@ function toFormState(settings: ZAxisSettings): FormState {
 function toPayload(form: FormState): ZAxisSettingsPayload | { error: string } {
   const pulsePerMm = Number(form.pulsePerMm);
   const stepDistanceMm = Number(form.stepDistanceMm);
+  const coarseStepDistanceMm = Number(form.coarseStepDistanceMm);
   const upwardEmptyTripMm = Number(form.upwardEmptyTripMm);
   const downwardEmptyTripMm = Number(form.downwardEmptyTripMm);
 
@@ -72,7 +75,10 @@ function toPayload(form: FormState): ZAxisSettingsPayload | { error: string } {
     return { error: 'Pulse Per mm must be a positive integer.' };
   }
   if (!Number.isFinite(stepDistanceMm) || stepDistanceMm <= 0) {
-    return { error: 'Step Distance (mm) must be greater than 0.' };
+    return { error: 'Fine Step Distance (mm) must be greater than 0.' };
+  }
+  if (!Number.isFinite(coarseStepDistanceMm) || coarseStepDistanceMm <= 0) {
+    return { error: 'Coarse Step Distance (mm) must be greater than 0.' };
   }
   if (!Number.isFinite(upwardEmptyTripMm) || upwardEmptyTripMm < 0) {
     return { error: 'Upward Empty Trip (mm) must be 0 or greater.' };
@@ -84,6 +90,7 @@ function toPayload(form: FormState): ZAxisSettingsPayload | { error: string } {
     reverseDirection: form.reverseDirection,
     pulsePerMm,
     stepDistanceMm,
+    coarseStepDistanceMm,
     hasEmptyTrip: form.hasEmptyTrip,
     upwardEmptyTripMm,
     downwardEmptyTripMm,
@@ -129,7 +136,7 @@ function ZAxisSettingsDialogImpl({ open, onClose, onStatusChange }: Props) {
   );
 
   const handleNumber = useCallback(
-    (field: 'pulsePerMm' | 'stepDistanceMm' | 'upwardEmptyTripMm' | 'downwardEmptyTripMm') =>
+    (field: 'pulsePerMm' | 'stepDistanceMm' | 'coarseStepDistanceMm' | 'upwardEmptyTripMm' | 'downwardEmptyTripMm') =>
       (event: React.ChangeEvent<HTMLInputElement>) => {
         const value = event.target.value;
         setActionError(null);
@@ -232,7 +239,7 @@ function ZAxisSettingsDialogImpl({ open, onClose, onStatusChange }: Props) {
             </Stack>
             <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
               <Typography variant="body2" sx={FIELD_LABEL_SX}>
-                Step Distance (mm)
+                Fine Step Distance (mm)
               </Typography>
               <TextField
                 fullWidth
@@ -240,6 +247,20 @@ function ZAxisSettingsDialogImpl({ open, onClose, onStatusChange }: Props) {
                 type="number"
                 value={form?.stepDistanceMm ?? ''}
                 onChange={handleNumber('stepDistanceMm')}
+                disabled={disabled}
+                slotProps={{ htmlInput: { min: 0, step: 0.001 } }}
+              />
+            </Stack>
+            <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
+              <Typography variant="body2" sx={FIELD_LABEL_SX}>
+                Coarse Step Distance (mm)
+              </Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                value={form?.coarseStepDistanceMm ?? ''}
+                onChange={handleNumber('coarseStepDistanceMm')}
                 disabled={disabled}
                 slotProps={{ htmlInput: { min: 0, step: 0.001 } }}
               />

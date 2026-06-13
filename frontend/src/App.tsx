@@ -86,6 +86,7 @@ import {
 } from '@/features/autoMeasure/autoMeasureHelpers';
 import { useCommittedFingerprints } from '@/features/autoMeasure/useCommittedFingerprints';
 import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAutoMeasureCalibration';
+import { useCameraPointSelect } from '@/features/multipoint/useCameraPointSelect';
 import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
 import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
@@ -500,6 +501,14 @@ function App() {
     machineHardnessLevel,
   });
   calibrationReadyRef.current = umPerPixelForActiveObjective != null;
+
+  // Multipoint camera-click point selection: a click on the live camera moves the
+  // stage (RX-gated, via the backend relocation engine) so the clicked feature is
+  // brought to the objective, then captures the ACTUAL landed position as a point.
+  const cameraPointSelect = useCameraPointSelect({
+    umPerPixel: umPerPixelForActiveObjective,
+    setStatusMessage,
+  });
 
   const handleUpdateShape = overlay.updateShape;
 
@@ -1952,6 +1961,9 @@ function App() {
           cameraOpen={cameraOpen}
           umPerPixel={umPerPixelForActiveObjective}
           onUpdateShape={handleUpdateShape}
+          pointSelectActive={cameraPointSelect.selecting}
+          pointSelectHint={cameraPointSelect.hint}
+          onPointSelectPick={cameraPointSelect.handlePick}
         />
         <RightPanel
           micrometerEnabled={micrometerEnabled}

@@ -1,6 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { MultipointState, ProgramMeta } from '@/types/multipoint';
-import type { PatternGenerationRequest, PatternMode, PatternPoint } from '@/types/patternProgram';
+import type { FreePoint, PatternGenerationRequest, PatternMode, PatternPoint } from '@/types/patternProgram';
 
 const INITIAL_CONFIG: PatternGenerationRequest = {
   mode: 'Horizontal Mode',
@@ -32,6 +32,8 @@ const INITIAL_STATE: MultipointState = {
   programMeta: { pattern: 'Line', multiset: false, focusAll: false, impressMode: 'indenting' },
   activePointId: null,
   completedPointIds: [],
+  failedPointIds: [],
+  cameraPointPhase: 'idle',
 };
 
 // Editing any generation input invalidates the previous preview, so points +
@@ -41,6 +43,7 @@ function clearGenerated(state: MultipointState): void {
   state.selectedPointIds = [];
   state.activePointId = null;
   state.completedPointIds = [];
+  state.failedPointIds = [];
 }
 
 const multipointSlice = createSlice({
@@ -51,6 +54,8 @@ const multipointSlice = createSlice({
       state.mode = action.payload;
       state.config.mode = action.payload;
       clearGenerated(state);
+      // Switching modes cancels any in-flight camera point selection.
+      state.cameraPointPhase = 'idle';
     },
     updateConfig(state, action: PayloadAction<Partial<PatternGenerationRequest>>) {
       state.config = { ...state.config, ...action.payload };
@@ -68,6 +73,7 @@ const multipointSlice = createSlice({
       state.isGenerating = false;
       state.activePointId = null;
       state.completedPointIds = [];
+      state.failedPointIds = [];
     },
     setActivePoint(state, action: PayloadAction<string | null>) {
       state.activePointId = action.payload;
@@ -77,10 +83,18 @@ const multipointSlice = createSlice({
     resetExecutionProgress(state) {
       state.activePointId = null;
       state.completedPointIds = [];
+      state.failedPointIds = [];
     },
     markPointCompleted(state, action: PayloadAction<string>) {
       if (!state.completedPointIds.includes(action.payload)) {
         state.completedPointIds.push(action.payload);
+      }
+      // A re-run that now succeeds clears any prior failure for the same point.
+      state.failedPointIds = state.failedPointIds.filter((id) => id !== action.payload);
+    },
+    markPointFailed(state, action: PayloadAction<string>) {
+      if (!state.failedPointIds.includes(action.payload)) {
+        state.failedPointIds.push(action.payload);
       }
     },
     setSelectedPointIds(state, action: PayloadAction<string[]>) {
@@ -96,6 +110,23 @@ const multipointSlice = createSlice({
       state.selectedPointIds = state.selectedPointIds.filter((id) => !remove.has(id));
     },
     clearPoints(state) {
+      clearGenerated(state);
+    },
+    // Camera-click point selection (Free/Midpoint "Pick on Camera").
+    startCameraPointSelect(state) {
+      state.cameraPointPhase = 'selecting';
+    },
+    setCameraPointMoving(state) {
+      state.cameraPointPhase = 'moving';
+    },
+    endCameraPointSelect(state) {
+      state.cameraPointPhase = 'idle';
+    },
+    // Append one operator-captured free point (camera-click capture stores the
+    // ACTUAL landed stage position). Invalidates the stale preview, exactly as
+    // editing any other generation input does.
+    appendFreePoint(state, action: PayloadAction<FreePoint>) {
+      state.config.freePoints = [...(state.config.freePoints ?? []), action.payload];
       clearGenerated(state);
     },
     selectPoint(state, action: PayloadAction<string>) {
@@ -121,12 +152,17 @@ export const {
   setActivePoint,
   resetExecutionProgress,
   markPointCompleted,
+  markPointFailed,
   setSelectedPointIds,
   deletePoint,
   deletePoints,
   clearPoints,
   selectPoint,
   deselectPoint,
+  startCameraPointSelect,
+  setCameraPointMoving,
+  endCameraPointSelect,
+  appendFreePoint,
   resetMultipoint,
 } = multipointSlice.actions;
 

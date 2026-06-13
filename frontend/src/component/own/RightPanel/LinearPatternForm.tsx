@@ -1,22 +1,27 @@
 import { memo } from 'react';
 import Box from '@mui/material/Box';
+import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import MyLocationIcon from '@mui/icons-material/MyLocation';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { toNumberOrNull } from '@/utils/inputNumber';
 import type { PatternGenerationRequest } from '@/types/patternProgram';
 
-const REF_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 1fr', alignItems: 'center', gap: 1 };
+const REF_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 1fr auto', alignItems: 'center', gap: 1 };
 const TWO_COL_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 96px 1fr', alignItems: 'center', gap: 1 };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 
 type Props = {
   config: PatternGenerationRequest;
   disabled: boolean;
+  stageReady: boolean;
+  onCapture: () => void;
   onConfigChange: (patch: Partial<PatternGenerationRequest>) => void;
 };
 
-function LinearPatternFormImpl({ config, disabled, onConfigChange }: Props) {
+function LinearPatternFormImpl({ config, disabled, stageReady, onCapture, onConfigChange }: Props) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
       <Box sx={REF_ROW_SX}>
@@ -35,6 +40,13 @@ function LinearPatternFormImpl({ config, disabled, onConfigChange }: Props) {
           disabled={disabled}
           onChange={(event) => onConfigChange({ refY: toNumberOrNull(event.target.value) })}
         />
+        <Tooltip title={stageReady ? 'Add point from current stage position' : 'Stage position unknown'}>
+          <span>
+            <IconButton size="small" color="primary" disabled={disabled || !stageReady} onClick={onCapture}>
+              <MyLocationIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
       </Box>
 
       <Box sx={TWO_COL_SX}>

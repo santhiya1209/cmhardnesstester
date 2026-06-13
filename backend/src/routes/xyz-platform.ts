@@ -14,6 +14,7 @@ import {
   lockXy,
   lockZ,
   moveStage,
+  moveStageByOffset,
   moveStageToCenter,
   moveStageToPoint,
   moveStep,
@@ -55,6 +56,7 @@ router.post('/disconnect', disconnectStage);
 router.post('/move-stage', moveStage);
 router.post('/move-step', moveStep);
 router.post('/move-to-point', moveStageToPoint);
+router.post('/move-by-offset', moveStageByOffset);
 router.post('/stop-stage', stopStage);
 router.post('/move-z', moveZ);
 router.post('/stop-z', stopZ);

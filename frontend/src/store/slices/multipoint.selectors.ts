@@ -15,3 +15,5 @@ export const selectIsGenerating = (state: RootState): boolean => state.multipoin
 export const selectProgramMeta = (state: RootState): ProgramMeta => state.multipoint.programMeta;
 export const selectActivePointId = (state: RootState): string | null => state.multipoint.activePointId;
 export const selectCompletedPointIds = (state: RootState): string[] => state.multipoint.completedPointIds;
+export const selectFailedPointIds = (state: RootState): string[] => state.multipoint.failedPointIds;
+export const selectCameraPointPhase = (state: RootState) => state.multipoint.cameraPointPhase;

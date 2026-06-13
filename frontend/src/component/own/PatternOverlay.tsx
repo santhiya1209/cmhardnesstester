@@ -36,8 +36,12 @@ import { tokens } from '@/theme/theme';
  * grows down, so Y is negated. The two signs below are the single place to flip
  * after a hardware check if a pattern previews mirrored/upside-down.
  */
-const STAGE_X_TO_SCREEN = 1; // stage +X → screen +X (right)
-const STAGE_Y_TO_SCREEN = -1; // stage +Y → screen −Y (up)
+// Exported as the single source of truth for the stage↔screen axis convention:
+// the camera-click point-selection conversion (useCameraPointSelect) inverts the
+// SAME signs, so a click maps to where a dot would be drawn. Flip here after a
+// hardware check if a pattern previews mirrored/upside-down.
+export const STAGE_X_TO_SCREEN = 1; // stage +X → screen +X (right)
+export const STAGE_Y_TO_SCREEN = -1; // stage +Y → screen −Y (up)
 
 const POINT_RADIUS = 4;
 const ACTIVE_RING_RADIUS = 8;

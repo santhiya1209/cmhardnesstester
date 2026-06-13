@@ -376,6 +376,9 @@ export class ZAxisSerialService extends EventEmitter {
       this.lastError = message;
     });
     instance.on('close', () => {
+      // If the port dies mid-jog, the close itself ceases all jog frames — this is
+      // the de-facto emergency stop for a focus jog. Surface it as such.
+      const wasJogging = this.jogActive;
       this.port = null;
       this.rxBuffer = '';
       this.clearJogTimer();
@@ -383,6 +386,12 @@ export class ZAxisSerialService extends EventEmitter {
       this.jogActive = false;
       this.setMoving(false);
       this.connected = false;
+      if (wasJogging) {
+        // eslint-disable-next-line no-console
+        console.error('[ZFOCUS] Communication Lost');
+        // eslint-disable-next-line no-console
+        console.error('[ZFOCUS] Emergency Motion Stop Executed');
+      }
     });
 
     this.port = instance;

@@ -134,8 +134,11 @@ function MultipointTabImpl() {
           points={config.freePoints ?? []}
           disabled={m.isBusy}
           stageReady={m.stageReady}
+          pickPhase={m.cameraPointPhase}
           onAddPoint={m.addFreePoint}
           onCapture={m.captureFreePoint}
+          onPickOnCamera={m.beginCameraPointSelect}
+          onCancelPick={m.cancelCameraPointSelect}
           onUpdate={m.updateFreePoint}
           onDelete={m.deleteFreePoint}
           onClear={m.clearFreePoints}
@@ -219,7 +222,14 @@ function MultipointTabImpl() {
           onConfigChange={m.updateConfig}
         />
       ) : (
-        <LinearPatternForm key={formKey} config={config} disabled={m.isBusy} onConfigChange={m.updateConfig} />
+        <LinearPatternForm
+          key={formKey}
+          config={config}
+          disabled={m.isBusy}
+          stageReady={m.stageReady}
+          onCapture={m.captureLinearReference}
+          onConfigChange={m.updateConfig}
+        />
       )}
 
       <Box sx={BTN_ROW_SX}>
@@ -275,6 +285,11 @@ function MultipointTabImpl() {
       <PatternPreviewTable
         points={m.generatedPoints}
         selectedIds={m.selectedPointIds}
+        activeId={m.activePointId}
+        completedIds={m.completedPointIds}
+        failedIds={m.failedPointIds}
+        busy={m.isBusy}
+        onGo={m.goToPoint}
         onToggleSelect={m.toggleSelect}
         onToggleSelectAll={m.toggleSelectAll}
         onDeleteSelected={m.removeSelected}

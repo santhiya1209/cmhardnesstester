@@ -8,6 +8,9 @@ export type ZAxisSettingsPayload = {
   reverseDirection: boolean;
   pulsePerMm: number;
   stepDistanceMm: number;
+  // CFocus (coarse) step. Optional to mirror the backend schema; the backend
+  // falls back to 0.010 mm when absent.
+  coarseStepDistanceMm?: number;
   hasEmptyTrip: boolean;
   upwardEmptyTripMm: number;
   downwardEmptyTripMm: number;

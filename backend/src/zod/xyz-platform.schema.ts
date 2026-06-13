@@ -71,6 +71,15 @@ export const MoveToPointSchema = z.object({
 });
 export type MoveToPointInput = z.infer<typeof MoveToPointSchema>;
 
+// Relative nudge from the CURRENT position (camera-click point selection). dx/dy
+// are mm deltas; the service converts mm→pulses and reuses the relocation engine.
+// Finite numbers only — no fabricated/NaN delta reaches the relocation engine.
+export const MoveByOffsetSchema = z.object({
+  dx: z.number().finite(),
+  dy: z.number().finite(),
+});
+export type MoveByOffsetInput = z.infer<typeof MoveByOffsetSchema>;
+
 // Z-axis connect: operator-selected zPortName from Serial Port Setting — NEVER a
 // hardcoded/fallback COM. Baud defaults to the legacy 57600 in the service.
 export const ConnectZSchema = z.object({

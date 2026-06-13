@@ -348,6 +348,8 @@ export interface XyzPlatformApi {
   moveStep(direction: XyzDirection): Promise<XyzCommandResult>;
   /** Absolute point move: x/y are mm offsets from the taught optical center (RX-gated). */
   moveToPoint(x: number, y: number): Promise<XyzCommandResult>;
+  /** Relative nudge from the current position: dx/dy are mm deltas (RX-gated). Returns the landed position in pulses + mm. */
+  moveByOffsetMm(dx: number, dy: number): Promise<XyzCommandResult>;
   stopStage(): Promise<XyzCommandResult>;
   /** Quick-tap Z step (one configured stepDistanceMm, RX-gated). */
   moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;

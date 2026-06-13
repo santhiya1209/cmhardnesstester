@@ -9,6 +9,7 @@ import {
   xyzLocateCenter,
   xyzLockXy,
   xyzLockZ,
+  xyzMoveByOffset,
   xyzMoveStage,
   xyzMoveStep,
   xyzMoveToCenter,
@@ -177,6 +178,9 @@ export function useXyzPlatformHardware() {
   // Absolute point move (Multipoint execution): x/y are mm offsets from the taught
   // optical center. RX-gated by the backend relocation engine — no optimistic update.
   const moveToPoint = useCallback((x: number, y: number) => run(() => xyzMoveToPoint(x, y)), [run]);
+  // Relative nudge from the current position (camera-click point selection): dx/dy
+  // are mm deltas. RX-gated by the same backend relocation engine — no optimistic update.
+  const moveByOffsetMm = useCallback((dx: number, dy: number) => run(() => xyzMoveByOffset(dx, dy)), [run]);
   const locateCenter = useCallback(() => run(() => xyzLocateCenter()), [run]);
   const setCenter = useCallback(() => run(() => xyzSetCenter()), [run]);
   const home = useCallback(() => run(() => xyzHome()), [run]);
@@ -206,6 +210,7 @@ export function useXyzPlatformHardware() {
     getPosition,
     moveToCenter,
     moveToPoint,
+    moveByOffsetMm,
     locateCenter,
     setCenter,
     home,

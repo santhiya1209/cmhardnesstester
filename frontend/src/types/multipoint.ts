@@ -18,6 +18,12 @@ export type ProgramMeta = {
   impressMode: ImpressMode;
 };
 
+/**
+ * Camera-click point-selection state machine (Free/Midpoint mode "Pick on Camera"):
+ * idle → selecting (waiting for a camera click) → moving (RX-gated stage move) → idle.
+ */
+export type CameraPointPhase = 'idle' | 'selecting' | 'moving';
+
 export interface MultipointState {
   mode: PatternMode;
   config: PatternGenerationRequest;
@@ -29,6 +35,10 @@ export interface MultipointState {
   activePointId: string | null;
   /** Ids of points already visited in the current Start run — drives the green "completed" overlay state. */
   completedPointIds: string[];
+  /** Ids of points whose move failed in the current run — drives the "Failed" status in the preview table. */
+  failedPointIds: string[];
+  /** Camera-click point-selection phase; 'idle' unless the operator is picking a point on the live camera. */
+  cameraPointPhase: CameraPointPhase;
 }
 
 /** Impress mode in the wire form the machine-control layer expects. */

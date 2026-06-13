@@ -46,6 +46,7 @@ const ALLOWED_INVOKE = new Set([
   'xyz-platform:move-stage',
   'xyz-platform:move-step',
   'xyz-platform:move-to-point',
+  'xyz-platform:move-by-offset',
   'xyz-platform:stop-stage',
   'xyz-platform:move-z',
   'xyz-platform:stop-z',
@@ -199,6 +200,9 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   // Absolute point move (Multipoint execution): x/y are mm offsets from the
   // taught optical center. Reuses the backend relocation engine.
   moveToPoint: (x, y) => ipcRenderer.invoke('xyz-platform:move-to-point', { x, y }),
+  // Relative nudge from the current position (camera-click point selection):
+  // dx/dy are mm deltas. Reuses the backend relocation engine.
+  moveByOffsetMm: (dx, dy) => ipcRenderer.invoke('xyz-platform:move-by-offset', { dx, dy }),
   stopStage: () => ipcRenderer.invoke('xyz-platform:stop-stage'),
   moveZ: (direction, speed) => ipcRenderer.invoke('xyz-platform:move-z', { direction, speed }),
   stopZ: () => ipcRenderer.invoke('xyz-platform:stop-z'),

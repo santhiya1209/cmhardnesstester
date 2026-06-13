@@ -117,6 +117,10 @@ export const xyzMoveStep = (direction: XyzDirection): Promise<XyzCommandResult> 
 export const xyzMoveToPoint = (x: number, y: number): Promise<XyzCommandResult> =>
   bridge()?.moveToPoint(x, y) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
+/** Relative nudge from the current position: dx/dy are mm deltas, RX-gated (camera-click point selection). */
+export const xyzMoveByOffset = (dx: number, dy: number): Promise<XyzCommandResult> =>
+  bridge()?.moveByOffsetMm(dx, dy) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+
 export const xyzStopStage = (): Promise<XyzCommandResult> =>
   bridge()?.stopStage() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 

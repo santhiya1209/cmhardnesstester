@@ -5,7 +5,7 @@ module.exports = {
     name: 'VickersMeasurementSoftware',
     executableName: 'VickersMeasurementSoftware',
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
-    icon: path.resolve(__dirname, "frontend/public/vms icon"),
+    icon: path.resolve(__dirname, "frontend/public/vms icon.ico"),
     asar: true,
     extraResource: [
       'drivers/opencv',
@@ -74,12 +74,12 @@ module.exports = {
         perMachine: false,
         shortcutName: 'Vickers Measurement Software',
         // App icon used for desktop + Start menu shortcuts.
-        win: { icon: path.resolve(__dirname, "frontend/public/icon.ico") },
+        win: { icon: path.resolve(__dirname, "frontend/public/vms icon.ico") },
         // Installer/uninstaller + setup header icons.
         nsis: {
-          installerIcon: 'build/icon.ico',
-          uninstallerIcon: 'build/icon.ico',
-          installerHeaderIcon: 'build/icon.ico',
+          installerIcon: 'build/vms icon.ico',
+          uninstallerIcon: 'build/vms icon.ico',
+          installerHeaderIcon: 'build/vms icon.ico',
         },
       },
     },

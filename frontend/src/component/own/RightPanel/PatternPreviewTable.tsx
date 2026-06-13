@@ -10,8 +10,9 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import ScatterPlotOutlinedIcon from '@mui/icons-material/ScatterPlotOutlined';
+import NearMeOutlinedIcon from '@mui/icons-material/NearMeOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
-import type { PatternPoint } from '@/types/patternProgram';
+import type { MoveStatus, PatternPoint } from '@/types/patternProgram';
 
 const HEADER_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 };
 const HEADER_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, color: 'text.secondary' };
@@ -21,10 +22,23 @@ const TABLE_WRAP_SX: SxProps<Theme> = { maxHeight: 220, border: 1, borderColor: 
 const HEAD_CELL_SX: SxProps<Theme> = { fontSize: 11, fontWeight: 600, color: 'text.secondary', py: 0.5, px: 1 };
 const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.25, px: 1 };
 const EMPTY_CELL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.disabled', textAlign: 'center', py: 4 };
+const GO_BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 11, py: 0, px: 1, minWidth: 48 };
+
+const STATUS_COLOR: Record<MoveStatus, string> = {
+  Pending: 'text.disabled',
+  Moving: 'warning.main',
+  Done: 'success.main',
+  Failed: 'error.main',
+};
 
 type Props = {
   points: PatternPoint[];
   selectedIds: string[];
+  activeId: string | null;
+  completedIds: string[];
+  failedIds: string[];
+  busy: boolean;
+  onGo: (point: PatternPoint) => void;
   onToggleSelect: (id: string, selected: boolean) => void;
   onToggleSelectAll: (selected: boolean) => void;
   onDeleteSelected: () => void;
@@ -34,14 +48,27 @@ type Props = {
 function PatternPreviewTableImpl({
   points,
   selectedIds,
+  activeId,
+  completedIds,
+  failedIds,
+  busy,
+  onGo,
   onToggleSelect,
   onToggleSelectAll,
   onDeleteSelected,
   onClear,
 }: Props) {
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const completed = useMemo(() => new Set(completedIds), [completedIds]);
+  const failed = useMemo(() => new Set(failedIds), [failedIds]);
   const allSelected = points.length > 0 && selectedIds.length === points.length;
   const someSelected = selectedIds.length > 0 && !allSelected;
+
+  // Derive the per-row Move status from the execution markers (same source the
+  // camera overlay uses): completed wins over a stale failure, then the live
+  // active target, then any failure, else not yet run.
+  const statusFor = (id: string): MoveStatus =>
+    completed.has(id) ? 'Done' : id === activeId ? 'Moving' : failed.has(id) ? 'Failed' : 'Pending';
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
@@ -82,12 +109,14 @@ function PatternPreviewTableImpl({
               <TableCell sx={HEAD_CELL_SX}>No</TableCell>
               <TableCell sx={HEAD_CELL_SX}>X (mm)</TableCell>
               <TableCell sx={HEAD_CELL_SX}>Y (mm)</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Move</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Hardness</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {points.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} sx={EMPTY_CELL_SX}>
+                <TableCell colSpan={7} sx={EMPTY_CELL_SX}>
                   <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                     <ScatterPlotOutlinedIcon sx={{ fontSize: 32, color: 'text.disabled', opacity: 0.6 }} />
                     No generated points. Use Generate to preview.
@@ -95,21 +124,40 @@ function PatternPreviewTableImpl({
                 </TableCell>
               </TableRow>
             ) : (
-              points.map((point) => (
-                <TableRow key={point.id} selected={selected.has(point.id)}>
-                  <TableCell sx={BODY_CELL_SX} padding="checkbox">
-                    <Checkbox
-                      size="small"
-                      checked={selected.has(point.id)}
-                      onChange={(event) => onToggleSelect(point.id, event.target.checked)}
-                    />
-                  </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{point.line ?? '-'}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{point.no}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{point.x.toFixed(3)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{point.y.toFixed(3)}</TableCell>
-                </TableRow>
-              ))
+              points.map((point) => {
+                const status = statusFor(point.id);
+                return (
+                  <TableRow key={point.id} selected={selected.has(point.id) || point.id === activeId}>
+                    <TableCell sx={BODY_CELL_SX} padding="checkbox">
+                      <Checkbox
+                        size="small"
+                        checked={selected.has(point.id)}
+                        onChange={(event) => onToggleSelect(point.id, event.target.checked)}
+                      />
+                    </TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{point.line ?? '-'}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{point.no}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{point.x.toFixed(3)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{point.y.toFixed(3)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          sx={GO_BTN_SX}
+                          startIcon={<NearMeOutlinedIcon sx={{ fontSize: 14 }} />}
+                          disabled={busy}
+                          onClick={() => onGo(point)}
+                        >
+                          Go
+                        </Button>
+                        <Typography sx={{ fontSize: 11, color: STATUS_COLOR[status] }}>{status}</Typography>
+                      </Box>
+                    </TableCell>
+                    <TableCell sx={BODY_CELL_SX}>-</TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>

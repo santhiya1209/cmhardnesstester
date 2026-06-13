@@ -5,11 +5,14 @@ import {
   deletePoint,
   deletePoints,
   deselectPoint,
+  endCameraPointSelect,
   markPointCompleted,
+  markPointFailed,
   resetExecutionProgress,
   resetMultipoint,
   selectPoint,
   setActivePoint,
+  startCameraPointSelect,
   setGenerating,
   setGeneratedPoints,
   setMode,
@@ -18,6 +21,10 @@ import {
   updateProgramMeta,
 } from '@/store/slices/multipoint.slice';
 import {
+  selectActivePointId,
+  selectCameraPointPhase,
+  selectCompletedPointIds,
+  selectFailedPointIds,
   selectGeneratedPoints,
   selectIsGenerating,
   selectPatternConfig,
@@ -29,15 +36,19 @@ import { usePatternPrograms } from '@/hooks/queries/usePatternPrograms';
 import { useSavePatternProgram } from '@/hooks/mutations/useSavePatternProgram';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
+import { useMachineStoreApi } from '@/contexts/MachineStateContext';
+import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { arePointsVerticallyAligned, generatePattern } from '@/utils/patternGeneration';
 import { buildMultipointExecutionRequest } from '@/utils/multipointExecution';
 import { configFromProgram, metaFromProgram, toPayload } from '@/utils/patternProgramMapping';
 import type { ProgramMeta } from '@/types/multipoint';
+import type { MachineState } from '@/types/machine';
 import type {
   CompositeLine,
   FreePoint,
   PatternGenerationRequest,
   PatternMode,
+  PatternPoint,
   TriangleDefinition,
 } from '@/types/patternProgram';
 
@@ -80,6 +91,54 @@ function createTriangle(): TriangleDefinition {
   return { id: createPointId(), x1: NaN, y1: NaN, x2: NaN, y2: NaN, x3: NaN, y3: NaN };
 }
 
+// Generous upper bound for one impress cycle (press + dwell + retract). This is a
+// FAILURE GUARD only — completion is gated on the real machine RX status reaching
+// 'completed', never on the timer (which only fails honestly if the machine never
+// reports completion).
+const INDENT_TIMEOUT_MS = 120000;
+
+type MachineSnapshotStore = {
+  subscribe: (cb: () => void) => () => void;
+  getSnapshot: () => MachineState | null;
+};
+
+/**
+ * Await one indent cycle's REAL completion via the live machine-state broadcast
+ * (RX-confirmed) — no optimistic success, no setTimeout-driven completion. Resolves
+ * 'completed' only after the status has been observed armed ('started'/'running')
+ * and then reaches 'completed', so a stale 'completed' from the previous point is
+ * never mistaken for this one. Resolves 'error' on a machine error, or 'timeout'
+ * if no terminal status arrives within `timeoutMs`.
+ */
+function waitForIndentTerminal(
+  store: MachineSnapshotStore,
+  timeoutMs: number
+): Promise<'completed' | 'error' | 'timeout'> {
+  return new Promise((resolve) => {
+    let armed = false;
+    let done = false;
+    const read = (): IndentStatusLike => store.getSnapshot()?.indentStatus ?? 'idle';
+    const finish = (result: 'completed' | 'error' | 'timeout') => {
+      if (done) return;
+      done = true;
+      unsubscribe();
+      window.clearTimeout(timer);
+      resolve(result);
+    };
+    const evaluate = () => {
+      const status = read();
+      if (status === 'started' || status === 'running') armed = true;
+      if (status === 'error') finish('error');
+      else if (status === 'completed' && armed) finish('completed');
+    };
+    const unsubscribe = store.subscribe(evaluate);
+    const timer = window.setTimeout(() => finish('timeout'), timeoutMs);
+    evaluate();
+  });
+}
+
+type IndentStatusLike = MachineState['indentStatus'];
+
 /**
  * Single state surface for the Multipoint feature. Reads the Redux slice via
  * memoization-free field selectors, exposes typed action dispatchers, runs
@@ -95,6 +154,10 @@ export function useMultipoint() {
   const selectedPointIds = useAppSelector(selectSelectedPointIds);
   const isGenerating = useAppSelector(selectIsGenerating);
   const programMeta = useAppSelector(selectProgramMeta);
+  const activePointId = useAppSelector(selectActivePointId);
+  const completedPointIds = useAppSelector(selectCompletedPointIds);
+  const failedPointIds = useAppSelector(selectFailedPointIds);
+  const cameraPointPhase = useAppSelector(selectCameraPointPhase);
 
   const {
     data: patternPrograms,
@@ -105,6 +168,11 @@ export function useMultipoint() {
   const { error: saveError, savePatternProgram, saving } = useSavePatternProgram();
   const stage = useXyzStageState();
   const hardware = useXyzPlatformHardware();
+  // Imperative latest-snapshot access (no re-render subscription) for awaiting the
+  // RX-confirmed indent status inside the Start loop; and the existing impress
+  // command path (startIndent → window.machineControl → IPC → backend serial).
+  const machineStore = useMachineStoreApi();
+  const { start: fireIndent } = useStartIndent();
 
   const [loadedProgramId, setLoadedProgramId] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -119,7 +187,10 @@ export function useMultipoint() {
 
   const loadedProgram = patternPrograms.find((program) => program.id === loadedProgramId) ?? null;
   const errorMessage = patternProgramsError ?? saveError ?? generationError;
-  const isBusy = patternProgramsLoading || saving || executing;
+  // A camera point-selection in progress (selecting a click target or moving the
+  // stage to it) also counts as busy, so Generate/Start/Add Point are disabled
+  // until the pick completes — the camera click + RX-gated move own the stage.
+  const isBusy = patternProgramsLoading || saving || executing || cameraPointPhase !== 'idle';
 
   const changeMode = useCallback(
     (value: PatternMode) => {
@@ -250,6 +321,43 @@ export function useMultipoint() {
   );
 
   const clearFreePoints = useCallback(() => dispatch(updateConfig({ freePoints: [] })), [dispatch]);
+
+  // Enter camera-click point selection (Free/Midpoint only): the operator then
+  // clicks a feature in the live camera, the stage moves there (RX-gated), and
+  // the ACTUAL landed position is captured as a free point. The orchestration
+  // (convert click → move → capture) lives in useCameraPointSelect, driven by the
+  // shared cameraPointPhase; this just arms the flow.
+  const beginCameraPointSelect = useCallback(() => {
+    if (mode !== 'Free Mode' && mode !== 'Midpoint Mode') return;
+    if (!stage.positionKnown) {
+      setStatusMessage('Stage position unknown — connect and home the platform first.');
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[point-select-start] mode=${mode}`);
+    dispatch(startCameraPointSelect());
+    setStatusMessage('Click a location in the camera to add a point.');
+  }, [mode, stage.positionKnown, dispatch]);
+
+  const cancelCameraPointSelect = useCallback(() => {
+    dispatch(endCameraPointSelect());
+    setStatusMessage('Point selection cancelled.');
+  }, [dispatch]);
+
+  // Horizontal / Vertical (single reference point) "Add Point": fill refX/refY
+  // from the live stage position — the same XYZ flow the machine-control tabs and
+  // the other capture handlers use. Bump the form revision so the uncontrolled
+  // refX/refY inputs remount and re-read the captured values (same approach Load
+  // uses). updateConfig clears the previous preview, exactly as typing does.
+  const captureLinearReference = useCallback(() => {
+    if (!stage.positionKnown) {
+      setStatusMessage('Stage position unknown — connect and home the platform first.');
+      return;
+    }
+    dispatch(updateConfig({ refX: stage.positionMm.x, refY: stage.positionMm.y }));
+    setFormRevision((revision) => revision + 1);
+    setStatusMessage('Captured reference point at stage position.');
+  }, [stage.positionKnown, stage.positionMm.x, stage.positionMm.y, dispatch]);
 
   // Case Depth captures real coordinates from the same XYZ stage flow as the
   // machine-control tabs — never mocked. Origin (slot 0) must exist before the
@@ -490,24 +598,35 @@ export function useMultipoint() {
   // are mm offsets from the taught optical center — the backend owns the conversion
   // and the truth. Gates read the backend snapshot (no frontend state copies).
   const start = useCallback(async () => {
+    // eslint-disable-next-line no-console
+    console.log('[MP] Start clicked');
+    // Step 8 — fail fast with the exact operator-facing reason; stop immediately.
     if (generatedPoints.length === 0) {
-      setStatusMessage('Generate a pattern before Start.');
+      setStatusMessage('No generated points');
       return;
     }
     if (!stage.connected) {
-      setStatusMessage('Connect the XYZ stage before Start.');
+      setStatusMessage('XYZ stage not connected');
       return;
     }
     if (!stage.xyLocked) {
-      setStatusMessage('Lock the X/Y stage before Start.');
+      setStatusMessage('XY stage not locked');
       return;
     }
     if (stage.centerX === null || stage.centerY === null) {
       setStatusMessage('Set the optical center (Set Center) before Start — points are relative to it.');
       return;
     }
+    // Indent needs the hardness machine; fail honestly rather than firing into a
+    // disconnected port.
+    if (!(machineStore.getSnapshot()?.connected ?? false)) {
+      setStatusMessage('Hardness machine not connected');
+      return;
+    }
 
     const request = buildMultipointExecutionRequest(generatedPoints, programMeta);
+    // eslint-disable-next-line no-console
+    console.log(`[MP] Generated points: ${request.points.map((p) => `(${p.x},${p.y})`).join(' ')}`);
     // eslint-disable-next-line no-console
     console.log(
       `[multipoint-start] points=${request.points.length} mode=${mode} impressMode=${request.impressMode} multiset=${request.multiset} focusAll=${request.focusAll} connected=${stage.connected} xyLocked=${stage.xyLocked} centerX=${stage.centerX} centerY=${stage.centerY}`
@@ -524,28 +643,71 @@ export function useMultipoint() {
         // Mark the live target so the camera pattern overlay highlights it (red).
         dispatch(setActivePoint(point.id));
         // eslint-disable-next-line no-console
-        console.log(`[multipoint-point] index=${i + 1}/${request.points.length} no=${point.no} targetX=${point.x} targetY=${point.y}`);
+        console.log(`[MP] Executing point ${i + 1}`);
+        // eslint-disable-next-line no-console
+        console.log(`[MP] Moving to:\nX=${point.x}\nY=${point.y}`);
         setStatusMessage(`Moving to point ${point.no} of ${request.points.length}…`);
-        // eslint-disable-next-line no-console
-        console.log(`[multipoint-move-request] index=${i + 1} no=${point.no} targetX=${point.x} targetY=${point.y}`);
         const result = await hardware.moveToPoint(point.x, point.y);
-        // eslint-disable-next-line no-console
-        console.log(`[multipoint-move-dispatched] index=${i + 1} no=${point.no} ok=${result.ok}`);
         if (!result.ok) {
           // eslint-disable-next-line no-console
           console.error(
             `[multipoint-error] index=${i + 1} no=${point.no} error=${JSON.stringify(result.error)} message=${JSON.stringify(result.message ?? null)}`
           );
+          dispatch(markPointFailed(point.id));
           setStatusMessage(`Stopped at point ${point.no}: ${result.message ?? result.error}`);
           return;
         }
         // eslint-disable-next-line no-console
+        console.log('[MP] Motion complete');
+        // eslint-disable-next-line no-console
         console.log(
           `[multipoint-position-reached] index=${i + 1} no=${point.no} x=${result.position?.x ?? 'unknown'} y=${result.position?.y ?? 'unknown'} source=hardware-rx`
         );
-        // Point reached → mark it completed so the overlay turns it green.
+
+        // Indent via the existing impress path (RX-confirmed completion). Autofocus
+        // is NOT implemented in the codebase, so no focus step runs (Step 6).
+        // eslint-disable-next-line no-console
+        console.log('[MP] Indent started');
+        setStatusMessage(`Indenting at point ${point.no} of ${request.points.length}…`);
+        try {
+          await fireIndent();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // eslint-disable-next-line no-console
+          console.error(`[multipoint-indent-error] index=${i + 1} no=${point.no} message=${JSON.stringify(message)}`);
+          dispatch(markPointFailed(point.id));
+          setStatusMessage(`Indent command failed at point ${point.no}: ${message}`);
+          return;
+        }
+        const indentOutcome = await waitForIndentTerminal(machineStore, INDENT_TIMEOUT_MS);
+        if (indentOutcome !== 'completed') {
+          // eslint-disable-next-line no-console
+          console.error(`[multipoint-indent-incomplete] index=${i + 1} no=${point.no} outcome=${indentOutcome}`);
+          dispatch(markPointFailed(point.id));
+          setStatusMessage(
+            indentOutcome === 'timeout'
+              ? `Indent timed out at point ${point.no} (no completion reported).`
+              : `Indent reported an error at point ${point.no}.`
+          );
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.log('[MP] Indent complete');
+
+        // Measure + Store: performed by the EXISTING event-driven after-impress
+        // pipeline (useAfterImpressFlow) when the operator's "measure after impress"
+        // setting is on — it runs Auto Measure and saves to the measurements DB.
+        // There is NO synchronous measure→HV primitive, so the loop neither
+        // fabricates an HV nor reads one back (the preview Hardness column stays
+        // '--'). See the task report for the measurement-integration gap.
+
+        // Point reached + indented → mark it completed (overlay turns it green).
         dispatch(markPointCompleted(point.id));
+        // eslint-disable-next-line no-console
+        console.log('[MP] Point complete');
       }
+      // eslint-disable-next-line no-console
+      console.log('[MP] Program complete');
       // eslint-disable-next-line no-console
       console.log(`[multipoint-finished] points=${request.points.length}`);
       setStatusMessage(`Executed ${request.points.length} point(s).`);
@@ -553,7 +715,46 @@ export function useMultipoint() {
       setExecuting(false);
       dispatch(setActivePoint(null));
     }
-  }, [generatedPoints, programMeta, mode, hardware, stage.connected, stage.xyLocked, stage.centerX, stage.centerY, dispatch]);
+  }, [generatedPoints, programMeta, mode, hardware, stage.connected, stage.xyLocked, stage.centerX, stage.centerY, machineStore, fireIndent, dispatch]);
+
+  // Per-row "Go": move ONLY to that point so the operator can verify a generated
+  // location before running the full sequence. Same RX-gated hardware path and
+  // gates as Start, but a single move — no measurement, no other rows touched.
+  // The point's x/y are the same mm offsets Start uses (preview = execution).
+  const goToPoint = useCallback(
+    async (point: PatternPoint) => {
+      if (!stage.connected) {
+        setStatusMessage('Connect the XYZ stage before moving.');
+        return;
+      }
+      if (!stage.xyLocked) {
+        setStatusMessage('Lock the X/Y stage before moving.');
+        return;
+      }
+      if (stage.centerX === null || stage.centerY === null) {
+        setStatusMessage('Set the optical center (Set Center) before moving — points are relative to it.');
+        return;
+      }
+      setExecuting(true);
+      setGenerationError(null);
+      dispatch(setActivePoint(point.id));
+      try {
+        setStatusMessage(`Moving to point ${point.no}…`);
+        const result = await hardware.moveToPoint(point.x, point.y);
+        if (!result.ok) {
+          dispatch(markPointFailed(point.id));
+          setStatusMessage(`Move to point ${point.no} failed: ${result.message ?? result.error}`);
+          return;
+        }
+        dispatch(markPointCompleted(point.id));
+        setStatusMessage(`Reached point ${point.no}.`);
+      } finally {
+        setExecuting(false);
+        dispatch(setActivePoint(null));
+      }
+    },
+    [hardware, stage.connected, stage.xyLocked, stage.centerX, stage.centerY, dispatch]
+  );
 
   return {
     // state
@@ -561,6 +762,10 @@ export function useMultipoint() {
     config,
     generatedPoints,
     selectedPointIds,
+    activePointId,
+    completedPointIds,
+    failedPointIds,
+    cameraPointPhase,
     isGenerating,
     programMeta,
     loadedProgram,
@@ -577,6 +782,9 @@ export function useMultipoint() {
     generatePattern: generate,
     addFreePoint,
     captureFreePoint,
+    captureLinearReference,
+    beginCameraPointSelect,
+    cancelCameraPointSelect,
     updateFreePoint,
     deleteFreePoint,
     clearFreePoints,
@@ -608,5 +816,6 @@ export function useMultipoint() {
     load,
     reset,
     start,
+    goToPoint,
   };
 }

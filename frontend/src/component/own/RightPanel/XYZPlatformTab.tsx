@@ -712,8 +712,16 @@ function XYZPlatformTabImpl() {
   const handleFocusMode = useCallback(
     (mode: FocusMode) => {
       void hardware.setFocusMode(mode);
+      // Cfocus = coarse jog speed (Fast), Ffocus = fine jog speed (Slow). The
+      // press-hold ↑/↓ jog runs at the active zSpeed, so selecting the focus mode
+      // also selects how fast a held jog travels — and the Speed radio reflects it.
+      // The #VZnnnn# speed write needs the Z port, so it's best-effort: focus mode
+      // itself is pure software and always applies.
+      if (live.zConnected) {
+        void handleZSpeedChange(mode === 'cFocus' ? 'fast' : 'slow');
+      }
     },
-    [hardware]
+    [hardware, live.zConnected, handleZSpeedChange]
   );
 
   // Both buttons move to the FIXED physical center (settings physicalCenter pulses,
@@ -1038,6 +1046,17 @@ function XYZPlatformTabImpl() {
             <Button sx={Z_ARROW_BTN_SX} disabled={zMoveDisabled} {...zJogHandlers('down')}>
               <ArrowDownwardIcon />
             </Button>
+          </Box>
+
+          {/* Live status — Motion + Focus mode. No Z position: the Z controller
+              reports no absolute position, so showing one would be fabricated. */}
+          <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between' }}>
+            <Typography sx={SECTION_LABEL_SX}>
+              Motion: {live.zMoving ? 'Moving' : 'Idle'}
+            </Typography>
+            <Typography sx={SECTION_LABEL_SX}>
+              Focus: {live.focusMode === 'cFocus' ? 'Coarse' : live.focusMode === 'fFocus' ? 'Fine' : 'None'}
+            </Typography>
           </Box>
         </Box>
       </Box>

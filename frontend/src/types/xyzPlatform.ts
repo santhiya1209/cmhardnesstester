@@ -25,7 +25,7 @@ export interface XyzPosition {
 
 /** Mirrors the backend xyz-platform action-route result shape. */
 export type XyzCommandResult =
-  | { ok: true; position?: XyzPosition; rx?: string; commandId: string }
+  | { ok: true; position?: XyzPosition; positionMm?: XyzPosition; rx?: string; commandId: string }
   | {
       ok: false;
       error: string;
