@@ -64,6 +64,10 @@ export interface XyzStageState {
   /** Operator-taught optical center (absolute pulses), or null until taught. */
   centerX: number | null;
   centerY: number | null;
+  /** Relocation working-origin in mm (absolute machine mm captured at the physical
+   * center on the last Relocation), or null. The Position panel shows positionMm
+   * minus this so the relocation center reads 0,0. Display-only — never absolute. */
+  relocationOriginMm: { x: number; y: number } | null;
   lastAction: string;
   lastError?: string;
   lastTx?: string;

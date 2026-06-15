@@ -76,6 +76,10 @@ export const tokens = {
     patternPointPending: '#FFFFFF',
     patternConnector: 'rgba(255,255,255,0.45)',
     livePosition: '#FF5252',
+    // Camera-clicked reference points (Multipoint "Add Point") + the selection
+    // crosshair — bright yellow so a placed marker reads distinctly from the
+    // white generated dots and the red live-position cross.
+    cameraPoint: '#FFEB3B',
   },
 } as const;
 

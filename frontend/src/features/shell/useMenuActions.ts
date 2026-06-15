@@ -48,6 +48,7 @@ export function useMenuActions(input: UseMenuActionsInput): MenuActionsApi {
         'config:restoreFactory': 'restoreFactory',
         'config:zAxis': 'zAxis',
         'config:xyPlatform': 'xyPlatform',
+        'config:crosshair': 'crosshair',
       };
       setActiveDialog(map[id]);
     },

@@ -6,6 +6,7 @@ import { useRenderCount } from '@/utils/renderStats';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
+import type { CrosshairConfig } from '@/types/crosshair';
 
 
 const PANEL_SX: SxProps<Theme> = {
@@ -26,6 +27,7 @@ type Props = {
   autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
   autoMeasureClearNonce?: number;
   crossLineVisible: boolean;
+  crosshairConfig?: CrosshairConfig;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   manualMeasureObjective?: string | null;
@@ -59,6 +61,7 @@ function LeftPanelImpl(
     autoMeasureGraphicsSource,
     autoMeasureClearNonce,
     crossLineVisible,
+    crosshairConfig,
     onAddShape,
     manualMeasureResetKey,
     manualMeasureObjective,
@@ -93,6 +96,7 @@ function LeftPanelImpl(
         autoMeasureGraphicsSource={autoMeasureGraphicsSource}
         autoMeasureClearNonce={autoMeasureClearNonce}
         crossLineVisible={crossLineVisible}
+        crosshairConfig={crosshairConfig}
         onAddShape={onAddShape}
         manualMeasureResetKey={manualMeasureResetKey}
         manualMeasureObjective={manualMeasureObjective}

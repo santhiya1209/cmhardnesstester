@@ -23,6 +23,7 @@ import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
 import PatternOverlay from '@/component/own/PatternOverlay';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { CameraPixelFormat } from '@/types/camera';
+import type { CrosshairConfig } from '@/types/crosshair';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
 import { displayToImage, getImagePlacement } from '@/utils/manualMeasure';
@@ -96,6 +97,7 @@ type Props = {
   autoMeasureGraphicsSource?: 'auto' | 'preview' | 'save';
   autoMeasureClearNonce?: number;
   crossLineVisible: boolean;
+  crosshairConfig?: CrosshairConfig;
   onAddShape: (shape: OverlayShapeInput) => void;
   manualMeasureResetKey: number;
   manualMeasureObjective?: string | null;
@@ -182,6 +184,7 @@ function CameraWindowImpl(
     autoMeasureGraphicsSource = 'auto',
     autoMeasureClearNonce = 0,
     crossLineVisible,
+    crosshairConfig,
     onAddShape,
     manualMeasureResetKey,
     manualMeasureObjective,
@@ -832,6 +835,7 @@ function CameraWindowImpl(
           activeTool={activeTool}
           shapes={overlayShapes}
           crossLineVisible={crossLineVisible}
+          crosshairConfig={crosshairConfig}
           imageSize={imageSize}
           umPerPixel={umPerPixel}
           onAddShape={onAddShape}
@@ -866,6 +870,37 @@ function CameraWindowImpl(
           umPerPixel={umPerPixel}
           active={activeTool !== 'manualMeasure'}
         />
+        {/* Full crosshair reticle while arming a Multipoint "Add Point" click —
+            spans the viewport at the cursor so the operator can sight the exact
+            feature before clicking. Cursor tracking already feeds cursorDisplay. */}
+        {pointSelectActive && cursorDisplay ? (
+          <>
+            <Box
+              sx={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: cursorDisplay.y,
+                height: '1px',
+                bgcolor: tokens.overlay.cameraPoint,
+                pointerEvents: 'none',
+                zIndex: 4,
+              }}
+            />
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                left: cursorDisplay.x,
+                width: '1px',
+                bgcolor: tokens.overlay.cameraPoint,
+                pointerEvents: 'none',
+                zIndex: 4,
+              }}
+            />
+          </>
+        ) : null}
         {magnifierEnabled ? (
           <MagnifierLens
             source={frozen ? freezeCanvasRef.current : canvasRef.current}

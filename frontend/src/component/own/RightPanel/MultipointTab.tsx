@@ -30,6 +30,7 @@ import CirclePatternForm from './CirclePatternForm';
 import EquidistantMultipointForm from './EquidistantMultipointForm';
 import EquidistantThreePointForm from './EquidistantThreePointForm';
 import FreePatternForm from './FreePatternForm';
+import HorizontalCaptureForm from './HorizontalCaptureForm';
 import VerticalLineFreePointsForm from './VerticalLineFreePointsForm';
 import MultiLineCompositeForm from './MultiLineCompositeForm';
 import EquidistantTriangleForm from './EquidistantTriangleForm';
@@ -40,6 +41,7 @@ const PATTERN_OPTIONS: PatternOption[] = ['Line', 'Rectangle', 'Circle', 'Custom
 const MODE_OPTIONS: PatternMode[] = [
   'Vertical Mode',
   'Horizontal Mode',
+  'Horizontal Capture Mode',
   'Matrix Mode',
   'Free Mode',
   'Midpoint Mode',
@@ -129,13 +131,24 @@ function MultipointTabImpl() {
 
       {m.mode === 'Matrix Mode' ? (
         <MatrixPatternForm key={formKey} config={config} disabled={m.isBusy} onConfigChange={m.updateConfig} />
+      ) : m.mode === 'Horizontal Capture Mode' ? (
+        <HorizontalCaptureForm
+          points={config.freePoints ?? []}
+          disabled={m.isBusy}
+          stageReady={m.stageReady}
+          origin={m.relocationOriginMm}
+          onCapture={m.captureFreePoint}
+          onUpdate={m.updateFreePoint}
+          onDelete={m.deleteFreePoint}
+          onClear={m.clearFreePoints}
+        />
       ) : m.mode === 'Free Mode' || m.mode === 'Midpoint Mode' ? (
         <FreePatternForm
           points={config.freePoints ?? []}
           disabled={m.isBusy}
           stageReady={m.stageReady}
           pickPhase={m.cameraPointPhase}
-          onAddPoint={m.addFreePoint}
+          origin={m.relocationOriginMm}
           onCapture={m.captureFreePoint}
           onPickOnCamera={m.beginCameraPointSelect}
           onCancelPick={m.cancelCameraPointSelect}

@@ -32,6 +32,8 @@ export interface XyzStageSnapshot {
   /** Operator-taught optical center (absolute pulses), or null until taught. */
   centerX: number | null;
   centerY: number | null;
+  /** Relocation working-origin in mm, or null. Position panel shows positionMm − this. */
+  relocationOriginMm: { x: number; y: number } | null;
   lastAction: string;
   lastError: string | null;
 }
@@ -52,6 +54,7 @@ const INITIAL: XyzStageSnapshot = {
   positionKnown: false,
   centerX: null,
   centerY: null,
+  relocationOriginMm: null,
   lastAction: 'Ready for platform control.',
   lastError: null,
 };
@@ -78,6 +81,7 @@ export function useXyzStageState(): XyzStageSnapshot {
       const zConnected = state.zConnected ?? false;
       const zPort = state.zPort ?? null;
       const zMoving = state.zMoving ?? false;
+      const relocationOriginMm = state.relocationOriginMm ?? null;
       const key = [
         state.connected,
         x,
@@ -98,6 +102,8 @@ export function useXyzStageState(): XyzStageSnapshot {
         positionKnown,
         centerX ?? '',
         centerY ?? '',
+        relocationOriginMm?.x ?? '',
+        relocationOriginMm?.y ?? '',
         state.lastAction,
         lastError ?? '',
       ].join('|');
@@ -119,6 +125,7 @@ export function useXyzStageState(): XyzStageSnapshot {
         positionKnown,
         centerX,
         centerY,
+        relocationOriginMm,
         lastAction: state.lastAction,
         lastError,
       });

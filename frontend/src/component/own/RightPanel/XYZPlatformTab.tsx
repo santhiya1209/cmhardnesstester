@@ -772,7 +772,14 @@ function XYZPlatformTabImpl() {
 
   // Displayed coordinates are MILLIMETRES — the backend-converted positionMm (pulses
   // / pulsePerMm) from the real #11 RX frame. Never the raw pulses, never computed here.
-  const pos = live.positionMm;
+  // After Relocation the backend sets a working origin (the physical-center mm); the
+  // panel then shows positionMm − origin so the relocation center reads 0,0 and every
+  // value is relative to it. The stage is NOT moved and positionMm stays absolute —
+  // this subtraction is display-only (pattern/overlay/camera still use absolute mm).
+  const origin = live.relocationOriginMm;
+  const pos = origin
+    ? { x: live.positionMm.x - origin.x, y: live.positionMm.y - origin.y, z: live.positionMm.z }
+    : live.positionMm;
   // X/Y movement requires the stage to be LOCKED (servo engaged): locked ⇒ arrows
   // enabled + movement allowed; unlocked ⇒ arrows greyed + movement blocked.
   const xyMoveDisabled = movementDisabled || !live.xyLocked;

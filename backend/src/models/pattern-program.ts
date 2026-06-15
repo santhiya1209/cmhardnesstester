@@ -4,6 +4,7 @@ import { EntityIdSchema, IsoDateTimeSchema, NonEmptyStringSchema } from './commo
 export const PatternSchema = z.enum(['Line', 'Rectangle', 'Circle', 'Custom']);
 export const PatternModeSchema = z.enum([
   'Horizontal Mode',
+  'Horizontal Capture Mode',
   'Vertical Mode',
   'Case Depth Mode',
   'Free Mode',

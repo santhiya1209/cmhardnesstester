@@ -116,14 +116,12 @@ const multipointSlice = createSlice({
     startCameraPointSelect(state) {
       state.cameraPointPhase = 'selecting';
     },
-    setCameraPointMoving(state) {
-      state.cameraPointPhase = 'moving';
-    },
     endCameraPointSelect(state) {
       state.cameraPointPhase = 'idle';
     },
-    // Append one operator-captured free point (camera-click capture stores the
-    // ACTUAL landed stage position). Invalidates the stale preview, exactly as
+    // Append one operator-captured free point. The camera-click "Add Point" stores
+    // the clicked LOCATION (live stage centre + pixel offset, absolute mm); Capture
+    // Position stores the live centre. Invalidates the stale preview, exactly as
     // editing any other generation input does.
     appendFreePoint(state, action: PayloadAction<FreePoint>) {
       state.config.freePoints = [...(state.config.freePoints ?? []), action.payload];
@@ -160,7 +158,6 @@ export const {
   selectPoint,
   deselectPoint,
   startCameraPointSelect,
-  setCameraPointMoving,
   endCameraPointSelect,
   appendFreePoint,
   resetMultipoint,

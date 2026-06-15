@@ -2,6 +2,7 @@ export type PatternOption = 'Line' | 'Rectangle' | 'Circle' | 'Custom';
 
 export type PatternMode =
   | 'Horizontal Mode'
+  | 'Horizontal Capture Mode'
   | 'Vertical Mode'
   | 'Case Depth Mode'
   | 'Free Mode'

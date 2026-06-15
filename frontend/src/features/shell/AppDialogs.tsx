@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import AutoMeasureSettingsDialog from '@/component/own/AutoMeasureSettingsDialog';
 import CameraSettingDialog from '@/component/own/CameraSettingDialog';
+import CrosshairSettingsDialog from '@/component/own/CrosshairSettingsDialog';
 import LineColorSettingDialog from '@/component/own/LineColorSettingDialog';
 import MicrometerConfigDialog from '@/component/own/MicrometerConfigDialog';
 import GenericSettingDialog from '@/component/own/GenericSettingDialog';
@@ -21,6 +22,7 @@ import Alert from '@mui/material/Alert';
 import { exitApp } from '@/api/system';
 import type { DialogKey } from '@/contexts/DialogContext';
 import type { AutoMeasureSettingsPayload } from '@/types/autoMeasureSettings';
+import type { CrosshairConfig } from '@/types/crosshair';
 import type { Measurement } from '@/types/measurement';
 
 export type AppDialogsProps = {
@@ -40,9 +42,15 @@ export type AppDialogsProps = {
   setExitConfirmOpen: (next: boolean) => void;
   unavailableMsg: string | null;
   setUnavailableMsg: React.Dispatch<React.SetStateAction<string | null>>;
+  calibrationRequiredMsg: string | null;
+  setCalibrationRequiredMsg: React.Dispatch<React.SetStateAction<string | null>>;
   openCalibrationPanel: (source?: 'menu' | 'toolbar' | 'snackbar') => void;
   measurements: Measurement[];
   testRecordMeasurementIds: string[];
+  crosshairConfig: CrosshairConfig;
+  onCrosshairConfigChange: (next: Partial<CrosshairConfig>) => void;
+  crossLineVisible: boolean;
+  onToggleCrossLine: () => void;
 };
 
 function AppDialogs({
@@ -62,9 +70,15 @@ function AppDialogs({
   setExitConfirmOpen,
   unavailableMsg,
   setUnavailableMsg,
+  calibrationRequiredMsg,
+  setCalibrationRequiredMsg,
   openCalibrationPanel,
   measurements,
   testRecordMeasurementIds,
+  crosshairConfig,
+  onCrosshairConfigChange,
+  crossLineVisible,
+  onToggleCrossLine,
 }: AppDialogsProps) {
   const handleDialogStatusChange = useCallback(
     (message: string) => setStatusMessage(`System Status: ${message}`),
@@ -107,6 +121,14 @@ function AppDialogs({
         open={activeDialog === 'camera'}
         onClose={closeDialog}
         onStatusChange={handleDialogStatusChange}
+      />
+      <CrosshairSettingsDialog
+        open={activeDialog === 'crosshair'}
+        onClose={closeDialog}
+        config={crosshairConfig}
+        onChange={onCrosshairConfigChange}
+        visible={crossLineVisible}
+        onToggleVisible={onToggleCrossLine}
       />
       <GenericSettingDialog
         open={activeDialog === 'generic'}
@@ -162,6 +184,32 @@ function AppDialogs({
             }}
           >
             Exit
+          </MuiButton>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={calibrationRequiredMsg !== null}
+        onClose={() => setCalibrationRequiredMsg(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Calibration Required</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ whiteSpace: 'pre-line' }}>
+            {calibrationRequiredMsg}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <MuiButton onClick={() => setCalibrationRequiredMsg(null)}>Close</MuiButton>
+          <MuiButton
+            variant="contained"
+            onClick={() => {
+              setCalibrationRequiredMsg(null);
+              openCalibrationPanel('snackbar');
+            }}
+          >
+            Open Calibration
           </MuiButton>
         </DialogActions>
       </Dialog>

@@ -7,6 +7,7 @@ export type ConfigDialogId =
   | 'config:micrometer'
   | 'config:serialPort'
   | 'config:camera'
+  | 'config:crosshair'
   | 'config:generic'
   | 'config:other'
   | 'config:restoreFactory'

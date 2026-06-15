@@ -1,6 +1,11 @@
 import type { RootState } from '@/store';
 import type { MultipointState, ProgramMeta } from '@/types/multipoint';
-import type { PatternGenerationRequest, PatternMode, PatternPoint } from '@/types/patternProgram';
+import type { FreePoint, PatternGenerationRequest, PatternMode, PatternPoint } from '@/types/patternProgram';
+
+// Stable empty reference so `selectFreePoints` never returns a fresh [] (which
+// would re-render every consumer each dispatch). config.freePoints is itself a
+// stored array reference, stable until it actually changes.
+const EMPTY_FREE_POINTS: FreePoint[] = [];
 
 // Direct slice/field accessors are already referentially stable (they return an
 // existing state reference, never a freshly-built object), so they need no
@@ -17,3 +22,5 @@ export const selectActivePointId = (state: RootState): string | null => state.mu
 export const selectCompletedPointIds = (state: RootState): string[] => state.multipoint.completedPointIds;
 export const selectFailedPointIds = (state: RootState): string[] => state.multipoint.failedPointIds;
 export const selectCameraPointPhase = (state: RootState) => state.multipoint.cameraPointPhase;
+export const selectFreePoints = (state: RootState): FreePoint[] =>
+  state.multipoint.config.freePoints ?? EMPTY_FREE_POINTS;

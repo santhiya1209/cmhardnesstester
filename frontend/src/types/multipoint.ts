@@ -19,10 +19,11 @@ export type ProgramMeta = {
 };
 
 /**
- * Camera-click point-selection state machine (Free/Midpoint mode "Pick on Camera"):
- * idle → selecting (waiting for a camera click) → moving (RX-gated stage move) → idle.
+ * Camera-click point-selection state machine (Free/Midpoint "Add Point"):
+ * idle → selecting (waiting for a camera click) → idle. The click computes the
+ * clicked LOCATION's coordinate in place — the stage is not moved.
  */
-export type CameraPointPhase = 'idle' | 'selecting' | 'moving';
+export type CameraPointPhase = 'idle' | 'selecting';
 
 export interface MultipointState {
   mode: PatternMode;

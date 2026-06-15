@@ -77,6 +77,7 @@ const TOP_MENUS: TopMenuDef[] = [
       { label: 'Auto Measure Setting', action: 'config:autoMeasure' },
       { label: 'Micrometer Setting', action: 'config:micrometer' },
       { label: 'Camera Setting', action: 'config:camera', dividerBefore: true },
+      { label: 'Crosshair Setting', action: 'config:crosshair' },
       { label: 'Serial Port Setting', action: 'config:serialPort' },
       { label: 'XY Platform Setting', action: 'config:xyPlatform' },
       { label: 'Z Axis Setting', action: 'config:zAxis' },

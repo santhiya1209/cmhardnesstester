@@ -30,6 +30,7 @@ import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
 import Toolbar from '@/component/own/Toolbar';
 import LeftPanel from '@/component/own/LeftPanel';
+import ReticleModeLock from '@/features/multipoint/ReticleModeLock';
 import type { CameraWindowHandle } from '@/component/own/CameraWindow';
 import RightPanel from '@/component/own/RightPanel';
 import StatusBar, {
@@ -109,7 +110,7 @@ import { useAutoMeasure } from '@/features/measurement/useAutoMeasure';
 import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMeasureLifecycle';
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { MachineState } from '@/types/machine';
-import { calculateVickersFromPixels } from '@/utils/manualMeasure';
+import { calculateVickersFromPixels, hasCalibrationForForce } from '@/utils/manualMeasure';
 
 const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
@@ -259,6 +260,7 @@ function App() {
     suppressAutoMeasurePreviewRef,
   } = useAutoMeasureRefs();
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
+  const [calibrationRequiredMsg, setCalibrationRequiredMsg] = useState<string | null>(null);
   const [magnifierEnabled, setMagnifierEnabled] = useState(false);
   const [selectedMeasureMode, setSelectedMeasureMode] = useState<MeasureSelection>(null);
   const [cameraOpen, setCameraOpen] = useState(false);  const [turretMoving, setTurretMoving] = useState(false);
@@ -1164,6 +1166,32 @@ function App() {
           setStatusMessage('System Status: Auto Measure blocked: no active objective');
           return false;
         }
+        // Block measurement-creating runs when the selected force is not
+        // calibrated for the active objective. This runs BEFORE any frame
+        // capture, detection, HV calculation or save, so an uncalibrated force
+        // never produces a measurement row. Previews are exempt (they never
+        // save), and so is the Calibration dialog's own Auto Measure mode, which
+        // must run to CREATE the calibration in the first place.
+        const isCalibrationModeRun =
+          calibrationMeasureModeRef.current !== 'none' || calibrationManualModeRef.current;
+        if (!preview && !isCalibrationModeRun) {
+          if (!hasCalibrationForForce(calibrations, objectiveForCalibration, machineState?.force)) {
+            const forceRaw = machineState?.force;
+            const forceLabel =
+              forceRaw != null && String(forceRaw).trim() !== '' ? String(forceRaw).trim() : null;
+            const forceText = forceLabel ?? 'The selected force';
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[auto-measure-blocked] reason=force-not-calibrated objective=${objectiveForCalibration} force=${forceLabel ?? 'null'}`
+            );
+            setCalibrationRequiredMsg(
+              `${forceText} has not been calibrated.\nPlease complete calibration for ${forceText} before performing Auto Measure.`
+            );
+            setStatusMessage(`System Status: Auto Measure blocked: ${forceText} not calibrated`);
+            if (isFreshCapture) setAutoMeasureStatus('failed');
+            return false;
+          }
+        }
         const resolvedObjectiveForMeasure = objectiveForCalibration;
         if (settings.objectiveForMeasure !== resolvedObjectiveForMeasure) {
           const profiledSettings = applyAutoMeasureObjectiveProfile(settings, objectiveForCalibration);
@@ -1928,6 +1956,7 @@ function App() {
 
   return (
     <Box sx={ROOT_SX}>
+      <ReticleModeLock onLockChange={overlay.lockCrossLine} />
       <MenuBar onSelect={handleMenuSelect} />
       <Toolbar
         onSelect={handleToolbarSelect}
@@ -1944,6 +1973,7 @@ function App() {
           autoMeasureClearNonce={autoMeasureClearNonce}
           autoMeasureGraphicsSource={displayedAutoMeasureSource}
           crossLineVisible={overlay.crossLineVisible}
+          crosshairConfig={overlay.crosshairConfig}
           onAddShape={overlay.addShape}
           manualMeasureResetKey={manualMeasureResetKey}
           manualMeasureObjective={activeObjective}
@@ -2013,9 +2043,15 @@ function App() {
         setExitConfirmOpen={setExitConfirmOpen}
         unavailableMsg={unavailableMsg}
         setUnavailableMsg={setUnavailableMsg}
+        calibrationRequiredMsg={calibrationRequiredMsg}
+        setCalibrationRequiredMsg={setCalibrationRequiredMsg}
         openCalibrationPanel={openCalibrationPanel}
         measurements={measurements}
         testRecordMeasurementIds={testRecordMeasurementIds}
+        crosshairConfig={overlay.crosshairConfig}
+        onCrosshairConfigChange={overlay.setCrosshairConfig}
+        crossLineVisible={overlay.crossLineVisible}
+        onToggleCrossLine={overlay.toggleCrossLine}
       />
     </Box>
   );

@@ -9,7 +9,9 @@ import MenuItem from '@mui/material/MenuItem';
 import Select, { type SelectChangeEvent } from '@mui/material/Select';
 import FormControl from '@mui/material/FormControl';
 import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
 import DialogActions from '@mui/material/DialogActions';
 import Slider from '@mui/material/Slider';
 import { alpha, type SxProps, type Theme } from '@mui/material/styles';
@@ -32,6 +34,8 @@ import { useMachineSelector, useMachineError } from '@/contexts/MachineStateCont
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { useTurret } from '@/hooks/mutations/useTurret';
+import { useCalibrations } from '@/hooks/queries/useCalibrations';
+import { hasCalibrationForForce } from '@/utils/manualMeasure';
 import type { IndentStatus, MachineControlKey, MachineState, TurretDirection } from '@/types/machine';
 import type { ToolbarActionId, MeasureSelection } from '@/types/tool';
 import { useRenderCount } from '@/utils/renderStats';
@@ -553,6 +557,7 @@ function MachineControlTabImpl({
   const { setControl, busy: setBusy, error: setError } = useSetMachineControl();
   const { start: startIndent, busy: indentBusy, error: indentError } = useStartIndent();
   const { move: moveTurret, busy: turretBusy, error: turretError } = useTurret();
+  const { data: calibrations } = useCalibrations();
 
   const formState = useMemo(
     () =>
@@ -766,6 +771,7 @@ function MachineControlTabImpl({
     status: 'running' | 'done' | 'error';
     message: string;
   }>({ open: false, status: 'running', message: '' });
+  const [calibrationRequiredMsg, setCalibrationRequiredMsg] = useState<string | null>(null);
   const impressAutoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastIndentStatusRef = useRef<IndentStatus>(machineIndentStatus);
 
@@ -787,6 +793,19 @@ function MachineControlTabImpl({
 
   const handleIndentClick = useCallback(() => {
     console.log('[IMPRESS] button clicked / handler fired'); // [IMPRESS-DIAG] temporary
+    // Block the indent up-front when the selected force is not calibrated for
+    // the active objective. This stops the stage from ever pressing an indent
+    // for an uncalibrated force (which could not be measured anyway).
+    if (!hasCalibrationForForce(calibrations, formState.objective, formState.force)) {
+      const forceText = formState.force.trim() || 'The selected force';
+      console.warn(
+        `[impress-blocked] reason=force-not-calibrated objective=${formState.objective || 'null'} force=${formState.force || 'null'}`
+      );
+      setCalibrationRequiredMsg(
+        `${forceText} has not been calibrated.\nPlease complete calibration for ${forceText} before performing Auto Measure.`
+      );
+      return;
+    }
     if (impressAutoCloseTimerRef.current !== null) {
       clearTimeout(impressAutoCloseTimerRef.current);
       impressAutoCloseTimerRef.current = null;
@@ -806,6 +825,7 @@ function MachineControlTabImpl({
       }, 4000);
     });
   }, [
+    calibrations,
     formState.force,
     formState.loadTime,
     formState.objective,
@@ -1176,6 +1196,23 @@ function MachineControlTabImpl({
             </Button>
           </DialogActions>
         ) : null}
+      </Dialog>
+
+      <Dialog
+        open={calibrationRequiredMsg !== null}
+        onClose={() => setCalibrationRequiredMsg(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Calibration Required</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ whiteSpace: 'pre-line' }}>
+            {calibrationRequiredMsg}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCalibrationRequiredMsg(null)}>Close</Button>
+        </DialogActions>
       </Dialog>
     </Box>
   );

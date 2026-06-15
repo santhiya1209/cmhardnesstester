@@ -22,6 +22,7 @@ const CONFIG_LABEL: Record<ConfigDialogId, string> = {
   'config:other': 'Other Setting',
   'config:restoreFactory': 'Restore Factory Settings',
   'config:camera': 'Camera Setting',
+  'config:crosshair': 'Crosshair Setting',
   'config:xyPlatform': 'XY Platform Setting',
   'config:zAxis': 'Z Axis Setting',
 };
@@ -33,6 +34,7 @@ const CONFIG_DIALOG_IDS = new Set<ConfigDialogId>([
   'config:micrometer',
   'config:serialPort',
   'config:camera',
+  'config:crosshair',
   'config:generic',
   'config:other',
   'config:restoreFactory',

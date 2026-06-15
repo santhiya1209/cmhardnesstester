@@ -19,6 +19,7 @@ export type DialogKey =
   | 'autoMeasure'
   | 'calibration'
   | 'camera'
+  | 'crosshair'
   | 'generic'
   | 'lineColor'
   | 'micrometer'

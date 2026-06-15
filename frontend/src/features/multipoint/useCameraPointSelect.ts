@@ -1,12 +1,8 @@
 import { useCallback, useMemo } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
 import { selectCameraPointPhase } from '@/store/slices/multipoint.selectors';
-import {
-  appendFreePoint,
-  endCameraPointSelect,
-  setCameraPointMoving,
-} from '@/store/slices/multipoint.slice';
-import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
+import { appendFreePoint, endCameraPointSelect } from '@/store/slices/multipoint.slice';
+import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { STAGE_X_TO_SCREEN, STAGE_Y_TO_SCREEN } from '@/component/own/PatternOverlay';
 
 // Stable per-point id (selection + React keys); local counter, session-unique —
@@ -30,39 +26,51 @@ type Args = {
 export type CameraPointSelect = {
   /** True only while waiting for a camera click (crosshair + click capture on). */
   selecting: boolean;
-  /** Centered hint shown on the camera while selecting / moving; null when idle. */
+  /** Centered hint shown on the camera while selecting; null when idle. */
   hint: string | null;
-  /** Handle one in-bounds camera click: convert → move (RX-gated) → capture actual position. */
-  handlePick: (imagePoint: Point, imageSize: ImageSize) => Promise<void>;
+  /** Handle one in-bounds camera click: convert px→mm → compute clicked coordinate → append point. */
+  handlePick: (imagePoint: Point, imageSize: ImageSize) => void;
 };
 
 /**
- * Camera-click point-selection orchestration (Free/Midpoint "Pick on Camera").
- * Drives the shared `cameraPointPhase` state machine the right-panel button arms:
+ * Camera-click point-selection orchestration (Multipoint "Add Point").
+ * Drives the shared `cameraPointPhase` the right-panel button arms:
  *
- *   selecting → (camera click) → convert px→mm → moveByOffsetMm (RX-gated) →
- *   read ACTUAL landed mm → append free point → idle
+ *   selecting → (camera click) → convert px→mm → add (currentStagePos + offset)
+ *   as an ABSOLUTE free point → idle
  *
- * The optical axis is FIXED and the sample moves, so a click at image-pixel offset
- * (dx, dy) from the image centre is brought to the objective by nudging the stage
- * the equivalent mm in the inverse of the overlay's stage→screen axis convention.
- * Movement reuses the existing backend relocation engine (no new protocol); the
- * stored coordinate is the real post-move position, never the theoretical target.
+ * The optical axis is FIXED and the sample moves, so the feature under the
+ * objective is always the image centre at the live stage position. A click at
+ * image-pixel offset (dx, dy) from the centre therefore corresponds to the stage
+ * coordinate `positionMm + (dx, dy)→mm`, using the SAME stage→screen axis
+ * convention the overlay draws with (so the click maps to where a dot would be).
+ * The stage is NOT moved — the stored coordinate is the clicked LOCATION, not the
+ * current stage position. Coordinates are absolute mm, consistent with every other
+ * reference/free row; the table renders them relative to the relocation centre.
  */
 export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): CameraPointSelect {
   const dispatch = useAppDispatch();
   const phase = useAppSelector(selectCameraPointPhase);
-  const hardware = useXyzPlatformHardware();
+  const stage = useXyzStageState();
 
   const handlePick = useCallback(
-    async (imagePoint: Point, imageSize: ImageSize) => {
+    (imagePoint: Point, imageSize: ImageSize) => {
       if (phase !== 'selecting') return;
       if (!imageSize || imageSize.width <= 0 || imageSize.height <= 0) return;
 
       if (umPerPixel == null || !(umPerPixel > 0)) {
         // eslint-disable-next-line no-console
         console.warn('[camera-click] reason=no-calibration — cannot convert pixels to mm');
-        setStatusMessage('Camera is not calibrated for the active objective — cannot convert the click to a stage move.');
+        setStatusMessage('Camera is not calibrated for the active objective — cannot convert the click to a coordinate.');
+        dispatch(endCameraPointSelect());
+        return;
+      }
+      // The clicked coordinate is anchored to the live stage position; without a
+      // known position there is no absolute frame to place the point in.
+      if (!stage.positionKnown) {
+        // eslint-disable-next-line no-console
+        console.warn('[camera-click] reason=position-unknown — cannot anchor the clicked coordinate');
+        setStatusMessage('Stage position unknown — connect and home the platform first.');
         dispatch(endCameraPointSelect());
         return;
       }
@@ -72,53 +80,28 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
       // eslint-disable-next-line no-console
       console.log(`[camera-click] pixelX=${Math.round(imagePoint.x)} pixelY=${Math.round(imagePoint.y)}`);
 
-      // Invert the overlay's stage→screen signs: a feature seen at +dxPx (right of
-      // centre) is centred by moving the stage so the scene shifts left, etc.
+      // Same stage→screen signs the overlay draws with: a feature drawn at screen
+      // offset s sits at stage offset s/STAGE_*_TO_SCREEN from the image centre.
       const offsetXmm = (dxPx / STAGE_X_TO_SCREEN) * (umPerPixel / 1000);
       const offsetYmm = (dyPx / STAGE_Y_TO_SCREEN) * (umPerPixel / 1000);
       // eslint-disable-next-line no-console
-      console.log(`[pixel-to-mm] offsetX=${offsetXmm.toFixed(4)} offsetY=${offsetYmm.toFixed(4)}`);
+      console.log(`[pixel-to-mm] offsetX=${offsetXmm.toFixed(5)} offsetY=${offsetYmm.toFixed(5)}`);
 
-      dispatch(setCameraPointMoving());
-      setStatusMessage('Moving stage to the selected location…');
+      // Clicked LOCATION = live stage centre + pixel offset (absolute mm). No move.
+      const x = stage.positionMm.x + offsetXmm;
+      const y = stage.positionMm.y + offsetYmm;
+      const point = { id: createCameraPointId(), x, y };
+      dispatch(appendFreePoint(point));
       // eslint-disable-next-line no-console
-      console.log(`[move-to-point] targetX=${offsetXmm.toFixed(4)} targetY=${offsetYmm.toFixed(4)} (mm delta from current position)`);
-
-      try {
-        const result = await hardware.moveByOffsetMm(offsetXmm, offsetYmm);
-        if (!result.ok) {
-          // eslint-disable-next-line no-console
-          console.warn(`[camera-click] move failed error=${JSON.stringify(result.error)} message=${JSON.stringify(result.message ?? null)}`);
-          setStatusMessage(`Stage move failed: ${result.message ?? result.error}`);
-          return;
-        }
-        // eslint-disable-next-line no-console
-        console.log('[motion-complete]');
-        // Store the ACTUAL landed position (backend-derived mm), never the target.
-        const mm = result.positionMm;
-        if (!mm) {
-          setStatusMessage('Stage moved, but the landed position was unavailable — point not added.');
-          return;
-        }
-        const point = { id: createCameraPointId(), x: mm.x, y: mm.y };
-        dispatch(appendFreePoint(point));
-        // eslint-disable-next-line no-console
-        console.log(`[point-added] x=${mm.x} y=${mm.y}`);
-        setStatusMessage(`Added point at (${mm.x.toFixed(3)}, ${mm.y.toFixed(3)}).`);
-      } finally {
-        dispatch(endCameraPointSelect());
-      }
+      console.log(`[point-added] x=${x.toFixed(5)} y=${y.toFixed(5)} source=camera-click stagePos=(${stage.positionMm.x.toFixed(5)},${stage.positionMm.y.toFixed(5)})`);
+      setStatusMessage(`Added point at the selected location (${offsetXmm.toFixed(5)}, ${offsetYmm.toFixed(5)} mm from centre).`);
+      dispatch(endCameraPointSelect());
     },
-    [phase, umPerPixel, hardware, dispatch, setStatusMessage]
+    [phase, umPerPixel, stage.positionKnown, stage.positionMm.x, stage.positionMm.y, dispatch, setStatusMessage]
   );
 
   const hint = useMemo(
-    () =>
-      phase === 'selecting'
-        ? 'Click a location in the camera'
-        : phase === 'moving'
-          ? 'Moving stage…'
-          : null,
+    () => (phase === 'selecting' ? 'Click a location in the camera' : null),
     [phase]
   );
 

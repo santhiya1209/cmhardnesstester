@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react';
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
@@ -6,6 +7,7 @@ import { useAppSelector } from '@/store/hooks';
 import {
   selectActivePointId,
   selectCompletedPointIds,
+  selectFreePoints,
   selectGeneratedPoints,
   selectSelectedPointIds,
 } from '@/store/slices/multipoint.selectors';
@@ -62,6 +64,15 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
+const WARNING_SX: SxProps<Theme> = {
+  position: 'absolute',
+  top: 8,
+  left: '50%',
+  transform: 'translateX(-50%)',
+  maxWidth: '90%',
+  pointerEvents: 'none',
+};
+
 type ImageSize = { width: number; height: number };
 
 type Props = {
@@ -86,6 +97,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
   const [resizeTick, setResizeTick] = useState(0);
 
   const points = useAppSelector(selectGeneratedPoints);
+  const freePoints = useAppSelector(selectFreePoints);
   const selectedIds = useAppSelector(selectSelectedPointIds);
   const activePointId = useAppSelector(selectActivePointId);
   const completedIds = useAppSelector(selectCompletedPointIds);
@@ -213,6 +225,23 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         ctx.fillStyle = tokens.overlay.patternPointPending;
         ctx.fillText(String(p.no), sx + POINT_RADIUS + 2, sy - POINT_RADIUS - 2);
       }
+
+      // Camera-clicked reference points ("Add Point") — persistent yellow markers
+      // at each captured LOCATION. Same absolute-mm → screen transform as the dots
+      // (p − live position), so they stay pinned to the sample while the stage
+      // jogs. They live in config.freePoints, so a row delete/clear removes them.
+      for (const fp of freePoints) {
+        if (!Number.isFinite(fp.x) || !Number.isFinite(fp.y)) continue;
+        const fx = centerX + STAGE_X_TO_SCREEN * (fp.x - positionMm.x) * dispPxPerMm;
+        const fy = centerY + STAGE_Y_TO_SCREEN * (fp.y - positionMm.y) * dispPxPerMm;
+        ctx.beginPath();
+        ctx.arc(fx, fy, POINT_RADIUS + 1, 0, Math.PI * 2);
+        ctx.fillStyle = tokens.overlay.cameraPoint;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.stroke();
+      }
     }
 
     // Current stage position — always the centre of the live image.
@@ -249,11 +278,29 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         `[pattern-overlay] points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)}) umPerPixel=${umPerPixel ?? 'null'} dispPxPerMm=${dispPxPerMm?.toFixed(3) ?? 'n/a'} center=(${Math.round(centerX)},${Math.round(centerY)}) firstPx=${firstScreen ? `(${Math.round(firstScreen.x)},${Math.round(firstScreen.y)})` : 'none'} canvas=${Math.round(wCss)}x${Math.round(hCss)} active=${activePointId ?? 'none'}`
       );
     }
-  }, [active, points, selectedIds, activePointId, completedIds, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
+  }, [active, points, freePoints, selectedIds, activePointId, completedIds, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
+
+  // The mm→pixel transform needs the active objective's calibration; without it
+  // dispPxPerMm is null and no dots are painted. Surface that explicitly so a
+  // populated preview table next to a blank camera reads as "calibrate first",
+  // not "broken". Only shown when dots would otherwise be drawn.
+  const showCalibrationWarning =
+    active &&
+    points.length > 0 &&
+    positionKnown &&
+    !!imageSize &&
+    imageSize.width > 0 &&
+    imageSize.height > 0 &&
+    !(umPerPixel && umPerPixel > 0);
 
   return (
     <Box ref={wrapRef} sx={ROOT_SX}>
       <canvas ref={canvasRef} style={CANVAS_STYLE} />
+      {showCalibrationWarning ? (
+        <Alert severity="warning" variant="filled" sx={WARNING_SX}>
+          Calibrate the active objective/force to display the pattern on the camera overlay.
+        </Alert>
+      ) : null}
     </Box>
   );
 }

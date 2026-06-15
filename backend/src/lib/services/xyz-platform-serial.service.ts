@@ -301,6 +301,14 @@ export interface XyzStageState {
   /** Operator-taught optical center (absolute pulses), or null until taught. */
   centerX: number | null;
   centerY: number | null;
+  /**
+   * Relocation working-origin in MILLIMETRES — the absolute machine mm captured
+   * when Relocation finishes at the physical center, or null before the first
+   * relocation. The Position panel displays positionMm − relocationOriginMm so the
+   * relocation center reads as 0,0. `position`/`positionMm` stay ABSOLUTE: this is
+   * a display offset only, never applied to motion or pattern coordinates.
+   */
+  relocationOriginMm: { x: number; y: number } | null;
   lastAction: string;
   lastError?: string;
   lastTx?: string;
@@ -419,6 +427,7 @@ const DEFAULT_STATE: XyzStageState = {
   positionKnown: false,
   centerX: null,
   centerY: null,
+  relocationOriginMm: null,
   lastAction: 'XYZ stage idle.',
   updatedAt: new Date().toISOString(),
 };
@@ -764,7 +773,9 @@ class XyzPlatformSerialService extends EventEmitter {
     this.rxBuffer = '';
     this.clearJogWatchdog();
     this.jogActive = false;
-    this.setState({ connected: false, port: null, moving: false, lastAction: 'XYZ stage disconnected.' });
+    // Drop the relocation origin: after a disconnect the next session re-homes, so a
+    // stale display-zero would misrepresent the new absolute position.
+    this.setState({ connected: false, port: null, moving: false, relocationOriginMm: null, lastAction: 'XYZ stage disconnected.' });
     return this.getState();
   }
 
@@ -2141,8 +2152,20 @@ class XyzPlatformSerialService extends EventEmitter {
     return this.goToPhysicalCenter('moveToCenter', false, 'xyz-center');
   }
 
-  locateCenter(): Promise<XyzCommandResult> {
-    return this.goToPhysicalCenter('locateCenter', true, 'xyz-relocation');
+  async locateCenter(): Promise<XyzCommandResult> {
+    const result = await this.goToPhysicalCenter('locateCenter', true, 'xyz-relocation');
+    // Relocation defines the working origin: once the stage is confirmed AT the
+    // physical center, treat that absolute position as 0,0 for the UI Position
+    // panel. Display-only — `position`/`positionMm` stay absolute, and the stage is
+    // NOT moved again. Gated on a real confirmed position so the origin is never a
+    // fabricated 0,0. ⊕ Center (moveToCenter) deliberately does NOT reset it.
+    if (result.ok && this.state.positionKnown) {
+      const origin = { x: this.state.positionMm.x, y: this.state.positionMm.y };
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-relocation-origin] action=set originX=${origin.x} originY=${origin.y} note=display-zero`);
+      this.setState({ relocationOriginMm: origin });
+    }
+    return result;
   }
 
   /**

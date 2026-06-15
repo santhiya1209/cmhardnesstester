@@ -120,6 +120,21 @@ function generateFree(req: PatternGenerationRequest): PatternGenerationResult {
 }
 
 /**
+ * Horizontal Capture: the operator's captured reference points (each grabbed at
+ * the reticle centre / live stage position via "Add Point") are the measurement
+ * points, used verbatim — same model as Free Mode but driven by stage capture
+ * instead of a camera click. Coordinates are absolute mm (stored as captured);
+ * the table renders them relative to the relocation centre.
+ */
+function generateHorizontalCapture(req: PatternGenerationRequest): PatternGenerationResult {
+  const free = req.freePoints ?? [];
+  if (free.length === 0) return fail('Horizontal Capture Mode needs at least one captured reference point.');
+  const bad = free.find((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y));
+  if (bad) return fail('Horizontal Capture Mode reference list contains an invalid coordinate.');
+  return ok(free.map((p, i) => point(i + 1, p.x, p.y)));
+}
+
+/**
  * Standard hardness case-depth traverse: a single straight line of indents from
  * an edge toward the core. Reference point 1 is the origin; reference point 2
  * sets the direction vector (its distance from the origin is irrelevant — only
@@ -593,6 +608,7 @@ function generateVerticalLineFreePoints(req: PatternGenerationRequest): PatternG
 
 const GENERATORS: Record<PatternMode, PatternGenerator> = {
   'Horizontal Mode': generateHorizontal,
+  'Horizontal Capture Mode': generateHorizontalCapture,
   'Vertical Mode': generateVertical,
   'Matrix Mode': generateMatrix,
   'Free Mode': generateFree,

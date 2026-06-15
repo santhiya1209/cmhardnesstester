@@ -322,11 +322,12 @@ export function useMultipoint() {
 
   const clearFreePoints = useCallback(() => dispatch(updateConfig({ freePoints: [] })), [dispatch]);
 
-  // Enter camera-click point selection (Free/Midpoint only): the operator then
-  // clicks a feature in the live camera, the stage moves there (RX-gated), and
-  // the ACTUAL landed position is captured as a free point. The orchestration
-  // (convert click → move → capture) lives in useCameraPointSelect, driven by the
-  // shared cameraPointPhase; this just arms the flow.
+  // Enter camera-click point selection (Free/Midpoint "Add Point"): the operator
+  // then clicks a feature in the live camera and the CLICKED LOCATION's coordinate
+  // is computed (live stage centre + pixel offset) and appended as a free point —
+  // the stage is NOT moved. The conversion (px→mm, append) lives in
+  // useCameraPointSelect, driven by the shared cameraPointPhase; this just arms it.
+  // positionKnown is required because the clicked coordinate is anchored to it.
   const beginCameraPointSelect = useCallback(() => {
     if (mode !== 'Free Mode' && mode !== 'Midpoint Mode') return;
     if (!stage.positionKnown) {
@@ -770,6 +771,9 @@ export function useMultipoint() {
     programMeta,
     loadedProgram,
     stageReady: stage.positionKnown,
+    // Relocation-centre origin (absolute mm) so the Free/Midpoint table can show
+    // camera-clicked coordinates relative to the centre while storing absolute mm.
+    relocationOriginMm: stage.relocationOriginMm,
     formRevision,
     statusMessage,
     errorMessage,

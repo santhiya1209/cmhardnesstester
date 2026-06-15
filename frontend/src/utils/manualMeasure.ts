@@ -275,6 +275,33 @@ export function parseForceKgf(value: string | number | null | undefined): number
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+/**
+ * True when a calibration exists for the given objective AND force.
+ *
+ * Calibration is stored per (objective, force) in the legacy `calibrations`
+ * table. The objective-only calibration-settings scale is force-blind, so an
+ * uncalibrated force would otherwise resolve a different force's scale and
+ * silently produce an HV. Auto Measure is gated on this check so an
+ * uncalibrated force never starts a measurement.
+ */
+export function hasCalibrationForForce(
+  calibrations: Calibration[],
+  objective: string | null | undefined,
+  force: string | number | null | undefined
+): boolean {
+  const targetObjective = normalizeObjectiveName(objective);
+  const targetForce = parseForceKgf(force);
+  if (!targetObjective || targetForce === null) {
+    return false;
+  }
+  return calibrations.some(
+    (item) =>
+      normalizeObjectiveName(item.zoomTime) === targetObjective &&
+      parseForceKgf(item.force) === targetForce &&
+      (item.pixelLengthX > 0 || item.pixelLengthY > 0)
+  );
+}
+
 export function resolveMicronsPerPixel({
   calibrationSettings,
   calibrations,

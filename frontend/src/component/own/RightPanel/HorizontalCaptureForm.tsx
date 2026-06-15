@@ -9,10 +9,10 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import MyLocationIcon from '@mui/icons-material/MyLocation';
+import AddLocationAltIcon from '@mui/icons-material/AddLocationAlt';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { FreePoint } from '@/types/patternProgram';
-import type { CameraPointPhase } from '@/types/multipoint';
+import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 
 const BTN_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' };
 const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
@@ -23,41 +23,77 @@ const BODY_CELL_SX: SxProps<Theme> = { fontSize: 12, py: 0.25, px: 1 };
 const EMPTY_CELL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.disabled', textAlign: 'center', py: 4 };
 const FIELD_SX: SxProps<Theme> = { '& .MuiInputBase-input': { fontSize: 12, py: 0.5 } };
 
+// Reference-point readout card — the centre-relative live position the operator
+// captures with Add Point.
+const READOUT_SX: SxProps<Theme> = {
+  display: 'grid',
+  gridTemplateColumns: 'auto 1fr 1fr',
+  alignItems: 'center',
+  gap: 1,
+  px: 1.5,
+  py: 1,
+  border: 1,
+  borderColor: 'divider',
+  borderRadius: 1,
+  bgcolor: 'background.default',
+};
+const READOUT_LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary', fontWeight: 600 };
+const READOUT_VALUE_SX: SxProps<Theme> = {
+  fontFamily: "'Cascadia Mono', Consolas, ui-monospace, monospace",
+  fontVariantNumeric: 'tabular-nums',
+  fontSize: 13,
+  color: 'text.primary',
+};
+
+const COORD_DP = 5;
+
 function parseCoord(text: string): number {
-  // Empty / unparseable → NaN so the generation engine's Number.isFinite guard
-  // reports the incomplete point; the field keeps the operator's raw text via
-  // the local buffer below. (Matches CaseDepthPatternForm.)
   const trimmed = text.trim();
   if (trimmed === '') return Number.NaN;
   const value = Number(trimmed);
   return Number.isNaN(value) ? Number.NaN : value;
 }
 
+/**
+ * Live centre-relative position under the reticle centre. Owns its own stage
+ * subscription so only this leaf re-renders as the stage moves — the form and
+ * its table inputs stay put. displayX/Y = positionMm − relocation origin, which
+ * reads 0.000, 0.000 at the relocation centre. Never shows raw machine mm.
+ */
+function LiveReferenceReadoutImpl({ originX, originY }: { originX: number; originY: number }) {
+  const { positionMm, positionKnown } = useXyzStageState();
+  const x = positionKnown ? (positionMm.x - originX).toFixed(COORD_DP) : '--';
+  const y = positionKnown ? (positionMm.y - originY).toFixed(COORD_DP) : '--';
+  return (
+    <Box sx={READOUT_SX}>
+      <Typography sx={READOUT_LABEL_SX}>Reference Point</Typography>
+      <Typography sx={READOUT_VALUE_SX}>X: {x}</Typography>
+      <Typography sx={READOUT_VALUE_SX}>Y: {y}</Typography>
+    </Box>
+  );
+}
+const LiveReferenceReadout = memo(LiveReferenceReadoutImpl);
+
 type RowProps = {
   point: FreePoint;
   index: number;
   selected: boolean;
   disabled: boolean;
-  /** Relocation-centre origin (absolute mm). Cells DISPLAY value − origin so a
-   *  camera-clicked point reads relative to the centre; stored values stay absolute. */
   originX: number;
   originY: number;
   onSelect: (id: string) => void;
   onChange: (id: string, patch: Partial<FreePoint>) => void;
 };
 
-// Local string buffers keep typing/clearing smooth while committing parsed
-// numbers to the Redux config on every change. Keyed by point id in the parent,
-// so the buffer reseeds from the captured/loaded coordinate on Load/Reset. The
-// buffer holds the CENTRE-RELATIVE value (absolute − origin); edits add the origin
-// back before committing so the stored coordinate remains absolute.
-function FreePointRowImpl({ point, index, selected, disabled, originX, originY, onSelect, onChange }: RowProps) {
+// Centre-relative editable row. The local string buffer keeps typing smooth; the
+// stored coordinate stays absolute (buffer value + origin), matching the table
+// display convention used across multipoint modes.
+function CaptureRowImpl({ point, index, selected, disabled, originX, originY, onSelect, onChange }: RowProps) {
   const [x, setX] = useState(Number.isFinite(point.x) ? String(point.x - originX) : '');
   const [y, setY] = useState(Number.isFinite(point.y) ? String(point.y - originY) : '');
-
   return (
     <TableRow hover selected={selected} onClick={() => onSelect(point.id)}>
-      <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>P{index + 1}</TableCell>
       <TableCell sx={BODY_CELL_SX}>
         <TextField
           size="small"
@@ -85,52 +121,34 @@ function FreePointRowImpl({ point, index, selected, disabled, originX, originY, 
     </TableRow>
   );
 }
-
-const FreePointRow = memo(FreePointRowImpl);
+const CaptureRow = memo(CaptureRowImpl);
 
 type Props = {
   points: FreePoint[];
   disabled: boolean;
   stageReady: boolean;
-  /** Camera-click point-selection phase (drives the Add Point/Cancel button). */
-  pickPhase?: CameraPointPhase;
-  /** Relocation-centre origin (absolute mm) for centre-relative table display; null = show absolute. */
+  /** Relocation-centre origin (absolute mm) for centre-relative display; null = show absolute. */
   origin?: { x: number; y: number } | null;
-  /** Manual blank-row add. Used as "Add Point" ONLY when camera pick is unavailable
-   *  (e.g. Vertical-Line-Free, which has no camera pick). */
-  onAddPoint?: () => void;
+  /** Add Point: append the current stage position (the reticle centre) — no move, no camera click. */
   onCapture: () => void;
-  /** Arm camera-click point selection. When provided (Free/Midpoint), "Add Point"
-   *  becomes the camera pick: crosshair → click → marker + row (no stage move). */
-  onPickOnCamera?: () => void;
-  /** Cancel an in-flight camera point selection. */
-  onCancelPick?: () => void;
   onUpdate: (id: string, patch: Partial<FreePoint>) => void;
   onDelete: (id: string) => void;
   onClear: () => void;
 };
 
-function FreePatternFormImpl({
+function HorizontalCaptureFormImpl({
   points,
   disabled,
   stageReady,
-  pickPhase = 'idle',
   origin = null,
-  onAddPoint,
   onCapture,
-  onPickOnCamera,
-  onCancelPick,
   onUpdate,
   onDelete,
   onClear,
 }: Props) {
-  const picking = pickPhase === 'selecting';
   const originX = origin?.x ?? 0;
   const originY = origin?.y ?? 0;
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // Selection lives locally (screen-scoped UI state, per CLAUDE §10.6) but is
-  // derived against the Redux point list, so resetMultipoint / clear implicitly
-  // invalidate it — no stale selection survives a reset.
   const effectiveSelectedId = useMemo(
     () => (points.some((point) => point.id === selectedId) ? selectedId : null),
     [points, selectedId]
@@ -142,10 +160,8 @@ function FreePatternFormImpl({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      // Don't hijack arrows/Delete while editing a cell.
       if ((event.target as HTMLElement).tagName === 'INPUT') return;
       if (points.length === 0) return;
-
       const currentIndex = points.findIndex((point) => point.id === effectiveSelectedId);
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -165,36 +181,21 @@ function FreePatternFormImpl({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <LiveReferenceReadout originX={originX} originY={originY} />
+
       <Box sx={BTN_ROW_SX}>
-        {/* Add Point. With a camera pick available (Free/Midpoint) it arms the
-            click selection: crosshair → click → compute the clicked LOCATION (no
-            stage move) → yellow marker + table row. Without one (Vertical-Line-Free)
-            it falls back to a manual blank row. */}
-        {onPickOnCamera ? (
-          <Button
-            variant={picking ? 'contained' : 'outlined'}
-            color={picking ? 'warning' : 'primary'}
-            size="small"
-            sx={BTN_SX}
-            startIcon={<MyLocationIcon />}
-            disabled={pickPhase === 'idle' && (disabled || !stageReady)}
-            onClick={picking ? onCancelPick : onPickOnCamera}
-          >
-            {picking ? 'Cancel' : 'Add Point'}
-          </Button>
-        ) : (
-          <Button variant="outlined" size="small" sx={BTN_SX} disabled={disabled} onClick={onAddPoint}>
-            Add Point
-          </Button>
-        )}
+        {/* Add Point = capture the current stage position (the reticle centre).
+            No stage move, no camera click — stores exactly what the readout shows. */}
         <Button
-          variant="outlined"
+          variant="contained"
+          color="primary"
           size="small"
           sx={BTN_SX}
+          startIcon={<AddLocationAltIcon />}
           disabled={disabled || !stageReady}
           onClick={onCapture}
         >
-          Capture Position
+          Add Point
         </Button>
         <Button
           variant="outlined"
@@ -221,7 +222,7 @@ function FreePatternFormImpl({
         <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
-              <TableCell sx={HEAD_CELL_SX}>No.</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Point</TableCell>
               <TableCell sx={HEAD_CELL_SX}>X (mm)</TableCell>
               <TableCell sx={HEAD_CELL_SX}>Y (mm)</TableCell>
             </TableRow>
@@ -230,12 +231,12 @@ function FreePatternFormImpl({
             {points.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={3} sx={EMPTY_CELL_SX}>
-                  No points. Use Add Point (click on the camera) or Capture Position.
+                  No reference points. Move the stage so the feature is under the reticle, then Add Point.
                 </TableCell>
               </TableRow>
             ) : (
               points.map((point, index) => (
-                <FreePointRow
+                <CaptureRow
                   key={point.id}
                   point={point}
                   index={index}
@@ -255,4 +256,4 @@ function FreePatternFormImpl({
   );
 }
 
-export default memo(FreePatternFormImpl);
+export default memo(HorizontalCaptureFormImpl);
