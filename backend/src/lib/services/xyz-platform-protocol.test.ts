@@ -17,6 +17,10 @@ import {
   buildRelocationMoveCommand,
   buildHomeCommand,
   buildJogMoveCommand,
+  buildSoftLimitedMoveCommand,
+  jogDirectionVector,
+  nativeToDisplayMm,
+  xyAtSoftLimit,
   isBusyResponseToken,
   isMoveClassCommand,
   isSettleGatedCommand,
@@ -131,6 +135,78 @@ test('jog forward-right with reverseY -> #11 x+ y-', () => {
   const cmd = buildJogMoveCommand('forward-right', 100, { reverseX: false, reverseY: true });
   assert.equal(cmd.key, 'moveXy');
   assert.equal(cmd.visible, '#11+00000100-00000100!');
+});
+
+// --- Soft limit: ±25 mm enforced by clamping the commanded pulses ------------
+// Fixed machine geometry for these cases: pulsePerMm=1600, physical center=40000
+// pulses (=25 mm), soft limit ±25 mm. JOG full-travel magnitude = 1_000_000/1600.
+const PPM = 1600;
+const JOG_MAX_MM = 1_000_000 / PPM;
+const LIMIT = { softLimitMm: 25, pulsePerMm: PPM };
+const NO_INVERT = { reverseX: false, reverseY: false };
+
+test('jog right from center clamps to the +25 mm limit (40000 pulses)', () => {
+  const r = buildSoftLimitedMoveCommand('right', JOG_MAX_MM, NO_INVERT, { ...LIMIT, displayXmm: 0, displayYmm: 0 });
+  assert.equal(r.command?.visible, '#0C+00040000!');
+  assert.equal(r.commandedXPulses, 40000);
+  assert.equal(r.blockedXMax, false);
+});
+test('jog right AT the +25 mm limit is blocked -> no command', () => {
+  const r = buildSoftLimitedMoveCommand('right', JOG_MAX_MM, NO_INVERT, { ...LIMIT, displayXmm: 25, displayYmm: 0 });
+  assert.equal(r.command, null);
+  assert.equal(r.commandedXPulses, 0);
+  assert.equal(r.blockedXMax, true);
+});
+test('jog left AT +25 mm allows the full 50 mm span back to -25', () => {
+  const r = buildSoftLimitedMoveCommand('left', JOG_MAX_MM, NO_INVERT, { ...LIMIT, displayXmm: 25, displayYmm: 0 });
+  assert.equal(r.command?.visible, '#0C-00080000!');
+  assert.equal(r.blockedXMin, false);
+});
+test('diagonal at X=25,Y=10: X blocked, only Y continues (15 mm)', () => {
+  const r = buildSoftLimitedMoveCommand('forward-right', JOG_MAX_MM, NO_INVERT, { ...LIMIT, displayXmm: 25, displayYmm: 10 });
+  assert.equal(r.command?.key, 'moveY');
+  assert.equal(r.command?.visible, '#0E+00024000!');
+  assert.equal(r.commandedXPulses, 0);
+  assert.equal(r.blockedXMax, true);
+  assert.equal(r.blockedYMax, false);
+});
+test('diagonal at X=25,Y=25: both blocked -> no motion', () => {
+  const r = buildSoftLimitedMoveCommand('forward-right', JOG_MAX_MM, NO_INVERT, { ...LIMIT, displayXmm: 25, displayYmm: 25 });
+  assert.equal(r.command, null);
+  assert.equal(r.blockedXMax, true);
+  assert.equal(r.blockedYMax, true);
+});
+test('reverseY: jog up from center commands NEGATIVE Y to the limit', () => {
+  const r = buildSoftLimitedMoveCommand('forward', JOG_MAX_MM, { reverseX: false, reverseY: true }, { ...LIMIT, displayXmm: 0, displayYmm: 0 });
+  assert.equal(r.command?.visible, '#0E-00040000!');
+});
+test('step (tap) is clamped to the per-tier distance, not full travel', () => {
+  const r = buildSoftLimitedMoveCommand('right', 0.025, NO_INVERT, { ...LIMIT, displayXmm: 0, displayYmm: 0 });
+  assert.equal(r.command?.visible, '#0C+00000040!');
+});
+
+// --- nativeToDisplayMm: physical-center-relative operator frame --------------
+test('nativeToDisplayMm: center pulses -> 0, +span -> +25, -span -> -25', () => {
+  assert.equal(nativeToDisplayMm(40000, 40000, 40000, 40000, PPM, NO_INVERT).x, 0);
+  assert.equal(nativeToDisplayMm(80000, 40000, 40000, 40000, PPM, NO_INVERT).x, 25);
+  assert.equal(nativeToDisplayMm(0, 40000, 40000, 40000, PPM, NO_INVERT).x, -25);
+});
+test('nativeToDisplayMm: reverseY flips so Y-min pulses read as +25 (up)', () => {
+  const d = nativeToDisplayMm(40000, 0, 40000, 40000, PPM, { reverseX: false, reverseY: true });
+  assert.equal(d.y, 25);
+});
+
+// --- xyAtSoftLimit: edge detection -------------------------------------------
+test('xyAtSoftLimit flags the reached edge only', () => {
+  assert.deepEqual(xyAtSoftLimit(25, 0, 25), { xMax: true, xMin: false, yMax: false, yMin: false });
+  assert.deepEqual(xyAtSoftLimit(-25, 0, 25), { xMax: false, xMin: true, yMax: false, yMin: false });
+  assert.deepEqual(xyAtSoftLimit(0, 25, 25), { xMax: false, xMin: false, yMax: true, yMin: false });
+  assert.deepEqual(xyAtSoftLimit(24.9, 0, 25), { xMax: false, xMin: false, yMax: false, yMin: false });
+});
+
+test('jogDirectionVector mirrors the operator-frame mapping', () => {
+  assert.deepEqual(jogDirectionVector('right'), { x: 1, y: 0 });
+  assert.deepEqual(jogDirectionVector('forward-left'), { x: -1, y: 1 });
 });
 
 // --- Parser: HARDWARE-VERIFIED replies --------------------------------------

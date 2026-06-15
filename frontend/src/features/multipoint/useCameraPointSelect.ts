@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
-import { selectCameraPointPhase } from '@/store/slices/multipoint.selectors';
-import { appendFreePoint, endCameraPointSelect } from '@/store/slices/multipoint.slice';
+import { selectCameraPointPhase, selectCameraPointTarget } from '@/store/slices/multipoint.selectors';
+import { appendFreePoint, endCameraPointSelect, setReferencePoint } from '@/store/slices/multipoint.slice';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { STAGE_X_TO_SCREEN, STAGE_Y_TO_SCREEN } from '@/component/own/PatternOverlay';
 
@@ -51,6 +51,7 @@ export type CameraPointSelect = {
 export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): CameraPointSelect {
   const dispatch = useAppDispatch();
   const phase = useAppSelector(selectCameraPointPhase);
+  const target = useAppSelector(selectCameraPointTarget);
   const stage = useXyzStageState();
 
   const handlePick = useCallback(
@@ -88,8 +89,32 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
       console.log(`[pixel-to-mm] offsetX=${offsetXmm.toFixed(5)} offsetY=${offsetYmm.toFixed(5)}`);
 
       // Clicked LOCATION = live stage centre + pixel offset (absolute mm). No move.
+      // The live position is only the ANCHOR that turns the pixel offset into an
+      // absolute coordinate — the stored point is the CLICKED location, never the
+      // stage position itself.
       const x = stage.positionMm.x + offsetXmm;
       const y = stage.positionMm.y + offsetYmm;
+
+      if (target === 'reference') {
+        // Set the single reference point the offset/interval generation uses as its
+        // origin (replaces the 0,0 placeholder). NOT appended to freePoints.
+        dispatch(setReferencePoint({ x, y }));
+        // Display CENTRE-RELATIVE at 5 dp (legacy frame/precision); the stored
+        // refX/refY stay absolute full precision. A perfect centre click reads
+        // 0.00000; a real off-centre residual is shown, never snapped to 0.
+        const ox = stage.relocationOriginMm?.x ?? 0;
+        const oy = stage.relocationOriginMm?.y ?? 0;
+        // Display in the operator's image-frame convention: right = +X, up = −Y.
+        // X is centre-relative as-is; Y is negated (stored stage-frame +Y = up).
+        const relX = x - ox;
+        const relYDisplay = -(y - oy);
+        // eslint-disable-next-line no-console
+        console.log(`[reference-point-set] absX=${x.toFixed(6)} absY=${y.toFixed(6)} relX=${relX.toFixed(5)} relYdisplay=${relYDisplay.toFixed(5)} source=camera-click stagePos=(${stage.positionMm.x.toFixed(6)},${stage.positionMm.y.toFixed(6)})`);
+        setStatusMessage(`Reference point set to (${relX.toFixed(5)}, ${relYDisplay.toFixed(5)}).`);
+        dispatch(endCameraPointSelect());
+        return;
+      }
+
       const point = { id: createCameraPointId(), x, y };
       dispatch(appendFreePoint(point));
       // eslint-disable-next-line no-console
@@ -97,12 +122,12 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
       setStatusMessage(`Added point at the selected location (${offsetXmm.toFixed(5)}, ${offsetYmm.toFixed(5)} mm from centre).`);
       dispatch(endCameraPointSelect());
     },
-    [phase, umPerPixel, stage.positionKnown, stage.positionMm.x, stage.positionMm.y, dispatch, setStatusMessage]
+    [phase, target, umPerPixel, stage.positionKnown, stage.positionMm.x, stage.positionMm.y, stage.relocationOriginMm, dispatch, setStatusMessage]
   );
 
   const hint = useMemo(
-    () => (phase === 'selecting' ? 'Click a location in the camera' : null),
-    [phase]
+    () => (phase !== 'selecting' ? null : target === 'reference' ? 'Select Reference Point' : 'Click a location in the camera'),
+    [phase, target]
   );
 
   return { selecting: phase === 'selecting', hint, handlePick };

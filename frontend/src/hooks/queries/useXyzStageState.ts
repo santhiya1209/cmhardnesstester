@@ -34,6 +34,14 @@ export interface XyzStageSnapshot {
   centerY: number | null;
   /** Relocation working-origin in mm, or null. Position panel shows positionMm − this. */
   relocationOriginMm: { x: number; y: number } | null;
+  /**
+   * Operator-frame position in mm (physical center = 0, +x = right, +y = up) — the
+   * value the Position panel displays and the coordinate the ±25 mm soft limit
+   * applies to. Backend-derived from the same #11 frame; never computed here.
+   */
+  displayMm: { x: number; y: number };
+  /** Which ±25 mm soft-limit edges the stage has reached — drives arrow disabling. */
+  atLimit: { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean };
   lastAction: string;
   lastError: string | null;
 }
@@ -55,6 +63,8 @@ const INITIAL: XyzStageSnapshot = {
   centerX: null,
   centerY: null,
   relocationOriginMm: null,
+  displayMm: { x: 0, y: 0 },
+  atLimit: { xMin: false, xMax: false, yMin: false, yMax: false },
   lastAction: 'Ready for platform control.',
   lastError: null,
 };
@@ -82,6 +92,10 @@ export function useXyzStageState(): XyzStageSnapshot {
       const zPort = state.zPort ?? null;
       const zMoving = state.zMoving ?? false;
       const relocationOriginMm = state.relocationOriginMm ?? null;
+      // Operator-frame display position + soft-limit edges. Fall back to absolute mm
+      // / no-limit only if an older backend build omits the fields (never crash).
+      const displayMm = state.displayMm ?? { x: mm.x, y: mm.y };
+      const atLimit = state.atLimit ?? { xMin: false, xMax: false, yMin: false, yMax: false };
       const key = [
         state.connected,
         x,
@@ -104,6 +118,12 @@ export function useXyzStageState(): XyzStageSnapshot {
         centerY ?? '',
         relocationOriginMm?.x ?? '',
         relocationOriginMm?.y ?? '',
+        displayMm.x,
+        displayMm.y,
+        atLimit.xMin,
+        atLimit.xMax,
+        atLimit.yMin,
+        atLimit.yMax,
         state.lastAction,
         lastError ?? '',
       ].join('|');
@@ -126,6 +146,8 @@ export function useXyzStageState(): XyzStageSnapshot {
         centerX,
         centerY,
         relocationOriginMm,
+        displayMm: { x: displayMm.x, y: displayMm.y },
+        atLimit: { xMin: atLimit.xMin, xMax: atLimit.xMax, yMin: atLimit.yMin, yMax: atLimit.yMax },
         lastAction: state.lastAction,
         lastError,
       });

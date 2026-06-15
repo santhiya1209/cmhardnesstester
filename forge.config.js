@@ -74,7 +74,7 @@ module.exports = {
         perMachine: false,
         shortcutName: 'Vickers Measurement Software',
         // App icon used for desktop + Start menu shortcuts.
-        win: { icon: path.resolve(__dirname, "frontend/public/vms icon.ico") },
+        win: { icon: path.resolve(__dirname, "frontend/public/icon.ico") },
         // Installer/uninstaller + setup header icons.
         nsis: {
           installerIcon: 'build/icon.ico',

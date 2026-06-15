@@ -19,11 +19,19 @@ export type ProgramMeta = {
 };
 
 /**
- * Camera-click point-selection state machine (Free/Midpoint "Add Point"):
+ * Camera-click point-selection state machine (the "Add Point" / reference pick):
  * idle → selecting (waiting for a camera click) → idle. The click computes the
  * clicked LOCATION's coordinate in place — the stage is not moved.
  */
 export type CameraPointPhase = 'idle' | 'selecting';
+
+/**
+ * What a camera click sets while `cameraPointPhase === 'selecting'`:
+ *  - 'freePoint' → append a free point (Free/Midpoint "Add Point").
+ *  - 'reference' → set the single reference point refX/refY (Horizontal/Vertical
+ *    "Add Point") that the offset/interval generation uses as its origin.
+ */
+export type CameraPointTarget = 'freePoint' | 'reference';
 
 export interface MultipointState {
   mode: PatternMode;
@@ -40,6 +48,15 @@ export interface MultipointState {
   failedPointIds: string[];
   /** Camera-click point-selection phase; 'idle' unless the operator is picking a point on the live camera. */
   cameraPointPhase: CameraPointPhase;
+  /** What the in-flight camera pick will set; null when idle. */
+  cameraPointTarget: CameraPointTarget | null;
+  /**
+   * True once the single reference point (refX/refY) has been set from a camera
+   * click this session — gates the on-camera reference marker and distinguishes a
+   * real picked 0,0 from the un-picked 0,0 placeholder. Cleared on mode change /
+   * reset. UI/selection state, not persisted with the program.
+   */
+  referencePicked: boolean;
 }
 
 /** Impress mode in the wire form the machine-control layer expects. */

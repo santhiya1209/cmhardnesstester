@@ -68,6 +68,12 @@ export interface XyzStageState {
    * center on the last Relocation), or null. The Position panel shows positionMm
    * minus this so the relocation center reads 0,0. Display-only — never absolute. */
   relocationOriginMm: { x: number; y: number } | null;
+  /** Operator-frame position in mm (physical center = 0, +x = right, +y = up) — the
+   * Position panel value and the coordinate the ±25 mm soft limit applies to.
+   * Backend-derived from the same #11 frame; never computed here. */
+  displayMm: { x: number; y: number };
+  /** Which ±25 mm soft-limit edges the stage has reached — drives arrow disabling. */
+  atLimit: { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean };
   lastAction: string;
   lastError?: string;
   lastTx?: string;

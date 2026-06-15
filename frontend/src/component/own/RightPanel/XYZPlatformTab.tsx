@@ -298,7 +298,6 @@ const POSITION_SX: SxProps<Theme> = {
   borderRadius: '10px',
 };
 const FR_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'baseline', gap: 0.75, justifyContent: 'flex-end' };
-const FR_LABEL_SX: SxProps<Theme> = { fontSize: 10, fontWeight: 600, color: PALETTE.muted, textTransform: 'uppercase' };
 const COORD_AXIS_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 700, color: PALETTE.primary };
 const COORD_VALUE_SX: SxProps<Theme> = {
   fontFamily: 'Consolas, "Cascadia Mono", monospace',
@@ -318,6 +317,31 @@ const ALERT_SX: SxProps<Theme> = { py: 0.25, fontSize: 11.5, borderRadius: '10px
 
 function formatCoordinate(value: number): string {
   return value.toFixed(3);
+}
+
+// Operator-frame arrow vectors (+x = right, +y = up/forward) — mirrors the
+// backend JOG_VECTORS, used here only to disable an arrow when an axis it would
+// drive is at its ±25 mm soft limit. Per the spec's BUTTON STATES, an arrow is
+// disabled when ANY intended axis is pinned (so → ↗ ↘ all greyed at X max).
+const ARROW_VECTORS: Record<XyzDirection, { x: number; y: number }> = {
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+  forward: { x: 0, y: 1 },
+  back: { x: 0, y: -1 },
+  'forward-left': { x: -1, y: 1 },
+  'forward-right': { x: 1, y: 1 },
+  'back-left': { x: -1, y: -1 },
+  'back-right': { x: 1, y: -1 },
+};
+
+function arrowAtSoftLimit(
+  direction: XyzDirection,
+  atLimit: { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean }
+): boolean {
+  const v = ARROW_VECTORS[direction];
+  const xBlocked = (v.x > 0 && atLimit.xMax) || (v.x < 0 && atLimit.xMin);
+  const yBlocked = (v.y > 0 && atLimit.yMax) || (v.y < 0 && atLimit.yMin);
+  return xBlocked || yBlocked;
 }
 
 // Map a raw service error CODE to an operator-facing sentence. The backend now
@@ -771,19 +795,23 @@ function XYZPlatformTabImpl() {
     void hardware.disconnectZ();
   }, [hardware]);
 
-  // Displayed coordinates are MILLIMETRES — the backend-converted positionMm (pulses
-  // / pulsePerMm) from the real #11 RX frame. Never the raw pulses, never computed here.
-  // After Relocation the backend sets a working origin (the physical-center mm); the
-  // panel then shows positionMm − origin so the relocation center reads 0,0 and every
-  // value is relative to it. The stage is NOT moved and positionMm stays absolute —
-  // this subtraction is display-only (pattern/overlay/camera still use absolute mm).
-  const origin = live.relocationOriginMm;
-  const pos = origin
-    ? { x: live.positionMm.x - origin.x, y: live.positionMm.y - origin.y, z: live.positionMm.z }
-    : live.positionMm;
+  // The Position panel shows the OPERATOR-FRAME coordinate (physical center = 0,
+  // +x = right, +y = up) — the same ±25 mm frame the soft limits use, so the readout
+  // and the limit/disable behaviour agree. Backend-derived (live.displayMm) from the
+  // real #11 frame; never computed here. positionMm stays ABSOLUTE for pattern/
+  // overlay/camera.
+  const pos = live.displayMm;
   // X/Y movement requires the stage to be LOCKED (servo engaged): locked ⇒ arrows
   // enabled + movement allowed; unlocked ⇒ arrows greyed + movement blocked.
   const xyMoveDisabled = movementDisabled || !live.xyLocked;
+  // Per-arrow gating: an arrow is disabled while X/Y movement is generally blocked
+  // OR when an axis it would drive is at its ±25 mm soft limit (live.atLimit, the
+  // backend authority). The backend ALSO refuses/clamps the command, so this is the
+  // UI affordance, not the enforcement.
+  const arrowDisabled = useCallback(
+    (direction: XyzDirection) => xyMoveDisabled || arrowAtSoftLimit(direction, live.atLimit),
+    [xyMoveDisabled, live.atLimit]
+  );
   // Z is a SEPARATE connection: gate on zConnected (NOT the X/Y `connected`). Per
   // the Z controller, #LK# (Lock) ENABLES motion — so arrows are live only when the
   // Z drive is connected AND locked.
@@ -922,33 +950,33 @@ function XYZPlatformTabImpl() {
           <Box sx={XY_BODY_SX}>
             {/* Direction pad: ↖ ↑ ↗ / ← ◎ → / ↙ ↓ ↘ */}
             <Box sx={DPAD_SX}>
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-left')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('forward-left')} {...jogHandlers('forward-left')}>
                 <NorthWestIcon />
               </Button>
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('forward')} {...jogHandlers('forward')}>
                 <NorthIcon />
               </Button>
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('forward-right')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('forward-right')} {...jogHandlers('forward-right')}>
                 <NorthEastIcon />
               </Button>
 
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('left')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('left')} {...jogHandlers('left')}>
                 <WestIcon />
               </Button>
               <Button sx={CENTER_BTN_SX} disabled={xyMoveDisabled} onClick={handleCenter}>
                 <ControlCameraIcon />
               </Button>
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('right')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('right')} {...jogHandlers('right')}>
                 <EastIcon />
               </Button>
 
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-left')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('back-left')} {...jogHandlers('back-left')}>
                 <SouthWestIcon />
               </Button>
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('back')} {...jogHandlers('back')}>
                 <SouthIcon />
               </Button>
-              <Button sx={ARROW_BTN_SX} disabled={xyMoveDisabled} {...jogHandlers('back-right')}>
+              <Button sx={ARROW_BTN_SX} disabled={arrowDisabled('back-right')} {...jogHandlers('back-right')}>
                 <SouthEastIcon />
               </Button>
             </Box>
@@ -980,25 +1008,18 @@ function XYZPlatformTabImpl() {
           {/* Position panel */}
           <Box sx={POSITION_SX}>
             <Typography sx={SECTION_LABEL_SX}>Position</Typography>
-            {/* Forward / Reverse per axis, driven by the live origin-adjusted
-                position (pos.x/pos.y) — same source the readout always used.
-                Forward = positive magnitude, Reverse = its negation; both update
-                whenever the stage moves. '--' until the position is known. */}
+            {/* Single SIGNED operator-frame coordinate per axis (physical center = 0,
+                range ±25.000 mm), updated live from the backend (pos = live.displayMm).
+                0.001 mm precision. '--' until the position is known. */}
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, flex: 1 }}>
               <Box sx={FR_ROW_SX}>
                 <Typography sx={COORD_AXIS_SX}>X</Typography>
-                <Typography sx={FR_LABEL_SX}>Forward</Typography>
-                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(Math.abs(pos.x)) : '--'}</Typography>
-                <Typography sx={FR_LABEL_SX}>Reverse</Typography>
-                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(-Math.abs(pos.x)) : '--'}</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(pos.x) : '--'}</Typography>
                 <Typography sx={COORD_UNIT_SX}>mm</Typography>
               </Box>
               <Box sx={FR_ROW_SX}>
                 <Typography sx={COORD_AXIS_SX}>Y</Typography>
-                <Typography sx={FR_LABEL_SX}>Forward</Typography>
-                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(Math.abs(pos.y)) : '--'}</Typography>
-                <Typography sx={FR_LABEL_SX}>Reverse</Typography>
-                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(-Math.abs(pos.y)) : '--'}</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(pos.y) : '--'}</Typography>
                 <Typography sx={COORD_UNIT_SX}>mm</Typography>
               </Box>
             </Box>

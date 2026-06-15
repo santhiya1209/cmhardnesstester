@@ -23,6 +23,8 @@ import {
 import {
   selectActivePointId,
   selectCameraPointPhase,
+  selectCameraPointTarget,
+  selectReferencePicked,
   selectCompletedPointIds,
   selectFailedPointIds,
   selectGeneratedPoints,
@@ -159,6 +161,8 @@ export function useMultipoint() {
   const completedPointIds = useAppSelector(selectCompletedPointIds);
   const failedPointIds = useAppSelector(selectFailedPointIds);
   const cameraPointPhase = useAppSelector(selectCameraPointPhase);
+  const cameraPointTarget = useAppSelector(selectCameraPointTarget);
+  const referencePicked = useAppSelector(selectReferencePicked);
 
   const {
     data: patternPrograms,
@@ -337,8 +341,8 @@ export function useMultipoint() {
       return;
     }
     // eslint-disable-next-line no-console
-    console.log(`[point-select-start] mode=${mode}`);
-    dispatch(startCameraPointSelect());
+    console.log(`[point-select-start] mode=${mode} target=freePoint`);
+    dispatch(startCameraPointSelect('freePoint'));
     setStatusMessage('Click a location in the camera to add a point.');
   }, [mode, stage.positionKnown, dispatch]);
 
@@ -347,20 +351,24 @@ export function useMultipoint() {
     setStatusMessage('Point selection cancelled.');
   }, [dispatch]);
 
-  // Horizontal / Vertical (single reference point) "Add Point": fill refX/refY
-  // from the live stage position — the same XYZ flow the machine-control tabs and
-  // the other capture handlers use. Bump the form revision so the uncontrolled
-  // refX/refY inputs remount and re-read the captured values (same approach Load
-  // uses). updateConfig clears the previous preview, exactly as typing does.
-  const captureLinearReference = useCallback(() => {
+  // Horizontal / Vertical (single reference point) "Add Point": enter camera
+  // point-selection for the REFERENCE. The operator then clicks a feature in the
+  // live camera and the CLICKED LOCATION's coordinate (px→mm, via
+  // useCameraPointSelect) becomes refX/refY — the origin every generated point is
+  // offset from. The stage is NOT moved and the current machine position is NEVER
+  // used as the reference (only as the anchor that converts the pixel offset to an
+  // absolute coordinate). positionKnown is required for that anchor.
+  const beginReferencePointSelect = useCallback(() => {
+    if (mode !== 'Horizontal Mode' && mode !== 'Vertical Mode') return;
     if (!stage.positionKnown) {
       setStatusMessage('Stage position unknown — connect and home the platform first.');
       return;
     }
-    dispatch(updateConfig({ refX: stage.positionMm.x, refY: stage.positionMm.y }));
-    setFormRevision((revision) => revision + 1);
-    setStatusMessage('Captured reference point at stage position.');
-  }, [stage.positionKnown, stage.positionMm.x, stage.positionMm.y, dispatch]);
+    // eslint-disable-next-line no-console
+    console.log(`[point-select-start] mode=${mode} target=reference`);
+    dispatch(startCameraPointSelect('reference'));
+    setStatusMessage('Select Reference Point — click the feature in the live camera.');
+  }, [mode, stage.positionKnown, dispatch]);
 
   // Case Depth captures real coordinates from the same XYZ stage flow as the
   // machine-control tabs — never mocked. Origin (slot 0) must exist before the
@@ -815,6 +823,8 @@ export function useMultipoint() {
     completedPointIds,
     failedPointIds,
     cameraPointPhase,
+    cameraPointTarget,
+    referencePicked,
     isGenerating,
     programMeta,
     loadedProgram,
@@ -834,7 +844,7 @@ export function useMultipoint() {
     generatePattern: generate,
     addFreePoint,
     captureFreePoint,
-    captureLinearReference,
+    beginReferencePointSelect,
     beginCameraPointSelect,
     cancelCameraPointSelect,
     updateFreePoint,

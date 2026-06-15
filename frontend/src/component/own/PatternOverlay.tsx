@@ -9,6 +9,9 @@ import {
   selectCompletedPointIds,
   selectFreePoints,
   selectGeneratedPoints,
+  selectRefX,
+  selectRefY,
+  selectReferencePicked,
   selectSelectedPointIds,
 } from '@/store/slices/multipoint.selectors';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
@@ -101,6 +104,9 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
   const selectedIds = useAppSelector(selectSelectedPointIds);
   const activePointId = useAppSelector(selectActivePointId);
   const completedIds = useAppSelector(selectCompletedPointIds);
+  const referencePicked = useAppSelector(selectReferencePicked);
+  const refX = useAppSelector(selectRefX);
+  const refY = useAppSelector(selectRefY);
   const { positionMm, positionKnown } = useXyzStageState();
 
   // DPR-aware backing store, matching ImageOverlay so dots stay crisp and the
@@ -242,6 +248,29 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         ctx.strokeStyle = 'rgba(0,0,0,0.55)';
         ctx.stroke();
       }
+
+      // Camera-picked REFERENCE point (Horizontal/Vertical "Add Point") — the
+      // origin every generated point is offset from. Drawn only once a reference
+      // has actually been picked this session (referencePicked), so the un-picked
+      // 0,0 placeholder shows nothing. A yellow ringed dot + crosshair + "REF"
+      // label, pinned to the sample via the same (ref − live position) transform.
+      if (referencePicked && refX != null && refY != null && Number.isFinite(refX) && Number.isFinite(refY)) {
+        const rx = centerX + STAGE_X_TO_SCREEN * (refX - positionMm.x) * dispPxPerMm;
+        const ry = centerY + STAGE_Y_TO_SCREEN * (refY - positionMm.y) * dispPxPerMm;
+        ctx.strokeStyle = tokens.overlay.cameraPoint;
+        ctx.fillStyle = tokens.overlay.cameraPoint;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(rx - ACTIVE_RING_RADIUS, ry);
+        ctx.lineTo(rx + ACTIVE_RING_RADIUS, ry);
+        ctx.moveTo(rx, ry - ACTIVE_RING_RADIUS);
+        ctx.lineTo(rx, ry + ACTIVE_RING_RADIUS);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(rx, ry, ACTIVE_RING_RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillText('REF', rx + ACTIVE_RING_RADIUS + 2, ry - ACTIVE_RING_RADIUS);
+      }
     }
 
     // The image centre = current stage position, but no centre marker is drawn
@@ -268,7 +297,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         `[pattern-overlay] points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)}) umPerPixel=${umPerPixel ?? 'null'} dispPxPerMm=${dispPxPerMm?.toFixed(3) ?? 'n/a'} center=(${Math.round(centerX)},${Math.round(centerY)}) firstPx=${firstScreen ? `(${Math.round(firstScreen.x)},${Math.round(firstScreen.y)})` : 'none'} canvas=${Math.round(wCss)}x${Math.round(hCss)} active=${activePointId ?? 'none'}`
       );
     }
-  }, [active, points, freePoints, selectedIds, activePointId, completedIds, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
+  }, [active, points, freePoints, selectedIds, activePointId, completedIds, referencePicked, refX, refY, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
 
   // The mm→pixel transform needs the active objective's calibration; without it
   // dispPxPerMm is null and no dots are painted. Surface that explicitly so a

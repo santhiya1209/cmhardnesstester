@@ -5,6 +5,10 @@ import {
   buildJogMoveCommand,
   buildLockXyCommand,
   buildRelocationMoveCommand,
+  buildSoftLimitedMoveCommand,
+  jogDirectionVector,
+  nativeToDisplayMm,
+  xyAtSoftLimit,
   buildSetXAccelerationCommand,
   buildSetXBeginSpeedCommand,
   buildSetXFinalSpeedCommand,
@@ -185,6 +189,12 @@ const PROBE_WINDOW_MS = 800;
 // missed release can never drive to the extreme; the watchdog + limit sensors
 // are the backstops. Position only ever comes from the Stop's #11 reply.
 const JOG_PULSES = 1_000_000;
+// Symmetric XY soft limit (mm) measured from the PHYSICAL center: the stage is
+// never commanded — by jog OR tap — past ±SOFT_LIMIT_MM in the operator display
+// frame. Enforced HERE in the motion controller by clamping the commanded pulses
+// to the remaining distance to the limit (so the hardware physically stops at the
+// limit even while a jog button is held), NOT as a UI-only guard.
+const SOFT_LIMIT_MM = 25;
 // Backend safety watchdog: if no Stop arrives within this window after a jog
 // starts (release event missed, renderer/IPC dropped), the service sends #0B
 // itself. Bounds runaway TIME just as JOG_PULSES bounds runaway DISTANCE.
@@ -309,6 +319,15 @@ export interface XyzStageState {
    * a display offset only, never applied to motion or pattern coordinates.
    */
   relocationOriginMm: { x: number; y: number } | null;
+  /**
+   * Operator-frame position in MILLIMETRES (physical center = 0, +x = right,
+   * +y = up/forward), derived from the SAME #11 RX frame as `position`. This is
+   * the value the Position panel displays and the coordinate the ±soft-limit
+   * applies to. Distinct from `positionMm` (absolute machine mm).
+   */
+  displayMm: { x: number; y: number };
+  /** Which ±soft-limit edges the stage has reached — drives arrow disabling. */
+  atLimit: { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean };
   lastAction: string;
   lastError?: string;
   lastTx?: string;
@@ -428,6 +447,8 @@ const DEFAULT_STATE: XyzStageState = {
   centerX: null,
   centerY: null,
   relocationOriginMm: null,
+  displayMm: { x: 0, y: 0 },
+  atLimit: { xMin: false, xMax: false, yMin: false, yMax: false },
   lastAction: 'XYZ stage idle.',
   updatedAt: new Date().toISOString(),
 };
@@ -523,12 +544,27 @@ class XyzPlatformSerialService extends EventEmitter {
   // without an async settings read; refreshed from the active settings whenever
   // loadActiveSettings() runs. Seeded from the confirmed default until the first load.
   private pulsePerMm = DEFAULT_XYZ_PLATFORM_SETTINGS.pulsePerMm;
+  // XY geometry cached for the synchronous RX handler and the jog/step soft-limit
+  // clamp: the PHYSICAL center (native pulses — the ±SOFT_LIMIT_MM origin) and the
+  // per-axis inversion. Refreshed whenever loadActiveSettings() runs; seeded from
+  // the confirmed defaults until the first load.
+  private xyGeom = {
+    centerX: DEFAULT_XYZ_PLATFORM_SETTINGS.physicalCenterXpulses,
+    centerY: DEFAULT_XYZ_PLATFORM_SETTINGS.physicalCenterYpulses,
+    reverseX: DEFAULT_XYZ_PLATFORM_SETTINGS.reverseXAxis,
+    reverseY: DEFAULT_XYZ_PLATFORM_SETTINGS.reverseYAxis,
+  };
+  // Operator-frame direction of the in-flight jog, kept so stopStage() can log the
+  // matching [XY] Move ... Stopped lines on release. Null when no jog is active.
+  private jogDirection: XyzDirection | null = null;
 
   getState(): XyzStageState {
     return {
       ...this.state,
       position: { ...this.state.position },
       positionMm: { ...this.state.positionMm },
+      displayMm: { ...this.state.displayMm },
+      atLimit: { ...this.state.atLimit },
     };
   }
 
@@ -542,6 +578,8 @@ class XyzPlatformSerialService extends EventEmitter {
       ...patch,
       position: patch.position ? { ...patch.position } : { ...this.state.position },
       positionMm: patch.positionMm ? { ...patch.positionMm } : { ...this.state.positionMm },
+      displayMm: patch.displayMm ? { ...patch.displayMm } : { ...this.state.displayMm },
+      atLimit: patch.atLimit ? { ...patch.atLimit } : { ...this.state.atLimit },
       updatedAt: new Date().toISOString(),
     };
     // eslint-disable-next-line no-console
@@ -1291,6 +1329,20 @@ class XyzPlatformSerialService extends EventEmitter {
         console.log(`[xyz-position-raw] commandId=${commandId} rawX=${parsed.x} rawY=${parsed.y}`);
         // eslint-disable-next-line no-console
         console.log(`[xyz-position-mm] commandId=${commandId} mmX=${positionMm.x} mmY=${positionMm.y} pulsePerMm=${ppm}`);
+        // OPERATOR-FRAME position (physical center = 0, +x = right, +y = up) and the
+        // ±SOFT_LIMIT_MM edge flags — derived from the SAME real RX frame. Drives the
+        // Position panel readout and the arrow-disabling; the false→true transition
+        // emits the spec's [XY] ... Limit Reached line as the stage reaches the edge.
+        const displayMm = nativeToDisplayMm(
+          parsed.x,
+          parsed.y,
+          this.xyGeom.centerX,
+          this.xyGeom.centerY,
+          ppm,
+          { reverseX: this.xyGeom.reverseX, reverseY: this.xyGeom.reverseY }
+        );
+        const atLimit = xyAtSoftLimit(displayMm.x, displayMm.y, SOFT_LIMIT_MM);
+        this.logSoftLimitTransitions(this.state.atLimit, atLimit);
         // ACTIVE-JOG GUARD. During a press-and-hold jog the move was sent
         // fire-and-forget (no pending command), so these #11 frames are UNSOLICITED
         // in-motion telemetry. They update the live X/Y but must NOT clear `moving`
@@ -1305,10 +1357,10 @@ class XyzPlatformSerialService extends EventEmitter {
           console.log(
             `[xyz-jog-ignore-unsolicited-complete] x=${parsed.x} y=${parsed.y} status=${JSON.stringify(parsed.status)} busy=${parsed.busy} reason=active-jog`
           );
-          this.setState({ position, positionMm, positionKnown: true, moving: true, lastError: undefined });
+          this.setState({ position, positionMm, displayMm, atLimit, positionKnown: true, moving: true, lastError: undefined });
           break; // do NOT complete/resolve/stop the jog on an unsolicited frame
         }
-        this.setState({ position, positionMm, positionKnown: true, moving: parsed.busy, lastError: undefined });
+        this.setState({ position, positionMm, displayMm, atLimit, positionKnown: true, moving: parsed.busy, lastError: undefined });
         // Travel-range SAFETY warning only — the real RX value is kept as-is (never
         // clamped or faked). Coordinates are SIGNED (+/-): negative positions are
         // normal hardware output (confirmed by RX logs, e.g. x=-179), so the bound
@@ -1707,6 +1759,62 @@ class XyzPlatformSerialService extends EventEmitter {
     return Promise.resolve({ ok: false, error: MOVE_NOT_CONFIRMED, commandId });
   }
 
+  // Operator-frame current position (physical center = 0) from the latest known
+  // native pulses + cached geometry. Used to clamp a jog/step to the soft limit.
+  private currentDisplayMm(): { x: number; y: number } {
+    return nativeToDisplayMm(
+      this.state.position.x,
+      this.state.position.y,
+      this.xyGeom.centerX,
+      this.xyGeom.centerY,
+      this.pulsePerMm,
+      { reverseX: this.xyGeom.reverseX, reverseY: this.xyGeom.reverseY }
+    );
+  }
+
+  // Spec-mandated [XY] Move <Right|Left|Up|Down> <Started|Stopped> lines, one per
+  // intended axis of the jog (a diagonal logs both its components).
+  private logXyMove(direction: XyzDirection, phase: 'Started' | 'Stopped'): void {
+    const v = jogDirectionVector(direction);
+    // eslint-disable-next-line no-console
+    if (v.x > 0) console.log(`[XY] Move Right ${phase}`);
+    // eslint-disable-next-line no-console
+    if (v.x < 0) console.log(`[XY] Move Left ${phase}`);
+    // eslint-disable-next-line no-console
+    if (v.y > 0) console.log(`[XY] Move Up ${phase}`);
+    // eslint-disable-next-line no-console
+    if (v.y < 0) console.log(`[XY] Move Down ${phase}`);
+  }
+
+  // Spec-mandated [XY] <axis> <Max|Min> Limit Reached (±25.000) lines for any edge
+  // a freshly-built clamp reports as blocked (the requested direction is pinned).
+  private logBlockedLimits(b: { blockedXMax: boolean; blockedXMin: boolean; blockedYMax: boolean; blockedYMin: boolean }): void {
+    const max = SOFT_LIMIT_MM.toFixed(3);
+    // eslint-disable-next-line no-console
+    if (b.blockedXMax) console.log(`[XY] X Max Limit Reached (+${max})`);
+    // eslint-disable-next-line no-console
+    if (b.blockedXMin) console.log(`[XY] X Min Limit Reached (-${max})`);
+    // eslint-disable-next-line no-console
+    if (b.blockedYMax) console.log(`[XY] Y Max Limit Reached (+${max})`);
+    // eslint-disable-next-line no-console
+    if (b.blockedYMin) console.log(`[XY] Y Min Limit Reached (-${max})`);
+  }
+
+  // The same limit lines, but emitted on the live false→true transition during
+  // motion (the literal "reaches +25.000" moment). `prev` is the pre-update edge
+  // state; call BEFORE setState applies `next`.
+  private logSoftLimitTransitions(
+    prev: { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean },
+    next: { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean }
+  ): void {
+    this.logBlockedLimits({
+      blockedXMax: next.xMax && !prev.xMax,
+      blockedXMin: next.xMin && !prev.xMin,
+      blockedYMax: next.yMax && !prev.yMax,
+      blockedYMin: next.yMin && !prev.yMin,
+    });
+  }
+
   /**
    * Start a press-and-hold JOG in `direction`. The active XY speed (already
    * pushed to the controller's #05–#0A registers) governs how fast it moves; the
@@ -1741,22 +1849,61 @@ class XyzPlatformSerialService extends EventEmitter {
     // applied to relocation/position (those work in native controller pulses).
     const settings = await this.loadActiveSettings();
     const invert = { reverseX: settings.reverseXAxis, reverseY: settings.reverseYAxis };
-    // eslint-disable-next-line no-console
-    console.log(`[xyz-jog-dispatch] direction=${direction} pulses=${JOG_PULSES} reverseX=${invert.reverseX} reverseY=${invert.reverseY} speed=${this.state.xySpeed}`);
-    const built = buildJogMoveCommand(direction, JOG_PULSES, invert);
+    // The soft-limit clamp needs a real position. If we have never read one, query
+    // #10! once before deciding — never command blindly past ±SOFT_LIMIT_MM.
+    if (!this.state.positionKnown) {
+      // eslint-disable-next-line no-console
+      console.warn('[xyz-jog-no-position] action=query-before-jog note=position-unknown');
+      await this.getPosition();
+    }
+
+    let built: XyzBuiltCommand;
+    if (this.state.positionKnown) {
+      const display = this.currentDisplayMm();
+      // Jog target = remaining distance to the limit (full travel is far larger, so
+      // it always clamps to the limit). The stage physically stops AT the limit even
+      // while held; #0B on release stops it earlier.
+      const limited = buildSoftLimitedMoveCommand(direction, JOG_PULSES / this.pulsePerMm, invert, {
+        displayXmm: display.x,
+        displayYmm: display.y,
+        softLimitMm: SOFT_LIMIT_MM,
+        pulsePerMm: this.pulsePerMm,
+      });
+      this.logBlockedLimits(limited);
+      if (!limited.command) {
+        // Every requested axis is already at its limit — ignore (no motion).
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-jog-blocked-softlimit] direction=${direction} x=${display.x.toFixed(3)} y=${display.y.toFixed(3)}`);
+        return { ok: true, commandId: this.state.lastCommandId ?? this.nextCommandId() };
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-jog-dispatch] direction=${direction} clampedX=${limited.commandedXPulses} clampedY=${limited.commandedYPulses} reverseX=${invert.reverseX} reverseY=${invert.reverseY} speed=${this.state.xySpeed} softLimitMm=${SOFT_LIMIT_MM}`);
+      built = limited.command;
+    } else {
+      // Position still unknown after the query — cannot compute the clamp. Fall back
+      // to the bounded full-travel jog (hardware limit sensors remain the physical
+      // backstop) so the operator can still move; warn so the gap is visible.
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-jog-unclamped] direction=${direction} reason=position-unknown pulses=${JOG_PULSES}`);
+      built = buildJogMoveCommand(direction, JOG_PULSES, invert);
+    }
+
+    this.logXyMove(direction, 'Started');
     const sent = await this.sendFireAndForget('moveStage', () => built, `Jog ${direction}.`);
     if (!sent.ok) {
       // eslint-disable-next-line no-console
       console.error(`[xyz-jog-error] phase=start direction=${direction} error=${JSON.stringify(sent.error)}`);
+      this.logXyMove(direction, 'Stopped');
       return sent;
     }
     // Movement state is set ONLY after the TX was accepted by the OS serial layer
     // (not a guessed coordinate). Real X/Y still updates only from an RX frame.
     // eslint-disable-next-line no-console
-    console.log(`[xyz-jog-start] direction=${direction} speed=${this.state.xySpeed} pulses=${JOG_PULSES} commandId=${sent.commandId}`);
+    console.log(`[xyz-jog-start] direction=${direction} speed=${this.state.xySpeed} commandId=${sent.commandId}`);
     // Mark the jog active BEFORE broadcasting moving=true so any immediately
     // following unsolicited #11 frame is caught by the active-jog guard.
     this.jogActive = true;
+    this.jogDirection = direction;
     this.setState({ moving: true });
     this.armJogWatchdog();
     return sent;
@@ -1792,12 +1939,38 @@ class XyzPlatformSerialService extends EventEmitter {
     const profile = settings.speedProfiles[this.state.xySpeed];
     // Normalized settings always carry stepDistanceMm; the ?? is a defensive floor.
     const stepMm = profile.stepDistanceMm ?? DEFAULT_XYZ_PLATFORM_SETTINGS.speedProfiles[this.state.xySpeed].stepDistanceMm ?? 0;
-    const pulses = Math.max(1, Math.round(stepMm * settings.pulsePerMm));
-    // eslint-disable-next-line no-console
-    console.log(
-      `[xyz-step-dispatch] direction=${direction} speed=${this.state.xySpeed} stepMm=${stepMm} pulsePerMm=${settings.pulsePerMm} pulses=${pulses} reverseX=${invert.reverseX} reverseY=${invert.reverseY}`
-    );
-    const built = buildJogMoveCommand(direction, pulses, invert);
+    // A tap is bound by the same soft limit as a jog — query position first if we
+    // have never read one, then clamp the step to the remaining travel.
+    if (!this.state.positionKnown) {
+      // eslint-disable-next-line no-console
+      console.warn('[xyz-step-no-position] action=query-before-step note=position-unknown');
+      await this.getPosition();
+    }
+
+    let built: XyzBuiltCommand;
+    if (this.state.positionKnown) {
+      const display = this.currentDisplayMm();
+      const limited = buildSoftLimitedMoveCommand(direction, stepMm, invert, {
+        displayXmm: display.x,
+        displayYmm: display.y,
+        softLimitMm: SOFT_LIMIT_MM,
+        pulsePerMm: this.pulsePerMm,
+      });
+      this.logBlockedLimits(limited);
+      if (!limited.command) {
+        // eslint-disable-next-line no-console
+        console.log(`[xyz-step-blocked-softlimit] direction=${direction} x=${display.x.toFixed(3)} y=${display.y.toFixed(3)}`);
+        return { ok: true, commandId: this.state.lastCommandId ?? this.nextCommandId() };
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-step-dispatch] direction=${direction} speed=${this.state.xySpeed} stepMm=${stepMm} pulsePerMm=${this.pulsePerMm} clampedX=${limited.commandedXPulses} clampedY=${limited.commandedYPulses} reverseX=${invert.reverseX} reverseY=${invert.reverseY}`);
+      built = limited.command;
+    } else {
+      const pulses = Math.max(1, Math.round(stepMm * this.pulsePerMm));
+      // eslint-disable-next-line no-console
+      console.warn(`[xyz-step-unclamped] direction=${direction} reason=position-unknown pulses=${pulses}`);
+      built = buildJogMoveCommand(direction, pulses, invert);
+    }
     // RX-gated finite move: runCommand waits for the idle position frame, and the
     // [xyz-position-raw]/[xyz-position-mm] logs fire from that real #11 reply.
     const result = await this.runCommand('moveStep', () => built, `Step ${direction} ${stepMm}mm.`);
@@ -1825,6 +1998,10 @@ class XyzPlatformSerialService extends EventEmitter {
     // the guard and completes normally). Only after #0B RX do we end the jog.
     let result = await this.runCommand('stopStage', () => buildStopXyCommand(), 'Stop X/Y.', true);
     this.jogActive = false;
+    if (this.jogDirection) {
+      this.logXyMove(this.jogDirection, 'Stopped');
+      this.jogDirection = null;
+    }
     this.setState({ moving: false });
     // eslint-disable-next-line no-console
     console.log(
@@ -1983,6 +2160,13 @@ class XyzPlatformSerialService extends EventEmitter {
     };
     // Keep the display conversion factor in sync with the operator's configuration.
     this.pulsePerMm = settings.pulsePerMm;
+    // Keep the soft-limit/display geometry in sync (physical center + inversion).
+    this.xyGeom = {
+      centerX: settings.physicalCenterXpulses,
+      centerY: settings.physicalCenterYpulses,
+      reverseX: settings.reverseXAxis,
+      reverseY: settings.reverseYAxis,
+    };
     return settings;
   }
 

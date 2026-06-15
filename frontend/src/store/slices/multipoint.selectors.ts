@@ -22,5 +22,9 @@ export const selectActivePointId = (state: RootState): string | null => state.mu
 export const selectCompletedPointIds = (state: RootState): string[] => state.multipoint.completedPointIds;
 export const selectFailedPointIds = (state: RootState): string[] => state.multipoint.failedPointIds;
 export const selectCameraPointPhase = (state: RootState) => state.multipoint.cameraPointPhase;
+export const selectCameraPointTarget = (state: RootState) => state.multipoint.cameraPointTarget;
+export const selectReferencePicked = (state: RootState): boolean => state.multipoint.referencePicked;
+export const selectRefX = (state: RootState): number | null => state.multipoint.config.refX ?? null;
+export const selectRefY = (state: RootState): number | null => state.multipoint.config.refY ?? null;
 export const selectFreePoints = (state: RootState): FreePoint[] =>
   state.multipoint.config.freePoints ?? EMPTY_FREE_POINTS;

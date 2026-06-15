@@ -128,6 +128,12 @@ const WORKSPACE_SX: SxProps<Theme> = {
   minWidth: 0,
 };
 
+// Operator-facing message shown when Auto Measure cannot produce a trustworthy
+// detection (failed geometry validation or below the confidence threshold). The
+// run is rejected before any measurement row / HV is created.
+const AUTO_MEASURE_UNRELIABLE_MSG =
+  'Auto Measure could not reliably detect the indentation. Please adjust focus/lighting or use Manual Measure.';
+
 function logAfterImpressDetectionFailed(reason: string) {
   // eslint-disable-next-line no-console
   console.warn(`[after-impress-detection-failed] reason=${reason}`);
@@ -1434,7 +1440,7 @@ function App() {
             reason,
           });
           setStatusMessage(`System Status: Auto Measure rejected: ${reason}`);
-          setUnavailableMsg(`Auto Measure rejected: ${reason}. Please use manual measure.`);
+          setUnavailableMsg(AUTO_MEASURE_UNRELIABLE_MSG);
           clearAutoMeasureOverlay(
             callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
           );
@@ -1464,6 +1470,37 @@ function App() {
           );
         }
         if (result.confidence < minConfidence) {
+          // A geometry-plausible but low-confidence detection is not trustworthy
+          // enough to become a saved measurement. Reject it here (after geometry
+          // validation, before commit) so no incorrect row / HV is created.
+          // Previews never save, and calibration-mode runs must proceed to create
+          // the calibration in the first place — both keep accepting + logging.
+          if (!preview && !isCalibrationModeRun) {
+            logAutoMeasurePhase('auto-measure-reject', {
+              objective: liveObjectiveForNative,
+              smoothing: runSmoothing,
+              threshold: runThreshold,
+              method: detectionMethod,
+              d1Px: result.d1Pixels,
+              d2Px: result.d2Pixels,
+              center: resolvedDetection.validation.center,
+              reason: `low-confidence confidence=${result.confidence.toFixed(3)} min=${minConfidence.toFixed(3)}`,
+            });
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[measurement-commit-blocked] method=Auto reason=low-confidence confidence=${result.confidence.toFixed(3)} min=${minConfidence.toFixed(3)}`
+            );
+            setStatusMessage('System Status: Auto Measure rejected: low detection confidence');
+            setUnavailableMsg(AUTO_MEASURE_UNRELIABLE_MSG);
+            clearAutoMeasureOverlay(
+              callSource === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-failed'
+            );
+            if (isFreshCapture) setAutoMeasureStatus('failed');
+            if (callSource === 'after-impress') {
+              logAfterImpressDetectionFailed('low-confidence');
+            }
+            return false;
+          }
           logAutoMeasurePhase('auto-measure-fallback-used', {
             objective: liveObjectiveForNative,
             smoothing: runSmoothing,
@@ -1474,7 +1511,8 @@ function App() {
             center: resolvedDetection.validation.center,
             reason: `low-confidence-geometry-accepted confidence=${result.confidence.toFixed(3)} min=${minConfidence.toFixed(3)}`,
           });
-        }        const graphics: AutoMeasureGraphics = {
+        }
+        const graphics: AutoMeasureGraphics = {
           ...graphicsFromAutoMeasureResult(result, objectiveForCalibration),
           sessionId: sessionIdForRun,
           frameId: capturedFrameIdForRun,

@@ -372,6 +372,138 @@ export function buildJogMoveCommand(
   return buildMoveYCommand(y);
 }
 
+/**
+ * The operator-frame unit vector (+x = right, +y = up/forward) for an arrow,
+ * BEFORE axis inversion — exposed so callers can label or limit a jog by intended
+ * axis without re-deriving the mapping or applying the native pulse sign.
+ */
+export function jogDirectionVector(direction: XyzDirection): { x: number; y: number } {
+  return JOG_VECTORS[direction];
+}
+
+// Tolerance (mm) for "is the stage AT the soft limit". 0.1 µm — far below the
+// pulse resolution (1/pulsePerMm mm), so it only absorbs float rounding, never a
+// real step.
+const SOFT_LIMIT_EPS_MM = 1e-4;
+
+/** Current operator-frame position and the symmetric ±soft-limit, for clamping. */
+export interface XySoftLimitState {
+  /** Operator-frame position (physical center = 0, +x = right, +y = up), in mm. */
+  displayXmm: number;
+  displayYmm: number;
+  /** Symmetric per-axis soft limit, in mm (e.g. 25 → ±25 mm). */
+  softLimitMm: number;
+  /** mm↔pulse factor used to convert the clamped distance into commanded pulses. */
+  pulsePerMm: number;
+}
+
+/** Result of clamping a jog/step move to the soft limit. */
+export interface SoftLimitedMove {
+  /** The clamped relative-move frame, or null when EVERY requested axis is blocked. */
+  command: XyzBuiltCommand | null;
+  commandedXPulses: number;
+  commandedYPulses: number;
+  /** The requested direction is already AT this edge (zero remaining travel). */
+  blockedXMax: boolean;
+  blockedXMin: boolean;
+  blockedYMax: boolean;
+  blockedYMin: boolean;
+}
+
+/**
+ * Build a relative-move frame for `direction` whose per-axis magnitude is CLAMPED
+ * to the remaining distance to the symmetric ±softLimitMm soft limit (operator
+ * frame), so the stage can never be commanded past the limit. An axis already at
+ * its limit contributes zero pulses and is flagged blocked; when both requested
+ * axes are blocked the command is null (caller sends nothing — no motion). For a
+ * diagonal with one axis blocked, the free axis still moves (the spec's "only Y
+ * may continue"). `maxMagnitudeMm` is the unclamped distance (jog: full travel;
+ * tap: the per-tier step). Axis inversion flips only the commanded pulse SIGN,
+ * exactly like buildJogMoveCommand.
+ */
+export function buildSoftLimitedMoveCommand(
+  direction: XyzDirection,
+  maxMagnitudeMm: number,
+  invert: AxisInversion,
+  limit: XySoftLimitState
+): SoftLimitedMove {
+  const v = JOG_VECTORS[direction];
+  const { displayXmm, displayYmm, softLimitMm, pulsePerMm } = limit;
+
+  // Remaining travel (mm) toward the requested edge, clamped to [0, maxMagnitudeMm].
+  const axis = (dir: number, pos: number) => {
+    if (dir > 0) {
+      const remaining = softLimitMm - pos;
+      return { allowed: Math.max(0, Math.min(maxMagnitudeMm, remaining)), atMax: remaining <= SOFT_LIMIT_EPS_MM, atMin: false };
+    }
+    if (dir < 0) {
+      const remaining = pos + softLimitMm;
+      return { allowed: Math.max(0, Math.min(maxMagnitudeMm, remaining)), atMax: false, atMin: remaining <= SOFT_LIMIT_EPS_MM };
+    }
+    return { allowed: 0, atMax: false, atMin: false };
+  };
+
+  const ax = axis(v.x, displayXmm);
+  const ay = axis(v.y, displayYmm);
+
+  const xSign = (v.x > 0 ? 1 : v.x < 0 ? -1 : 0) * (invert.reverseX ? -1 : 1);
+  const ySign = (v.y > 0 ? 1 : v.y < 0 ? -1 : 0) * (invert.reverseY ? -1 : 1);
+  const commandedXPulses = xSign * Math.round(ax.allowed * pulsePerMm);
+  const commandedYPulses = ySign * Math.round(ay.allowed * pulsePerMm);
+
+  let command: XyzBuiltCommand | null = null;
+  if (commandedXPulses !== 0 && commandedYPulses !== 0) command = buildMoveXyCommand(commandedXPulses, commandedYPulses);
+  else if (commandedXPulses !== 0) command = buildMoveXCommand(commandedXPulses);
+  else if (commandedYPulses !== 0) command = buildMoveYCommand(commandedYPulses);
+
+  return {
+    command,
+    commandedXPulses,
+    commandedYPulses,
+    blockedXMax: ax.atMax,
+    blockedXMin: ax.atMin,
+    blockedYMax: ay.atMax,
+    blockedYMin: ay.atMin,
+  };
+}
+
+/**
+ * Convert a native (controller-pulse) X/Y position into the OPERATOR display
+ * frame: physical-center-relative mm where +x = right and +y = up/forward. Axis
+ * inversion flips the sign so the displayed coordinate increases in the same
+ * direction the positive arrow drives the stage. This is the coordinate the
+ * ±soft-limit applies to and the value the Position panel shows — distinct from
+ * absolute machine mm (used by pattern/overlay).
+ */
+export function nativeToDisplayMm(
+  nativeXPulses: number,
+  nativeYPulses: number,
+  centerXPulses: number,
+  centerYPulses: number,
+  pulsePerMm: number,
+  invert: AxisInversion
+): { x: number; y: number } {
+  const ppm = pulsePerMm > 0 ? pulsePerMm : 1;
+  return {
+    x: (invert.reverseX ? centerXPulses - nativeXPulses : nativeXPulses - centerXPulses) / ppm,
+    y: (invert.reverseY ? centerYPulses - nativeYPulses : nativeYPulses - centerYPulses) / ppm,
+  };
+}
+
+/** Which symmetric ±softLimitMm edges an operator-frame position has reached. */
+export function xyAtSoftLimit(
+  displayXmm: number,
+  displayYmm: number,
+  softLimitMm: number
+): { xMin: boolean; xMax: boolean; yMin: boolean; yMax: boolean } {
+  return {
+    xMax: displayXmm >= softLimitMm - SOFT_LIMIT_EPS_MM,
+    xMin: displayXmm <= -softLimitMm + SOFT_LIMIT_EPS_MM,
+    yMax: displayYmm >= softLimitMm - SOFT_LIMIT_EPS_MM,
+    yMin: displayYmm <= -softLimitMm + SOFT_LIMIT_EPS_MM,
+  };
+}
+
 // --- RX parser --------------------------------------------------------------
 //
 // HARDWARE-VERIFIED reply formats (machine -> PC, via Hercules):

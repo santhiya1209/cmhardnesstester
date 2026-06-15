@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { MultipointState, ProgramMeta } from '@/types/multipoint';
+import type { CameraPointTarget, MultipointState, ProgramMeta } from '@/types/multipoint';
 import type { FreePoint, PatternGenerationRequest, PatternMode, PatternPoint } from '@/types/patternProgram';
 
 const INITIAL_CONFIG: PatternGenerationRequest = {
@@ -37,6 +37,8 @@ const INITIAL_STATE: MultipointState = {
   completedPointIds: [],
   failedPointIds: [],
   cameraPointPhase: 'idle',
+  cameraPointTarget: null,
+  referencePicked: false,
 };
 
 // Editing any generation input invalidates the previous preview, so points +
@@ -66,8 +68,11 @@ const multipointSlice = createSlice({
         state.config.refY = 0;
       }
       clearGenerated(state);
-      // Switching modes cancels any in-flight camera point selection.
+      // Switching modes cancels any in-flight camera point selection and drops the
+      // picked-reference marker — the new mode starts with no reference selected.
       state.cameraPointPhase = 'idle';
+      state.cameraPointTarget = null;
+      state.referencePicked = false;
     },
     updateConfig(state, action: PayloadAction<Partial<PatternGenerationRequest>>) {
       state.config = { ...state.config, ...action.payload };
@@ -124,12 +129,25 @@ const multipointSlice = createSlice({
     clearPoints(state) {
       clearGenerated(state);
     },
-    // Camera-click point selection (Free/Midpoint "Pick on Camera").
-    startCameraPointSelect(state) {
+    // Camera-click point selection. The payload says what the next click sets:
+    // 'freePoint' (Free/Midpoint) or 'reference' (Horizontal/Vertical refX/refY).
+    startCameraPointSelect(state, action: PayloadAction<CameraPointTarget>) {
       state.cameraPointPhase = 'selecting';
+      state.cameraPointTarget = action.payload;
     },
     endCameraPointSelect(state) {
       state.cameraPointPhase = 'idle';
+      state.cameraPointTarget = null;
+    },
+    // Set the single reference point (refX/refY) the offset/interval generation
+    // uses as its origin — from a camera click (the clicked LOCATION's mm), never
+    // the live stage position. Marks the reference picked (drives the marker) and
+    // invalidates the stale preview, exactly as editing any generation input does.
+    setReferencePoint(state, action: PayloadAction<{ x: number; y: number }>) {
+      state.config.refX = action.payload.x;
+      state.config.refY = action.payload.y;
+      state.referencePicked = true;
+      clearGenerated(state);
     },
     // Append one operator-captured free point. The camera-click "Add Point" stores
     // the clicked LOCATION (live stage centre + pixel offset, absolute mm); Capture
@@ -171,6 +189,7 @@ export const {
   deselectPoint,
   startCameraPointSelect,
   endCameraPointSelect,
+  setReferencePoint,
   appendFreePoint,
   resetMultipoint,
 } = multipointSlice.actions;

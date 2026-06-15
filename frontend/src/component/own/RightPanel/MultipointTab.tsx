@@ -246,7 +246,12 @@ function MultipointTabImpl({ onValidateStart }: Props) {
           config={config}
           disabled={m.isBusy}
           stageReady={m.stageReady}
-          onCapture={m.captureLinearReference}
+          picking={m.cameraPointPhase === 'selecting' && m.cameraPointTarget === 'reference'}
+          picked={m.referencePicked}
+          originX={m.relocationOriginMm?.x ?? 0}
+          originY={m.relocationOriginMm?.y ?? 0}
+          onBeginPick={m.beginReferencePointSelect}
+          onCancelPick={m.cancelCameraPointSelect}
           onConfigChange={m.updateConfig}
         />
       )}
