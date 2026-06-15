@@ -35,6 +35,7 @@ import {
 import { usePatternPrograms } from '@/hooks/queries/usePatternPrograms';
 import { useSavePatternProgram } from '@/hooks/mutations/useSavePatternProgram';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
+import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
 import { useMachineStoreApi } from '@/contexts/MachineStateContext';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
@@ -167,6 +168,7 @@ export function useMultipoint() {
   } = usePatternPrograms();
   const { error: saveError, savePatternProgram, saving } = useSavePatternProgram();
   const stage = useXyzStageState();
+  const { status: cameraStatus } = useCameraStatus();
   const hardware = useXyzPlatformHardware();
   // Imperative latest-snapshot access (no re-render subscription) for awaiting the
   // RX-confirmed indent status inside the Start loop; and the existing impress
@@ -561,12 +563,12 @@ export function useMultipoint() {
   }, [dispatch]);
 
   const save = useCallback(async () => {
-    const payload = toPayload(config, mode, programMeta, loadedProgram?.checked ?? true);
+    const payload = toPayload(config, mode, programMeta, loadedProgram?.checked ?? true, generatedPoints);
     const saved = await savePatternProgram({ id: loadedProgram?.id, values: payload });
     setLoadedProgramId(saved.id);
     setStatusMessage(`Saved ${saved.patternName}.`);
     await refetchPatternPrograms();
-  }, [config, mode, programMeta, loadedProgram?.checked, loadedProgram?.id, refetchPatternPrograms, savePatternProgram]);
+  }, [config, mode, programMeta, generatedPoints, loadedProgram?.checked, loadedProgram?.id, refetchPatternPrograms, savePatternProgram]);
 
   const load = useCallback(() => {
     const program = patternPrograms[0] ?? null;
@@ -577,6 +579,10 @@ export function useMultipoint() {
     dispatch(setMode(program.mode));
     dispatch(updateConfig(configFromProgram(program)));
     dispatch(updateProgramMeta(metaFromProgram(program)));
+    // Restore the saved generated points LAST — setMode/updateConfig both clear
+    // the preview, so the persisted points must be re-applied after them. Load
+    // therefore restores the exact run list without re-pressing Generate.
+    dispatch(setGeneratedPoints(program.points ?? []));
     setLoadedProgramId(program.id);
     setGenerationError(null);
     setFormRevision((revision) => revision + 1);
@@ -606,6 +612,14 @@ export function useMultipoint() {
       setStatusMessage('No generated points');
       return;
     }
+    // The per-point measure step (after-impress flow) captures the live frame, so
+    // the camera must be streaming — fail loudly rather than indent without ever
+    // recording a result. (Objective/force calibration are gated downstream by the
+    // existing after-impress calibration-required check.)
+    if (!cameraStatus.streaming) {
+      setStatusMessage('Camera is not live — open and start the camera before running Multipoint.');
+      return;
+    }
     if (!stage.connected) {
       setStatusMessage('XYZ stage not connected');
       return;
@@ -624,6 +638,14 @@ export function useMultipoint() {
       setStatusMessage('Hardness machine not connected');
       return;
     }
+
+    // Snapshot the stage position at Start so the run can return to the operator's
+    // captured reference/objective position when every point is done — the final
+    // resting position equals where the run began.
+    const home =
+      stage.positionKnown && Number.isFinite(stage.positionMm.x) && Number.isFinite(stage.positionMm.y)
+        ? { x: stage.positionMm.x, y: stage.positionMm.y }
+        : null;
 
     const request = buildMultipointExecutionRequest(generatedPoints, programMeta);
     // eslint-disable-next-line no-console
@@ -665,8 +687,16 @@ export function useMultipoint() {
           `[multipoint-position-reached] index=${i + 1} no=${point.no} x=${result.position?.x ?? 'unknown'} y=${result.position?.y ?? 'unknown'} source=hardware-rx`
         );
 
-        // Indent via the existing impress path (RX-confirmed completion). Autofocus
-        // is NOT implemented in the codebase, so no focus step runs (Step 6).
+        // --- Autofocus (legacy step 3) hook point ---
+        // No automated autofocus primitive exists in the codebase (only manual Z
+        // stepping). It is deferred to a dedicated hardware task; when a real
+        // Z-sweep/sharpness routine lands, await it HERE before the indent. Until
+        // then the loop proceeds focus-less, exactly as before.
+        //
+        // Indent via the existing impress path (RX-confirmed completion). The
+        // turret rotate-to-indenter / rotate-back-to-objective is handled by the
+        // machine firmware via the indent command's turret suffix — no separate
+        // turret calls here.
         // eslint-disable-next-line no-console
         console.log('[MP] Indent started');
         setStatusMessage(`Indenting at point ${point.no} of ${request.points.length}…`);
@@ -711,12 +741,30 @@ export function useMultipoint() {
       console.log('[MP] Program complete');
       // eslint-disable-next-line no-console
       console.log(`[multipoint-finished] points=${request.points.length}`);
-      setStatusMessage(`Executed ${request.points.length} point(s).`);
+
+      // Return to the captured reference/objective position the run started from.
+      if (home) {
+        setStatusMessage('Returning to reference position…');
+        const back = await hardware.moveToPoint(home.x, home.y);
+        if (!back.ok) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[multipoint-return-error] message=${JSON.stringify(back.message ?? back.error)}`
+          );
+          setStatusMessage(
+            `Executed ${request.points.length} point(s), but return to reference failed: ${back.message ?? back.error}`
+          );
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.log('[MP] Returned to reference position');
+      }
+      setStatusMessage(`Executed ${request.points.length} point(s); returned to reference.`);
     } finally {
       setExecuting(false);
       dispatch(setActivePoint(null));
     }
-  }, [generatedPoints, programMeta, mode, hardware, stage.connected, stage.xyLocked, stage.centerX, stage.centerY, machineStore, fireIndent, dispatch]);
+  }, [generatedPoints, programMeta, mode, hardware, cameraStatus.streaming, stage.connected, stage.xyLocked, stage.centerX, stage.centerY, stage.positionKnown, stage.positionMm.x, stage.positionMm.y, machineStore, fireIndent, dispatch]);
 
   // Per-row "Go": move ONLY to that point so the operator can verify a generated
   // location before running the full sequence. Same RX-gated hardware path and

@@ -815,6 +815,12 @@ function CameraWindowImpl(
             transformOrigin: 'center center',
             transition: 'transform 120ms ease-out',
             cursor: pointSelectActive ? 'crosshair' : undefined,
+            // A press-drag over the live image must NOT trigger the browser's
+            // native selection/image drag (which looks like the camera panning).
+            // Same guard the other draggable surfaces use; pointer handlers and
+            // zoom are unaffected. The feed stays fixed; overlays move on their own.
+            userSelect: 'none',
+            touchAction: 'none',
           }}
           onPointerMoveCapture={updateCursorFromPointer}
           onPointerLeave={clearCursor}

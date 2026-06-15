@@ -75,7 +75,13 @@ const INFO_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', jus
 const INFO_TEXT_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 const INFO_LINK_SX: SxProps<Theme> = { fontSize: 12, color: 'primary.main', fontWeight: 500 };
 
-function MultipointTabImpl() {
+type Props = {
+  /** Start-time calibration gate from App; returns false (and shows the
+   *  "Calibration Required" dialog) to abort BEFORE the first point moves. */
+  onValidateStart?: () => boolean | Promise<boolean>;
+};
+
+function MultipointTabImpl({ onValidateStart }: Props) {
   const m = useMultipoint();
   const { config, programMeta } = m;
   const formKey = `${m.mode}-${m.formRevision}`;
@@ -246,7 +252,7 @@ function MultipointTabImpl() {
       )}
 
       <Box sx={BTN_ROW_SX}>
-        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<PlayArrowRoundedIcon />} disabled={m.isBusy} onClick={() => void m.start()}>Start</Button>
+        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<PlayArrowRoundedIcon />} disabled={m.isBusy} onClick={async () => { if (onValidateStart && !(await onValidateStart())) return; void m.start(); }}>Start</Button>
         <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<AutoAwesomeOutlinedIcon />} disabled={m.isBusy || m.isGenerating} onClick={m.generatePattern}>
           Generate
         </Button>

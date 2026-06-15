@@ -111,6 +111,7 @@ import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMea
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { MachineState } from '@/types/machine';
 import { calculateVickersFromPixels, hasCalibrationForForce } from '@/utils/manualMeasure';
+import { subscribeXyzStageState } from '@/api/xyzPlatform';
 
 const ROOT_SX: SxProps<Theme> = {
   display: 'flex',
@@ -200,6 +201,20 @@ function App() {
 
   const { saveMeasurement: saveManualMeasurement } = useSaveMeasurement();
   const { getSnapshot: getMachineStateSnapshot } = useMachineStateSnapshot();
+  // Latest XYZ stage position, mirrored into a ref (NOT React state) so reading it
+  // at measurement-save time never adds a re-render to this large root on every
+  // serial position update. Populates xMm/yMm on each saved measurement row.
+  const stagePositionRef = useRef<{ x: number; y: number; known: boolean }>({ x: 0, y: 0, known: false });
+  useEffect(
+    () =>
+      subscribeXyzStageState((state) => {
+        const mm = state.positionMm ?? state.position;
+        if (mm && Number.isFinite(mm.x) && Number.isFinite(mm.y)) {
+          stagePositionRef.current = { x: mm.x, y: mm.y, known: state.positionKnown ?? false };
+        }
+      }),
+    []
+  );
   const machineStore = useMachineStoreApi();
   const machineForce = useMachineSelector((s) => s?.force ?? null);
   const machineHardnessLevel = useMachineSelector((s) => s?.hardnessLevel ?? null);
@@ -975,6 +990,11 @@ function App() {
         calibrationName: values.calibrationName,
         objective: values.normalizedObjective,
         testForceKgf: values.forceKgf,
+        // True stage position at the moment the measurement is taken — gives each
+        // row (incl. every Multipoint point) its X/Y. Null when the stage position
+        // is not yet known (e.g. before homing / non-stage measurements).
+        xMm: stagePositionRef.current.known ? stagePositionRef.current.x : null,
+        yMm: stagePositionRef.current.known ? stagePositionRef.current.y : null,
         ...(isNewAutoMeasurement && depthCapture
           ? {
               depthMm: depthCapture.depthMm,
@@ -1079,6 +1099,32 @@ function App() {
       setAutoMeasureStatus,
     ]
   );
+
+  // Start-time prerequisite for a Multipoint run: the (active objective, selected
+  // force) pair must be calibrated BEFORE the first point moves/indents — the
+  // measurement-save gate alone would let the stage move + indent first. Reuses
+  // the same lookup (`hasCalibrationForForce`) and the same "Calibration Required"
+  // dialog the Auto Measure / Impress gates use. Returns false (and shows the
+  // dialog) to abort Start; true to proceed. Wired to the Multipoint Start button.
+  const validateMultipointCalibration = useCallback(async (): Promise<boolean> => {
+    const machineState = await getMachineStateSnapshot();
+    const activeObjectiveSnapshot = activeObjectiveRef.current?.trim().toUpperCase() || null;
+    const objectiveForCalibration = objectiveForMeasureFromObjective(activeObjectiveSnapshot);
+    const calibrated =
+      !!objectiveForCalibration &&
+      hasCalibrationForForce(calibrations, objectiveForCalibration, machineState?.force);
+    if (!calibrated) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[multipoint-start-blocked] reason=calibration-required objective=${objectiveForCalibration ?? 'null'} force=${machineState?.force ?? 'null'}`
+      );
+      setCalibrationRequiredMsg(
+        'The selected objective and/or force has not been calibrated.\nPlease complete calibration before running a Multipoint program.'
+      );
+      return false;
+    }
+    return true;
+  }, [getMachineStateSnapshot, calibrations]);
 
   const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource): Promise<boolean> => {
     const callSource = source ?? (preview ? 'settings-preview' : 'auto-click');
@@ -2011,6 +2057,7 @@ function App() {
           onTurretIntent={handleTurretIntentClick}
           onObjectiveChangeIntent={handleObjectiveChangeIntent}
           onToolbarAction={handleToolbarSelect}
+          onValidateMultipointStart={validateMultipointCalibration}
           selectedMeasureMode={selectedMeasureMode}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={handleCloseTrimMeasure}

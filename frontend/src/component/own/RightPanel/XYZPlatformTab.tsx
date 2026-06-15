@@ -297,7 +297,8 @@ const POSITION_SX: SxProps<Theme> = {
   border: `1px solid ${PALETTE.border}`,
   borderRadius: '10px',
 };
-const COORD_CHIP_SX: SxProps<Theme> = { display: 'flex', alignItems: 'baseline', gap: 0.5 };
+const FR_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'baseline', gap: 0.75, justifyContent: 'flex-end' };
+const FR_LABEL_SX: SxProps<Theme> = { fontSize: 10, fontWeight: 600, color: PALETTE.muted, textTransform: 'uppercase' };
 const COORD_AXIS_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 700, color: PALETTE.primary };
 const COORD_VALUE_SX: SxProps<Theme> = {
   fontFamily: 'Consolas, "Cascadia Mono", monospace',
@@ -979,15 +980,25 @@ function XYZPlatformTabImpl() {
           {/* Position panel */}
           <Box sx={POSITION_SX}>
             <Typography sx={SECTION_LABEL_SX}>Position</Typography>
-            <Box sx={{ display: 'flex', gap: 2, flex: 1, justifyContent: 'flex-end' }}>
-              <Box sx={COORD_CHIP_SX}>
+            {/* Forward / Reverse per axis, driven by the live origin-adjusted
+                position (pos.x/pos.y) — same source the readout always used.
+                Forward = positive magnitude, Reverse = its negation; both update
+                whenever the stage moves. '--' until the position is known. */}
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, flex: 1 }}>
+              <Box sx={FR_ROW_SX}>
                 <Typography sx={COORD_AXIS_SX}>X</Typography>
-                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(pos.x) : '--'}</Typography>
+                <Typography sx={FR_LABEL_SX}>Forward</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(Math.abs(pos.x)) : '--'}</Typography>
+                <Typography sx={FR_LABEL_SX}>Reverse</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(-Math.abs(pos.x)) : '--'}</Typography>
                 <Typography sx={COORD_UNIT_SX}>mm</Typography>
               </Box>
-              <Box sx={COORD_CHIP_SX}>
+              <Box sx={FR_ROW_SX}>
                 <Typography sx={COORD_AXIS_SX}>Y</Typography>
-                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(pos.y) : '--'}</Typography>
+                <Typography sx={FR_LABEL_SX}>Forward</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(Math.abs(pos.y)) : '--'}</Typography>
+                <Typography sx={FR_LABEL_SX}>Reverse</Typography>
+                <Typography sx={COORD_VALUE_SX}>{live.positionKnown ? formatCoordinate(-Math.abs(pos.y)) : '--'}</Typography>
                 <Typography sx={COORD_UNIT_SX}>mm</Typography>
               </Box>
             </Box>

@@ -48,6 +48,31 @@ export const CompositeLineSchema = z.object({
   firstOffset: z.number().finite().nonnegative(),
 });
 
+// A generated indentation point, persisted verbatim so Load restores the exact
+// preview/overlay/execution list without re-running Generate. `line`/`triangle`
+// tag the source for MultiLine Composite / Equidistant Triangle modes only.
+export const PatternPointSchema = z.object({
+  id: z.string().min(1),
+  no: z.number().int().nonnegative(),
+  x: z.number().finite(),
+  y: z.number().finite(),
+  line: z.number().int().positive().optional(),
+  triangle: z.number().int().positive().optional(),
+});
+
+// One Equidistant Triangle definition, persisted verbatim so the triangle layout
+// round-trips on Load. Without this the frontend's `triangles` payload field was
+// silently stripped by zod, so Equidistant Triangle programs reloaded empty.
+export const TriangleDefinitionSchema = z.object({
+  id: z.string().min(1),
+  x1: z.number().finite(),
+  y1: z.number().finite(),
+  x2: z.number().finite(),
+  y2: z.number().finite(),
+  x3: z.number().finite(),
+  y3: z.number().finite(),
+});
+
 export const PatternProgramPayloadSchema = z.object({
   pattern: PatternSchema,
   mode: PatternModeSchema,
@@ -73,6 +98,12 @@ export const PatternProgramPayloadSchema = z.object({
   // MultiLine Composite per-line definitions. Defaulted so programs saved
   // before this mode existed still load (they parse to an empty line list).
   lines: z.array(CompositeLineSchema).default([]),
+  // Equidistant Triangle per-triangle definitions. Defaulted so programs saved
+  // before this field existed still load (empty list).
+  triangles: z.array(TriangleDefinitionSchema).default([]),
+  // Generated points, persisted so Load restores them without pressing Generate.
+  // Defaulted so programs saved before this field existed still load (empty list).
+  points: z.array(PatternPointSchema).default([]),
   multiset: z.boolean(),
   focusAll: z.boolean(),
   impressMode: ImpressModeSchema,

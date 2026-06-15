@@ -37,7 +37,6 @@ const CANVAS_STYLE: React.CSSProperties = {
 
 const STROKE_ANGLE = tokens.overlay.measureAngleLine;
 const STROKE_LENGTH = '#E040FB';
-const CENTER_MARKER_COLOR = '#FFFFFF';
 const LENGTH_FONT = '600 15px "Cascadia Mono", Consolas, ui-monospace, monospace';
 const ANGLE_FONT = '600 15px "Cascadia Mono", Consolas, ui-monospace, monospace';
 const LENGTH_LINE_WIDTH = 2.25;
@@ -445,7 +444,8 @@ function drawCross(ctx: CanvasRenderingContext2D, rect: ImageRect, config: Cross
   ctx.rect(rect.x, rect.y, rect.width, rect.height);
   ctx.clip();
 
-  // Full-image vertical + horizontal crosshair lines.
+  // Full-image vertical + horizontal crosshair lines. Their intersection at the
+  // optical axis is the sighting reference — no separate centre marker is drawn.
   ctx.strokeStyle = config.color;
   ctx.lineWidth = config.thickness;
   ctx.beginPath();
@@ -454,29 +454,6 @@ function drawCross(ctx: CanvasRenderingContext2D, rect: ImageRect, config: Cross
   ctx.moveTo(lineX, rect.y);
   ctx.lineTo(lineX, rect.y + rect.height);
   ctx.stroke();
-
-  // White centre pointer — a short high-visibility cross at the optical axis
-  // (the focus / machine-positioning point) with a small gap so the exact
-  // centre coordinate stays readable through the lines.
-  const half = config.markerSize;
-  const gap = Math.max(2, Math.round(half * 0.3));
-  ctx.strokeStyle = CENTER_MARKER_COLOR;
-  ctx.lineWidth = config.thickness + 1;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(lineX - half, lineY);
-  ctx.lineTo(lineX - gap, lineY);
-  ctx.moveTo(lineX + gap, lineY);
-  ctx.lineTo(lineX + half, lineY);
-  ctx.moveTo(lineX, lineY - half);
-  ctx.lineTo(lineX, lineY - gap);
-  ctx.moveTo(lineX, lineY + gap);
-  ctx.lineTo(lineX, lineY + half);
-  ctx.stroke();
-  ctx.fillStyle = CENTER_MARKER_COLOR;
-  ctx.beginPath();
-  ctx.arc(lineX, lineY, Math.max(1, config.thickness), 0, Math.PI * 2);
-  ctx.fill();
 
   ctx.restore();
   const key = `${rect.x.toFixed(1)},${rect.y.toFixed(1)},${rect.width.toFixed(1)}x${rect.height.toFixed(1)}|${config.color}|${config.thickness}|${config.markerSize}`;

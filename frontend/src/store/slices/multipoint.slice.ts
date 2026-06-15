@@ -4,8 +4,11 @@ import type { FreePoint, PatternGenerationRequest, PatternMode, PatternPoint } f
 
 const INITIAL_CONFIG: PatternGenerationRequest = {
   mode: 'Horizontal Mode',
-  refX: null,
-  refY: null,
+  // Single-reference modes (Horizontal/Vertical) open at a clean 0,0 — the
+  // reference is only ever set by an explicit crosshair capture, never preloaded
+  // from the live stage position or a prior session.
+  refX: 0,
+  refY: 0,
   interval: null,
   offset: null,
   firstOffset: null,
@@ -53,6 +56,15 @@ const multipointSlice = createSlice({
     setMode(state, action: PayloadAction<PatternMode>) {
       state.mode = action.payload;
       state.config.mode = action.payload;
+      // Entering a single-reference linear mode starts the reference clean: no
+      // carryover of a reference captured/typed/loaded earlier in the session.
+      // The operator must capture it explicitly from the live crosshair. (Load
+      // dispatches setMode BEFORE updateConfig, so a loaded program's reference is
+      // re-applied right after this and is preserved.)
+      if (action.payload === 'Horizontal Mode' || action.payload === 'Vertical Mode') {
+        state.config.refX = 0;
+        state.config.refY = 0;
+      }
       clearGenerated(state);
       // Switching modes cancels any in-flight camera point selection.
       state.cameraPointPhase = 'idle';

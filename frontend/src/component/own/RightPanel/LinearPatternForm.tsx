@@ -13,6 +13,13 @@ const REF_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px
 const TWO_COL_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 96px 1fr', alignItems: 'center', gap: 1 };
 const LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
 
+// Reference fields seed from the captured value. An un-captured reference reads as
+// a clean "0.00000"; a captured one shows its exact coordinate. (Uncontrolled
+// inputs — this only seeds the initial text; the remount on capture re-seeds it.)
+function formatRef(value: number | null): string {
+  return value != null && Number.isFinite(value) && value !== 0 ? String(value) : '0.00000';
+}
+
 type Props = {
   config: PatternGenerationRequest;
   disabled: boolean;
@@ -29,14 +36,14 @@ function LinearPatternFormImpl({ config, disabled, stageReady, onCapture, onConf
         <TextField
           size="small"
           label="X"
-          defaultValue={config.refX ?? ''}
+          defaultValue={formatRef(config.refX)}
           disabled={disabled}
           onChange={(event) => onConfigChange({ refX: toNumberOrNull(event.target.value) })}
         />
         <TextField
           size="small"
           label="Y"
-          defaultValue={config.refY ?? ''}
+          defaultValue={formatRef(config.refY)}
           disabled={disabled}
           onChange={(event) => onConfigChange({ refY: toNumberOrNull(event.target.value) })}
         />

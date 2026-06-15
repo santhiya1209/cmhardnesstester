@@ -100,6 +100,8 @@ type TabContentProps = {
   activeTool?: ToolId;
   selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
+  /** Start-time calibration gate for Multipoint; returns false to abort Start. */
+  onValidateMultipointStart?: () => boolean | Promise<boolean>;
   micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
@@ -124,6 +126,7 @@ function renderTab(
     onTurretIntent,
     onObjectiveChangeIntent,
     onToolbarAction,
+    onValidateMultipointStart,
     selectedMeasureMode,
     micrometerEnabled,
     targetMinHv,
@@ -157,7 +160,7 @@ function renderTab(
       );
     case 1: return <XYZPlatformTab />;
     case 2:
-      return <MultipointTab />;
+      return <MultipointTab onValidateStart={onValidateMultipointStart} />;
     case 3:
       return (
         <PatternListTab
@@ -207,6 +210,7 @@ type Props = {
   activeTool?: ToolId;
   selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
+  onValidateMultipointStart?: () => boolean | Promise<boolean>;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
@@ -237,6 +241,7 @@ function RightPanelImpl({
   onTurretIntent,
   onObjectiveChangeIntent,
   onToolbarAction,
+  onValidateMultipointStart,
   activeTool,
   selectedMeasureMode,
   cameraReady,
@@ -336,6 +341,7 @@ function RightPanelImpl({
             onTurretIntent,
             onObjectiveChangeIntent,
             onToolbarAction,
+            onValidateMultipointStart,
             activeTool,
             selectedMeasureMode,
             cameraReady,

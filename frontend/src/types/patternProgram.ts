@@ -46,6 +46,10 @@ export type PatternProgramPayload = {
   // Equidistant Triangle: the per-triangle vertex definitions. Empty for every
   // other mode. Incomplete triangles are dropped on Save (see toPayload).
   triangles: TriangleDefinition[];
+  // The generated points, persisted so Load restores the preview/overlay/run
+  // list without re-running Generate. Optional for older programs (the backend
+  // defaults it to []); restored into Redux `generatedPoints`, not `config`.
+  points?: PatternPoint[];
   multiset: boolean;
   focusAll: boolean;
   impressMode: ImpressMode;

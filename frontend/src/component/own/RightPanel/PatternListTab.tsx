@@ -69,6 +69,9 @@ function toPayload(program: PatternProgram, checked: boolean): PatternProgramPay
     angle: program.angle,
     lines: program.lines ?? [],
     triangles: program.triangles ?? [],
+    // Preserve persisted generated points on a checked-toggle re-save (omitting
+    // them would let the backend default wipe the saved run list).
+    points: program.points ?? [],
     multiset: program.multiset,
     focusAll: program.focusAll,
     impressMode: program.impressMode,

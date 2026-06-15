@@ -17,11 +17,14 @@ import { tokens } from '@/theme/theme';
 
 /**
  * Live multipoint overlay painted on top of the camera image. It draws:
- *  - connecting lines along the generated execution order,
+ *  - connecting lines along the generated execution order, and
  *  - the generated pattern points as numbered dots in their execution tri-state
  *    (current = red, completed = green, pending = white; an amber ring marks a
- *    preview-table selection), and
- *  - a distinct "current stage position" marker.
+ *    preview-table selection).
+ *
+ * It deliberately draws no centre/current-position marker — the crosshair
+ * reticle (ImageOverlay.drawCross) is the sole image-centre reference, keeping
+ * the crosshair and pattern overlays visually independent.
  *
  * Coordinate model — the optical axis is FIXED and the sample moves on the XY
  * stage, so the point currently under the objective is always the centre of the
@@ -30,8 +33,7 @@ import { tokens } from '@/theme/theme';
  * to image pixels via the active objective's calibration (`umPerPixel`) and then
  * to display pixels via the letterbox `placement.scale`. Because the offset is
  * measured against the live `positionMm`, every dot tracks in real time while
- * jogging, during move-to-point, and during pattern execution — and the current
- * position marker stays at the centre by construction.
+ * jogging, during move-to-point, and during pattern execution.
  *
  * Stage→screen axis orientation is hardware-dependent and cannot be derived from
  * code. The generator's convention is "X grows right, Y grows up"; canvas Y
@@ -47,8 +49,6 @@ export const STAGE_Y_TO_SCREEN = -1; // stage +Y → screen −Y (up)
 
 const POINT_RADIUS = 4;
 const ACTIVE_RING_RADIUS = 8;
-const LIVE_MARKER_RADIUS = 9;
-const LIVE_CROSS_HALF = 14;
 
 const ROOT_SX: SxProps<Theme> = {
   position: 'absolute',
@@ -244,19 +244,9 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
       }
     }
 
-    // Current stage position — always the centre of the live image.
-    ctx.strokeStyle = tokens.overlay.livePosition;
-    ctx.fillStyle = tokens.overlay.livePosition;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(centerX - LIVE_CROSS_HALF, centerY);
-    ctx.lineTo(centerX + LIVE_CROSS_HALF, centerY);
-    ctx.moveTo(centerX, centerY - LIVE_CROSS_HALF);
-    ctx.lineTo(centerX, centerY + LIVE_CROSS_HALF);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, LIVE_MARKER_RADIUS, 0, Math.PI * 2);
-    ctx.stroke();
+    // The image centre = current stage position, but no centre marker is drawn
+    // here — the crosshair reticle (ImageOverlay.drawCross) is the sole centre
+    // reference, so the pattern layer paints points/lines only.
     ctx.restore();
 
     // Deduped diagnostic trace (no per-frame spam): position, scale, computed pixels.

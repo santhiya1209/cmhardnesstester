@@ -3,6 +3,7 @@ import type {
   FreePoint,
   PatternGenerationRequest,
   PatternMode,
+  PatternPoint,
   PatternProgram,
   PatternProgramPayload,
   TriangleDefinition,
@@ -72,7 +73,8 @@ export function toPayload(
   config: PatternGenerationRequest,
   mode: PatternMode,
   meta: ProgramMeta,
-  checked: boolean
+  checked: boolean,
+  points: PatternPoint[] = []
 ): PatternProgramPayload {
   return {
     pattern: meta.pattern,
@@ -94,6 +96,7 @@ export function toPayload(
     angle: finite(config.angle),
     lines: config.lines ?? [],
     triangles: completeTriangles(config.triangles),
+    points,
     multiset: meta.multiset,
     focusAll: meta.focusAll,
     impressMode: meta.impressMode,
