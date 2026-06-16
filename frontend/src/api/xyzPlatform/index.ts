@@ -124,8 +124,12 @@ export const xyzMoveByOffset = (dx: number, dy: number): Promise<XyzCommandResul
 export const xyzStopStage = (): Promise<XyzCommandResult> =>
   bridge()?.stopStage() ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
-export const xyzMoveZ = (direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult> =>
-  bridge()?.moveZ(direction, speed) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
+export const xyzMoveZ = (
+  direction: ZDirection,
+  speed: ZSpeed,
+  focus?: 'coarse' | 'fine'
+): Promise<XyzCommandResult> =>
+  bridge()?.moveZ(direction, speed, focus) ?? Promise.resolve(BRIDGE_UNAVAILABLE);
 
 export const xyzStopZ = (): Promise<XyzCommandResult> =>
   bridge()?.stopZ() ?? Promise.resolve(BRIDGE_UNAVAILABLE);

@@ -13,6 +13,7 @@ import ScatterPlotOutlinedIcon from '@mui/icons-material/ScatterPlotOutlined';
 import NearMeOutlinedIcon from '@mui/icons-material/NearMeOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { MoveStatus, PatternPoint } from '@/types/patternProgram';
+import type { AtomicStatus, PointExecState } from '@/types/multipointExecution';
 
 const HEADER_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 };
 const HEADER_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, color: 'text.secondary' };
@@ -31,6 +32,40 @@ const STATUS_COLOR: Record<MoveStatus, string> = {
   Failed: 'error.main',
 };
 
+// Per-atomic-step glyph + colour for the execution columns (Move/Focus/Indent/
+// Measure). Compact so the wider industrial table still fits the desktop panel.
+const ATOMIC_COLOR: Record<AtomicStatus, string> = {
+  pending: 'text.disabled',
+  active: 'warning.main',
+  done: 'success.main',
+  failed: 'error.main',
+  skipped: 'text.secondary',
+};
+const ATOMIC_LABEL: Record<AtomicStatus, string> = {
+  pending: '—',
+  active: '…',
+  done: '✓',
+  failed: '✗',
+  skipped: 'skip',
+};
+
+// Overall row disposition derived from the four atomic steps.
+function overallStatus(exec: PointExecState | undefined): { label: string; color: string } {
+  if (!exec) return { label: 'Pending', color: 'text.disabled' };
+  const steps: AtomicStatus[] = [exec.move, exec.focus, exec.indent, exec.measure];
+  if (steps.includes('failed')) return { label: 'Failed', color: 'error.main' };
+  if (steps.includes('active')) return { label: 'Running', color: 'warning.main' };
+  if (exec.move === 'skipped' || exec.indent === 'skipped') return { label: 'Skipped', color: 'text.secondary' };
+  const measured = exec.measure === 'done' || exec.measure === 'skipped' || exec.measure === 'pending';
+  if (exec.indent === 'done' && measured) return { label: 'Completed', color: 'success.main' };
+  return { label: 'Pending', color: 'text.disabled' };
+}
+
+function renderAtomic(status: AtomicStatus | undefined) {
+  const s = status ?? 'pending';
+  return <Typography sx={{ fontSize: 12, fontWeight: 600, color: ATOMIC_COLOR[s] }}>{ATOMIC_LABEL[s]}</Typography>;
+}
+
 // The table shows X/Y in the SAME centre-relative frame as the Reference Point
 // readout (LinearPatternForm.formatRef): X = value − origin, Y = −(value − origin)
 // (image frame: up = −Y). This is why Point 1 reads exactly like the Reference
@@ -48,6 +83,8 @@ type Props = {
   /** Relocation-centre origin (absolute mm) so the readout is centre-relative; 0 if no relocation. */
   originX: number;
   originY: number;
+  /** Live per-point execution status (engine), keyed by generated point id. */
+  execPoints?: Record<string, PointExecState>;
   selectedIds: string[];
   activeId: string | null;
   completedIds: string[];
@@ -64,6 +101,7 @@ function PatternPreviewTableImpl({
   points,
   originX,
   originY,
+  execPoints,
   selectedIds,
   activeId,
   completedIds,
@@ -127,13 +165,17 @@ function PatternPreviewTableImpl({
               <TableCell sx={HEAD_CELL_SX}>X (mm)</TableCell>
               <TableCell sx={HEAD_CELL_SX}>Y (mm)</TableCell>
               <TableCell sx={HEAD_CELL_SX}>Move</TableCell>
-              <TableCell sx={HEAD_CELL_SX}>Hardness</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Focus</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Indent</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Measure</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>HV</TableCell>
+              <TableCell sx={HEAD_CELL_SX}>Status</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {points.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} sx={EMPTY_CELL_SX}>
+                <TableCell colSpan={11} sx={EMPTY_CELL_SX}>
                   <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                     <ScatterPlotOutlinedIcon sx={{ fontSize: 32, color: 'text.disabled', opacity: 0.6 }} />
                     No generated points. Use Generate to preview.
@@ -142,7 +184,9 @@ function PatternPreviewTableImpl({
               </TableRow>
             ) : (
               points.map((point) => {
+                const exec = execPoints?.[point.id];
                 const status = statusFor(point.id);
+                const overall = overallStatus(exec);
                 return (
                   <TableRow key={point.id} selected={selected.has(point.id) || point.id === activeId}>
                     <TableCell sx={BODY_CELL_SX} padding="checkbox">
@@ -157,7 +201,7 @@ function PatternPreviewTableImpl({
                     <TableCell sx={BODY_CELL_SX}>{relX(point.x, originX)}</TableCell>
                     <TableCell sx={BODY_CELL_SX}>{relY(point.y, originY)}</TableCell>
                     <TableCell sx={BODY_CELL_SX}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                         <Button
                           variant="outlined"
                           size="small"
@@ -168,10 +212,22 @@ function PatternPreviewTableImpl({
                         >
                           Go
                         </Button>
-                        <Typography sx={{ fontSize: 11, color: STATUS_COLOR[status] }}>{status}</Typography>
+                        {exec ? (
+                          renderAtomic(exec.move)
+                        ) : (
+                          <Typography sx={{ fontSize: 11, color: STATUS_COLOR[status] }}>{status}</Typography>
+                        )}
                       </Box>
                     </TableCell>
-                    <TableCell sx={BODY_CELL_SX}>-</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{renderAtomic(exec?.focus)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{renderAtomic(exec?.indent)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{renderAtomic(exec?.measure)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{exec?.hv != null ? exec.hv.toFixed(1) : '-'}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>
+                      <Typography sx={{ fontSize: 11, fontWeight: 600, color: overall.color }}>
+                        {overall.label}
+                      </Typography>
+                    </TableCell>
                   </TableRow>
                 );
               })

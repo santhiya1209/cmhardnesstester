@@ -272,7 +272,7 @@ export type IpcInvokeMap = {
   };
   'xyz-platform:stop-stage': { request: void; response: XyzCommandResult };
   'xyz-platform:move-z': {
-    request: { direction: ZDirection; speed: ZSpeed };
+    request: { direction: ZDirection; speed: ZSpeed; focus?: 'coarse' | 'fine' };
     response: XyzCommandResult;
   };
   'xyz-platform:stop-z': { request: void; response: XyzCommandResult };
@@ -351,8 +351,9 @@ export interface XyzPlatformApi {
   /** Relative nudge from the current position: dx/dy are mm deltas (RX-gated). Returns the landed position in pulses + mm. */
   moveByOffsetMm(dx: number, dy: number): Promise<XyzCommandResult>;
   stopStage(): Promise<XyzCommandResult>;
-  /** Quick-tap Z step (one configured stepDistanceMm, RX-gated). */
-  moveZ(direction: ZDirection, speed: ZSpeed): Promise<XyzCommandResult>;
+  /** Single Z step (RX-gated). `focus` ('coarse'/'fine') picks the step size for the
+   *  CFOCUS/FFOCUS single-click buttons; omitted by the ↑/↓ arrows. */
+  moveZ(direction: ZDirection, speed: ZSpeed, focus?: 'coarse' | 'fine'): Promise<XyzCommandResult>;
   stopZ(): Promise<XyzCommandResult>;
   /** Open the dedicated Z serial connection on the configured Z port. */
   connectZ(opts: { port: string; baudRate?: number }): Promise<XyzStageStateResponse>;

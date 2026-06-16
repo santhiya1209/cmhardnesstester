@@ -99,7 +99,7 @@ export async function moveZ(req: Request, res: Response): Promise<void> {
     res.status(400).json({ ok: false, error: 'ValidationError', details: parsed.error.flatten() });
     return;
   }
-  sendResult(res, await xyzPlatformSerialService.moveZ(parsed.data.direction, parsed.data.speed));
+  sendResult(res, await xyzPlatformSerialService.moveZ(parsed.data.direction, parsed.data.speed, parsed.data.focus));
 }
 
 export async function stopZ(_req: Request, res: Response): Promise<void> {

@@ -39,6 +39,7 @@ export const COLLECTION_TO_TABLE: Record<CollectionName, string> = {
   depthImageSettings: 'depth_image_settings',
   albumItems: 'album_items',
   toolbarStates: 'toolbar_states',
+  multipointResults: 'multipoint_results',
 };
 
 export const TABLE_TO_COLLECTION: Record<string, CollectionName> = Object.fromEntries(

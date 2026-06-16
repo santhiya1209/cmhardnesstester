@@ -14,6 +14,7 @@ import { IsoDateTimeSchema } from './common';
 import { MachineSettingsModel } from './machine-settings';
 import { MeasurementModel } from './measurement';
 import { MicrometerConfigModel } from './micrometer-config';
+import { MultipointResultModel } from './multipoint-result';
 import { PatternProgramModel } from './pattern-program';
 import { TestRecordModel } from './test-record';
 import { ToolbarStateModel } from './toolbar-state';
@@ -50,6 +51,7 @@ export const DatabaseSchema = z.object({
   depthImageSettings: z.array(DepthImageSettingModel).default([]),
   albumItems: z.array(AlbumItemModel).default([]),
   toolbarStates: z.array(ToolbarStateModel).default([]),
+  multipointResults: z.array(MultipointResultModel).default([]),
 });
 
 export type DatabaseState = z.infer<typeof DatabaseSchema>;
@@ -76,6 +78,7 @@ export const COLLECTION_NAMES = [
   'depthImageSettings',
   'albumItems',
   'toolbarStates',
+  'multipointResults',
 ] as const;
 
 export type CollectionName = (typeof COLLECTION_NAMES)[number];
@@ -107,5 +110,6 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     depthImageSettings: [],
     albumItems: [],
     toolbarStates: [],
+    multipointResults: [],
   };
 }

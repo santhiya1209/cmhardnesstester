@@ -33,7 +33,7 @@ import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHar
 import { useXyzPlatformStateSync } from '@/features/xyzPlatform/useXyzPlatformStateSync';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
-import type { FocusMode, XySpeed, ZSpeed } from '@/types/xyzPlatformState';
+import type { XySpeed, ZSpeed } from '@/types/xyzPlatformState';
 import type { XyzDirection, ZDirection } from '@/types/xyzPlatform';
 
 // Premium industrial control surface for the XYZ Platform, scaled to the
@@ -276,12 +276,6 @@ const BTN_ACTIVE_DANGER = {
   color: '#FFFFFF',
   borderColor: PALETTE.danger,
   '&:hover': { bgcolor: PALETTE.dangerHover, borderColor: PALETTE.dangerHover, boxShadow: '0 3px 10px rgba(220,38,38,0.3)' },
-} as const;
-const BTN_ACTIVE_PRIMARY = {
-  bgcolor: PALETTE.primary,
-  color: '#FFFFFF',
-  borderColor: PALETTE.primary,
-  '&:hover': { bgcolor: PALETTE.primaryHover, borderColor: PALETTE.primaryHover, boxShadow: '0 3px 10px rgba(15,76,129,0.3)' },
 } as const;
 const SIDE_BTN_SX = { ...PANEL_BTN_BASE, flex: 1, minHeight: 0, fontSize: 11 } as const;
 
@@ -734,19 +728,24 @@ function XYZPlatformTabImpl() {
     [hardware]
   );
 
-  const handleFocusMode = useCallback(
-    (mode: FocusMode) => {
-      void hardware.setFocusMode(mode);
-      // Cfocus = coarse jog speed (Fast), Ffocus = fine jog speed (Slow). The
-      // press-hold ↑/↓ jog runs at the active zSpeed, so selecting the focus mode
-      // also selects how fast a held jog travels — and the Speed radio reflects it.
-      // The #VZnnnn# speed write needs the Z port, so it's best-effort: focus mode
-      // itself is pure software and always applies.
-      if (live.zConnected) {
-        void handleZSpeedChange(mode === 'cFocus' ? 'fast' : 'slow');
+  // CFOCUS / FFOCUS are SINGLE-CLICK focus moves (legacy behaviour): one click =
+  // exactly one Z step DOWN at the configured coarse/fine focus step. The backend
+  // sends #±Z n#, waits for the >Z: completion, then updates the Z odometer — no
+  // mode state, no press-and-hold jog. Step size is passed explicitly so it never
+  // depends on a previously selected mode.
+  const handleFocusClick = useCallback(
+    (focus: 'coarse' | 'fine') => {
+      // #LK# enables Z motion — never dispatch unless the drive is locked.
+      if (!zLockedRef.current) {
+        // eslint-disable-next-line no-console
+        console.warn(`[FOCUS] blocked reason=z-unlocked focus=${focus}`);
+        return;
       }
+      // eslint-disable-next-line no-console
+      console.log(`[xyz-ui-action] action=focus-${focus}`);
+      void hardwareRef.current.moveZ('down', zSpeedRef.current, focus);
     },
-    [hardware, live.zConnected, handleZSpeedChange]
+    []
   );
 
   // Both buttons move to the FIXED physical center (settings physicalCenter pulses,
@@ -1062,11 +1061,11 @@ function XYZPlatformTabImpl() {
               Unlock
             </Button>
 
-            {/* Row 2: Cfocus | ↑ */}
+            {/* Row 2: Cfocus | ↑ — Cfocus = ONE coarse Z step down per click */}
             <Button
-              sx={live.focusMode === 'cFocus' ? { ...Z_BTN_SX, ...BTN_ACTIVE_PRIMARY } : Z_BTN_SX}
-              disabled={isBusy}
-              onClick={() => handleFocusMode('cFocus')}
+              sx={Z_BTN_SX}
+              disabled={zMoveDisabled}
+              onClick={() => handleFocusClick('coarse')}
             >
               Cfocus
             </Button>
@@ -1074,11 +1073,11 @@ function XYZPlatformTabImpl() {
               <ArrowUpwardIcon />
             </Button>
 
-            {/* Row 3: Ffocus | ↓ */}
+            {/* Row 3: Ffocus | ↓ — Ffocus = ONE fine Z step down per click */}
             <Button
-              sx={live.focusMode === 'fFocus' ? { ...Z_BTN_SX, ...BTN_ACTIVE_PRIMARY } : Z_BTN_SX}
-              disabled={isBusy}
-              onClick={() => handleFocusMode('fFocus')}
+              sx={Z_BTN_SX}
+              disabled={zMoveDisabled}
+              onClick={() => handleFocusClick('fine')}
             >
               Ffocus
             </Button>
@@ -1087,14 +1086,13 @@ function XYZPlatformTabImpl() {
             </Button>
           </Box>
 
-          {/* Live status — Motion + Focus mode. No Z position: the Z controller
-              reports no absolute position, so showing one would be fabricated. */}
-          <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between' }}>
+          {/* Live status — Motion only. Focus is now a single-click action (Cfocus/
+              Ffocus), not a persistent mode, so there's no focus-mode readout. No Z
+              position: the Z controller reports no absolute position, so showing one
+              would be fabricated. */}
+          <Box sx={{ mt: 1 }}>
             <Typography sx={SECTION_LABEL_SX}>
               Motion: {live.zMoving ? 'Moving' : 'Idle'}
-            </Typography>
-            <Typography sx={SECTION_LABEL_SX}>
-              Focus: {live.focusMode === 'cFocus' ? 'Coarse' : live.focusMode === 'fFocus' ? 'Fine' : 'None'}
             </Typography>
           </Box>
         </Box>

@@ -13,6 +13,7 @@ export const baseApi = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE_URL }),
   tagTypes: [
     'Measurement',
+    'MultipointResult',
     'Calibration',
     'CalibrationSettings',
     'AutoMeasureSettings',

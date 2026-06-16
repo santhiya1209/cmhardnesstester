@@ -212,7 +212,9 @@ function validateXyzZMovePayload(payload) {
   const speed = payload && typeof payload.speed === 'string' ? payload.speed : '';
   if (!XYZ_Z_DIRECTIONS.has(direction)) throw new Error('invalid z direction');
   if (!XYZ_Z_SPEEDS.has(speed)) throw new Error('invalid z speed');
-  return { direction, speed };
+  // Optional explicit step size for the single-click CFOCUS/FFOCUS buttons.
+  const focus = payload && (payload.focus === 'coarse' || payload.focus === 'fine') ? payload.focus : undefined;
+  return focus ? { direction, speed, focus } : { direction, speed };
 }
 
 // Press-and-hold Z jog: direction only (speed is backend-owned state).
@@ -674,7 +676,7 @@ function registerIpc() {
     startXyzPlatformEventBridge();
     const body = validateXyzZMovePayload(payload);
     // eslint-disable-next-line no-console
-    console.log(`[xyz-ipc] method=moveZ direction=${body.direction} speed=${body.speed}`);
+    console.log(`[xyz-ipc] method=moveZ direction=${body.direction} speed=${body.speed} focus=${body.focus ?? 'none'}`);
     return machineBackendRequest('/api/xyz-platform/move-z', { method: 'POST', body });
   });
 

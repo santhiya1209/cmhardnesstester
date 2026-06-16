@@ -14,7 +14,6 @@ import Checkbox from '@mui/material/Checkbox';
 import InputAdornment from '@mui/material/InputAdornment';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
-import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import ShowChartRoundedIcon from '@mui/icons-material/ShowChartRounded';
@@ -35,6 +34,10 @@ import VerticalLineFreePointsForm from './VerticalLineFreePointsForm';
 import MultiLineCompositeForm from './MultiLineCompositeForm';
 import EquidistantTriangleForm from './EquidistantTriangleForm';
 import PatternPreviewTable from './PatternPreviewTable';
+import ExecutionToolbar from './ExecutionToolbar';
+import ExecutionStatusPanel from './ExecutionStatusPanel';
+import { useMultipointExecution } from '@/hooks/useMultipointExecution';
+import type { MeasurePointFn } from '@/types/multipointExecution';
 
 const PATTERN_OPTIONS: PatternOption[] = ['Line', 'Rectangle', 'Circle', 'Custom'];
 // The UI exposes every PatternMode member the engine supports.
@@ -78,12 +81,19 @@ type Props = {
   /** Start-time calibration gate from App; returns false (and shows the
    *  "Calibration Required" dialog) to abort BEFORE the first point moves. */
   onValidateStart?: () => boolean | Promise<boolean>;
+  /** Real per-point Vickers measurement + save, supplied by App (owns the
+   *  detection pipeline). When omitted, the engine's measure step is skipped
+   *  honestly rather than faked. */
+  measurePoint?: MeasurePointFn;
 };
 
-function MultipointTabImpl({ onValidateStart }: Props) {
+function MultipointTabImpl({ onValidateStart, measurePoint }: Props) {
   const m = useMultipoint();
+  const exec = useMultipointExecution({ onValidateStart, measurePoint, operator: null });
   const { config, programMeta } = m;
   const formKey = `${m.mode}-${m.formRevision}`;
+  // While the engine is running, generation/edit/reset are locked out.
+  const locked = m.isBusy || exec.running;
 
   return (
     <Box sx={SCROLL_SX}>
@@ -256,8 +266,7 @@ function MultipointTabImpl({ onValidateStart }: Props) {
       )}
 
       <Box sx={BTN_ROW_SX}>
-        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<PlayArrowRoundedIcon />} disabled={m.isBusy} onClick={async () => { if (onValidateStart && !(await onValidateStart())) return; void m.start(); }}>Start</Button>
-        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<AutoAwesomeOutlinedIcon />} disabled={m.isBusy || m.isGenerating} onClick={m.generatePattern}>
+        <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<AutoAwesomeOutlinedIcon />} disabled={locked || m.isGenerating} onClick={m.generatePattern}>
           Generate
         </Button>
         <FormControlLabel
@@ -265,7 +274,7 @@ function MultipointTabImpl({ onValidateStart }: Props) {
             <Checkbox
               size="small"
               checked={programMeta.multiset}
-              disabled={m.isBusy}
+              disabled={locked}
               onChange={(event) => m.updateProgramMeta({ multiset: event.target.checked })}
             />
           }
@@ -295,20 +304,44 @@ function MultipointTabImpl({ onValidateStart }: Props) {
             <Checkbox
               size="small"
               checked={programMeta.focusAll}
-              disabled={m.isBusy}
+              disabled={locked}
               onChange={(event) => m.updateProgramMeta({ focusAll: event.target.checked })}
             />
           }
           label="FocusAll"
           sx={RADIO_SX}
         />
-        <Button variant="outlined" color="error" size="small" sx={BTN_SX} startIcon={<RefreshRoundedIcon />} disabled={m.isBusy} onClick={m.reset}>Reset</Button>
+        <Button variant="outlined" color="error" size="small" sx={BTN_SX} startIcon={<RefreshRoundedIcon />} disabled={locked} onClick={m.reset}>Reset</Button>
       </Box>
+
+      <ExecutionStatusPanel
+        phase={exec.phase}
+        currentPointNo={exec.currentPointNo}
+        total={exec.total}
+        completedCount={exec.completedCount}
+        progressPct={exec.progressPct}
+        pass={exec.pass}
+        startedAtMs={exec.startedAtMs}
+      />
+
+      <ExecutionToolbar
+        phase={exec.phase}
+        running={exec.running}
+        awaitingDecision={exec.awaitingDecision}
+        onStart={() => void exec.start()}
+        onPause={exec.pause}
+        onResume={exec.resume}
+        onStop={exec.stop}
+        onSkip={exec.skip}
+        onRetry={exec.retry}
+        onRemeasure={exec.remeasure}
+      />
 
       <PatternPreviewTable
         points={m.generatedPoints}
         originX={m.relocationOriginMm?.x ?? 0}
         originY={m.relocationOriginMm?.y ?? 0}
+        execPoints={exec.points}
         selectedIds={m.selectedPointIds}
         activeId={m.activePointId}
         completedIds={m.completedPointIds}

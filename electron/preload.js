@@ -204,7 +204,7 @@ contextBridge.exposeInMainWorld('xyzPlatform', {
   // dx/dy are mm deltas. Reuses the backend relocation engine.
   moveByOffsetMm: (dx, dy) => ipcRenderer.invoke('xyz-platform:move-by-offset', { dx, dy }),
   stopStage: () => ipcRenderer.invoke('xyz-platform:stop-stage'),
-  moveZ: (direction, speed) => ipcRenderer.invoke('xyz-platform:move-z', { direction, speed }),
+  moveZ: (direction, speed, focus) => ipcRenderer.invoke('xyz-platform:move-z', { direction, speed, focus }),
   stopZ: () => ipcRenderer.invoke('xyz-platform:stop-z'),
   connectZ: (opts) => ipcRenderer.invoke('xyz-platform:connect-z', opts || {}),
   disconnectZ: () => ipcRenderer.invoke('xyz-platform:disconnect-z'),

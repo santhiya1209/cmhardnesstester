@@ -519,6 +519,10 @@ class XyzPlatformSerialService extends EventEmitter {
   private centerX: number | null = null;
   private centerY: number | null = null;
   private centerLoaded = false;
+  // Relative Z travel in mm, accumulated from each COMPLETED Z step (session zero).
+  // Diagnostics only — the Z controller reports no absolute position, so this is a
+  // relative odometer for the [FOCUS] before/after logs, never shown as a position.
+  private zOdometerMm = 0;
   // Stable id of the singleton config row (UUID). Generated on first persist,
   // then reused so every write updates the same row instead of appending.
   private centerRowId: string | null = null;
@@ -2821,12 +2825,14 @@ class XyzPlatformSerialService extends EventEmitter {
   }
 
   /**
-   * Quick-tap STEP, RX-gated. The step size is chosen by the SOFTWARE focus mode
-   * (no focus serial command exists): CFocus → coarseStepDistanceMm (0.010 mm =
-   * 150 pulses), FFocus/manual → stepDistanceMm (0.001 mm = 15 pulses). Movement
-   * requires Z connected AND locked.
+   * Single Z step, RX-gated. The step size is either the explicit `focus`
+   * ('coarse'/'fine') — used by the single-click CFOCUS/FFOCUS buttons — or, when
+   * omitted (the ↑/↓ jog arrows), derived from the software focus mode: CFocus →
+   * coarseStepDistanceMm (0.010 mm), FFocus/manual → stepDistanceMm (0.001 mm).
+   * Sends #±Z n#, waits for the >Z: completion frame, then updates state and the
+   * relative Z odometer. Movement requires Z connected AND locked.
    */
-  async moveZ(direction: ZDirection, _speed: ZSpeed): Promise<XyzCommandResult> {
+  async moveZ(direction: ZDirection, _speed: ZSpeed, focus?: 'coarse' | 'fine'): Promise<XyzCommandResult> {
     if (!zAxisSerialService.isConnected()) {
       this.syncZState({ lastError: friendlyXyzMessage('XYZ_Z_NOT_CONNECTED') });
       return { ok: false, error: 'XYZ_Z_NOT_CONNECTED', commandId: this.nextCommandId() };
@@ -2840,15 +2846,32 @@ class XyzPlatformSerialService extends EventEmitter {
     }
     const z = await this.loadZSettings();
     const sign = resolveZSign(direction, z.reverseDirection);
-    // Coarse step only for CFocus; FFocus and manual both use the fine step.
+    // An explicit `focus` (CFOCUS/FFOCUS single click) picks the step size directly;
+    // otherwise fall back to the focus mode (CFocus = coarse, FFocus/manual = fine).
     const focusMode = this.state.focusMode;
-    const stepMm = focusMode === 'cFocus' ? z.coarseStepDistanceMm : z.stepDistanceMm;
+    const useCoarse = focus ? focus === 'coarse' : focusMode === 'cFocus';
+    const stepMm = useCoarse ? z.coarseStepDistanceMm : z.stepDistanceMm;
     const pulses = Math.max(1, zMmToPulses(stepMm, z.pulsePerMm));
     // eslint-disable-next-line no-console
-    console.log(`[xyz-z] action=move-step direction=${direction} focusMode=${focusMode} reverseDirection=${z.reverseDirection} sign=${sign} stepMm=${stepMm} pulsePerMm=${z.pulsePerMm} pulses=${pulses}`);
+    console.log(`[xyz-z] action=move-step direction=${direction} focus=${focus ?? 'mode'} focusMode=${focusMode} reverseDirection=${z.reverseDirection} sign=${sign} stepMm=${stepMm} pulsePerMm=${z.pulsePerMm} pulses=${pulses}`);
     // eslint-disable-next-line no-console
     console.log(`[z-move] focusMode=${focusMode} stepMm=${stepMm} pulses=${pulses}`);
+    if (focus) {
+      // eslint-disable-next-line no-console
+      console.log(`[FOCUS] ${useCoarse ? 'Coarse' : 'Fine'} Focus Click`);
+      // eslint-disable-next-line no-console
+      console.log(`[FOCUS] Z Before = ${this.zOdometerMm.toFixed(4)}`);
+    }
     const result = await zAxisSerialService.moveStep(sign, pulses);
+    if (result.ok) {
+      // Odometer tracks PHYSICAL travel (sign already reverse-resolved); updated
+      // only on a real >Z: completion. CFOCUS/FFOCUS both move DOWN.
+      this.zOdometerMm += (sign === '+' ? 1 : -1) * stepMm;
+      if (focus) {
+        // eslint-disable-next-line no-console
+        console.log(`[FOCUS] Z After = ${this.zOdometerMm.toFixed(4)}`);
+      }
+    }
     this.syncZState(result.ok ? { lastAction: `Z step ${direction}.`, lastError: undefined } : { lastError: result.message ?? friendlyXyzMessage(result.error) });
     return this.toXyzResult(result);
   }

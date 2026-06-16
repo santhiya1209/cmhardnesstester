@@ -58,6 +58,9 @@ export type MoveStepInput = z.infer<typeof MoveStepSchema>;
 export const MoveZSchema = z.object({
   direction: ZDirectionSchema,
   speed: ZSpeedSchema,
+  // Single-click CFOCUS/FFOCUS buttons pass an explicit step size ('coarse'/'fine')
+  // that overrides the focus-mode-derived step. Omitted by the ↑/↓ jog arrows.
+  focus: z.enum(['coarse', 'fine']).optional(),
 });
 export type MoveZInput = z.infer<typeof MoveZSchema>;
 

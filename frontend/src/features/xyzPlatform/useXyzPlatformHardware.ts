@@ -121,8 +121,8 @@ export function useXyzPlatformHardware() {
   // Z quick-tap step + press-and-hold jog mirror their X/Y counterparts: they
   // bypass `run` (no busy toggle) so a held Z arrow is never disabled mid-press;
   // `zMoving` comes only from the backend broadcast.
-  const moveZ = useCallback(async (direction: ZDirection, speed: ZSpeed) => {
-    const result = await xyzMoveZ(direction, speed);
+  const moveZ = useCallback(async (direction: ZDirection, speed: ZSpeed, focus?: 'coarse' | 'fine') => {
+    const result = await xyzMoveZ(direction, speed, focus);
     if (!result.ok && !result.preempted) setError(result.message ?? result.error);
     return result;
   }, []);
