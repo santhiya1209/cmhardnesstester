@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -16,6 +16,7 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import ShowChartRoundedIcon from '@mui/icons-material/ShowChartRounded';
 import SwapHorizRoundedIcon from '@mui/icons-material/SwapHorizRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -34,8 +35,6 @@ import VerticalLineFreePointsForm from './VerticalLineFreePointsForm';
 import MultiLineCompositeForm from './MultiLineCompositeForm';
 import EquidistantTriangleForm from './EquidistantTriangleForm';
 import PatternPreviewTable from './PatternPreviewTable';
-import ExecutionToolbar from './ExecutionToolbar';
-import ExecutionStatusPanel from './ExecutionStatusPanel';
 import { useMultipointExecution } from '@/hooks/useMultipointExecution';
 import type { MeasurePointFn } from '@/types/multipointExecution';
 
@@ -85,11 +84,23 @@ type Props = {
    *  detection pipeline). When omitted, the engine's measure step is skipped
    *  honestly rather than faked. */
   measurePoint?: MeasurePointFn;
+  /** After a "Go" move lands, re-display that point's recorded overlay + HV. */
+  onReviewPoint?: (pointId: string) => void | Promise<void>;
 };
 
-function MultipointTabImpl({ onValidateStart, measurePoint }: Props) {
+function MultipointTabImpl({ onValidateStart, measurePoint, onReviewPoint }: Props) {
   const m = useMultipoint();
   const exec = useMultipointExecution({ onValidateStart, measurePoint, operator: null });
+  const goToPoint = m.goToPoint;
+  // "Go" = move to the point (existing RX-gated motion), then re-display its
+  // recorded indentation overlay + HV so the operator can verify a completed point.
+  const handleGo = useCallback(
+    async (point: Parameters<typeof goToPoint>[0]) => {
+      await goToPoint(point);
+      await onReviewPoint?.(point.id);
+    },
+    [goToPoint, onReviewPoint]
+  );
   const { config, programMeta } = m;
   const formKey = `${m.mode}-${m.formRevision}`;
   // While the engine is running, generation/edit/reset are locked out.
@@ -257,8 +268,8 @@ function MultipointTabImpl({ onValidateStart, measurePoint }: Props) {
           stageReady={m.stageReady}
           picking={m.cameraPointPhase === 'selecting' && m.cameraPointTarget === 'reference'}
           picked={m.referencePicked}
-          originX={m.relocationOriginMm?.x ?? 0}
-          originY={m.relocationOriginMm?.y ?? 0}
+          originX={m.displayOriginMm.x}
+          originY={m.displayOriginMm.y}
           onBeginPick={m.beginReferencePointSelect}
           onCancelPick={m.cancelCameraPointSelect}
           onConfigChange={m.updateConfig}
@@ -268,6 +279,19 @@ function MultipointTabImpl({ onValidateStart, measurePoint }: Props) {
       <Box sx={BTN_ROW_SX}>
         <Button variant="contained" color="primary" size="small" sx={BTN_SX} startIcon={<AutoAwesomeOutlinedIcon />} disabled={locked || m.isGenerating} onClick={m.generatePattern}>
           Generate
+        </Button>
+        {/* Start runs the execution engine with the selected mode (Indenting / One
+            Pass / Two Pass / Focus All). Disabled until points exist and while busy/running. */}
+        <Button
+          variant="contained"
+          color="success"
+          size="small"
+          sx={BTN_SX}
+          startIcon={exec.running ? <CircularProgress size={14} color="inherit" /> : <PlayArrowRoundedIcon />}
+          disabled={locked || m.generatedPoints.length === 0}
+          onClick={() => void exec.start()}
+        >
+          {exec.running ? 'Running…' : 'Start'}
         </Button>
         <FormControlLabel
           control={
@@ -314,40 +338,17 @@ function MultipointTabImpl({ onValidateStart, measurePoint }: Props) {
         <Button variant="outlined" color="error" size="small" sx={BTN_SX} startIcon={<RefreshRoundedIcon />} disabled={locked} onClick={m.reset}>Reset</Button>
       </Box>
 
-      <ExecutionStatusPanel
-        phase={exec.phase}
-        currentPointNo={exec.currentPointNo}
-        total={exec.total}
-        completedCount={exec.completedCount}
-        progressPct={exec.progressPct}
-        pass={exec.pass}
-        startedAtMs={exec.startedAtMs}
-      />
-
-      <ExecutionToolbar
-        phase={exec.phase}
-        running={exec.running}
-        awaitingDecision={exec.awaitingDecision}
-        onStart={() => void exec.start()}
-        onPause={exec.pause}
-        onResume={exec.resume}
-        onStop={exec.stop}
-        onSkip={exec.skip}
-        onRetry={exec.retry}
-        onRemeasure={exec.remeasure}
-      />
-
       <PatternPreviewTable
         points={m.generatedPoints}
-        originX={m.relocationOriginMm?.x ?? 0}
-        originY={m.relocationOriginMm?.y ?? 0}
+        originX={m.displayOriginMm.x}
+        originY={m.displayOriginMm.y}
         execPoints={exec.points}
         selectedIds={m.selectedPointIds}
         activeId={m.activePointId}
         completedIds={m.completedPointIds}
         failedIds={m.failedPointIds}
-        busy={m.isBusy}
-        onGo={m.goToPoint}
+        busy={locked}
+        onGo={handleGo}
         onToggleSelect={m.toggleSelect}
         onToggleSelectAll={m.toggleSelectAll}
         onDeleteSelected={m.removeSelected}
@@ -361,12 +362,14 @@ function MultipointTabImpl({ onValidateStart, measurePoint }: Props) {
             : 'Active Program: Unsaved values'}
         </Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          {m.isBusy ? <CircularProgress size={12} /> : <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled' }} />}
-          <Typography sx={INFO_TEXT_SX}>{m.statusMessage}</Typography>
+          {m.isBusy || exec.running ? <CircularProgress size={12} /> : <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled' }} />}
+          <Typography sx={INFO_TEXT_SX}>{exec.statusMessage || m.statusMessage}</Typography>
         </Box>
       </Box>
 
-      {m.errorMessage ? <Alert severity="error">{m.errorMessage}</Alert> : null}
+      {m.errorMessage || exec.errorMessage ? (
+        <Alert severity="error">{m.errorMessage || exec.errorMessage}</Alert>
+      ) : null}
       </Box>
     </Box>
   );

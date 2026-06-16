@@ -14,6 +14,7 @@ import NearMeOutlinedIcon from '@mui/icons-material/NearMeOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { MoveStatus, PatternPoint } from '@/types/patternProgram';
 import type { AtomicStatus, PointExecState } from '@/types/multipointExecution';
+import { normalizeCoordinate } from '@/utils/coordinate';
 
 const HEADER_ROW_SX: SxProps<Theme> = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 };
 const HEADER_SX: SxProps<Theme> = { fontSize: 12, fontWeight: 600, color: 'text.secondary' };
@@ -56,7 +57,13 @@ function overallStatus(exec: PointExecState | undefined): { label: string; color
   if (steps.includes('failed')) return { label: 'Failed', color: 'error.main' };
   if (steps.includes('active')) return { label: 'Running', color: 'warning.main' };
   if (exec.move === 'skipped' || exec.indent === 'skipped') return { label: 'Skipped', color: 'text.secondary' };
-  const measured = exec.measure === 'done' || exec.measure === 'skipped' || exec.measure === 'pending';
+  // Two-pass pass 1: indent is done but the measure step has not run yet (left
+  // 'pending' by the engine — Indenting mode marks it 'skipped' instead). The
+  // point carries a physical indent awaiting pass-2 measurement.
+  if (exec.indent === 'done' && exec.measure === 'pending') {
+    return { label: 'Pass1 Complete', color: 'info.main' };
+  }
+  const measured = exec.measure === 'done' || exec.measure === 'skipped';
   if (exec.indent === 'done' && measured) return { label: 'Completed', color: 'success.main' };
   return { label: 'Pending', color: 'text.disabled' };
 }
@@ -72,10 +79,10 @@ function renderAtomic(status: AtomicStatus | undefined) {
 // field. The stored point.x/point.y stay ABSOLUTE — "Go" and stage motion consume
 // those, so the conversion is display-only.
 function relX(value: number, originX: number): string {
-  return (value - originX).toFixed(3);
+  return normalizeCoordinate(value - originX).toFixed(3);
 }
 function relY(value: number, originY: number): string {
-  return (-(value - originY)).toFixed(3);
+  return normalizeCoordinate(-(value - originY)).toFixed(3);
 }
 
 type Props = {

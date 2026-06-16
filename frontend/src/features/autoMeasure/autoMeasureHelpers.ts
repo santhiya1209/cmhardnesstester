@@ -76,7 +76,7 @@ export type CommittedAutoMeasureFingerprint = {
   graphics: AutoMeasureGraphics;
 };
 
-export type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save' | 'after-impress';
+export type AutoMeasureCallSource = 'auto-click' | 'settings-preview' | 'settings-save' | 'after-impress' | 'multipoint';
 
 export type CapturedAutoMeasureFrame = Extract<
   ReturnType<CameraWindowHandle['captureDisplayedFrame']>,
@@ -89,7 +89,7 @@ export type RunAutoMeasure = (
   source?: AutoMeasureCallSource
 ) => Promise<boolean>;
 
-export type CommitAutoMeasureSource = 'auto-click' | 'settings-save' | 'after-impress';
+export type CommitAutoMeasureSource = 'auto-click' | 'settings-save' | 'after-impress' | 'multipoint';
 
 export function logUnexpectedAutoMeasureCall(source: string) {
   if (

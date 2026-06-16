@@ -14,6 +14,7 @@ import {
   selectReferencePicked,
   selectSelectedPointIds,
 } from '@/store/slices/multipoint.selectors';
+import { selectExecPhase } from '@/store/slices/multipointExecution.selectors';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { getImagePlacement } from '@/utils/manualMeasure';
 import { tokens } from '@/theme/theme';
@@ -107,7 +108,35 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
   const referencePicked = useAppSelector(selectReferencePicked);
   const refX = useAppSelector(selectRefX);
   const refY = useAppSelector(selectRefY);
+  // Execution phase is read ONLY for the diagnostic log + to prove the overlay's
+  // visibility is NOT gated on it — the dots/lines render from `points`
+  // (generatedPoints), so a Completed run never hides them.
+  const phase = useAppSelector(selectExecPhase);
   const { positionMm, positionKnown } = useXyzStageState();
+
+  // Retain the last valid calibration scale. The pattern (points, connecting
+  // lines, labels) needs a mm→pixel scale to be placed, so it is drawn only when
+  // a `umPerPixel` is known. That value can transiently drop to null while the
+  // objective/turret/calibration state churns — notably the end-of-cycle turret
+  // return — which would otherwise blank an intact pattern the instant a run
+  // completes. Holding the last good scale keeps points/lines/labels visible
+  // across such a blip; a genuine objective change replaces it with the new
+  // valid value on the next render.
+  const [stableUmPerPixel, setStableUmPerPixel] = useState<number | null>(null);
+  useEffect(() => {
+    if (umPerPixel && umPerPixel > 0) setStableUmPerPixel(umPerPixel);
+  }, [umPerPixel]);
+  const effectiveUmPerPixel = umPerPixel && umPerPixel > 0 ? umPerPixel : stableUmPerPixel;
+
+  // Requested diagnostic: prove the point list survives every status transition
+  // (Generate → Running → Completed all keep the same length; only Reset/Clear
+  // empties it). Logged on change of count or phase, not per frame.
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[OVERLAY] generatedPoints', points.length);
+    // eslint-disable-next-line no-console
+    console.log('[OVERLAY] status', phase);
+  }, [points.length, phase]);
 
   // DPR-aware backing store, matching ImageOverlay so dots stay crisp and the
   // canvas never blurs on monitor-scale changes or window resize.
@@ -150,9 +179,11 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
 
     const centerX = placement.offsetX + placement.width / 2;
     const centerY = placement.offsetY + placement.height / 2;
-    // mm → display px: image px per mm × letterbox scale.
+    // mm → display px: image px per mm × letterbox scale. Uses the retained scale
+    // so a transient null (e.g. objective churn at run completion) does not blank
+    // the pattern; the points themselves come from `points` regardless.
     const dispPxPerMm =
-      umPerPixel && umPerPixel > 0 ? (1000 / umPerPixel) * placement.scale : null;
+      effectiveUmPerPixel && effectiveUmPerPixel > 0 ? (1000 / effectiveUmPerPixel) * placement.scale : null;
 
     // Clip to the displayed image rect so dots outside the field of view don't
     // bleed onto the black letterbox padding.
@@ -297,7 +328,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         `[pattern-overlay] points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)}) umPerPixel=${umPerPixel ?? 'null'} dispPxPerMm=${dispPxPerMm?.toFixed(3) ?? 'n/a'} center=(${Math.round(centerX)},${Math.round(centerY)}) firstPx=${firstScreen ? `(${Math.round(firstScreen.x)},${Math.round(firstScreen.y)})` : 'none'} canvas=${Math.round(wCss)}x${Math.round(hCss)} active=${activePointId ?? 'none'}`
       );
     }
-  }, [active, points, freePoints, selectedIds, activePointId, completedIds, referencePicked, refX, refY, positionMm.x, positionMm.y, positionKnown, imageSize, umPerPixel, resizeTick]);
+  }, [active, points, freePoints, selectedIds, activePointId, completedIds, referencePicked, refX, refY, positionMm.x, positionMm.y, positionKnown, imageSize, effectiveUmPerPixel, resizeTick]);
 
   // The mm→pixel transform needs the active objective's calibration; without it
   // dispPxPerMm is null and no dots are painted. Surface that explicitly so a
@@ -310,7 +341,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
     !!imageSize &&
     imageSize.width > 0 &&
     imageSize.height > 0 &&
-    !(umPerPixel && umPerPixel > 0);
+    !(effectiveUmPerPixel && effectiveUmPerPixel > 0);
 
   return (
     <Box ref={wrapRef} sx={ROOT_SX}>

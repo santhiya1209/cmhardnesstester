@@ -34,9 +34,12 @@ import { useCameraStatus } from '@/hooks/queries/useCameraStatus';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
 import { useMachineStoreApi } from '@/contexts/MachineStateContext';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
+import { useTurret } from '@/hooks/mutations/useTurret';
 import { useSaveMultipointResult } from '@/hooks/mutations/useSaveMultipointResult';
 import { buildMultipointExecutionRequest } from '@/utils/multipointExecution';
 import { waitForIndentTerminal } from '@/utils/indentCompletion';
+import { resolveDisplayOrigin } from '@/utils/coordinate';
+import type { TurretDirection } from '@/types/machine';
 import type {
   AtomicStep,
   EnginePhase,
@@ -55,6 +58,17 @@ const INDENT_TIMEOUT_MS = 120000;
 // Post-move optical settle before focus/measure (40X needs longer than low mags).
 const SETTLE_MS_40X = 600;
 const SETTLE_MS_DEFAULT = 350;
+
+// The turret carries the viewing objectives on its left/right slots (10X / 40X) —
+// the inverse of MachineControlTab's handleTurretClick mapping. Used to rotate the
+// turret back to the active objective lens at end-of-cycle so the operator can
+// inspect every indent through the lens (the per-indent turret-return is
+// setting-dependent and off for indent-only runs). Objectives with no slot button
+// (IND/center and others) are intentionally absent → no end-of-cycle rotation.
+const OBJECTIVE_TO_TURRET: Record<string, TurretDirection> = {
+  '10X': 'left',
+  '40X': 'right',
+};
 
 // A control signal raised by the operator that aborts the run loop cleanly.
 class StopSignal extends Error {}
@@ -113,6 +127,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
   const hardware = useXyzPlatformHardware();
   const machineStore = useMachineStoreApi();
   const { start: fireIndent } = useStartIndent();
+  const { move: moveTurret } = useTurret();
   const { saveMultipointResult } = useSaveMultipointResult();
 
   // Latest option values without re-creating the run loop on every render.
@@ -219,9 +234,11 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       runId: string,
       point: PatternPoint,
       passNo: 1 | 2 | null,
+      doFocus: boolean,
       doIndent: boolean,
       doMeasure: boolean,
-      indentAlreadyDone: boolean
+      indentAlreadyDone: boolean,
+      origin: { x: number; y: number }
     ): Promise<'ok' | 'skipped'> => {
       let indentDone = indentAlreadyDone;
       // Retry loop for THIS point. `continue` re-attempts after an operator retry.
@@ -229,6 +246,13 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       while (true) {
         dispatch(pointEntered({ pointId: point.id, pointNo: point.no }));
         dispatch(pointErrored({ pointId: point.id, error: null }));
+        if (passNo === 1) {
+          // eslint-disable-next-line no-console
+          console.log('[PASS1_POINT_START]', point.no);
+        } else if (passNo === 2) {
+          // eslint-disable-next-line no-console
+          console.log('[PASS2_POINT_START]', point.no);
+        }
         const t0 = Date.now();
         let focusStatus: MultipointFocusStatus = 'not-available';
         let measureStatus: MultipointMeasureStatus = 'pending';
@@ -242,21 +266,60 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           await checkpoint();
           setPhase('moving', `Moving to point ${point.no}…`);
           setStep(point.id, 'move', 'active');
-          const moved = await hardware.moveToPoint(point.x, point.y);
+          // Generated points are stored ABSOLUTE stage mm, but moveToPoint expects
+          // mm OFFSETS from the taught optical center (backend: target = center +
+          // offset*pulsePerMm). Rebase into the same display-origin frame the
+          // preview table shows (point − origin) so Start drives exactly the
+          // previewed coordinate — never the absolute value, which would re-apply
+          // the center and fling the stage ~one center away into the soft limit.
+          const targetX = point.x - origin.x;
+          const targetY = point.y - origin.y;
+          // eslint-disable-next-line no-console
+          console.log('[START]', point);
+          // eslint-disable-next-line no-console
+          console.log('[MOVE_TARGET]', targetX, targetY);
+          const moved = await hardware.moveToPoint(targetX, targetY);
           if (!moved.ok) throw new StepError('move', moved.message ?? moved.error ?? 'Move failed');
           setStep(point.id, 'move', 'done');
 
-          // ── FOCUS (honest: settle only; no autofocus hardware exists) ──────
+          // ── FOCUS (FocusAll-gated; honest: settle only, no autofocus
+          //    hardware exists). When FocusAll is OFF the focus step runs at
+          //    every point (local per-point focus); when ON it is skipped
+          //    per-point because the single global FOCUS_ALL baseline already
+          //    ran once before the loop. The two paths are mutually exclusive —
+          //    global focus and per-point focus never both fully execute. ────
           await checkpoint();
-          setPhase('focusing', `Settling at point ${point.no}…`);
-          setStep(point.id, 'focus', 'active');
-          await delay(settleMs(machineStore.getSnapshot()?.objective));
-          focusStatus = 'settled';
-          setStep(point.id, 'focus', 'done');
+          if (doFocus) {
+            if (passNo === 1) {
+              // eslint-disable-next-line no-console
+              console.log('[PASS1_FOCUS]', point.no);
+            } else if (passNo === 2) {
+              // eslint-disable-next-line no-console
+              console.log('[PASS2_FOCUS]', point.no);
+            }
+            // eslint-disable-next-line no-console
+            console.log('[POINT_FOCUS_LOCAL]', point.no);
+            setPhase('focusing', `Focusing at point ${point.no}…`);
+            setStep(point.id, 'focus', 'active');
+            await delay(settleMs(machineStore.getSnapshot()?.objective));
+            focusStatus = 'settled';
+            setStep(point.id, 'focus', 'done');
+          } else {
+            // eslint-disable-next-line no-console
+            console.log('[POINT_FOCUS_SKIP_GLOBAL_ACTIVE]', point.no);
+            focusStatus = 'skipped';
+            setStep(point.id, 'focus', 'skipped');
+          }
 
           // ── INDENT (skip if already impressed; never double-indent) ────────
           if (doIndent && !indentDone) {
             await checkpoint();
+            if (passNo === 1) {
+              // eslint-disable-next-line no-console
+              console.log('[PASS1_INDENT]', point.no);
+            }
+            // eslint-disable-next-line no-console
+            console.log('[INDENT_START]', point.no);
             setPhase('indenting', `Indenting at point ${point.no}…`);
             setStep(point.id, 'indent', 'active');
             await fireIndent();
@@ -276,6 +339,12 @@ export function useMultipointExecution(options: ExecOptions = {}) {
               setStep(point.id, 'measure', 'skipped');
             } else {
               await checkpoint();
+              if (passNo === 2) {
+                // eslint-disable-next-line no-console
+                console.log('[PASS2_MEASURE]', point.no);
+              }
+              // eslint-disable-next-line no-console
+              console.log('[MEASURE_START]', point.no);
               setPhase('measuring', `Measuring point ${point.no}…`);
               setStep(point.id, 'measure', 'active');
               const m = await measure({ runId, pointId: point.id, pointNo: point.no, xMm: point.x, yMm: point.y });
@@ -289,9 +358,20 @@ export function useMultipointExecution(options: ExecOptions = {}) {
                 measureStatus = m.rejected ? 'rejected' : 'failed';
                 throw new StepError('measure', m.message ?? (m.rejected ? 'Low confidence' : 'Measurement failed'));
               }
+              if (passNo === 2) {
+                // eslint-disable-next-line no-console
+                console.log('[HV_RESULT]', point.no, hv);
+              }
               measureStatus = 'measured';
               setStep(point.id, 'measure', 'done');
             }
+          } else if (passNo !== 1) {
+            // No measure for this point (Indenting mode). Mark it skipped so the
+            // row reads "Completed" — NOT pending. Two-pass pass 1 (passNo === 1)
+            // is intentionally left pending so it reads "Pass1 Complete" until
+            // pass 2 measures it.
+            measureStatus = 'skipped';
+            setStep(point.id, 'measure', 'skipped');
           }
 
           // ── SAVE run record ───────────────────────────────────────────────
@@ -313,6 +393,13 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             durationMs,
           });
           dispatch(pointCompleted({ pointId: point.id }));
+          if (passNo === 1) {
+            // eslint-disable-next-line no-console
+            console.log('[PASS1_COMPLETE]', point.no);
+          } else if (passNo === 2) {
+            // eslint-disable-next-line no-console
+            console.log('[PASS2_COMPLETE]', point.no);
+          }
           return 'ok';
         } catch (err) {
           if (err instanceof StopSignal) throw err;
@@ -365,6 +452,10 @@ export function useMultipointExecution(options: ExecOptions = {}) {
   );
 
   const start = useCallback(async () => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[MP-EXEC] start clicked: running=${ctrl.current.running} points=${generatedPoints.length} streaming=${cameraStatus.streaming} connected=${stage.connected} xyLocked=${stage.xyLocked} centerX=${stage.centerX} centerY=${stage.centerY} machineConnected=${machineStore.getSnapshot()?.connected ?? false}`
+    );
     if (ctrl.current.running) return;
     // ── Safety gate (fail fast, before any motion) ─────────────────────────
     if (generatedPoints.length === 0) {
@@ -384,9 +475,18 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       return void setPhase('idle', 'Hardness machine not connected.');
     }
     const validate = optsRef.current.onValidateStart;
-    if (validate && !(await validate())) return;
+    if (validate && !(await validate())) {
+      // eslint-disable-next-line no-console
+      console.log('[MP-EXEC] blocked by onValidateStart (calibration gate)');
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log('[MP-EXEC] all gates passed — beginning run');
 
     const request = buildMultipointExecutionRequest(generatedPoints, programMeta);
+    const focusAll = request.focusAll;
+    // eslint-disable-next-line no-console
+    console.log('[FOCUS_ALL]', focusAll);
     const runId = `run-${Date.now()}`;
     ctrl.current = { stop: false, pause: false, running: true, decide: null };
     dispatch(
@@ -397,37 +497,95 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       })
     );
 
+    // Rebase origin: the absolute-mm → optical-center-offset frame moveToPoint
+    // consumes, captured ONCE here so every point uses a STABLE anchor (the live
+    // stage position drifts as the run moves). Same origin the preview table and
+    // reference readout use (resolveDisplayOrigin), so previewed coordinate ==
+    // executed coordinate. Relocation origin when taught; live crosshair otherwise.
+    const origin = resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[MP-EXEC] rebase-origin x=${origin.x} y=${origin.y} source=${stage.relocationOriginMm ? 'relocation' : 'live-position'}`
+    );
+
     const home =
       stage.positionKnown && Number.isFinite(stage.positionMm.x) && Number.isFinite(stage.positionMm.y)
         ? { x: stage.positionMm.x, y: stage.positionMm.y }
         : null;
 
     try {
+      // FocusAll ON: run the global FOCUS_ALL baseline exactly once here, before
+      // the loop, as a stabilization step for the whole run (suited to very flat
+      // specimens). The per-point focus step is then skipped for every point —
+      // global and per-point focus never both execute. Settle-only — no autofocus
+      // hardware exists; this is the honest one-time equivalent.
+      if (focusAll) {
+        // eslint-disable-next-line no-console
+        console.log('[FOCUS_ALL_START]');
+        setPhase('focusing', 'Focus All — global baseline…');
+        await delay(settleMs(machineStore.getSnapshot()?.objective));
+        // eslint-disable-next-line no-console
+        console.log('[FOCUS_ALL_DONE]');
+      }
+
       if (request.impressMode === 'TWO_PASS_IMPRESS') {
+        // eslint-disable-next-line no-console
+        console.log('[TWO_PASS_START]');
         // Pass 1: indent every point (no measure) so all impressions stabilize.
         dispatch(passChanged(1));
         for (const point of request.points) {
-          await executePoint(runId, point, 1, true, false, false);
+          // doFocus = !focusAll → per-point focus only when FocusAll is OFF.
+          await executePoint(runId, point, 1, !focusAll, true, false, false, origin);
         }
         // Pass 2: return to each point and measure.
         dispatch(passChanged(2));
         for (const point of request.points) {
           // indentAlreadyDone = true → pass 2 never re-indents.
-          await executePoint(runId, point, 2, false, true, true);
+          await executePoint(runId, point, 2, !focusAll, false, true, true, origin);
         }
       } else {
         // INDENTING = move+focus+indent; ONE_PASS = + measure.
         const doMeasure = request.impressMode === 'ONE_PASS_IMPRESS';
         for (const point of request.points) {
-          await executePoint(runId, point, null, true, doMeasure, false);
+          // doFocus = !focusAll → per-point focus only when FocusAll is OFF.
+          await executePoint(runId, point, null, !focusAll, true, doMeasure, false, origin);
         }
       }
 
-      // Return to the captured reference/objective position.
+      // Return to the captured reference/objective position. Same rebase as the
+      // points: `home` is the absolute start position, so subtract the origin to
+      // get the optical-center offset moveToPoint expects.
       if (home) {
         setPhase('moving', 'Returning to reference position…');
-        await hardware.moveToPoint(home.x, home.y);
+        await hardware.moveToPoint(home.x - origin.x, home.y - origin.y);
       }
+
+      // End-of-cycle: rotate the turret back to the viewing objective so the
+      // operator can inspect every indent through the lens. The per-indent
+      // turret-return (indent 'X'/'P' suffix) is driven by the auto-measure
+      // setting and is off for indent-only runs, so the cycle could otherwise end
+      // with the indenter — not the objective — over the sample. Same RX-gated
+      // turret command as the Machine Control tab; a failure here is non-fatal
+      // (the measurement work already succeeded), so it is logged, not thrown.
+      const endObjective = (machineStore.getSnapshot()?.objective ?? '').trim().toUpperCase();
+      const turretDir = OBJECTIVE_TO_TURRET[endObjective];
+      if (turretDir) {
+        setPhase('moving', `Returning turret to ${endObjective} objective…`);
+        try {
+          await moveTurret(turretDir);
+          // eslint-disable-next-line no-console
+          console.log(`[MP-EXEC] turret-return objective=${endObjective} direction=${turretDir}`);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(`[MP-EXEC] turret-return-failed objective=${endObjective}`, err);
+        }
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[MP-EXEC] turret-return-skip objective=${endObjective || 'unknown'} reason=no-direction-mapping`
+        );
+      }
+
       dispatch(
         runFinished({
           phase: 'completed',
@@ -461,6 +619,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     setPhase,
     executePoint,
     hardware,
+    moveTurret,
   ]);
 
   // ── Operator controls (resolve a parked gate, or set a deferred flag) ──────

@@ -80,6 +80,9 @@ type Props = {
   onOpenTestRecords: (measurementIds: string[]) => void;
   onMeasurementsCleared?: () => void;
   onDisplayValuesChange?: (values: MeasurementDisplayValues) => void;
+  /** Externally-driven selection (Multipoint "Go" review) — selects this row so
+   *  the HV readout follows the reviewed point. */
+  reviewSelectMeasurementId?: string | null;
   refetch: () => Promise<void>;
   micrometerEnabled: boolean;
   targetMinHv: number | null;
@@ -116,6 +119,7 @@ function MeasurementsWorkspaceImpl({
   onOpenTestRecords,
   onMeasurementsCleared,
   onDisplayValuesChange,
+  reviewSelectMeasurementId,
   refetch,
   micrometerEnabled,
   targetMinHv,
@@ -126,6 +130,11 @@ function MeasurementsWorkspaceImpl({
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
   const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
+  // Follow an externally-requested selection (Multipoint "Go" review) so the HV
+  // readout shows the reviewed point's measurement.
+  useEffect(() => {
+    if (reviewSelectMeasurementId) setSelectedMeasurementId(reviewSelectMeasurementId);
+  }, [reviewSelectMeasurementId]);
   const [reportOpen, setReportOpen] = useState(false);
   const [convertSyncError, setConvertSyncError] = useState<string | null>(null);
 

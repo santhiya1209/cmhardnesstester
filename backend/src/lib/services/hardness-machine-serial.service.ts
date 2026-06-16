@@ -1608,7 +1608,7 @@ class HardnessMachineSerialService extends EventEmitter {
     return this.getState();
   }
 
-  async startIndent(): Promise<MachineState> {
+  async startIndent(turretAfterImpressOverride?: boolean): Promise<MachineState> {
     if (!this.state.connected) {
       const message = 'machine not connected';
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
@@ -1623,18 +1623,26 @@ class HardnessMachineSerialService extends EventEmitter {
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
-    let turretAfterImpress = true;
-    try {
-      const all = await autoMeasureSettingsService.getAll();
-      const settings = all[0] ?? null;
-      if (settings) {
-        turretAfterImpress = settings.turretAfterImpress !== false;
+    // An explicit per-call override wins (Multipoint Indenting mode fires indent-only
+    // with turretAfterImpress=false, so the objective never rotates in between points).
+    // Otherwise fall back to the configured auto-measure setting (unchanged default).
+    let turretAfterImpress: boolean;
+    if (typeof turretAfterImpressOverride === 'boolean') {
+      turretAfterImpress = turretAfterImpressOverride;
+    } else {
+      turretAfterImpress = true;
+      try {
+        const all = await autoMeasureSettingsService.getAll();
+        const settings = all[0] ?? null;
+        if (settings) {
+          turretAfterImpress = settings.turretAfterImpress !== false;
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[machine-service] indent settings read failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[machine-service] indent settings read failed: ${err instanceof Error ? err.message : String(err)}`
-      );
     }
     if (turretAfterImpress) {
       this.pendingTurretAfterImpressConfirm = true;

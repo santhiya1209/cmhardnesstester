@@ -36,6 +36,14 @@ export type UseAfterImpressFlowArgs = {
   machineLastObjectiveRx: string | null;
   cameraRef: React.RefObject<CameraWindowHandle | null>;
   getAfterImpressReadiness: () => AfterImpressReadiness;
+  /**
+   * True while the Multipoint execution engine is driving a run. The engine owns
+   * the full per-point workflow (move → indent → optional measure), so the manual
+   * after-impress reactions (objective switch + auto-measure) must stay inert —
+   * otherwise Indenting mode would switch to the objective and measure after every
+   * point instead of indenting continuously.
+   */
+  getMultipointRunActive: () => boolean;
 
   activeObjectiveRef: React.MutableRefObject<string | null>;
   autoMeasureInFlightRef: React.MutableRefObject<boolean>;
@@ -66,6 +74,7 @@ export function useAfterImpressFlow({
   machineLastObjectiveRx,
   cameraRef,
   getAfterImpressReadiness,
+  getMultipointRunActive,
   activeObjectiveRef,
   autoMeasureInFlightRef,
   runAutoMeasureRef,
@@ -271,6 +280,12 @@ export function useAfterImpressFlow({
     if (prev === next) return;
     lastSeenIndentStatusRef.current = next;
 
+    // Indenting mode is INDENT-ONLY: while the Multipoint engine drives a run it
+    // owns the workflow, so skip all per-impress after-impress reactions (objective
+    // switch + auto-measure). The status ref is still advanced above, so transitions
+    // resume cleanly once the run ends.
+    if (getMultipointRunActive()) return;
+
     const enteringRun =
       (next === 'started' || next === 'running') && prev !== 'started' && prev !== 'running';
     if (enteringRun) {
@@ -400,6 +415,7 @@ export function useAfterImpressFlow({
     cameraRef,
     clearActiveMeasurement,
     clearAutoMeasureOverlay,
+    getMultipointRunActive,
     latestAutoMeasurePreviewSettingsRef,
     liveMachineStateRef,
     machineIndentStatus,

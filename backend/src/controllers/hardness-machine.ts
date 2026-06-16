@@ -57,9 +57,14 @@ export async function setMachineControlValue(req: Request, res: Response): Promi
   }
 }
 
-export async function startIndent(_req: Request, res: Response): Promise<void> {
+export async function startIndent(req: Request, res: Response): Promise<void> {
   try {
-    const state = await hardnessMachineSerialService.startIndent();
+    // Optional per-run override: Multipoint Indenting mode sends false so the
+    // turret does not rotate to the objective between points. Absent → settings.
+    const body = req.body as { turretAfterImpress?: unknown } | undefined;
+    const turretAfterImpress =
+      typeof body?.turretAfterImpress === 'boolean' ? body.turretAfterImpress : undefined;
+    const state = await hardnessMachineSerialService.startIndent(turretAfterImpress);
     res.json({ ok: true, state });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

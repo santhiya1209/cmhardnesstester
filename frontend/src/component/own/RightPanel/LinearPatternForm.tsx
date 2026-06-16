@@ -7,6 +7,7 @@ import Typography from '@mui/material/Typography';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { toNumberOrNull } from '@/utils/inputNumber';
+import { normalizeCoordinate } from '@/utils/coordinate';
 import type { PatternGenerationRequest } from '@/types/patternProgram';
 
 const REF_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 1fr auto', alignItems: 'center', gap: 1 };
@@ -27,7 +28,9 @@ const REF_DP = 5;
 // display-only and never touches what generation/moveToPoint consume.
 function formatRef(value: number | null, origin: number, established: boolean, sign: number): string {
   if (!established || value == null || !Number.isFinite(value)) return (0).toFixed(REF_DP);
-  return (sign * (value - origin)).toFixed(REF_DP);
+  // Snap sub-tolerance residue and -0 to a clean 0 so a centre pick reads
+  // 0.00000, never -0.00007, while real off-centre values keep full precision.
+  return normalizeCoordinate(sign * (value - origin)).toFixed(REF_DP);
 }
 
 type Props = {

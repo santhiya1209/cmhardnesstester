@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStore } from 'react-redux';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
+import type { RootState } from '@/store';
+import { selectExecPhase } from '@/store/slices/multipointExecution.selectors';
+import { useGetMultipointResultsQuery } from '@/store/api/multipointResultApi';
+import { isRunning } from '@/types/multipointExecution';
+import type { MeasurePointFn, MeasurePointOutcome } from '@/types/multipointExecution';
 import { useCalibrationDialogSlot } from '@/features/calibration/useCalibrationDialogSlot';
 import AppDialogs from '@/features/shell/AppDialogs';
 import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
@@ -300,6 +306,18 @@ function App() {
     clearActiveMeasurement,
   } = useActiveMeasurement();
   const committedFingerprintsRef = useCommittedFingerprints(measurements);
+  // The metrology committed by the most recent successful Auto Measure save,
+  // written by commitAutoMeasureSnapshot and read by the Multipoint engine's
+  // injected measurePoint primitive (the run loop has no other way to read back
+  // an HV from the event-driven save path). Reset to null before each point.
+  const lastMultipointMeasureRef = useRef<MeasurePointOutcome | null>(null);
+  // Saved per-point run records — map a generated point to the measurement it
+  // produced so the Multipoint "Go" button can re-display that point's overlay
+  // image + HV. Already persisted by the engine's per-point save.
+  const { data: multipointResults = [] } = useGetMultipointResultsQuery();
+  // Drives MeasurementsWorkspace selection from outside (Multipoint "Go" review)
+  // so the main HV readout follows the reviewed point.
+  const [reviewSelectMeasurementId, setReviewSelectMeasurementId] = useState<string | null>(null);
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
   const activeObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
@@ -317,6 +335,20 @@ function App() {
     }),
     []
   );
+
+  // Mirror the Multipoint engine's run state into a ref via an imperative store
+  // subscription — the after-impress flow reads it without re-rendering this
+  // (large) component on every per-point phase change.
+  const reduxStore = useStore<RootState>();
+  const multipointRunActiveRef = useRef(false);
+  useEffect(() => {
+    const read = () => {
+      multipointRunActiveRef.current = isRunning(selectExecPhase(reduxStore.getState()));
+    };
+    read();
+    return reduxStore.subscribe(read);
+  }, [reduxStore]);
+  const getMultipointRunActive = useCallback(() => multipointRunActiveRef.current, []);
 
   const [cameraStatus, setCameraStatusState] = useState<CameraStatusState>('closed');
   const setCameraStatus = useCallback((next: CameraStatusState) => {
@@ -388,6 +420,7 @@ function App() {
     machineLastObjectiveRx,
     cameraRef,
     getAfterImpressReadiness,
+    getMultipointRunActive,
     activeObjectiveRef,
     autoMeasureInFlightRef,
     runAutoMeasureRef,
@@ -796,7 +829,8 @@ function App() {
         return false;
       }
 
-      const forceOverlayRefresh = source === 'auto-click' || source === 'after-impress';
+      const forceOverlayRefresh =
+        source === 'auto-click' || source === 'after-impress' || source === 'multipoint';
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-final-corners] session=${graphics.sessionId ?? 'n/a'} objective=${graphics.objective ?? 'n/a'} key=${autoMeasureCornersKey(graphics.corners)}`
@@ -1091,6 +1125,18 @@ function App() {
           ? `System Status: Auto measurement added: HV ${saved.hv}`
           : `System Status: Auto measurement added: ${values.d1Um} µm / ${values.d2Um} µm`
       );
+      // Hand the committed metrology back to the Multipoint engine's measurePoint
+      // primitive (the only consumer). Populated on every successful save; the
+      // primitive resets it to null before each point so a stale value is never
+      // misread as the current point's result.
+      lastMultipointMeasureRef.current = {
+        ok: true,
+        hv: finiteOrNull(saved.hv) ?? values.hv,
+        d1Um: finiteOrNull(saved.d1Um) ?? values.d1Um,
+        d2Um: finiteOrNull(saved.d2Um) ?? values.d2Um,
+        confidence: finiteOrNull(result.confidence),
+        measurementId: saved.id,
+      };
       return true;
     },
     [
@@ -1132,6 +1178,43 @@ function App() {
     return true;
   }, [getMachineStateSnapshot, calibrations]);
 
+  // Multipoint per-row "Go" review: after the stage has moved to the point, re-
+  // display that point's recorded indentation overlay + HV. The overlay is
+  // already baked into the saved measurement's imageDataUrl (captureFinalized
+  // Thumbnail), so it is shown by loading that still onto the camera — no need to
+  // re-run the live overlay engine. Selecting the measurement drives the main HV
+  // readout through the existing MeasurementsWorkspace selection chain.
+  const reviewMultipointPoint = useCallback(
+    async (pointId: string): Promise<void> => {
+      const result = multipointResults
+        .filter((r) => r.pointId === pointId && r.measurementId)
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
+      const measurementId = result?.measurementId ?? null;
+      if (!measurementId) {
+        setStatusMessage('System Status: No measurement recorded for this point yet.');
+        return;
+      }
+      const measurement = measurements.find((m) => m.id === measurementId) ?? null;
+      setReviewSelectMeasurementId(measurementId);
+      const imageDataUrl = measurement?.imageDataUrl;
+      if (imageDataUrl) {
+        try {
+          const buffer = await (await fetch(imageDataUrl)).arrayBuffer();
+          await cameraRef.current?.loadImageFromBuffer(buffer);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[multipoint-go-review] image-load-failed', err);
+        }
+      }
+      setStatusMessage(
+        measurement?.hv != null
+          ? `System Status: Point review — HV ${measurement.hv}`
+          : 'System Status: Point review'
+      );
+    },
+    [multipointResults, measurements, setStatusMessage]
+  );
+
   const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource): Promise<boolean> => {
     const callSource = source ?? (preview ? 'settings-preview' : 'auto-click');
     logUnexpectedAutoMeasureCall(callSource);
@@ -1168,7 +1251,8 @@ function App() {
       autoMeasureSessionIdRef.current = sessionIdForRun;
       setAutoMeasureSessionId(sessionIdForRun);
       setAutoMeasureSessionActive(true);
-      const isFreshCapture = callSource === 'auto-click' || callSource === 'after-impress';
+      const isFreshCapture =
+        callSource === 'auto-click' || callSource === 'after-impress' || callSource === 'multipoint';
       if (isFreshCapture) {
         setAutoMeasureStatus('detecting');
         setCameraStatus('frozen');
@@ -1253,7 +1337,11 @@ function App() {
           console.log(
             `[auto-measure-settings-sync] objective=${resolvedObjectiveForMeasure} smoothing=${profiledSettings.smoothing} threshold=${profiledSettings.threshold}`
           );
-          if (callSource === 'auto-click' || callSource === 'after-impress') {
+          if (
+            callSource === 'auto-click' ||
+            callSource === 'after-impress' ||
+            callSource === 'multipoint'
+          ) {
             setAutoMeasurePreviewSettings((prev) =>
               autoMeasureSettingsEqual(prev, profiledSettings) ? prev : profiledSettings
             );
@@ -1623,7 +1711,9 @@ function App() {
             ? 'settings-save'
             : callSource === 'after-impress'
               ? 'after-impress'
-              : 'auto-click'
+              : callSource === 'multipoint'
+                ? 'multipoint'
+                : 'auto-click'
         );
         if (callSource === 'after-impress') {
           if (committed) {
@@ -1670,6 +1760,34 @@ function App() {
 
   useEffect(() => {
     runAutoMeasureRef.current = runAutoMeasure;
+  }, [runAutoMeasure]);
+
+  // Real per-point Vickers measurement for the Multipoint engine. Reuses the
+  // EXACT single-indent detector/save path (runAutoMeasure → commitAutoMeasure
+  // Snapshot) via the dedicated 'multipoint' call-source, then hands back the
+  // committed metrology the engine records against the point. A fresh row is
+  // forced per point (autoMeasurementIdRef = null) and the result ref is cleared
+  // first so a stale value can never be misread as this point's outcome.
+  const measurePoint = useCallback<MeasurePointFn>(async () => {
+    lastMultipointMeasureRef.current = null;
+    autoMeasurementIdRef.current = null;
+    const ok = await runAutoMeasure(
+      latestAutoMeasurePreviewSettingsRef.current,
+      false,
+      'multipoint'
+    );
+    const result = lastMultipointMeasureRef.current;
+    if (ok && result) return result;
+    return {
+      ok: false,
+      rejected: true,
+      hv: null,
+      d1Um: null,
+      d2Um: null,
+      confidence: null,
+      measurementId: null,
+      message: 'Auto Measure could not detect the indentation',
+    };
   }, [runAutoMeasure]);
 
   const autoMeasurePreviewSettingsRef = useRef<AutoMeasureSettingsPayload>(autoMeasurePreviewSettings);
@@ -2096,6 +2214,9 @@ function App() {
           onObjectiveChangeIntent={handleObjectiveChangeIntent}
           onToolbarAction={handleToolbarSelect}
           onValidateMultipointStart={validateMultipointCalibration}
+          measurePoint={measurePoint}
+          onReviewMultipointPoint={reviewMultipointPoint}
+          reviewSelectMeasurementId={reviewSelectMeasurementId}
           selectedMeasureMode={selectedMeasureMode}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={handleCloseTrimMeasure}

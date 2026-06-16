@@ -9,6 +9,7 @@ import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
 import type { ToolId, ToolbarActionId, MeasureSelection } from '@/types/tool';
+import type { MeasurePointFn } from '@/types/multipointExecution';
 import { tokens } from '@/theme/theme';
 import { useRenderCount } from '@/utils/renderStats';
 
@@ -102,6 +103,10 @@ type TabContentProps = {
   cameraReady?: boolean;
   /** Start-time calibration gate for Multipoint; returns false to abort Start. */
   onValidateMultipointStart?: () => boolean | Promise<boolean>;
+  /** Real per-point Vickers measurement + save for the Multipoint engine. */
+  measurePoint?: MeasurePointFn;
+  /** Multipoint "Go" review: re-display a point's overlay image + HV. */
+  onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
   micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
@@ -127,6 +132,8 @@ function renderTab(
     onObjectiveChangeIntent,
     onToolbarAction,
     onValidateMultipointStart,
+    measurePoint,
+    onReviewMultipointPoint,
     selectedMeasureMode,
     micrometerEnabled,
     targetMinHv,
@@ -160,7 +167,13 @@ function renderTab(
       );
     case 1: return <XYZPlatformTab />;
     case 2:
-      return <MultipointTab onValidateStart={onValidateMultipointStart} />;
+      return (
+        <MultipointTab
+          onValidateStart={onValidateMultipointStart}
+          measurePoint={measurePoint}
+          onReviewPoint={onReviewMultipointPoint}
+        />
+      );
     case 3:
       return (
         <PatternListTab
@@ -211,6 +224,10 @@ type Props = {
   selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
   onValidateMultipointStart?: () => boolean | Promise<boolean>;
+  measurePoint?: MeasurePointFn;
+  onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
+  /** Externally-driven measurement selection (Multipoint "Go" review). */
+  reviewSelectMeasurementId?: string | null;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
@@ -242,6 +259,9 @@ function RightPanelImpl({
   onObjectiveChangeIntent,
   onToolbarAction,
   onValidateMultipointStart,
+  measurePoint,
+  onReviewMultipointPoint,
+  reviewSelectMeasurementId,
   activeTool,
   selectedMeasureMode,
   cameraReady,
@@ -307,6 +327,7 @@ function RightPanelImpl({
             onOpenTestRecords={onOpenTestRecords}
             onMeasurementsCleared={onMeasurementsCleared}
             onDisplayValuesChange={handleMeasurementDisplayValuesChange}
+            reviewSelectMeasurementId={reviewSelectMeasurementId}
             micrometerEnabled={micrometerEnabled}
             targetMinHv={targetMinHv}
             targetMaxHv={targetMaxHv}
@@ -342,6 +363,8 @@ function RightPanelImpl({
             onObjectiveChangeIntent,
             onToolbarAction,
             onValidateMultipointStart,
+            measurePoint,
+            onReviewMultipointPoint,
             activeTool,
             selectedMeasureMode,
             cameraReady,

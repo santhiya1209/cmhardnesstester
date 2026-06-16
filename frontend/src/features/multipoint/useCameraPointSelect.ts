@@ -4,6 +4,7 @@ import { selectCameraPointPhase, selectCameraPointTarget } from '@/store/slices/
 import { appendFreePoint, endCameraPointSelect, setReferencePoint } from '@/store/slices/multipoint.slice';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { STAGE_X_TO_SCREEN, STAGE_Y_TO_SCREEN } from '@/component/own/PatternOverlay';
+import { normalizeCoordinate, resolveDisplayOrigin } from '@/utils/coordinate';
 
 // Stable per-point id (selection + React keys); local counter, session-unique —
 // same scheme as useMultipoint's captured/entered points.
@@ -83,8 +84,11 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
 
       // Same stage→screen signs the overlay draws with: a feature drawn at screen
       // offset s sits at stage offset s/STAGE_*_TO_SCREEN from the image centre.
-      const offsetXmm = (dxPx / STAGE_X_TO_SCREEN) * (umPerPixel / 1000);
-      const offsetYmm = (dyPx / STAGE_Y_TO_SCREEN) * (umPerPixel / 1000);
+      // A sub-tolerance offset (a click within ~half a pixel of the crosshair) is
+      // snapped to exactly 0 so a centre click stores the exact stage centre — no
+      // -0.00007 residue propagating into the reference or the generated points.
+      const offsetXmm = normalizeCoordinate((dxPx / STAGE_X_TO_SCREEN) * (umPerPixel / 1000));
+      const offsetYmm = normalizeCoordinate((dyPx / STAGE_Y_TO_SCREEN) * (umPerPixel / 1000));
       // eslint-disable-next-line no-console
       console.log(`[pixel-to-mm] offsetX=${offsetXmm.toFixed(5)} offsetY=${offsetYmm.toFixed(5)}`);
 
@@ -98,16 +102,21 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
       if (target === 'reference') {
         // Set the single reference point the offset/interval generation uses as its
         // origin (replaces the 0,0 placeholder). NOT appended to freePoints.
+        // eslint-disable-next-line no-console
+        console.log('[ADD_POINT]', { x, y });
         dispatch(setReferencePoint({ x, y }));
         // Display CENTRE-RELATIVE at 5 dp (legacy frame/precision); the stored
         // refX/refY stay absolute full precision. A perfect centre click reads
         // 0.00000; a real off-centre residual is shown, never snapped to 0.
-        const ox = stage.relocationOriginMm?.x ?? 0;
-        const oy = stage.relocationOriginMm?.y ?? 0;
+        // No working origin set → measure from the live crosshair so the readout is
+        // the pure click offset (up = −Y), matching the marker and the reference field.
+        const origin = resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown);
+        const ox = origin.x;
+        const oy = origin.y;
         // Display in the operator's image-frame convention: right = +X, up = −Y.
         // X is centre-relative as-is; Y is negated (stored stage-frame +Y = up).
-        const relX = x - ox;
-        const relYDisplay = -(y - oy);
+        const relX = normalizeCoordinate(x - ox);
+        const relYDisplay = normalizeCoordinate(-(y - oy));
         // eslint-disable-next-line no-console
         console.log(`[reference-point-set] absX=${x.toFixed(6)} absY=${y.toFixed(6)} relX=${relX.toFixed(5)} relYdisplay=${relYDisplay.toFixed(5)} source=camera-click stagePos=(${stage.positionMm.x.toFixed(6)},${stage.positionMm.y.toFixed(6)})`);
         setStatusMessage(`Reference point set to (${relX.toFixed(5)}, ${relYDisplay.toFixed(5)}).`);
@@ -116,6 +125,8 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
       }
 
       const point = { id: createCameraPointId(), x, y };
+      // eslint-disable-next-line no-console
+      console.log('[ADD_POINT]', point);
       dispatch(appendFreePoint(point));
       // eslint-disable-next-line no-console
       console.log(`[point-added] x=${x.toFixed(5)} y=${y.toFixed(5)} source=camera-click stagePos=(${stage.positionMm.x.toFixed(5)},${stage.positionMm.y.toFixed(5)})`);

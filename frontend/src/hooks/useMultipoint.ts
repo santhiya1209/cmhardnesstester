@@ -44,6 +44,7 @@ import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { arePointsVerticallyAligned, generatePattern } from '@/utils/patternGeneration';
 import { buildMultipointExecutionRequest } from '@/utils/multipointExecution';
 import { configFromProgram, metaFromProgram, toPayload } from '@/utils/patternProgramMapping';
+import { resolveDisplayOrigin } from '@/utils/coordinate';
 import type { ProgramMeta } from '@/types/multipoint';
 import type { MachineState } from '@/types/machine';
 import type {
@@ -280,6 +281,8 @@ export function useMultipoint() {
     }
     setGenerationError(null);
     dispatch(setGeneratedPoints(result.points));
+    // eslint-disable-next-line no-console
+    console.log('[GENERATE]', result.points);
     setStatusMessage(`Generated ${result.points.length} point(s) using ${mode}.`);
   }, [config, mode, programMeta.multiset, alignmentOverride, dispatch]);
 
@@ -797,7 +800,16 @@ export function useMultipoint() {
       dispatch(setActivePoint(point.id));
       try {
         setStatusMessage(`Moving to point ${point.no}…`);
-        const result = await hardware.moveToPoint(point.x, point.y);
+        // Points are stored ABSOLUTE mm; moveToPoint expects an offset from the
+        // taught optical center. Rebase into the same display-origin frame the
+        // preview table shows (point − origin) so Go drives exactly the previewed
+        // coordinate — identical to the Start engine's rebase.
+        const origin = resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown);
+        const targetX = point.x - origin.x;
+        const targetY = point.y - origin.y;
+        // eslint-disable-next-line no-console
+        console.log('[MOVE_TARGET]', targetX, targetY);
+        const result = await hardware.moveToPoint(targetX, targetY);
         if (!result.ok) {
           dispatch(markPointFailed(point.id));
           setStatusMessage(`Move to point ${point.no} failed: ${result.message ?? result.error}`);
@@ -810,7 +822,17 @@ export function useMultipoint() {
         dispatch(setActivePoint(null));
       }
     },
-    [hardware, stage.connected, stage.xyLocked, stage.centerX, stage.centerY, dispatch]
+    [
+      hardware,
+      stage.connected,
+      stage.xyLocked,
+      stage.centerX,
+      stage.centerY,
+      stage.relocationOriginMm,
+      stage.positionMm,
+      stage.positionKnown,
+      dispatch,
+    ]
   );
 
   return {
@@ -832,6 +854,10 @@ export function useMultipoint() {
     // Relocation-centre origin (absolute mm) so the Free/Midpoint table can show
     // camera-clicked coordinates relative to the centre while storing absolute mm.
     relocationOriginMm: stage.relocationOriginMm,
+    // Origin for READ-ONLY readouts (reference field, preview table): the taught
+    // centre when set, else the live crosshair so a reference reads as the offset
+    // from the crosshair (up = −Y) rather than the absolute frame.
+    displayOriginMm: resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown),
     formRevision,
     statusMessage,
     errorMessage,
