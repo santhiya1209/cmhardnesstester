@@ -31,8 +31,23 @@ const STATUS_COLOR: Record<MoveStatus, string> = {
   Failed: 'error.main',
 };
 
+// The table shows X/Y in the SAME centre-relative frame as the Reference Point
+// readout (LinearPatternForm.formatRef): X = value − origin, Y = −(value − origin)
+// (image frame: up = −Y). This is why Point 1 reads exactly like the Reference
+// field. The stored point.x/point.y stay ABSOLUTE — "Go" and stage motion consume
+// those, so the conversion is display-only.
+function relX(value: number, originX: number): string {
+  return (value - originX).toFixed(3);
+}
+function relY(value: number, originY: number): string {
+  return (-(value - originY)).toFixed(3);
+}
+
 type Props = {
   points: PatternPoint[];
+  /** Relocation-centre origin (absolute mm) so the readout is centre-relative; 0 if no relocation. */
+  originX: number;
+  originY: number;
   selectedIds: string[];
   activeId: string | null;
   completedIds: string[];
@@ -47,6 +62,8 @@ type Props = {
 
 function PatternPreviewTableImpl({
   points,
+  originX,
+  originY,
   selectedIds,
   activeId,
   completedIds,
@@ -137,8 +154,8 @@ function PatternPreviewTableImpl({
                     </TableCell>
                     <TableCell sx={BODY_CELL_SX}>{point.line ?? '-'}</TableCell>
                     <TableCell sx={BODY_CELL_SX}>{point.no}</TableCell>
-                    <TableCell sx={BODY_CELL_SX}>{point.x.toFixed(3)}</TableCell>
-                    <TableCell sx={BODY_CELL_SX}>{point.y.toFixed(3)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{relX(point.x, originX)}</TableCell>
+                    <TableCell sx={BODY_CELL_SX}>{relY(point.y, originY)}</TableCell>
                     <TableCell sx={BODY_CELL_SX}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Button

@@ -41,7 +41,6 @@ const PATTERN_OPTIONS: PatternOption[] = ['Line', 'Rectangle', 'Circle', 'Custom
 const MODE_OPTIONS: PatternMode[] = [
   'Vertical Mode',
   'Horizontal Mode',
-  'Horizontal Capture Mode',
   'Matrix Mode',
   'Free Mode',
   'Midpoint Mode',
@@ -308,6 +307,8 @@ function MultipointTabImpl({ onValidateStart }: Props) {
 
       <PatternPreviewTable
         points={m.generatedPoints}
+        originX={m.relocationOriginMm?.x ?? 0}
+        originY={m.relocationOriginMm?.y ?? 0}
         selectedIds={m.selectedPointIds}
         activeId={m.activePointId}
         completedIds={m.completedPointIds}
