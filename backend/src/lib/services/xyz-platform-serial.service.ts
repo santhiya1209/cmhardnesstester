@@ -2185,8 +2185,11 @@ class XyzPlatformSerialService extends EventEmitter {
     );
   }
 
-  getPosition(): Promise<XyzCommandResult> {
-    return this.runCommand('getPosition', () => buildGetPositionCommand(), 'Query position.');
+  async getPosition(): Promise<XyzCommandResult> {
+    const res = await this.runCommand('getPosition', () => buildGetPositionCommand(), 'Query position.');
+    // Attach the freshly-read absolute mm mirror (pulses/pulsePerMm, no offset) so
+    // callers can compute an exact absolute-target delta without re-deriving it.
+    return res.ok && res.position ? { ...res, positionMm: { ...this.state.positionMm } } : res;
   }
 
   /**

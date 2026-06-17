@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -95,7 +95,11 @@ type Props = {
 
 function MultipointTabImpl({ onValidateStart, measurePoint, captureReviewPoint, onResumeLive, onReviewPoint }: Props) {
   const m = useMultipoint();
-  const exec = useMultipointExecution({ onValidateStart, measurePoint, captureReviewPoint, onResumeLive, operator: null });
+  // Soft-failure retry budget (0/1/2). A run-time option (not persisted with the
+  // program): on a non-critical point failure the engine re-attempts up to this
+  // many times before marking the point FAILED and continuing the batch.
+  const [retryCount, setRetryCount] = useState(0);
+  const exec = useMultipointExecution({ onValidateStart, measurePoint, captureReviewPoint, onResumeLive, operator: null, retryCount });
   const goToPoint = m.goToPoint;
   const highlightPoint = m.highlightPoint;
   // "Go" = move to the point (existing RX-gated motion), then re-display its
@@ -354,6 +358,23 @@ function MultipointTabImpl({ onValidateStart, measurePoint, captureReviewPoint, 
           label="FocusAll"
           sx={RADIO_SX}
         />
+        {/* Retry budget for SOFT per-point failures (auto measure / focus / detection
+            / single-point timeout). A failed point is re-attempted up to N times,
+            then marked FAILED and the batch continues — it never aborts the run. */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Typography sx={LABEL_SX}>Retry</Typography>
+          <FormControl size="small">
+            <Select
+              value={retryCount}
+              disabled={locked}
+              onChange={(event) => setRetryCount(Number(event.target.value))}
+            >
+              {[0, 1, 2].map((n) => (
+                <MenuItem key={n} value={n}>{n}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Box>
         <Button variant="outlined" color="error" size="small" sx={BTN_SX} startIcon={<RefreshRoundedIcon />} disabled={locked} onClick={m.reset}>Reset</Button>
       </Box>
 

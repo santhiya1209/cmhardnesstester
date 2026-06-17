@@ -1005,10 +1005,24 @@ function App() {
       }
       const overlayImageReady = !!imageDataUrl;
       if (source === 'multipoint') {
+        // Diamond offset from the target: with the stage parked ON the generated
+        // point, the optical axis (image centre / crosshair) IS the target, so the
+        // detected diamond centre's distance from the image centre = how far the
+        // actual impression sits from the generated point. ~0 ⇒ on target.
+        const fw = snapshot.imageSize?.width ?? 0;
+        const fh = snapshot.imageSize?.height ?? 0;
+        const upp = values.umPerPixel ?? null;
+        const offXmm = fw > 0 && upp ? ((center.x - fw / 2) * upp) / 1000 : null;
+        const offYmm = fh > 0 && upp ? ((center.y - fh / 2) * upp) / 1000 : null;
         /* eslint-disable no-console */
         console.log(`[RESULT] Image Saved hasImage=${overlayImageReady} key=${finalCornersKey}`);
         console.log(
           `[RESULT] Overlay Saved (vector geometry) d1Um=${values.d1Um} d2Um=${values.d2Um} hasCorners=${!!graphics.corners} hasNorm=${!!graphics.corners && !!(snapshot.imageSize?.width)} session=${graphics.sessionId ?? 'n/a'}`
+        );
+        console.log(`[EXEC] Diamond Center X ${center.x}`);
+        console.log(`[EXEC] Diamond Center Y ${center.y}`);
+        console.log(
+          `[EXEC] Diamond Offset From Target ${offXmm != null && offYmm != null ? `(${offXmm.toFixed(4)}, ${offYmm.toFixed(4)}) mm` : `(${(center.x - fw / 2).toFixed(1)}, ${(center.y - fh / 2).toFixed(1)}) px (uncalibrated)`}`
         );
         /* eslint-enable no-console */
       }
@@ -1975,10 +1989,19 @@ function App() {
     // a centre, diamond only when available).
     if (!centerNorm) centerNorm = { x: 0.5, y: 0.5 };
     const imageDataUrl = (await camera.captureThumbnailDataUrl()) ?? null;
-    // eslint-disable-next-line no-console
+    // Diamond offset from target: distance of the detected centre from the image
+    // centre (= crosshair = target, the stage being parked on the point). In
+    // normalised units (×100 ≈ % of frame); px when frame dims are known.
+    const offNX = centerNorm.x - 0.5;
+    const offNY = centerNorm.y - 0.5;
+    /* eslint-disable no-console */
+    console.log(`[EXEC] Diamond Center X ${centerNorm.x}`);
+    console.log(`[EXEC] Diamond Center Y ${centerNorm.y}`);
+    console.log(`[EXEC] Diamond Offset From Target (${(offNX * 100).toFixed(2)}%, ${(offNY * 100).toFixed(2)}%) of frame${diamond ? '' : ' (no diamond — frame-centre fallback)'}`);
     console.log(
       `[RESULT] Overlay Saved (vector geometry) hasDiamond=${!!diamond} hasImage=${!!imageDataUrl} (indenting-review)`
     );
+    /* eslint-enable no-console */
     return { imageDataUrl, diamond, centerNorm };
   }, []);
 

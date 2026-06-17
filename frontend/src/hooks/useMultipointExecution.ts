@@ -59,6 +59,11 @@ const INDENT_TIMEOUT_MS = 120000;
 // Post-move optical settle before focus/measure (40X needs longer than low mags).
 const SETTLE_MS_40X = 600;
 const SETTLE_MS_DEFAULT = 350;
+// Max allowed |actual − target| on EITHER axis (mm) before an indent is permitted.
+// The absolute move lands within ~1 controller pulse, so this is a safety net: if
+// the read-back position is further off (comms/mechanical fault), the impression
+// is withheld rather than placed off the generated point. Tunable per machine.
+const POSITION_TOLERANCE_MM = 0.01;
 
 // The turret carries the viewing objectives on its left/right slots (10X / 40X) —
 // the inverse of MachineControlTab's handleTurretClick mapping. Used to rotate the
@@ -79,6 +84,14 @@ class StepError extends Error {
     super(message);
   }
 }
+// A MACHINE-LEVEL fault that must stop the whole batch — unlike a soft per-point
+// failure (auto measure / focus / detection / single-point timeout) which only
+// fails that one point and continues. The one machine-level signal available in
+// this codebase is loss of the hardness-machine or XYZ-stage serial connection;
+// emergency stop / hardware alarm / motion-controller faults surface here only if
+// they drop that connection (there is no separate signal to wire). The operator
+// Stop button is handled separately via StopSignal.
+class CriticalFault extends Error {}
 
 type ExecOptions = {
   /** Real Vickers detection + save, injected by App (owns the pipeline). */
@@ -95,6 +108,10 @@ type ExecOptions = {
   onResumeLive?: () => void;
   /** Operator name captured into each run record (no auth system). */
   operator?: string | null;
+  /** Soft-failure retry budget per point (0/1/2). On a non-critical step failure
+   *  the point is re-attempted up to this many times (step-aware — a completed
+   *  indent is never repeated) before being marked FAILED and the batch continues. */
+  retryCount?: number;
 };
 
 function settleMs(objective: string | null | undefined): number {
@@ -274,6 +291,32 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     [saveMultipointResult, machineStore, stage]
   );
 
+  // Move the stage to an ABSOLUTE machine-mm coordinate with no optical-centre
+  // offset. Reads the FRESH current position (positionMm = pulses/pulsePerMm, no
+  // offset) and moves by the relative delta (target − current): backend final =
+  // current + delta = target, exactly. The fresh read is essential in the run loop
+  // — a stale closure snapshot would mis-aim every point after the first. Returns
+  // the read-back ACTUAL landed position so the caller can verify it.
+  const moveToAbsolute = useCallback(
+    async (
+      absX: number,
+      absY: number
+    ): Promise<{ ok: boolean; actual: { x: number; y: number } | null; message?: string }> => {
+      const before = await hardware.getPosition();
+      const curMm = before.ok ? before.positionMm ?? null : null;
+      if (!curMm) return { ok: false, actual: null, message: 'Stage position unknown — cannot compute an exact target.' };
+      const moved = await hardware.moveByOffsetMm(absX - curMm.x, absY - curMm.y);
+      if (!moved.ok) return { ok: false, actual: null, message: moved.message ?? moved.error ?? 'Move failed' };
+      let actual = moved.positionMm ?? null;
+      if (!actual) {
+        const reread = await hardware.getPosition();
+        actual = reread.ok ? reread.positionMm ?? null : null;
+      }
+      return { ok: true, actual };
+    },
+    [hardware]
+  );
+
   // Execute one point's atomic steps with step-aware retry. `doIndent`/`doMeasure`
   // select which steps run (two-pass splits them across passes). Returns the
   // terminal disposition for this point.
@@ -285,11 +328,16 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       doFocus: boolean,
       doIndent: boolean,
       doMeasure: boolean,
-      indentAlreadyDone: boolean,
-      origin: { x: number; y: number }
-    ): Promise<'ok' | 'skipped'> => {
+      indentAlreadyDone: boolean
+    ): Promise<'ok' | 'skipped' | 'failed'> => {
       let indentDone = indentAlreadyDone;
-      // Retry loop for THIS point. `continue` re-attempts after an operator retry.
+      // Soft-failure retry budget (operator-configured 0/1/2): a non-critical step
+      // failure re-attempts the point up to this many times before it is marked
+      // FAILED and the batch moves on. Step-aware via indentDone (never re-indents).
+      let attemptsLeft = Math.max(0, Math.min(2, Math.trunc(optsRef.current.retryCount ?? 0)));
+      // eslint-disable-next-line no-console
+      console.log(`[EXEC] Starting Point ${point.no}`);
+      // Retry loop for THIS point. `continue` re-attempts after a soft failure.
       // eslint-disable-next-line no-constant-condition
       while (true) {
         dispatch(pointEntered({ pointId: point.id, pointNo: point.no }));
@@ -323,20 +371,38 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           // the stage travel — the previous point's measure left it frozen on the
           // captured/overlay frame. No-op when not frozen.
           optsRef.current.onResumeLive?.();
-          // Generated points are stored ABSOLUTE stage mm, but moveToPoint expects
-          // mm OFFSETS from the taught optical center (backend: target = center +
-          // offset*pulsePerMm). Rebase into the same display-origin frame the
-          // preview table shows (point − origin) so Start drives exactly the
-          // previewed coordinate — never the absolute value, which would re-apply
-          // the center and fling the stage ~one center away into the soft limit.
-          const targetX = point.x - origin.x;
-          const targetY = point.y - origin.y;
-          // eslint-disable-next-line no-console
-          console.log('[START]', point);
-          // eslint-disable-next-line no-console
-          console.log('[MOVE_TARGET]', targetX, targetY);
-          const moved = await hardware.moveToPoint(targetX, targetY);
-          if (!moved.ok) throw new StepError('move', moved.message ?? moved.error ?? 'Move failed');
+          // Generated points are ABSOLUTE machine mm. Drive there with NO optical-
+          // centre offset (the old `moveToPoint(point − origin)` anchored to the
+          // optical centre and injected a CONSTANT offset, so every impression
+          // missed the generated point). moveToAbsolute reads the fresh position
+          // and moves by the exact delta → the stage lands ON the point.
+          /* eslint-disable no-console */
+          console.log(`[EXEC] Point ID ${point.id}`);
+          console.log(`[EXEC] Target X ${point.x}`);
+          console.log(`[EXEC] Target Y ${point.y}`);
+          /* eslint-enable no-console */
+          const move = await moveToAbsolute(point.x, point.y);
+          if (!move.ok) throw new StepError('move', move.message ?? 'Move failed');
+          // Verify the ACTUAL landed position — read back, never assumed. Motion
+          // "complete" alone is insufficient; the machine must be physically there.
+          const actual = move.actual;
+          const errX = actual ? actual.x - point.x : Number.POSITIVE_INFINITY;
+          const errY = actual ? actual.y - point.y : Number.POSITIVE_INFINITY;
+          /* eslint-disable no-console */
+          console.log(`[EXEC] Actual X ${actual?.x ?? 'unknown'}`);
+          console.log(`[EXEC] Actual Y ${actual?.y ?? 'unknown'}`);
+          console.log(`[EXEC] Position Error X ${errX}`);
+          console.log(`[EXEC] Position Error Y ${errY}`);
+          /* eslint-enable no-console */
+          // SAFETY: withhold the indent unless the stage is physically within
+          // tolerance of the target on BOTH axes — never place an impression off
+          // the generated point. Out-of-tolerance → the operator decision gate.
+          if (Math.abs(errX) > POSITION_TOLERANCE_MM || Math.abs(errY) > POSITION_TOLERANCE_MM) {
+            throw new StepError(
+              'move',
+              `Off target by (${errX.toFixed(4)}, ${errY.toFixed(4)}) mm > ${POSITION_TOLERANCE_MM} mm — indentation withheld.`
+            );
+          }
           setStep(point.id, 'move', 'done');
 
           // ── FOCUS (FocusAll-gated; one fine Z step DOWN per point — NOT an
@@ -376,11 +442,15 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             }
             // eslint-disable-next-line no-console
             console.log('[INDENT_START]', point.no);
+            // eslint-disable-next-line no-console
+            console.log(`[EXEC] Indent Started no=${point.no}`);
             setPhase('indenting', `Indenting at point ${point.no}…`);
             setStep(point.id, 'indent', 'active');
             await fireIndent();
             const outcome = await waitForIndentTerminal(machineStore, INDENT_TIMEOUT_MS);
             if (outcome !== 'completed') throw new StepError('indent', `Indent ${outcome}`);
+            // eslint-disable-next-line no-console
+            console.log(`[EXEC] Indent Completed no=${point.no}`);
             setStep(point.id, 'indent', 'done');
             indentDone = true;
           } else if (indentDone) {
@@ -482,6 +552,8 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           console.log(
             `[RESULT] Point Completed no=${point.no} pointId=${point.id} measureStatus=${doMeasure ? measureStatus : 'pending'} measurementId=${measurementId ?? 'none'} hv=${hv ?? 'n/a'}`
           );
+          // eslint-disable-next-line no-console
+          console.log(`[EXEC] Point ${point.no} Completed`);
           if (passNo === 1) {
             // eslint-disable-next-line no-console
             console.log('[PASS1_COMPLETE]', point.no);
@@ -493,36 +565,69 @@ export function useMultipointExecution(options: ExecOptions = {}) {
         } catch (err) {
           if (err instanceof StopSignal) throw err;
           const stepErr = err instanceof StepError ? err : new StepError('move', err instanceof Error ? err.message : String(err));
-          // Mark the failed step and surface the reason on the row.
+
+          // ── CRITICAL machine-level fault → abort the WHOLE batch ───────────
+          // Only loss of the machine / stage serial connection qualifies (the one
+          // machine-level signal available). Everything else is a SOFT per-point
+          // failure that must NOT stop the batch.
+          const machineConnected = machineStore.getSnapshot()?.connected ?? false;
+          const stageConnected = stageRef.current.connected;
+          if (!machineConnected || !stageConnected) {
+            setStep(point.id, stepErr.step, 'failed');
+            dispatch(pointErrored({ pointId: point.id, error: stepErr.message }));
+            // eslint-disable-next-line no-console
+            console.error(
+              `[EXEC] CRITICAL machine fault at point ${point.no} (machineConnected=${machineConnected} stageConnected=${stageConnected}): ${stepErr.message} — stopping batch.`
+            );
+            throw new CriticalFault(stepErr.message);
+          }
+
+          // ── SOFT failure → retry up to the budget, then FAIL and CONTINUE ──
+          if (attemptsLeft > 0) {
+            attemptsLeft -= 1;
+            // Reset the failed step to pending so the retry shows fresh progress;
+            // indentDone is preserved so an already-completed indent is not redone.
+            setStep(point.id, stepErr.step, 'pending');
+            dispatch(pointErrored({ pointId: point.id, error: null }));
+            // eslint-disable-next-line no-console
+            console.log(
+              `[EXEC] Point ${point.no} retry after ${stepErr.step} failure (${attemptsLeft} attempt(s) left): ${stepErr.message}`
+            );
+            await checkpoint(); // honor a Stop/Pause pressed during the failure
+            continue;
+          }
+
+          // Budget exhausted (or none): mark ONLY this point FAILED, persist the
+          // reason, and return so the run loop advances to the next point.
           setStep(point.id, stepErr.step, 'failed');
           dispatch(pointErrored({ pointId: point.id, error: stepErr.message }));
-          // Await the operator's decision. Re-measure maps to 'retry' on a measure
-          // failure; because indentDone is preserved, a retry never re-indents.
-          const cmd = await awaitDecision(
-            `Point ${point.no} failed at ${stepErr.step}: ${stepErr.message}`
-          );
-          if (cmd === 'stop') throw new StopSignal();
-          if (cmd === 'skip') {
-            (['move', 'focus', 'indent', 'measure'] as AtomicStep[]).forEach((s) => {
-              if (points[point.id]?.[s] !== 'done') setStep(point.id, s, 'skipped');
-            });
-            await persistResult({
-              runId,
-              point,
-              pass: passNo,
-              focusStatus,
-              indentStatus: indentDone ? 'indented' : 'skipped',
-              measureStatus: 'skipped',
-              hv,
-              d1Um,
-              d2Um,
-              confidence,
-              measurementId,
-              durationMs: Date.now() - t0,
-            });
-            return 'skipped';
-          }
-          // 'retry' / 'resume' → loop and re-attempt (step-aware via indentDone).
+          dispatch(pointDurationSet({ pointId: point.id, durationMs: Date.now() - t0 }));
+          // eslint-disable-next-line no-console
+          console.log(`[EXEC] Point ${point.no} Failed`);
+          // eslint-disable-next-line no-console
+          console.log(`[EXEC] Failure Reason = ${stepErr.message}`);
+          await persistResult({
+            runId,
+            point,
+            pass: passNo,
+            focusStatus,
+            indentStatus: indentDone ? 'indented' : 'skipped',
+            // Preserve a terminal measure status (e.g. 'rejected' = low confidence);
+            // a non-measure step failure leaves it 'pending', recorded as 'failed'.
+            measureStatus: measureStatus === 'pending' ? 'failed' : measureStatus,
+            hv,
+            d1Um,
+            d2Um,
+            confidence,
+            measurementId,
+            imageDataUrl: reviewImageDataUrl,
+            diamond: reviewDiamond,
+            centerNorm: reviewCenterNorm,
+            durationMs: Date.now() - t0,
+          });
+          // eslint-disable-next-line no-console
+          console.log('[EXEC] Continuing To Next Point');
+          return 'failed';
         }
       }
     },
@@ -532,12 +637,11 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       setPhase,
       setStep,
       hardware,
+      moveToAbsolute,
       fireIndent,
       machineStore,
       persistResult,
-      awaitDecision,
       focusStepFine,
-      points,
     ]
   );
 
@@ -595,25 +699,18 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       })
     );
 
-    // Rebase origin: the absolute-mm → optical-center-offset frame moveToPoint
-    // consumes (target = opticalCenter + offset·pulsePerMm), captured ONCE here so
-    // every point uses a STABLE anchor. This MUST be the SAME origin the preview
-    // table, reference readout, and the per-row GO button display/compute with —
-    // the FIXED physical center (positionMm − displayMm) — so previewed coordinate
-    // == GO coordinate == executed coordinate: a single 1:1 target path. (Using
-    // resolveDisplayOrigin here was the bug: relocationOriginMm ?? live positionMm
-    // diverges from the table's physical-center origin whenever no relocation is
-    // set, so Start landed off the previewed point by the live displayMm.)
-    const origin = stage.positionKnown
-      ? { x: stage.positionMm.x - stage.displayMm.x, y: stage.positionMm.y - stage.displayMm.y }
-      : { x: 0, y: 0 };
-    // eslint-disable-next-line no-console
-    console.log(`[MP-EXEC] rebase-origin x=${origin.x} y=${origin.y} source=physical-center`);
-
+    // Points are driven as ABSOLUTE machine mm via moveToAbsolute (fresh-read +
+    // relative delta), so no optical-centre/display-origin rebase is needed — that
+    // rebase was the source of the constant indent-position offset. `home` is the
+    // absolute start position the run returns to when every point is done.
     const home =
       stage.positionKnown && Number.isFinite(stage.positionMm.x) && Number.isFinite(stage.positionMm.y)
         ? { x: stage.positionMm.x, y: stage.positionMm.y }
         : null;
+
+    // Per-point final disposition, keyed by point id (final pass wins for two-pass)
+    // — used only for the end-of-run [EXEC] batch summary.
+    const outcomes = new Map<string, 'ok' | 'skipped' | 'failed'>();
 
     try {
       // Clear any stale freeze left by a prior manual measure so the feed is
@@ -642,29 +739,28 @@ export function useMultipointExecution(options: ExecOptions = {}) {
         dispatch(passChanged(1));
         for (const point of request.points) {
           // doFocus = !focusAll → per-point focus only when FocusAll is OFF.
-          await executePoint(runId, point, 1, !focusAll, true, false, false, origin);
+          outcomes.set(point.id, await executePoint(runId, point, 1, !focusAll, true, false, false));
         }
         // Pass 2: return to each point and measure.
         dispatch(passChanged(2));
         for (const point of request.points) {
           // indentAlreadyDone = true → pass 2 never re-indents.
-          await executePoint(runId, point, 2, !focusAll, false, true, true, origin);
+          outcomes.set(point.id, await executePoint(runId, point, 2, !focusAll, false, true, true));
         }
       } else {
         // INDENTING = move+focus+indent; ONE_PASS = + measure.
         const doMeasure = request.impressMode === 'ONE_PASS_IMPRESS';
         for (const point of request.points) {
           // doFocus = !focusAll → per-point focus only when FocusAll is OFF.
-          await executePoint(runId, point, null, !focusAll, true, doMeasure, false, origin);
+          outcomes.set(point.id, await executePoint(runId, point, null, !focusAll, true, doMeasure, false));
         }
       }
 
-      // Return to the captured reference/objective position. Same rebase as the
-      // points: `home` is the absolute start position, so subtract the origin to
-      // get the optical-center offset moveToPoint expects.
+      // Return to the captured reference/objective position (absolute mm) via the
+      // same exact-delta move the points use.
       if (home) {
         setPhase('moving', 'Returning to reference position…');
-        await hardware.moveToPoint(home.x - origin.x, home.y - origin.y);
+        await moveToAbsolute(home.x, home.y);
       }
 
       // End-of-cycle: rotate the turret back to the viewing objective so the
@@ -693,11 +789,24 @@ export function useMultipointExecution(options: ExecOptions = {}) {
         );
       }
 
+      // ── Batch summary (a single point failure never aborts the batch) ──────
+      const dispositions = [...outcomes.values()];
+      const completed = dispositions.filter((d) => d === 'ok').length;
+      const failed = dispositions.filter((d) => d === 'failed').length;
+      const skipped = dispositions.filter((d) => d === 'skipped').length;
+      /* eslint-disable no-console */
+      console.log('[EXEC] Batch Completed');
+      console.log(`[EXEC] Total Points = ${request.points.length}`);
+      console.log(`[EXEC] Completed = ${completed}`);
+      console.log(`[EXEC] Failed = ${failed}`);
+      /* eslint-enable no-console */
       dispatch(
         runFinished({
           phase: 'completed',
           finishedAtMs: Date.now(),
-          message: `Run complete — ${request.points.length} point(s).`,
+          message: `Batch complete — ${completed} completed, ${failed} failed${
+            skipped ? `, ${skipped} skipped` : ''
+          } of ${request.points.length}.`,
         })
       );
     } catch (err) {
@@ -709,6 +818,10 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             message: 'Run stopped. Completed results preserved.',
           })
         );
+      } else if (err instanceof CriticalFault) {
+        // eslint-disable-next-line no-console
+        console.error(`[EXEC] Batch aborted — critical machine fault: ${err.message}`);
+        dispatch(runErrored({ message: `Critical machine fault — batch stopped: ${err.message}` }));
       } else {
         dispatch(runErrored({ message: err instanceof Error ? err.message : String(err) }));
       }
@@ -730,6 +843,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     executePoint,
     focusStepFine,
     hardware,
+    moveToAbsolute,
     moveTurret,
   ]);
 
