@@ -105,6 +105,9 @@ type TabContentProps = {
   onValidateMultipointStart?: () => boolean | Promise<boolean>;
   /** Real per-point Vickers measurement + save for the Multipoint engine. */
   measurePoint?: MeasurePointFn;
+  /** Resume the live camera display between Multipoint points (the measure
+   *  path freezes it to paint the overlay and never resumes on its own). */
+  onResumeMultipointCamera?: () => void;
   /** Multipoint "Go" review: re-display a point's overlay image + HV. */
   onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
   micrometerEnabled: boolean;
@@ -133,6 +136,7 @@ function renderTab(
     onToolbarAction,
     onValidateMultipointStart,
     measurePoint,
+    onResumeMultipointCamera,
     onReviewMultipointPoint,
     selectedMeasureMode,
     micrometerEnabled,
@@ -171,6 +175,7 @@ function renderTab(
         <MultipointTab
           onValidateStart={onValidateMultipointStart}
           measurePoint={measurePoint}
+          onResumeLive={onResumeMultipointCamera}
           onReviewPoint={onReviewMultipointPoint}
         />
       );
@@ -225,6 +230,7 @@ type Props = {
   cameraReady?: boolean;
   onValidateMultipointStart?: () => boolean | Promise<boolean>;
   measurePoint?: MeasurePointFn;
+  onResumeMultipointCamera?: () => void;
   onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
   /** Externally-driven measurement selection (Multipoint "Go" review). */
   reviewSelectMeasurementId?: string | null;
@@ -260,6 +266,7 @@ function RightPanelImpl({
   onToolbarAction,
   onValidateMultipointStart,
   measurePoint,
+  onResumeMultipointCamera,
   onReviewMultipointPoint,
   reviewSelectMeasurementId,
   activeTool,
@@ -364,6 +371,7 @@ function RightPanelImpl({
             onToolbarAction,
             onValidateMultipointStart,
             measurePoint,
+            onResumeMultipointCamera,
             onReviewMultipointPoint,
             activeTool,
             selectedMeasureMode,

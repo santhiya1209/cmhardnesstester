@@ -84,6 +84,10 @@ type ExecOptions = {
   measurePoint?: MeasurePointFn;
   /** Pre-flight gate (e.g. calibration-required dialog). Abort if it returns false. */
   onValidateStart?: () => boolean | Promise<boolean>;
+  /** Resume the live camera display (App owns the camera). Called at each point
+   *  boundary and run start/end: the measure step freezes the display to paint
+   *  the overlay, so without this the feed sticks on the last measured frame. */
+  onResumeLive?: () => void;
   /** Operator name captured into each run record (no auth system). */
   operator?: string | null;
 };
@@ -134,6 +138,12 @@ export function useMultipointExecution(options: ExecOptions = {}) {
   const optsRef = useRef(options);
   optsRef.current = options;
 
+  // Live stage snapshot for the focus step (Z lock + Z speed) read inside the
+  // loop without adding `stage` — which changes on every streamed position
+  // frame — to executePoint/start deps and churning the run callbacks.
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+
   // Imperative control surface read by the running loop (refs, not React state,
   // so the loop sees operator commands without stale closures).
   const ctrl = useRef<{
@@ -152,6 +162,33 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       dispatch(atomicStatusChanged({ pointId, step, status })),
     [dispatch]
   );
+
+  // One single-click FINE Z focus step DOWN — the same CFOCUS/FFOCUS primitive
+  // the XYZPlatform tab's focus button issues (one fixed fine step per call, NOT
+  // an autofocus search). Z motion requires the drive to be locked (#LK#); if it
+  // is not, focus is unavailable and we fall back to the optical settle delay
+  // only, mirroring the focus button's z-unlocked guard. RX-gated like every
+  // other hardware move; a move failure is logged, not thrown (focus is never
+  // worth aborting the run over). Followed by an objective-dependent settle.
+  const focusStepFine = useCallback(async (): Promise<MultipointFocusStatus> => {
+    const objective = machineStore.getSnapshot()?.objective;
+    const s = stageRef.current;
+    if (!s.zLocked) {
+      // eslint-disable-next-line no-console
+      console.warn('[FOCUS] blocked reason=z-unlocked focus=fine source=multipoint');
+      await delay(settleMs(objective));
+      return 'not-available';
+    }
+    // eslint-disable-next-line no-console
+    console.log('[xyz-ui-action] action=focus-fine source=multipoint');
+    const result = await hardware.moveZ('down', s.zSpeed, 'fine');
+    if (!result.ok && !result.preempted) {
+      // eslint-disable-next-line no-console
+      console.warn(`[FOCUS] step failed: ${result.message ?? result.error ?? 'unknown'}`);
+    }
+    await delay(settleMs(objective));
+    return 'settled';
+  }, [hardware, machineStore]);
 
   // Park the loop until the operator issues a command (pause or post-failure
   // decision). Resolves with that command; toolbar handlers call resolveDecision.
@@ -266,6 +303,10 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           await checkpoint();
           setPhase('moving', `Moving to point ${point.no}…`);
           setStep(point.id, 'move', 'active');
+          // Return the display to live before each move so the operator watches
+          // the stage travel — the previous point's measure left it frozen on the
+          // captured/overlay frame. No-op when not frozen.
+          optsRef.current.onResumeLive?.();
           // Generated points are stored ABSOLUTE stage mm, but moveToPoint expects
           // mm OFFSETS from the taught optical center (backend: target = center +
           // offset*pulsePerMm). Rebase into the same display-origin frame the
@@ -282,8 +323,8 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           if (!moved.ok) throw new StepError('move', moved.message ?? moved.error ?? 'Move failed');
           setStep(point.id, 'move', 'done');
 
-          // ── FOCUS (FocusAll-gated; honest: settle only, no autofocus
-          //    hardware exists). When FocusAll is OFF the focus step runs at
+          // ── FOCUS (FocusAll-gated; one fine Z step DOWN per point — NOT an
+          //    autofocus search). When FocusAll is OFF the focus step runs at
           //    every point (local per-point focus); when ON it is skipped
           //    per-point because the single global FOCUS_ALL baseline already
           //    ran once before the loop. The two paths are mutually exclusive —
@@ -301,8 +342,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             console.log('[POINT_FOCUS_LOCAL]', point.no);
             setPhase('focusing', `Focusing at point ${point.no}…`);
             setStep(point.id, 'focus', 'active');
-            await delay(settleMs(machineStore.getSnapshot()?.objective));
-            focusStatus = 'settled';
+            focusStatus = await focusStepFine();
             setStep(point.id, 'focus', 'done');
           } else {
             // eslint-disable-next-line no-console
@@ -335,8 +375,11 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           if (doMeasure) {
             const measure = optsRef.current.measurePoint;
             if (!measure) {
-              measureStatus = 'skipped';
-              setStep(point.id, 'measure', 'skipped');
+              // A measuring mode (One/Two Pass) with no measurePoint injected is a
+              // misconfiguration, not a valid skip — surface it loudly rather than
+              // marking the point "Completed" with a silent skip and no HV.
+              measureStatus = 'failed';
+              throw new StepError('measure', 'No measurement primitive available (measurePoint not injected).');
             } else {
               await checkpoint();
               if (passNo === 2) {
@@ -447,6 +490,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       machineStore,
       persistResult,
       awaitDecision,
+      focusStepFine,
       points,
     ]
   );
@@ -487,6 +531,14 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     const focusAll = request.focusAll;
     // eslint-disable-next-line no-console
     console.log('[FOCUS_ALL]', focusAll);
+    // Decision diagnostic: a "Measure = skip / HV = -" report means the measure
+    // step is being skipped, not failing. It is skipped only when impressMode is
+    // not ONE_PASS_IMPRESS (doMeasure=false) or no measurePoint was injected.
+    // This one line prints both so a single run pinpoints which.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[MP-EXEC] measure-decision impressMode=${request.impressMode} measurePointInjected=${!!optsRef.current.measurePoint}`
+    );
     const runId = `run-${Date.now()}`;
     ctrl.current = { stop: false, pause: false, running: true, decide: null };
     dispatch(
@@ -514,16 +566,21 @@ export function useMultipointExecution(options: ExecOptions = {}) {
         : null;
 
     try {
-      // FocusAll ON: run the global FOCUS_ALL baseline exactly once here, before
-      // the loop, as a stabilization step for the whole run (suited to very flat
-      // specimens). The per-point focus step is then skipped for every point —
-      // global and per-point focus never both execute. Settle-only — no autofocus
-      // hardware exists; this is the honest one-time equivalent.
+      // Clear any stale freeze left by a prior manual measure so the feed is
+      // live from the moment the run begins (e.g. Indenting mode never calls the
+      // measure path, so nothing else would resume it).
+      optsRef.current.onResumeLive?.();
+      // FocusAll ON: run the global focus baseline exactly once here, before the
+      // loop, as a stabilization step for the whole run (suited to very flat
+      // specimens). One fine Z step DOWN — the same single-click primitive the
+      // per-point focus uses — so a FocusAll run still performs a real focus
+      // move; the per-point focus step is then skipped for every point (global
+      // and per-point focus never both execute).
       if (focusAll) {
         // eslint-disable-next-line no-console
         console.log('[FOCUS_ALL_START]');
         setPhase('focusing', 'Focus All — global baseline…');
-        await delay(settleMs(machineStore.getSnapshot()?.objective));
+        await focusStepFine();
         // eslint-disable-next-line no-console
         console.log('[FOCUS_ALL_DONE]');
       }
@@ -608,6 +665,9 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     } finally {
       ctrl.current.running = false;
       ctrl.current.decide = null;
+      // Return the display to live when the run ends (complete/stopped/error) so
+      // it never stays frozen on the last measured point's overlay.
+      optsRef.current.onResumeLive?.();
     }
   }, [
     generatedPoints,
@@ -618,6 +678,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     dispatch,
     setPhase,
     executePoint,
+    focusStepFine,
     hardware,
     moveTurret,
   ]);

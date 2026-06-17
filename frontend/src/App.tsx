@@ -1769,15 +1769,45 @@ function App() {
   // forced per point (autoMeasurementIdRef = null) and the result ref is cleared
   // first so a stale value can never be misread as this point's outcome.
   const measurePoint = useCallback<MeasurePointFn>(async () => {
-    lastMultipointMeasureRef.current = null;
-    autoMeasurementIdRef.current = null;
-    const ok = await runAutoMeasure(
-      latestAutoMeasurePreviewSettingsRef.current,
-      false,
-      'multipoint'
-    );
-    const result = lastMultipointMeasureRef.current;
-    if (ok && result) return result;
+    // Post-indent readiness gate (the gap that made every multipoint point's
+    // Measure fail): the indent rotates the INDENTER over the sample and the
+    // objective returns afterwards (firmware turret suffix). Detecting on the
+    // frame the instant the indent completes hits a stale / mid-turret-return
+    // view, so the detector rejects. Mirror the after-impress flow — unfreeze,
+    // settle for the objective, and wait for a fresh frame before detecting —
+    // with up to 3 attempts (each re-armed with a fresh frame), the same budget
+    // the after-impress detection uses.
+    const camera = cameraRef.current;
+    const objective = (activeObjectiveRef.current ?? '').trim().toUpperCase();
+    const settleForObjectiveMs = objective === '40X' ? 600 : 350;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (camera) {
+        camera.unfreezeCamera(`multipoint-measure-attempt-${attempt}`);
+        if (attempt === 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, settleForObjectiveMs));
+        }
+        const fresh = await camera.waitForFreshFrame(1500);
+        if (!fresh) {
+          // eslint-disable-next-line no-console
+          console.warn(`[multipoint-measure] fresh-frame timeout attempt=${attempt}`);
+        }
+      }
+      // Force a fresh row + clear the result ref so a stale value from a prior
+      // attempt/point can never be misread as this attempt's outcome.
+      lastMultipointMeasureRef.current = null;
+      autoMeasurementIdRef.current = null;
+      // eslint-disable-next-line no-console
+      console.log(`[multipoint-measure] detect attempt=${attempt} objective=${objective || 'null'}`);
+      const ok = await runAutoMeasure(
+        latestAutoMeasurePreviewSettingsRef.current,
+        false,
+        'multipoint'
+      );
+      const result = lastMultipointMeasureRef.current;
+      if (ok && result) return result;
+    }
+
     return {
       ok: false,
       rejected: true,
@@ -1786,9 +1816,24 @@ function App() {
       d2Um: null,
       confidence: null,
       measurementId: null,
-      message: 'Auto Measure could not detect the indentation',
+      message: 'Auto Measure could not detect the indentation after 3 attempts',
     };
   }, [runAutoMeasure]);
+
+  // Return the live camera display to streaming during a Multipoint run. The
+  // 'multipoint' measure path freezes the display at each point (to capture +
+  // paint the overlay on the held frame) but, unlike the after-impress flow, has
+  // no resume of its own — so without this the operator's view sticks on the
+  // first measured frame for the whole run. The engine calls this at every point
+  // boundary (and run start/end); unfreezeCamera is a no-op when not frozen, so
+  // the calls are cheap and safe. waitForFreshFrame is fire-and-forget (mirrors
+  // the after-impress resume) so it never delays the next move.
+  const resumeLiveCamera = useCallback(() => {
+    const camera = cameraRef.current;
+    if (!camera) return;
+    camera.unfreezeCamera('multipoint-resume-live');
+    void camera.waitForFreshFrame(1500);
+  }, []);
 
   const autoMeasurePreviewSettingsRef = useRef<AutoMeasureSettingsPayload>(autoMeasurePreviewSettings);
   useEffect(() => {
@@ -2215,6 +2260,7 @@ function App() {
           onToolbarAction={handleToolbarSelect}
           onValidateMultipointStart={validateMultipointCalibration}
           measurePoint={measurePoint}
+          onResumeMultipointCamera={resumeLiveCamera}
           onReviewMultipointPoint={reviewMultipointPoint}
           reviewSelectMeasurementId={reviewSelectMeasurementId}
           selectedMeasureMode={selectedMeasureMode}

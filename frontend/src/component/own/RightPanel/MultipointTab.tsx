@@ -84,13 +84,16 @@ type Props = {
    *  detection pipeline). When omitted, the engine's measure step is skipped
    *  honestly rather than faked. */
   measurePoint?: MeasurePointFn;
+  /** Resume the live camera display at point boundaries during a run (the
+   *  measure path freezes it to paint the overlay and never resumes itself). */
+  onResumeLive?: () => void;
   /** After a "Go" move lands, re-display that point's recorded overlay + HV. */
   onReviewPoint?: (pointId: string) => void | Promise<void>;
 };
 
-function MultipointTabImpl({ onValidateStart, measurePoint, onReviewPoint }: Props) {
+function MultipointTabImpl({ onValidateStart, measurePoint, onResumeLive, onReviewPoint }: Props) {
   const m = useMultipoint();
-  const exec = useMultipointExecution({ onValidateStart, measurePoint, operator: null });
+  const exec = useMultipointExecution({ onValidateStart, measurePoint, onResumeLive, operator: null });
   const goToPoint = m.goToPoint;
   // "Go" = move to the point (existing RX-gated motion), then re-display its
   // recorded indentation overlay + HV so the operator can verify a completed point.
