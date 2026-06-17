@@ -3,6 +3,8 @@
 // tracks the status of its four atomic operations independently so the table can
 // render per-step progress.
 
+import type { DiamondGeometry } from '@/types/measurement';
+
 export type EnginePhase =
   | 'idle'
   | 'moving'
@@ -78,6 +80,21 @@ export type MeasurePointOutcome = {
 };
 
 export type MeasurePointFn = (input: MeasurePointInput) => Promise<MeasurePointOutcome>;
+
+/**
+ * Indenting-mode review capture: after an indent (no metrology), grab a still +
+ * best-effort diamond geometry so the point can be revisited on GO. No HV is
+ * computed and nothing is rejected — every indent yields at least an image.
+ */
+export type CaptureReviewResult = {
+  /** Captured still (baked thumbnail) for the review display. */
+  imageDataUrl?: string | null;
+  /** Diamond vertices NORMALISED to 0..1 of the captured frame, when detected. */
+  diamond?: DiamondGeometry | null;
+  /** Indentation centre NORMALISED to 0..1, when detected (else frame centre). */
+  centerNorm?: { x: number; y: number } | null;
+};
+export type CaptureReviewFn = (input: MeasurePointInput) => Promise<CaptureReviewResult>;
 
 /** Operator command that releases a paused/failed gate inside the run loop. */
 export type ExecutionDecision = 'resume' | 'retry' | 'skip' | 'stop';

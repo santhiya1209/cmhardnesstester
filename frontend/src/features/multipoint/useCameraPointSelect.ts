@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
-import { selectCameraPointPhase, selectCameraPointTarget } from '@/store/slices/multipoint.selectors';
+import { selectCameraPointPhase, selectCameraPointTarget, selectPatternMode } from '@/store/slices/multipoint.selectors';
 import { appendFreePoint, endCameraPointSelect, setReferencePoint } from '@/store/slices/multipoint.slice';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { STAGE_X_TO_SCREEN, STAGE_Y_TO_SCREEN } from '@/component/own/PatternOverlay';
@@ -53,6 +53,7 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
   const dispatch = useAppDispatch();
   const phase = useAppSelector(selectCameraPointPhase);
   const target = useAppSelector(selectCameraPointTarget);
+  const mode = useAppSelector(selectPatternMode);
   const stage = useXyzStageState();
 
   const handlePick = useCallback(
@@ -104,6 +105,10 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
         // origin (replaces the 0,0 placeholder). NOT appended to freePoints.
         // eslint-disable-next-line no-console
         console.log('[ADD_POINT]', { x, y });
+        if (mode === 'Horizontal Mode') {
+          // eslint-disable-next-line no-console
+          console.log(`[HORIZONTAL] Reference Point X=${x} Y=${y}`);
+        }
         dispatch(setReferencePoint({ x, y }));
         // Display CENTRE-RELATIVE at 5 dp (legacy frame/precision); the stored
         // refX/refY stay absolute full precision. A perfect centre click reads
@@ -133,7 +138,7 @@ export function useCameraPointSelect({ umPerPixel, setStatusMessage }: Args): Ca
       setStatusMessage(`Added point at the selected location (${offsetXmm.toFixed(5)}, ${offsetYmm.toFixed(5)} mm from centre).`);
       dispatch(endCameraPointSelect());
     },
-    [phase, target, umPerPixel, stage.positionKnown, stage.positionMm.x, stage.positionMm.y, stage.relocationOriginMm, dispatch, setStatusMessage]
+    [phase, target, mode, umPerPixel, stage.positionKnown, stage.positionMm.x, stage.positionMm.y, stage.relocationOriginMm, dispatch, setStatusMessage]
   );
 
   const hint = useMemo(

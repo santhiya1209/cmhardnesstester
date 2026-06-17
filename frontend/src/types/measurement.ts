@@ -2,6 +2,16 @@ import type { ManualMeasureMethod, ManualMeasureUnit } from './manualMeasure';
 
 export type DepthSource = 'device' | 'manual';
 
+// Indentation diamond vertices, NORMALISED to 0..1 of the captured frame, so the
+// vector overlay can be repainted sharp on a later point review at any display
+// size (the saved still is a downscaled thumbnail). See App.reviewMultipointPoint.
+export type DiamondGeometry = {
+  top: { x: number; y: number };
+  right: { x: number; y: number };
+  bottom: { x: number; y: number };
+  left: { x: number; y: number };
+};
+
 export type MeasurementPayload = {
   d1: number;
   d2: number;
@@ -25,6 +35,7 @@ export type MeasurementPayload = {
   testForceKgf: number | null;
   timestamp: string;
   imageDataUrl?: string;
+  diamond?: DiamondGeometry | null;
   xMm?: number | null;
   yMm?: number | null;
   hardnessType?: string | null;
@@ -56,6 +67,7 @@ export type MeasurementSavePayload = {
   testForceKgf?: number | null;
   timestamp?: string;
   imageDataUrl?: string;
+  diamond?: DiamondGeometry | null;
   qualified?: 'YES' | 'NO' | null;
   hardnessType?: string | null;
   convertType?: string | null;

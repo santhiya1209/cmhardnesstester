@@ -2,6 +2,8 @@
 // The RUN outcome for one executed point; metrology (HV/D1/D2) lives in the
 // measurements table and is linked via `measurementId`.
 
+import type { DiamondGeometry } from './measurement';
+
 export type MultipointFocusStatus =
   | 'pending'
   | 'manual'
@@ -38,6 +40,10 @@ export type MultipointResultSavePayload = {
   objective?: string | null;
   confidence?: number | null;
   measurementId?: string | null;
+  // Indenting-mode self-contained review snapshot (null for measured points).
+  imageDataUrl?: string | null;
+  diamond?: DiamondGeometry | null;
+  centerNorm?: { x: number; y: number } | null;
   operator?: string | null;
   durationMs?: number | null;
   timestamp?: string;

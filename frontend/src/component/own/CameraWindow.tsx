@@ -136,7 +136,9 @@ export type CameraWindowHandle = {
     bits: 8 | 16;
     source: 'live-camera' | 'uploaded-image';
   } | { ok: false; error: string };
-  loadImageFromBuffer: (buffer: ArrayBufferLike) => Promise<{ ok: boolean; error?: string }>;
+  loadImageFromBuffer: (
+    buffer: ArrayBufferLike
+  ) => Promise<{ ok: boolean; error?: string; width?: number; height?: number }>;
   exportImageBlob: (mimeType?: string) => Promise<Blob | null>;
   captureThumbnailDataUrl: (options?: {
     maxWidth?: number;
@@ -366,18 +368,20 @@ function CameraWindowImpl(
   }, [frozen]);
 
   const loadImageFromBuffer = useCallback(
-    async (buffer: ArrayBufferLike): Promise<{ ok: boolean; error?: string }> => {
+    async (
+      buffer: ArrayBufferLike
+    ): Promise<{ ok: boolean; error?: string; width?: number; height?: number }> => {
       const snap = freezeCanvasRef.current;
       if (!snap) return { ok: false, error: 'no-canvas' };
       try {
         const u8 = new Uint8Array(buffer as ArrayBuffer).slice();
         const blob = new Blob([u8]);
         const bitmap = await createImageBitmap(blob);
-        snap.width = bitmap.width;
-        snap.height = bitmap.height;
-        setImageSize((current) =>
-          keepImageSizeIfSame(current, { width: bitmap.width, height: bitmap.height })
-        );
+        const width = bitmap.width;
+        const height = bitmap.height;
+        snap.width = width;
+        snap.height = height;
+        setImageSize((current) => keepImageSizeIfSame(current, { width, height }));
         const ctx = snap.getContext('2d');
         if (!ctx) {
           bitmap.close();
@@ -388,7 +392,7 @@ function CameraWindowImpl(
         bitmap.close();
         imageSourceRef.current = 'uploaded-image';
         setFrozen(true);
-        return { ok: true };
+        return { ok: true, width, height };
       } catch (err) {
         return {
           ok: false,

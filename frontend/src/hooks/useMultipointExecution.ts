@@ -38,14 +38,15 @@ import { useTurret } from '@/hooks/mutations/useTurret';
 import { useSaveMultipointResult } from '@/hooks/mutations/useSaveMultipointResult';
 import { buildMultipointExecutionRequest } from '@/utils/multipointExecution';
 import { waitForIndentTerminal } from '@/utils/indentCompletion';
-import { resolveDisplayOrigin } from '@/utils/coordinate';
 import type { TurretDirection } from '@/types/machine';
 import type {
   AtomicStep,
+  CaptureReviewFn,
   EnginePhase,
   ExecutionDecision,
   MeasurePointFn,
 } from '@/types/multipointExecution';
+import type { DiamondGeometry } from '@/types/measurement';
 import type { PatternPoint } from '@/types/patternProgram';
 import type {
   MultipointFocusStatus,
@@ -82,6 +83,10 @@ class StepError extends Error {
 type ExecOptions = {
   /** Real Vickers detection + save, injected by App (owns the pipeline). */
   measurePoint?: MeasurePointFn;
+  /** Indenting-mode review capture (still + best-effort diamond), injected by
+   *  App. Runs after the indent in Indenting mode so the point is revisitable on
+   *  GO; no metrology, never rejects. */
+  captureReviewPoint?: CaptureReviewFn;
   /** Pre-flight gate (e.g. calibration-required dialog). Abort if it returns false. */
   onValidateStart?: () => boolean | Promise<boolean>;
   /** Resume the live camera display (App owns the camera). Called at each point
@@ -230,6 +235,9 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       d2Um: number | null;
       confidence: number | null;
       measurementId: string | null;
+      imageDataUrl?: string | null;
+      diamond?: DiamondGeometry | null;
+      centerNorm?: { x: number; y: number } | null;
       durationMs: number;
     }) => {
       try {
@@ -252,6 +260,9 @@ export function useMultipointExecution(options: ExecOptions = {}) {
           objective: stage ? machineStore.getSnapshot()?.objective ?? null : null,
           confidence: args.confidence,
           measurementId: args.measurementId,
+          imageDataUrl: args.imageDataUrl ?? null,
+          diamond: args.diamond ?? null,
+          centerNorm: args.centerNorm ?? null,
           operator: optsRef.current.operator ?? null,
           durationMs: args.durationMs,
         });
@@ -298,6 +309,11 @@ export function useMultipointExecution(options: ExecOptions = {}) {
         let d2Um: number | null = null;
         let confidence: number | null = null;
         let measurementId: string | null = null;
+        // Indenting-mode review snapshot (still + best-effort diamond); stays null
+        // for measured points, which carry their image/geometry on the measurement.
+        let reviewImageDataUrl: string | null = null;
+        let reviewDiamond: DiamondGeometry | null = null;
+        let reviewCenterNorm: { x: number; y: number } | null = null;
         try {
           // ── MOVE ──────────────────────────────────────────────────────────
           await checkpoint();
@@ -415,6 +431,29 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             // pass 2 measures it.
             measureStatus = 'skipped';
             setStep(point.id, 'measure', 'skipped');
+            // Indenting review: capture a still + best-effort diamond so this
+            // indent can be revisited on GO exactly like a measured point. No HV
+            // is computed and a capture failure NEVER fails the point.
+            const capture = optsRef.current.captureReviewPoint;
+            if (capture && indentDone) {
+              await checkpoint();
+              setPhase('measuring', `Capturing review image for point ${point.no}…`);
+              // eslint-disable-next-line no-console
+              console.log('[REVIEW_CAPTURE_START]', point.no);
+              try {
+                const review = await capture({ runId, pointId: point.id, pointNo: point.no, xMm: point.x, yMm: point.y });
+                reviewImageDataUrl = review.imageDataUrl ?? null;
+                reviewDiamond = review.diamond ?? null;
+                reviewCenterNorm = review.centerNorm ?? null;
+                // eslint-disable-next-line no-console
+                console.log(
+                  `[RESULT] Image Saved hasImage=${!!reviewImageDataUrl} hasDiamond=${!!reviewDiamond} no=${point.no} (indenting-review)`
+                );
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.warn(`[RESULT] review-capture-failed no=${point.no}`, err);
+              }
+            }
           }
 
           // ── SAVE run record ───────────────────────────────────────────────
@@ -433,9 +472,16 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             d2Um,
             confidence,
             measurementId,
+            imageDataUrl: reviewImageDataUrl,
+            diamond: reviewDiamond,
+            centerNorm: reviewCenterNorm,
             durationMs,
           });
           dispatch(pointCompleted({ pointId: point.id }));
+          // eslint-disable-next-line no-console
+          console.log(
+            `[RESULT] Point Completed no=${point.no} pointId=${point.id} measureStatus=${doMeasure ? measureStatus : 'pending'} measurementId=${measurementId ?? 'none'} hv=${hv ?? 'n/a'}`
+          );
           if (passNo === 1) {
             // eslint-disable-next-line no-console
             console.log('[PASS1_COMPLETE]', point.no);
@@ -550,15 +596,19 @@ export function useMultipointExecution(options: ExecOptions = {}) {
     );
 
     // Rebase origin: the absolute-mm → optical-center-offset frame moveToPoint
-    // consumes, captured ONCE here so every point uses a STABLE anchor (the live
-    // stage position drifts as the run moves). Same origin the preview table and
-    // reference readout use (resolveDisplayOrigin), so previewed coordinate ==
-    // executed coordinate. Relocation origin when taught; live crosshair otherwise.
-    const origin = resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown);
+    // consumes (target = opticalCenter + offset·pulsePerMm), captured ONCE here so
+    // every point uses a STABLE anchor. This MUST be the SAME origin the preview
+    // table, reference readout, and the per-row GO button display/compute with —
+    // the FIXED physical center (positionMm − displayMm) — so previewed coordinate
+    // == GO coordinate == executed coordinate: a single 1:1 target path. (Using
+    // resolveDisplayOrigin here was the bug: relocationOriginMm ?? live positionMm
+    // diverges from the table's physical-center origin whenever no relocation is
+    // set, so Start landed off the previewed point by the live displayMm.)
+    const origin = stage.positionKnown
+      ? { x: stage.positionMm.x - stage.displayMm.x, y: stage.positionMm.y - stage.displayMm.y }
+      : { x: 0, y: 0 };
     // eslint-disable-next-line no-console
-    console.log(
-      `[MP-EXEC] rebase-origin x=${origin.x} y=${origin.y} source=${stage.relocationOriginMm ? 'relocation' : 'live-position'}`
-    );
+    console.log(`[MP-EXEC] rebase-origin x=${origin.x} y=${origin.y} source=physical-center`);
 
     const home =
       stage.positionKnown && Number.isFinite(stage.positionMm.x) && Number.isFinite(stage.positionMm.y)

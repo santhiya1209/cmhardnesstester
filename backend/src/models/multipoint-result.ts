@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { EntityIdSchema, IsoDateTimeSchema } from './common';
+import { DiamondGeometrySchema, NormalizedPointSchema } from './measurement';
 
 // Per-point execution outcome for one Multipoint run. This is the RUN record
 // (which point, what happened, how long), distinct from the measurements table
@@ -68,6 +69,13 @@ export const MultipointResultPayloadSchema = z.object({
   confidence: NullableFiniteNumberSchema,
   // Soft reference to the measurements row that owns the full metrology.
   measurementId: NullableTextSchema,
+
+  // Self-contained review snapshot for Indenting mode (no measurement row is
+  // created without metrology). For measured points these stay null and review
+  // pulls the image/geometry from the linked measurement instead.
+  imageDataUrl: z.string().nullable().default(null),
+  diamond: DiamondGeometrySchema.nullable().default(null),
+  centerNorm: NormalizedPointSchema.nullable().default(null),
 
   // Operator name captured at run time (no auth system; free-text from settings).
   operator: NullableTextSchema,

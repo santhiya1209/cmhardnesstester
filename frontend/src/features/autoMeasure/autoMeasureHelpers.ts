@@ -54,6 +54,10 @@ export type AutoMeasureDetectionSnapshot = {
   objectiveForCalibration: string;
   machineStateForAuto: MachineState | null;
   forceKgf: number | null;
+  // Captured-frame pixel dimensions the detection corners are expressed in.
+  // Used to normalise the diamond geometry (0..1) at save so it can be repainted
+  // resolution-independently on a later point review.
+  imageSize: { width: number; height: number };
 };
 
 export type AutoMeasureDetectionMethod = 'refined' | 'rough';

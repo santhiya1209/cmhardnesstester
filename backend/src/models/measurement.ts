@@ -7,6 +7,18 @@ export const DepthSourceSchema = z.enum(['device', 'manual']);
 const NullablePositiveNumberSchema = PositiveNumberSchema.nullable().default(null);
 const NullableTextSchema = z.string().trim().nullable().default(null);
 
+// Indentation diamond vertices, NORMALISED to 0..1 of the captured frame
+// (x = fraction of width, y = fraction of height). Stored resolution-independent
+// so the vector overlay can be repainted on a later review at ANY display size
+// (the saved still is a downscaled thumbnail) — see App.reviewMultipointPoint.
+export const NormalizedPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() });
+export const DiamondGeometrySchema = z.object({
+  top: NormalizedPointSchema,
+  right: NormalizedPointSchema,
+  bottom: NormalizedPointSchema,
+  left: NormalizedPointSchema,
+});
+
 export const MeasurementPayloadSchema = z.object({
   d1: PositiveNumberSchema,
   d2: PositiveNumberSchema,
@@ -45,6 +57,10 @@ export const MeasurementPayloadSchema = z.object({
   testForceKgf: NullablePositiveNumberSchema,
   timestamp: IsoDateTimeSchema,
   imageDataUrl: z.string().optional(),
+  // Normalised diamond vertices for sharp vector-overlay restore on point
+  // review. Null/missing for manual measures and legacy rows (those fall back
+  // to the baked-in overlay in imageDataUrl).
+  diamond: DiamondGeometrySchema.nullable().optional(),
   xMm: z.number().finite().nullable().optional(),
   yMm: z.number().finite().nullable().optional(),
   // Computed at save time from the parent test record's targetMin/MaxHv vs

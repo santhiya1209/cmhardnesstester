@@ -36,7 +36,7 @@ import MultiLineCompositeForm from './MultiLineCompositeForm';
 import EquidistantTriangleForm from './EquidistantTriangleForm';
 import PatternPreviewTable from './PatternPreviewTable';
 import { useMultipointExecution } from '@/hooks/useMultipointExecution';
-import type { MeasurePointFn } from '@/types/multipointExecution';
+import type { CaptureReviewFn, MeasurePointFn } from '@/types/multipointExecution';
 
 const PATTERN_OPTIONS: PatternOption[] = ['Line', 'Rectangle', 'Circle', 'Custom'];
 // The UI exposes every PatternMode member the engine supports.
@@ -84,6 +84,8 @@ type Props = {
    *  detection pipeline). When omitted, the engine's measure step is skipped
    *  honestly rather than faked. */
   measurePoint?: MeasurePointFn;
+  /** Indenting-mode review capture (still + best-effort diamond) for the engine. */
+  captureReviewPoint?: CaptureReviewFn;
   /** Resume the live camera display at point boundaries during a run (the
    *  measure path freezes it to paint the overlay and never resumes itself). */
   onResumeLive?: () => void;
@@ -91,18 +93,24 @@ type Props = {
   onReviewPoint?: (pointId: string) => void | Promise<void>;
 };
 
-function MultipointTabImpl({ onValidateStart, measurePoint, onResumeLive, onReviewPoint }: Props) {
+function MultipointTabImpl({ onValidateStart, measurePoint, captureReviewPoint, onResumeLive, onReviewPoint }: Props) {
   const m = useMultipoint();
-  const exec = useMultipointExecution({ onValidateStart, measurePoint, onResumeLive, operator: null });
+  const exec = useMultipointExecution({ onValidateStart, measurePoint, captureReviewPoint, onResumeLive, operator: null });
   const goToPoint = m.goToPoint;
+  const highlightPoint = m.highlightPoint;
   // "Go" = move to the point (existing RX-gated motion), then re-display its
   // recorded indentation overlay + HV so the operator can verify a completed point.
+  // Re-highlight the point AFTER the review (goToPoint clears the active marker on
+  // completion) so the revisited indent stays highlighted while it is inspected.
   const handleGo = useCallback(
     async (point: Parameters<typeof goToPoint>[0]) => {
+      // eslint-disable-next-line no-console
+      console.log(`[GO] Point Selected no=${point.no} pointId=${point.id} x=${point.x} y=${point.y}`);
       await goToPoint(point);
       await onReviewPoint?.(point.id);
+      highlightPoint(point.id);
     },
-    [goToPoint, onReviewPoint]
+    [goToPoint, onReviewPoint, highlightPoint]
   );
   const { config, programMeta } = m;
   const formKey = `${m.mode}-${m.formRevision}`;
@@ -159,7 +167,16 @@ function MultipointTabImpl({ onValidateStart, measurePoint, onResumeLive, onRevi
       </Box>
 
       {m.mode === 'Matrix Mode' ? (
-        <MatrixPatternForm key={formKey} config={config} disabled={m.isBusy} onConfigChange={m.updateConfig} />
+        <MatrixPatternForm
+          key={formKey}
+          config={config}
+          disabled={m.isBusy}
+          referenceX={m.referenceDisplay.x}
+          referenceY={m.referenceDisplay.y}
+          tracking={m.referenceTracksLive}
+          onEditReference={m.editMatrixReference}
+          onConfigChange={m.updateConfig}
+        />
       ) : m.mode === 'Horizontal Capture Mode' ? (
         <HorizontalCaptureForm
           points={config.freePoints ?? []}
@@ -270,9 +287,8 @@ function MultipointTabImpl({ onValidateStart, measurePoint, onResumeLive, onRevi
           disabled={m.isBusy}
           stageReady={m.stageReady}
           picking={m.cameraPointPhase === 'selecting' && m.cameraPointTarget === 'reference'}
-          picked={m.referencePicked}
-          originX={m.displayOriginMm.x}
-          originY={m.displayOriginMm.y}
+          referenceX={m.referenceDisplay.x}
+          referenceY={m.referenceDisplay.y}
           onBeginPick={m.beginReferencePointSelect}
           onCancelPick={m.cancelCameraPointSelect}
           onConfigChange={m.updateConfig}

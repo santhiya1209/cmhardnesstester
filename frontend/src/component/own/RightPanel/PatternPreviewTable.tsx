@@ -73,16 +73,16 @@ function renderAtomic(status: AtomicStatus | undefined) {
   return <Typography sx={{ fontSize: 12, fontWeight: 600, color: ATOMIC_COLOR[s] }}>{ATOMIC_LABEL[s]}</Typography>;
 }
 
-// The table shows X/Y in the SAME centre-relative frame as the Reference Point
-// readout (LinearPatternForm.formatRef): X = value − origin, Y = −(value − origin)
-// (image frame: up = −Y). This is why Point 1 reads exactly like the Reference
-// field. The stored point.x/point.y stay ABSOLUTE — "Go" and stage motion consume
-// those, so the conversion is display-only.
+// The table shows X/Y in the SAME frame as the Reference Point readout and the XYZ
+// Platform Position panel: physical center = origin, +X right, +Y up (no sign
+// flip). This is why Point 1 reads exactly like the Reference field / Platform
+// position. The stored point.x/point.y stay ABSOLUTE — "Go" and stage motion
+// consume those, so the conversion is display-only.
 function relX(value: number, originX: number): string {
   return normalizeCoordinate(value - originX).toFixed(3);
 }
 function relY(value: number, originY: number): string {
-  return normalizeCoordinate(-(value - originY)).toFixed(3);
+  return normalizeCoordinate(value - originY).toFixed(3);
 }
 
 type Props = {

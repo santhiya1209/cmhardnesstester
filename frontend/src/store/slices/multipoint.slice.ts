@@ -149,6 +149,13 @@ const multipointSlice = createSlice({
       state.referencePicked = true;
       clearGenerated(state);
     },
+    // Mark the reference explicitly established so it stops tracking the live stage
+    // position — used when the operator types a Matrix reference, or a saved program
+    // is loaded. The establishing action (updateConfig / load) owns the coordinates
+    // and preview; this only flips the flag.
+    markReferenceEstablished(state) {
+      state.referencePicked = true;
+    },
     // Append one operator-captured free point. The camera-click "Add Point" stores
     // the clicked LOCATION (live stage centre + pixel offset, absolute mm); Capture
     // Position stores the live centre. Invalidates the stale preview, exactly as
@@ -190,6 +197,7 @@ export const {
   startCameraPointSelect,
   endCameraPointSelect,
   setReferencePoint,
+  markReferenceEstablished,
   appendFreePoint,
   resetMultipoint,
 } = multipointSlice.actions;

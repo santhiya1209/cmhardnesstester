@@ -17,6 +17,7 @@ import {
   setGeneratedPoints,
   setMode,
   setSelectedPointIds,
+  markReferenceEstablished,
   updateConfig,
   updateProgramMeta,
 } from '@/store/slices/multipoint.slice';
@@ -44,7 +45,8 @@ import { useStartIndent } from '@/hooks/mutations/useStartIndent';
 import { arePointsVerticallyAligned, generatePattern } from '@/utils/patternGeneration';
 import { buildMultipointExecutionRequest } from '@/utils/multipointExecution';
 import { configFromProgram, metaFromProgram, toPayload } from '@/utils/patternProgramMapping';
-import { resolveDisplayOrigin } from '@/utils/coordinate';
+import { normalizeCoordinate } from '@/utils/coordinate';
+import { toNumberOrNull } from '@/utils/inputNumber';
 import type { ProgramMeta } from '@/types/multipoint';
 import type { MachineState } from '@/types/machine';
 import type {
@@ -199,6 +201,36 @@ export function useMultipoint() {
   // until the pick completes — the camera click + RX-gated move own the stage.
   const isBusy = patternProgramsLoading || saving || executing || cameraPointPhase !== 'idle';
 
+  // ---- Coordinate frame: mirror the XYZ Platform Position panel exactly --------
+  // The Platform shows `displayMm` (physical center = 0, +X right, +Y up). The
+  // reference readout + preview table must read IDENTICALLY, so their display origin
+  // is the FIXED physical center, derived from the backend's two mm mirrors:
+  // physicalCenter = positionMm (absolute) − displayMm (operator frame). Constant
+  // while connected; {0,0} until a real position frame arrives. (The physical-move
+  // rebase in goToPoint/execution keeps its own resolveDisplayOrigin — unchanged.)
+  const physicalCenterMm = stage.positionKnown
+    ? { x: stage.positionMm.x - stage.displayMm.x, y: stage.positionMm.y - stage.displayMm.y }
+    : { x: 0, y: 0 };
+
+  // The single-reference modes TRACK the live stage position (absolute mm) until
+  // the operator explicitly establishes a reference — so a generated pattern always
+  // starts where the stage currently is, never at absolute (0,0). "Established"
+  // means a camera pick (Horizontal/Vertical read-only field) or typing into the
+  // field (Matrix editable field); both set `referencePicked`.
+  const referenceTracksLive =
+    (mode === 'Horizontal Mode' || mode === 'Vertical Mode' || mode === 'Matrix Mode') &&
+    !referencePicked &&
+    stage.positionKnown;
+  const effectiveRefAbs = referenceTracksLive
+    ? { x: stage.positionMm.x, y: stage.positionMm.y }
+    : { x: config.refX ?? 0, y: config.refY ?? 0 };
+  // Platform-frame value the read-only reference field shows (physical-center
+  // relative, +Y up — no sign flip, matching the Position panel).
+  const referenceDisplay = {
+    x: normalizeCoordinate(effectiveRefAbs.x - physicalCenterMm.x),
+    y: normalizeCoordinate(effectiveRefAbs.y - physicalCenterMm.y),
+  };
+
   const changeMode = useCallback(
     (value: PatternMode) => {
       dispatch(setMode(value));
@@ -246,6 +278,27 @@ export function useMultipoint() {
     [dispatch]
   );
 
+  // Matrix reference is an EDITABLE field shown in the Platform frame; typing into
+  // it establishes a manual reference (stops live tracking). Convert the typed
+  // display value back to absolute mm (+ physical center) and freeze BOTH axes —
+  // the edited axis to its new value, the other to whatever it currently shows
+  // (live or already stored) — so the un-edited axis doesn't snap to a stale config
+  // value the moment tracking stops.
+  const editMatrixReference = useCallback(
+    (axis: 'x' | 'y', text: string) => {
+      const display = toNumberOrNull(text);
+      const origin = axis === 'x' ? physicalCenterMm.x : physicalCenterMm.y;
+      const absForAxis = display == null ? null : display + origin;
+      const next =
+        axis === 'x'
+          ? { refX: absForAxis, refY: effectiveRefAbs.y }
+          : { refX: effectiveRefAbs.x, refY: absForAxis };
+      dispatch(updateConfig(next));
+      if (!referencePicked) dispatch(markReferenceEstablished());
+    },
+    [physicalCenterMm.x, physicalCenterMm.y, effectiveRefAbs.x, effectiveRefAbs.y, referencePicked, dispatch]
+  );
+
   const toggleSelect = useCallback(
     (id: string, selected: boolean) => dispatch(selected ? selectPoint(id) : deselectPoint(id)),
     [dispatch]
@@ -256,6 +309,11 @@ export function useMultipoint() {
     [dispatch, selectedPointIds]
   );
   const clearGenerated = useCallback(() => dispatch(clearPoints()), [dispatch]);
+
+  // Highlight a point as the active/reviewed row (camera overlay + preview table).
+  // Used by "Go" to keep the revisited point highlighted after the move completes
+  // (goToPoint clears the active marker in its finally block).
+  const highlightPoint = useCallback((id: string | null) => dispatch(setActivePoint(id)), [dispatch]);
 
   const generate = useCallback(() => {
     // Vertical-line guard: refuse to generate a "vertical" line whose X values
@@ -272,7 +330,21 @@ export function useMultipoint() {
       return;
     }
     dispatch(setGenerating(true));
-    const result = generatePattern(config, { multiset: programMeta.multiset });
+    // Single-reference modes anchor on the live stage position while still tracking
+    // (no reference established yet); once established (camera pick / typed Matrix
+    // value) and for every other mode, the reference is read straight from config.
+    const genConfig = referenceTracksLive
+      ? { ...config, refX: effectiveRefAbs.x, refY: effectiveRefAbs.y }
+      : config;
+    /* eslint-disable no-console */
+    console.log(`[MULTIPOINT] Live Stage X,Y = ${stage.positionMm.x}, ${stage.positionMm.y}`);
+    console.log(
+      `[MULTIPOINT] Reference X,Y Assigned = ${genConfig.refX}, ${genConfig.refY} (source=${
+        referenceTracksLive ? 'live-stage' : referencePicked ? 'established' : 'config'
+      })`
+    );
+    /* eslint-enable no-console */
+    const result = generatePattern(genConfig, { multiset: programMeta.multiset });
     if (!result.success) {
       setGenerationError(result.error ?? 'Pattern generation failed.');
       setStatusMessage('Generation failed.');
@@ -281,10 +353,29 @@ export function useMultipoint() {
     }
     setGenerationError(null);
     dispatch(setGeneratedPoints(result.points));
-    // eslint-disable-next-line no-console
-    console.log('[GENERATE]', result.points);
+    /* eslint-disable no-console */
+    console.log(`[MULTIPOINT] Pattern Origin X,Y = ${genConfig.refX}, ${genConfig.refY}`);
+    result.points.forEach((p) => console.log(`[MULTIPOINT] Generated Point X,Y = ${p.x}, ${p.y}`));
+    if (mode === 'Horizontal Mode') {
+      result.points.forEach((p) =>
+        console.log(`[HORIZONTAL] Generated Point no=${p.no} X=${p.x} Y=${p.y}`)
+      );
+    }
+    /* eslint-enable no-console */
     setStatusMessage(`Generated ${result.points.length} point(s) using ${mode}.`);
-  }, [config, mode, programMeta.multiset, alignmentOverride, dispatch]);
+  }, [
+    config,
+    mode,
+    programMeta.multiset,
+    alignmentOverride,
+    referenceTracksLive,
+    effectiveRefAbs.x,
+    effectiveRefAbs.y,
+    referencePicked,
+    stage.positionMm.x,
+    stage.positionMm.y,
+    dispatch,
+  ]);
 
   // Select / clear every generated point at once (preview-table "Select All").
   const toggleSelectAll = useCallback(
@@ -574,12 +665,18 @@ export function useMultipoint() {
   }, [dispatch]);
 
   const save = useCallback(async () => {
-    const payload = toPayload(config, mode, programMeta, loadedProgram?.checked ?? true, generatedPoints);
+    // While the reference is still tracking the live stage (never explicitly set),
+    // config.refX/refY hold the 0,0 sentinel — persist the EFFECTIVE (live) anchor
+    // instead so a reload regenerates the same pattern.
+    const persistConfig = referenceTracksLive
+      ? { ...config, refX: effectiveRefAbs.x, refY: effectiveRefAbs.y }
+      : config;
+    const payload = toPayload(persistConfig, mode, programMeta, loadedProgram?.checked ?? true, generatedPoints);
     const saved = await savePatternProgram({ id: loadedProgram?.id, values: payload });
     setLoadedProgramId(saved.id);
     setStatusMessage(`Saved ${saved.patternName}.`);
     await refetchPatternPrograms();
-  }, [config, mode, programMeta, generatedPoints, loadedProgram?.checked, loadedProgram?.id, refetchPatternPrograms, savePatternProgram]);
+  }, [config, mode, programMeta, generatedPoints, referenceTracksLive, effectiveRefAbs.x, effectiveRefAbs.y, loadedProgram?.checked, loadedProgram?.id, refetchPatternPrograms, savePatternProgram]);
 
   const load = useCallback(() => {
     const program = patternPrograms[0] ?? null;
@@ -590,6 +687,12 @@ export function useMultipoint() {
     dispatch(setMode(program.mode));
     dispatch(updateConfig(configFromProgram(program)));
     dispatch(updateProgramMeta(metaFromProgram(program)));
+    // A loaded program carries an explicit reference — mark it established so the
+    // single-reference modes use the saved refX/refY instead of overriding them
+    // with live-stage tracking.
+    if (program.mode === 'Horizontal Mode' || program.mode === 'Vertical Mode' || program.mode === 'Matrix Mode') {
+      dispatch(markReferenceEstablished());
+    }
     // Restore the saved generated points LAST — setMode/updateConfig both clear
     // the preview, so the persisted points must be re-applied after them. Load
     // therefore restores the exact run list without re-pressing Generate.
@@ -791,8 +894,8 @@ export function useMultipoint() {
         setStatusMessage('Lock the X/Y stage before moving.');
         return;
       }
-      if (stage.centerX === null || stage.centerY === null) {
-        setStatusMessage('Set the optical center (Set Center) before moving — points are relative to it.');
+      if (!stage.positionKnown) {
+        setStatusMessage('Stage position unknown — home the platform before moving.');
         return;
       }
       setExecuting(true);
@@ -800,21 +903,38 @@ export function useMultipoint() {
       dispatch(setActivePoint(point.id));
       try {
         setStatusMessage(`Moving to point ${point.no}…`);
-        // Points are stored ABSOLUTE mm; moveToPoint expects an offset from the
-        // taught optical center. Rebase into the same display-origin frame the
-        // preview table shows (point − origin) so Go drives exactly the previewed
-        // coordinate — identical to the Start engine's rebase.
-        const origin = resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown);
-        const targetX = point.x - origin.x;
-        const targetY = point.y - origin.y;
-        // eslint-disable-next-line no-console
-        console.log('[MOVE_TARGET]', targetX, targetY);
-        const result = await hardware.moveToPoint(targetX, targetY);
+        // Generated points are ABSOLUTE machine mm. To land on point P with ZERO
+        // offset, move by the RELATIVE delta from the live position: the backend
+        // moveByOffset engine does final = current + delta, so final = P exactly —
+        // no dependence on any taught/physical/optical centre. The overlay marker is
+        // drawn at centre + (P − position), so once the stage sits on P the marker
+        // coincides with the centre crosshair. (moveToPoint anchors to the optical
+        // centre and would inject the centre↔origin gap as a landing error.)
+        const deltaX = normalizeCoordinate(point.x - stage.positionMm.x);
+        const deltaY = normalizeCoordinate(point.y - stage.positionMm.y);
+        if (mode === 'Horizontal Mode') {
+          // eslint-disable-next-line no-console
+          console.log(`[HORIZONTAL] Go To Point no=${point.no} X=${point.x} Y=${point.y} deltaX=${deltaX} deltaY=${deltaY}`);
+        }
+        /* eslint-disable no-console */
+        console.log(`[GO] Selected Point no=${point.no} id=${point.id} absX=${point.x} absY=${point.y}`);
+        console.log(`[GO] Relative Delta dX=${deltaX} dY=${deltaY} (from live position ${stage.positionMm.x},${stage.positionMm.y})`);
+        /* eslint-enable no-console */
+        const result = await hardware.moveByOffsetMm(deltaX, deltaY);
         if (!result.ok) {
           dispatch(markPointFailed(point.id));
           setStatusMessage(`Move to point ${point.no} failed: ${result.message ?? result.error}`);
           return;
         }
+        /* eslint-disable no-console */
+        const after = result.positionMm;
+        if (after) {
+          console.log(`[GO] Stage Position After Move absX=${after.x} absY=${after.y}`);
+          console.log(`[GO] Position Error dX=${after.x - point.x} dY=${after.y - point.y}`);
+        } else {
+          console.log('[GO] Stage Position After Move unknown (no positionMm in reply)');
+        }
+        /* eslint-enable no-console */
         dispatch(markPointCompleted(point.id));
         setStatusMessage(`Reached point ${point.no}.`);
       } finally {
@@ -826,11 +946,10 @@ export function useMultipoint() {
       hardware,
       stage.connected,
       stage.xyLocked,
-      stage.centerX,
-      stage.centerY,
-      stage.relocationOriginMm,
-      stage.positionMm,
       stage.positionKnown,
+      stage.positionMm.x,
+      stage.positionMm.y,
+      mode,
       dispatch,
     ]
   );
@@ -854,10 +973,16 @@ export function useMultipoint() {
     // Relocation-centre origin (absolute mm) so the Free/Midpoint table can show
     // camera-clicked coordinates relative to the centre while storing absolute mm.
     relocationOriginMm: stage.relocationOriginMm,
-    // Origin for READ-ONLY readouts (reference field, preview table): the taught
-    // centre when set, else the live crosshair so a reference reads as the offset
-    // from the crosshair (up = −Y) rather than the absolute frame.
-    displayOriginMm: resolveDisplayOrigin(stage.relocationOriginMm, stage.positionMm, stage.positionKnown),
+    // Origin for READ-ONLY readouts (reference field, preview table): the FIXED
+    // physical center, so coordinates read identically to the XYZ Platform Position
+    // panel (physical center = 0, +X right, +Y up — no sign flip).
+    displayOriginMm: physicalCenterMm,
+    // Live, Platform-frame reference shown in every single-reference field (tracks
+    // the stage until established; frozen to the picked/typed value afterwards).
+    referenceDisplay,
+    // True while the reference is still mirroring the live stage (no pick/typed value
+    // yet) — the Matrix field uses it to keep its buffer synced to the live position.
+    referenceTracksLive,
     formRevision,
     statusMessage,
     errorMessage,
@@ -878,6 +1003,7 @@ export function useMultipoint() {
     clearFreePoints,
     captureReferencePoint,
     captureCirclePoint,
+    editMatrixReference,
     updateReferencePoint,
     setReferenceSlot,
     captureReferenceSlot,
@@ -899,6 +1025,7 @@ export function useMultipoint() {
     setAlignmentOverride,
     removePoint,
     removeSelected,
+    highlightPoint,
     clearPoints: clearGenerated,
     save,
     load,

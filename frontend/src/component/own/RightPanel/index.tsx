@@ -9,7 +9,7 @@ import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { PatternProgram } from '@/types/patternProgram';
 import type { ToolId, ToolbarActionId, MeasureSelection } from '@/types/tool';
-import type { MeasurePointFn } from '@/types/multipointExecution';
+import type { CaptureReviewFn, MeasurePointFn } from '@/types/multipointExecution';
 import { tokens } from '@/theme/theme';
 import { useRenderCount } from '@/utils/renderStats';
 
@@ -105,6 +105,8 @@ type TabContentProps = {
   onValidateMultipointStart?: () => boolean | Promise<boolean>;
   /** Real per-point Vickers measurement + save for the Multipoint engine. */
   measurePoint?: MeasurePointFn;
+  /** Indenting-mode review capture (still + best-effort diamond) for the engine. */
+  captureReviewPoint?: CaptureReviewFn;
   /** Resume the live camera display between Multipoint points (the measure
    *  path freezes it to paint the overlay and never resumes on its own). */
   onResumeMultipointCamera?: () => void;
@@ -136,6 +138,7 @@ function renderTab(
     onToolbarAction,
     onValidateMultipointStart,
     measurePoint,
+    captureReviewPoint,
     onResumeMultipointCamera,
     onReviewMultipointPoint,
     selectedMeasureMode,
@@ -175,6 +178,7 @@ function renderTab(
         <MultipointTab
           onValidateStart={onValidateMultipointStart}
           measurePoint={measurePoint}
+          captureReviewPoint={captureReviewPoint}
           onResumeLive={onResumeMultipointCamera}
           onReviewPoint={onReviewMultipointPoint}
         />
@@ -230,6 +234,7 @@ type Props = {
   cameraReady?: boolean;
   onValidateMultipointStart?: () => boolean | Promise<boolean>;
   measurePoint?: MeasurePointFn;
+  captureReviewPoint?: CaptureReviewFn;
   onResumeMultipointCamera?: () => void;
   onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
   /** Externally-driven measurement selection (Multipoint "Go" review). */
@@ -266,6 +271,7 @@ function RightPanelImpl({
   onToolbarAction,
   onValidateMultipointStart,
   measurePoint,
+  captureReviewPoint,
   onResumeMultipointCamera,
   onReviewMultipointPoint,
   reviewSelectMeasurementId,
@@ -371,6 +377,7 @@ function RightPanelImpl({
             onToolbarAction,
             onValidateMultipointStart,
             measurePoint,
+            captureReviewPoint,
             onResumeMultipointCamera,
             onReviewMultipointPoint,
             activeTool,

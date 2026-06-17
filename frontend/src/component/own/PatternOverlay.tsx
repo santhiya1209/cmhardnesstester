@@ -9,6 +9,7 @@ import {
   selectCompletedPointIds,
   selectFreePoints,
   selectGeneratedPoints,
+  selectPatternMode,
   selectRefX,
   selectRefY,
   selectReferencePicked,
@@ -106,6 +107,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
   const activePointId = useAppSelector(selectActivePointId);
   const completedIds = useAppSelector(selectCompletedPointIds);
   const referencePicked = useAppSelector(selectReferencePicked);
+  const mode = useAppSelector(selectPatternMode);
   const refX = useAppSelector(selectRefX);
   const refY = useAppSelector(selectRefY);
   // Execution phase is read ONLY for the diagnostic log + to prove the overlay's
@@ -193,6 +195,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
     ctx.clip();
 
     let firstScreen: { x: number; y: number } | null = null;
+    let horizontalGuideDrawn = false;
     if (dispPxPerMm !== null) {
       const selected = new Set(selectedIds);
       const completed = new Set(completedIds);
@@ -280,6 +283,33 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         ctx.stroke();
       }
 
+      // Horizontal Mode guide line — a full-width horizontal rule through the
+      // reference point's screen Y. The generator holds Y constant (every point
+      // shares refY), so the P1…Pn dots all land exactly on this line; drawing it
+      // is the visual proof of that invariant. Painted UNDER the REF marker (and
+      // before the dots' own pass already ran above) so markers read on top.
+      // Clipped to the image rect, so it spans the full visible camera width.
+      if (
+        mode === 'Horizontal Mode' &&
+        referencePicked &&
+        refX != null &&
+        refY != null &&
+        Number.isFinite(refX) &&
+        Number.isFinite(refY)
+      ) {
+        const guideY = centerY + STAGE_Y_TO_SCREEN * (refY - positionMm.y) * dispPxPerMm;
+        ctx.save();
+        ctx.strokeStyle = tokens.overlay.cameraPoint;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(placement.offsetX, guideY);
+        ctx.lineTo(placement.offsetX + placement.width, guideY);
+        ctx.stroke();
+        ctx.restore();
+        horizontalGuideDrawn = true;
+      }
+
       // Camera-picked REFERENCE point (Horizontal/Vertical "Add Point") — the
       // origin every generated point is offset from. Drawn only once a reference
       // has actually been picked this session (referencePicked), so the un-picked
@@ -327,8 +357,18 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
       console.log(
         `[pattern-overlay] points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)}) umPerPixel=${umPerPixel ?? 'null'} dispPxPerMm=${dispPxPerMm?.toFixed(3) ?? 'n/a'} center=(${Math.round(centerX)},${Math.round(centerY)}) firstPx=${firstScreen ? `(${Math.round(firstScreen.x)},${Math.round(firstScreen.y)})` : 'none'} canvas=${Math.round(wCss)}x${Math.round(hCss)} active=${activePointId ?? 'none'}`
       );
+      if (mode === 'Horizontal Mode' && referencePicked) {
+        if (horizontalGuideDrawn) {
+          // eslint-disable-next-line no-console
+          console.log(`[HORIZONTAL] Horizontal Guide Created refX=${refX} refY=${refY}`);
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[HORIZONTAL] Camera Overlay Updated points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)})`
+        );
+      }
     }
-  }, [active, points, freePoints, selectedIds, activePointId, completedIds, referencePicked, refX, refY, positionMm.x, positionMm.y, positionKnown, imageSize, effectiveUmPerPixel, resizeTick]);
+  }, [active, points, freePoints, selectedIds, activePointId, completedIds, referencePicked, mode, refX, refY, positionMm.x, positionMm.y, positionKnown, imageSize, effectiveUmPerPixel, resizeTick]);
 
   // The mm→pixel transform needs the active objective's calibration; without it
   // dispPxPerMm is null and no dots are painted. Surface that explicitly so a

@@ -6,7 +6,8 @@ import type { RootState } from '@/store';
 import { selectExecPhase } from '@/store/slices/multipointExecution.selectors';
 import { useGetMultipointResultsQuery } from '@/store/api/multipointResultApi';
 import { isRunning } from '@/types/multipointExecution';
-import type { MeasurePointFn, MeasurePointOutcome } from '@/types/multipointExecution';
+import type { CaptureReviewFn, MeasurePointFn, MeasurePointOutcome } from '@/types/multipointExecution';
+import type { DiamondGeometry } from '@/types/measurement';
 import { useCalibrationDialogSlot } from '@/features/calibration/useCalibrationDialogSlot';
 import AppDialogs from '@/features/shell/AppDialogs';
 import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
@@ -1003,6 +1004,14 @@ function App() {
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
       }
       const overlayImageReady = !!imageDataUrl;
+      if (source === 'multipoint') {
+        /* eslint-disable no-console */
+        console.log(`[RESULT] Image Saved hasImage=${overlayImageReady} key=${finalCornersKey}`);
+        console.log(
+          `[RESULT] Overlay Saved (vector geometry) d1Um=${values.d1Um} d2Um=${values.d2Um} hasCorners=${!!graphics.corners} hasNorm=${!!graphics.corners && !!(snapshot.imageSize?.width)} session=${graphics.sessionId ?? 'n/a'}`
+        );
+        /* eslint-enable no-console */
+      }
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-overlay-visible] visible=true imageReady=${overlayImageReady}`);
       if (!overlayImageReady) {
@@ -1014,9 +1023,27 @@ function App() {
       // eslint-disable-next-line no-console
       console.log('[auto-measure-save-gate] overlayCommitted=true overlayVisible=true');
 
+      // Normalise the diamond vertices (0..1 of the captured frame) so the vector
+      // overlay can be repainted sharply on a later point review at any display
+      // size — the saved still (imageDataUrl) is a downscaled thumbnail, so raw
+      // frame-pixel corners would not map onto it. Null if geometry/dims missing
+      // (review then falls back to the baked-in overlay).
+      const fw = snapshot.imageSize?.width ?? 0;
+      const fh = snapshot.imageSize?.height ?? 0;
+      const diamondNorm =
+        graphics.corners && fw > 0 && fh > 0
+          ? {
+              top: { x: graphics.corners.top.x / fw, y: graphics.corners.top.y / fh },
+              right: { x: graphics.corners.right.x / fw, y: graphics.corners.right.y / fh },
+              bottom: { x: graphics.corners.bottom.x / fw, y: graphics.corners.bottom.y / fh },
+              left: { x: graphics.corners.left.x / fw, y: graphics.corners.left.y / fh },
+            }
+          : null;
+
       const autoRowPayload = {
         d1: values.d1Um,
         d2: values.d2Um,
+        diamond: diamondNorm,
         d1Px: values.d1Px,
         d2Px: values.d2Px,
         d1Um: values.d1Um,
@@ -1186,25 +1213,88 @@ function App() {
   // readout through the existing MeasurementsWorkspace selection chain.
   const reviewMultipointPoint = useCallback(
     async (pointId: string): Promise<void> => {
+      // Latest run record for this point, regardless of whether it links a
+      // measurement: One/Two-Pass points carry a measurementId (image+geometry on
+      // the measurement row); Indenting points carry the review snapshot on the
+      // result row itself (no metrology, no measurement). Both are revisitable.
       const result = multipointResults
-        .filter((r) => r.pointId === pointId && r.measurementId)
+        .filter((r) => r.pointId === pointId)
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
       const measurementId = result?.measurementId ?? null;
-      if (!measurementId) {
-        setStatusMessage('System Status: No measurement recorded for this point yet.');
+      // eslint-disable-next-line no-console
+      console.log(
+        `[GO] Loading Saved Result pointId=${pointId} found=${!!result} measurementId=${measurementId ?? 'none'} candidates=${
+          multipointResults.filter((r) => r.pointId === pointId).length
+        }`
+      );
+      if (!result) {
+        // eslint-disable-next-line no-console
+        console.warn(`[GO] No saved record for pointId=${pointId} — nothing to restore.`);
+        setStatusMessage('System Status: No result recorded for this point yet.');
         return;
       }
-      const measurement = measurements.find((m) => m.id === measurementId) ?? null;
-      setReviewSelectMeasurementId(measurementId);
-      const imageDataUrl = measurement?.imageDataUrl;
+      const measurement = measurementId ? measurements.find((m) => m.id === measurementId) ?? null : null;
+      if (measurementId) setReviewSelectMeasurementId(measurementId);
+      // Resolve the review assets: measurement row first (One/Two-Pass), else the
+      // result row's own snapshot (Indenting). diamond is normalised in both.
+      const imageDataUrl = measurement?.imageDataUrl ?? result.imageDataUrl ?? undefined;
+      const diamondNorm = measurement?.diamond ?? result.diamond ?? null;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[GO] Loading Saved Image measurementId=${measurementId ?? 'none'} source=${measurement ? 'measurement' : 'result-row'} hasImage=${!!imageDataUrl} hasGeometry=${!!diamondNorm} hv=${measurement?.hv ?? 'n/a'}`
+      );
       if (imageDataUrl) {
         try {
           const buffer = await (await fetch(imageDataUrl)).arrayBuffer();
-          await cameraRef.current?.loadImageFromBuffer(buffer);
+          const loaded = await cameraRef.current?.loadImageFromBuffer(buffer);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[GO] Loading Saved Image loaded=${loaded?.ok ?? false} bytes=${buffer.byteLength} dims=${loaded?.width ?? '?'}x${loaded?.height ?? '?'}${loaded?.error ? ` error=${loaded.error}` : ''}`
+          );
+          if (loaded?.ok) {
+            // eslint-disable-next-line no-console
+            console.log('[GO] Image Restored');
+            // Repaint the SHARP vector diamond from the stored normalised geometry,
+            // denormalised against the just-loaded still's dimensions (the overlay
+            // maps corners in that same imageSize). objective/frameId are nulled so
+            // the live render gate's objective/frame guards never drop a review
+            // overlay; autoMeasureSessionActive=true lets it paint.
+            const norm = diamondNorm;
+            const w = loaded.width ?? 0;
+            const h = loaded.height ?? 0;
+            // eslint-disable-next-line no-console
+            console.log(`[GO] Loading Saved Overlay hasGeometry=${!!norm} dims=${w}x${h}`);
+            if (norm && w > 0 && h > 0) {
+              const px = (p: { x: number; y: number }) => ({ x: p.x * w, y: p.y * h });
+              const corners = { top: px(norm.top), right: px(norm.right), bottom: px(norm.bottom), left: px(norm.left) };
+              setAutoMeasureCapturedFrameId(null);
+              setCommittedAutoMeasureOverlay({
+                corners,
+                lines: [],
+                lineLayout: 'four-guides',
+                objective: null,
+                frameId: null,
+                sessionId: null,
+              });
+              setAutoMeasureSessionActive(true);
+              // eslint-disable-next-line no-console
+              console.log(
+                `[GO] Diamond Restored corners=L(${corners.left.x.toFixed(0)},${corners.left.y.toFixed(0)}) R(${corners.right.x.toFixed(0)},${corners.right.y.toFixed(0)}) T(${corners.top.x.toFixed(0)},${corners.top.y.toFixed(0)}) B(${corners.bottom.x.toFixed(0)},${corners.bottom.y.toFixed(0)})`
+              );
+            } else {
+              // Legacy row with no stored geometry: the diamond baked into the still
+              // is still visible — only the sharp vector repaint is skipped.
+              // eslint-disable-next-line no-console
+              console.warn('[GO] Diamond Restored skipped — no stored geometry (using baked-in overlay).');
+            }
+          }
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.warn('[multipoint-go-review] image-load-failed', err);
+          console.warn('[GO] image-load-failed', err);
         }
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(`[GO] measurement ${measurementId} has no imageDataUrl — diamond overlay cannot be restored.`);
       }
       setStatusMessage(
         measurement?.hv != null
@@ -1212,7 +1302,14 @@ function App() {
           : 'System Status: Point review'
       );
     },
-    [multipointResults, measurements, setStatusMessage]
+    [
+      multipointResults,
+      measurements,
+      setStatusMessage,
+      setCommittedAutoMeasureOverlay,
+      setAutoMeasureSessionActive,
+      setAutoMeasureCapturedFrameId,
+    ]
   );
 
   const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource): Promise<boolean> => {
@@ -1650,6 +1747,7 @@ function App() {
           objectiveForCalibration,
           machineStateForAuto,
           forceKgf,
+          imageSize: { width: displayedFrame.width, height: displayedFrame.height },
         };
 
         if (preview) {
@@ -1819,6 +1917,70 @@ function App() {
       message: 'Auto Measure could not detect the indentation after 3 attempts',
     };
   }, [runAutoMeasure]);
+
+  // Indenting-mode review capture. Indenting mode does NOT measure (no HV), but a
+  // professional tester still lets the operator revisit every indent — so after
+  // each indent we grab a still and a BEST-EFFORT diamond (geometry only; no
+  // calibration needed, minConfidence 0, never rejects). The engine persists the
+  // result on the multipoint_results row (no measurement row, since there is no
+  // metrology). A single fast attempt: review must not slow the no-measure mode.
+  const captureReviewPoint = useCallback<CaptureReviewFn>(async () => {
+    const camera = cameraRef.current;
+    if (!camera) return {};
+    const objective = (activeObjectiveRef.current ?? '').trim().toUpperCase();
+    const settleForObjectiveMs = objective === '40X' ? 600 : 350;
+    // Mirror the measure readiness gate (unfreeze → settle → fresh frame) so the
+    // capture is not a stale / mid-turret-return view, but a single attempt.
+    camera.unfreezeCamera('multipoint-indent-review');
+    await new Promise((resolve) => window.setTimeout(resolve, settleForObjectiveMs));
+    await camera.waitForFreshFrame(1500);
+    const frame = camera.captureDisplayedFrame({ freeze: true });
+    let diamond: DiamondGeometry | null = null;
+    let centerNorm: { x: number; y: number } | null = null;
+    if (frame?.ok) {
+      try {
+        const { nativeResult } = await runNativeDetection({
+          preview: false,
+          callSource: 'multipoint',
+          settings: latestAutoMeasurePreviewSettingsRef.current,
+          objectiveForCalibration: objective,
+          displayedFrame: frame,
+          capturedFrameIdForRun: null,
+          calibration: null,
+          forceKgf: null,
+          minConfidence: 0,
+        });
+        const fw = frame.width || 0;
+        const fh = frame.height || 0;
+        if (nativeResult.ok && fw > 0 && fh > 0) {
+          const c = nativeResult.corners;
+          diamond = {
+            top: { x: c.top.x / fw, y: c.top.y / fh },
+            right: { x: c.right.x / fw, y: c.right.y / fh },
+            bottom: { x: c.bottom.x / fw, y: c.bottom.y / fh },
+            left: { x: c.left.x / fw, y: c.left.y / fh },
+          };
+          centerNorm = {
+            x: (c.top.x + c.right.x + c.bottom.x + c.left.x) / 4 / fw,
+            y: (c.top.y + c.right.y + c.bottom.y + c.left.y) / 4 / fh,
+          };
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[REVIEW] geometry-detect-failed', err);
+      }
+    }
+    // No diamond detected → the indent sits under the fixed optical axis = frame
+    // centre, so record that as the indentation centre (requirement: always save
+    // a centre, diamond only when available).
+    if (!centerNorm) centerNorm = { x: 0.5, y: 0.5 };
+    const imageDataUrl = (await camera.captureThumbnailDataUrl()) ?? null;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[RESULT] Overlay Saved (vector geometry) hasDiamond=${!!diamond} hasImage=${!!imageDataUrl} (indenting-review)`
+    );
+    return { imageDataUrl, diamond, centerNorm };
+  }, []);
 
   // Return the live camera display to streaming during a Multipoint run. The
   // 'multipoint' measure path freezes the display at each point (to capture +
@@ -2260,6 +2422,7 @@ function App() {
           onToolbarAction={handleToolbarSelect}
           onValidateMultipointStart={validateMultipointCalibration}
           measurePoint={measurePoint}
+          captureReviewPoint={captureReviewPoint}
           onResumeMultipointCamera={resumeLiveCamera}
           onReviewMultipointPoint={reviewMultipointPoint}
           reviewSelectMeasurementId={reviewSelectMeasurementId}
