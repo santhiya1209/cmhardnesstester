@@ -328,7 +328,7 @@ export interface MachineControlApi {
   setHardnessLevel(value: string | number): Promise<MachineApiResponse>;
   applyObjectiveBrightness(objective: string): Promise<MachineApiResponse>;
   setValue(key: MachineControlKey, value: string | number): Promise<MachineApiResponse>;
-  startIndent(): Promise<MachineApiResponse>;
+  startIndent(turretAfterImpress?: boolean): Promise<MachineApiResponse>;
   moveTurret(direction: TurretDirection): Promise<MachineApiResponse>;
 }
 

@@ -6,11 +6,11 @@ export function useStartIndent() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (turretAfterImpress?: boolean) => {
     setBusy(true);
     setError(null);
       try {
-        const reply = await startIndent();
+        const reply = await startIndent(turretAfterImpress);
       return reply.state;
     } catch (err) {
       const message = getApiErrorMessage(err, 'Failed to start indent.');

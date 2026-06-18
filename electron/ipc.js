@@ -527,9 +527,12 @@ function registerIpc() {
     });
   });
 
-  ipcMain.handle('machine:start-indent', async () => {
+  ipcMain.handle('machine:start-indent', async (_e, turretAfterImpress) => {
     startMachineEventBridge();
-    return machineBackendRequest('/api/machine/indent', { method: 'POST', body: {} });
+    // Multipoint Indenting mode passes false so the turret stays in the indenter
+    // between points; absent/non-boolean → backend falls back to the saved setting.
+    const body = typeof turretAfterImpress === 'boolean' ? { turretAfterImpress } : {};
+    return machineBackendRequest('/api/machine/indent', { method: 'POST', body });
   });
 
   ipcMain.handle('machine:move-turret', async (_e, payload) => {

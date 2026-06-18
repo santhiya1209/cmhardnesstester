@@ -34,8 +34,8 @@ export const sendTurret = async (direction: TurretDirection): Promise<MachineApi
   return reply;
 };
 
-export const startIndent = async (): Promise<MachineApiResponse> => {
-  const reply = await window.machineControl!.startIndent();
+export const startIndent = async (turretAfterImpress?: boolean): Promise<MachineApiResponse> => {
+  const reply = await window.machineControl!.startIndent(turretAfterImpress);
   if (!reply.ok) throw new Error(reply.message ?? reply.error ?? 'Machine impress command failed');
   return reply;
 };

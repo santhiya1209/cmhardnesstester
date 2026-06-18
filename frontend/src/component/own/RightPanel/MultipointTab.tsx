@@ -198,9 +198,13 @@ function MultipointTabImpl({ onValidateStart, measurePoint, captureReviewPoint, 
           disabled={m.isBusy}
           stageReady={m.stageReady}
           pickPhase={m.cameraPointPhase}
+          pickTarget={m.cameraPointTarget}
+          referenceX={m.referenceDisplay.x}
+          referenceY={m.referenceDisplay.y}
           origin={m.relocationOriginMm}
           onCapture={m.captureFreePoint}
           onPickOnCamera={m.beginCameraPointSelect}
+          onPickReference={m.beginReferencePointSelect}
           onCancelPick={m.cancelCameraPointSelect}
           onUpdate={m.updateFreePoint}
           onDelete={m.deleteFreePoint}

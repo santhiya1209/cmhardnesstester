@@ -163,7 +163,7 @@ contextBridge.exposeInMainWorld('machineControl', {
         return Promise.reject(new Error(`Unsupported machine field: ${key}`));
     }
   },
-  startIndent: () => ipcRenderer.invoke('machine:start-indent'),
+  startIndent: (turretAfterImpress) => ipcRenderer.invoke('machine:start-indent', turretAfterImpress),
   moveTurret: (direction) => ipcRenderer.invoke('machine:move-turret', { direction }),
 });
 

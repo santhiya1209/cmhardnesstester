@@ -328,7 +328,11 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       doFocus: boolean,
       doIndent: boolean,
       doMeasure: boolean,
-      indentAlreadyDone: boolean
+      indentAlreadyDone: boolean,
+      // Per-indent turret behaviour: false = stay in the indenter (Indenting mode,
+      // so the turret never rotates between points); undefined = follow the saved
+      // setting (One/Two-Pass, which rotates to the objective to measure).
+      turretAfterIndent: boolean | undefined
     ): Promise<'ok' | 'skipped' | 'failed'> => {
       let indentDone = indentAlreadyDone;
       // Soft-failure retry budget (operator-configured 0/1/2): a non-critical step
@@ -446,7 +450,7 @@ export function useMultipointExecution(options: ExecOptions = {}) {
             console.log(`[EXEC] Indent Started no=${point.no}`);
             setPhase('indenting', `Indenting at point ${point.no}…`);
             setStep(point.id, 'indent', 'active');
-            await fireIndent();
+            await fireIndent(turretAfterIndent);
             const outcome = await waitForIndentTerminal(machineStore, INDENT_TIMEOUT_MS);
             if (outcome !== 'completed') throw new StepError('indent', `Indent ${outcome}`);
             // eslint-disable-next-line no-console
@@ -690,6 +694,13 @@ export function useMultipointExecution(options: ExecOptions = {}) {
       `[MP-EXEC] measure-decision impressMode=${request.impressMode} measurePointInjected=${!!optsRef.current.measurePoint}`
     );
     const runId = `run-${Date.now()}`;
+    // Indenting mode runs the WHOLE batch with the turret in the indenter (suffix
+    // 'P', turretAfterImpress=false) and rotates to the objective exactly ONCE at
+    // end-of-cycle (the turret-return below). One/Two-Pass leave this undefined so
+    // each indent follows the saved auto-measure setting (rotating to the objective
+    // so the impression can be measured) — their behaviour is unchanged.
+    const indentTurretOverride: boolean | undefined =
+      request.impressMode === 'INDENTING' ? false : undefined;
     ctrl.current = { stop: false, pause: false, running: true, decide: null };
     dispatch(
       runInitialized({
@@ -739,20 +750,20 @@ export function useMultipointExecution(options: ExecOptions = {}) {
         dispatch(passChanged(1));
         for (const point of request.points) {
           // doFocus = !focusAll → per-point focus only when FocusAll is OFF.
-          outcomes.set(point.id, await executePoint(runId, point, 1, !focusAll, true, false, false));
+          outcomes.set(point.id, await executePoint(runId, point, 1, !focusAll, true, false, false, indentTurretOverride));
         }
         // Pass 2: return to each point and measure.
         dispatch(passChanged(2));
         for (const point of request.points) {
           // indentAlreadyDone = true → pass 2 never re-indents.
-          outcomes.set(point.id, await executePoint(runId, point, 2, !focusAll, false, true, true));
+          outcomes.set(point.id, await executePoint(runId, point, 2, !focusAll, false, true, true, indentTurretOverride));
         }
       } else {
         // INDENTING = move+focus+indent; ONE_PASS = + measure.
         const doMeasure = request.impressMode === 'ONE_PASS_IMPRESS';
         for (const point of request.points) {
           // doFocus = !focusAll → per-point focus only when FocusAll is OFF.
-          outcomes.set(point.id, await executePoint(runId, point, null, !focusAll, true, doMeasure, false));
+          outcomes.set(point.id, await executePoint(runId, point, null, !focusAll, true, doMeasure, false, indentTurretOverride));
         }
       }
 

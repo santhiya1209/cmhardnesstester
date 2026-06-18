@@ -217,8 +217,15 @@ export function useMultipoint() {
   // starts where the stage currently is, never at absolute (0,0). "Established"
   // means a camera pick (Horizontal/Vertical read-only field) or typing into the
   // field (Matrix editable field); both set `referencePicked`.
+  // Free/Midpoint also track live here so their OPTIONAL reference-datum readout
+  // mirrors the Platform until a pick — safe because generateFree/generateMidpoint
+  // use freePoints only and ignore refX/refY entirely.
   const referenceTracksLive =
-    (mode === 'Horizontal Mode' || mode === 'Vertical Mode' || mode === 'Matrix Mode') &&
+    (mode === 'Horizontal Mode' ||
+      mode === 'Vertical Mode' ||
+      mode === 'Matrix Mode' ||
+      mode === 'Free Mode' ||
+      mode === 'Midpoint Mode') &&
     !referencePicked &&
     stage.positionKnown;
   const effectiveRefAbs = referenceTracksLive
@@ -453,7 +460,16 @@ export function useMultipoint() {
   // used as the reference (only as the anchor that converts the pixel offset to an
   // absolute coordinate). positionKnown is required for that anchor.
   const beginReferencePointSelect = useCallback(() => {
-    if (mode !== 'Horizontal Mode' && mode !== 'Vertical Mode') return;
+    // Free/Midpoint use this for an OPTIONAL visual reference datum (does not
+    // affect their freePoints-only generation); Horizontal/Vertical use it as the
+    // generation origin.
+    if (
+      mode !== 'Horizontal Mode' &&
+      mode !== 'Vertical Mode' &&
+      mode !== 'Free Mode' &&
+      mode !== 'Midpoint Mode'
+    )
+      return;
     if (!stage.positionKnown) {
       setStatusMessage('Stage position unknown — connect and home the platform first.');
       return;
@@ -684,14 +700,24 @@ export function useMultipoint() {
       setStatusMessage('No saved pattern program to load.');
       return;
     }
+    const loadedConfig = configFromProgram(program);
     dispatch(setMode(program.mode));
-    dispatch(updateConfig(configFromProgram(program)));
+    dispatch(updateConfig(loadedConfig));
     dispatch(updateProgramMeta(metaFromProgram(program)));
     // A loaded program carries an explicit reference — mark it established so the
     // single-reference modes use the saved refX/refY instead of overriding them
     // with live-stage tracking.
     if (program.mode === 'Horizontal Mode' || program.mode === 'Vertical Mode' || program.mode === 'Matrix Mode') {
       dispatch(markReferenceEstablished());
+    } else if (program.mode === 'Free Mode' || program.mode === 'Midpoint Mode') {
+      // Free/Midpoint's reference is an OPTIONAL visual datum. Re-establish it only
+      // when a real (non-0,0 placeholder) reference was actually saved, so a program
+      // with no datum doesn't pin a stray REF marker at absolute (0,0).
+      const rx = loadedConfig.refX;
+      const ry = loadedConfig.refY;
+      if (Number.isFinite(rx) && Number.isFinite(ry) && !(rx === 0 && ry === 0)) {
+        dispatch(markReferenceEstablished());
+      }
     }
     // Restore the saved generated points LAST — setMode/updateConfig both clear
     // the preview, so the persisted points must be re-applied after them. Load

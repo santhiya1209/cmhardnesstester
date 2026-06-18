@@ -1,6 +1,8 @@
 import { memo, useCallback, useMemo, useState, type KeyboardEvent } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -12,8 +14,14 @@ import Typography from '@mui/material/Typography';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { FreePoint } from '@/types/patternProgram';
-import type { CameraPointPhase } from '@/types/multipoint';
+import type { CameraPointPhase, CameraPointTarget } from '@/types/multipoint';
 
+// Reference readout matches LinearPatternForm: read-only, physical-center frame
+// (+Y up), fixed 5 dp; tracks the live stage until a pick. Free Mode's reference is
+// an OPTIONAL visual datum — it does NOT affect the freePoints-only point list.
+const REF_ROW_SX: SxProps<Theme> = { display: 'grid', gridTemplateColumns: '96px 1fr 1fr auto', alignItems: 'center', gap: 1 };
+const REF_LABEL_SX: SxProps<Theme> = { fontSize: 12, color: 'text.secondary' };
+const REF_DP = 5;
 const BTN_ROW_SX: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' };
 const BTN_SX: SxProps<Theme> = { textTransform: 'none', fontSize: 12, py: 0.5, minWidth: 96 };
 const HINT_SX: SxProps<Theme> = { fontSize: 11, color: 'text.disabled' };
@@ -94,6 +102,14 @@ type Props = {
   stageReady: boolean;
   /** Camera-click point-selection phase (drives the Add Point/Cancel button). */
   pickPhase?: CameraPointPhase;
+  /** Which target an in-flight pick is for — disambiguates Add Point vs Set Reference. */
+  pickTarget?: CameraPointTarget | null;
+  /** Live, Platform-frame reference value (physical-center relative, +Y up). */
+  referenceX?: number;
+  referenceY?: number;
+  /** Arm the reference camera-pick (optional visual datum). When omitted, the
+   *  reference row is hidden (e.g. Vertical-Line-Free, which has no camera pick). */
+  onPickReference?: () => void;
   /** Relocation-centre origin (absolute mm) for centre-relative table display; null = show absolute. */
   origin?: { x: number; y: number } | null;
   /** Manual blank-row add. Used as "Add Point" ONLY when camera pick is unavailable
@@ -115,6 +131,10 @@ function FreePatternFormImpl({
   disabled,
   stageReady,
   pickPhase = 'idle',
+  pickTarget = null,
+  referenceX,
+  referenceY,
+  onPickReference,
   origin = null,
   onAddPoint,
   onCapture,
@@ -124,7 +144,11 @@ function FreePatternFormImpl({
   onDelete,
   onClear,
 }: Props) {
-  const picking = pickPhase === 'selecting';
+  // A pick can target the free-point list or the reference datum — keep the two
+  // buttons' active/cancel state independent so only the armed one shows "Cancel".
+  const pointPicking = pickPhase === 'selecting' && pickTarget === 'freePoint';
+  const refPicking = pickPhase === 'selecting' && pickTarget === 'reference';
+  const showReference = onPickReference != null && referenceX != null && referenceY != null;
   const originX = origin?.x ?? 0;
   const originY = origin?.y ?? 0;
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -165,6 +189,32 @@ function FreePatternFormImpl({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      {/* Optional reference datum (Free/Midpoint). Read-only, tracks the live stage
+          until a camera pick, then shows the picked location and draws the REF
+          marker on the overlay. Does NOT affect the freePoints point list. */}
+      {showReference ? (
+        <>
+          <Box sx={REF_ROW_SX}>
+            <Typography sx={REF_LABEL_SX}>Reference Point</Typography>
+            <TextField size="small" label="X" value={referenceX!.toFixed(REF_DP)} slotProps={{ input: { readOnly: true } }} />
+            <TextField size="small" label="Y" value={referenceY!.toFixed(REF_DP)} slotProps={{ input: { readOnly: true } }} />
+            <Tooltip title={refPicking ? 'Cancel — Select Reference Point on camera' : stageReady ? 'Set Reference — pick the datum on the live camera' : 'Stage position unknown'}>
+              <span>
+                <IconButton
+                  size="small"
+                  color={refPicking ? 'warning' : 'primary'}
+                  disabled={pointPicking || (!refPicking && (disabled || !stageReady))}
+                  onClick={refPicking ? onCancelPick : onPickReference}
+                >
+                  <MyLocationIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
+          {refPicking ? <Typography sx={{ ...REF_LABEL_SX, color: 'warning.main' }}>Select Reference Point — click the feature in the live camera.</Typography> : null}
+        </>
+      ) : null}
+
       <Box sx={BTN_ROW_SX}>
         {/* Add Point. With a camera pick available (Free/Midpoint) it arms the
             click selection: crosshair → click → compute the clicked LOCATION (no
@@ -172,15 +222,15 @@ function FreePatternFormImpl({
             it falls back to a manual blank row. */}
         {onPickOnCamera ? (
           <Button
-            variant={picking ? 'contained' : 'outlined'}
-            color={picking ? 'warning' : 'primary'}
+            variant={pointPicking ? 'contained' : 'outlined'}
+            color={pointPicking ? 'warning' : 'primary'}
             size="small"
             sx={BTN_SX}
             startIcon={<MyLocationIcon />}
-            disabled={pickPhase === 'idle' && (disabled || !stageReady)}
-            onClick={picking ? onCancelPick : onPickOnCamera}
+            disabled={refPicking || (!pointPicking && (disabled || !stageReady))}
+            onClick={pointPicking ? onCancelPick : onPickOnCamera}
           >
-            {picking ? 'Cancel' : 'Add Point'}
+            {pointPicking ? 'Cancel' : 'Add Point'}
           </Button>
         ) : (
           <Button variant="outlined" size="small" sx={BTN_SX} disabled={disabled} onClick={onAddPoint}>
