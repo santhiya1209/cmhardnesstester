@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -30,6 +30,7 @@ import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useDialog } from '@/contexts/DialogContext';
 import { useXyzPlatformHardware } from '@/features/xyzPlatform/useXyzPlatformHardware';
+import { runAutofocus } from '@/features/xyzPlatform/autofocus';
 import { useXyzPlatformStateSync } from '@/features/xyzPlatform/useXyzPlatformStateSync';
 import { useXyzStageState } from '@/hooks/queries/useXyzStageState';
 import { useSerialPortSetting } from '@/hooks/queries/useSerialPortSetting';
@@ -603,6 +604,10 @@ function XYZPlatformTabImpl() {
   zLockedRef.current = live.zLocked;
   const zSpeedRef = useRef(live.zSpeed);
   zSpeedRef.current = live.zSpeed;
+  // Autofocus (CFOCUS/FFOCUS) runs a multi-step sharpness search; `focusing` gates
+  // the Z controls during the scan, `focusNotice` surfaces a "no clear peak" warning.
+  const [focusing, setFocusing] = useState(false);
+  const [focusNotice, setFocusNotice] = useState<string | null>(null);
   const zPressRef = useRef<{
     pointerId: number;
     direction: ZDirection;
@@ -728,24 +733,37 @@ function XYZPlatformTabImpl() {
     [hardware]
   );
 
-  // CFOCUS / FFOCUS are SINGLE-CLICK focus moves (legacy behaviour): one click =
-  // exactly one Z step DOWN at the configured coarse/fine focus step. The backend
-  // sends #±Z n#, waits for the >Z: completion, then updates the Z odometer — no
-  // mode state, no press-and-hold jog. Step size is passed explicitly so it never
-  // depends on a previously selected mode.
+  // CFOCUS / FFOCUS run a bounded passive-autofocus SEARCH: scan Z up and down at
+  // the configured coarse (CFOCUS) / fine (FFOCUS) focus step, score image
+  // sharpness at each position, then park on the sharpest Z. Each scan step is one
+  // RX-gated #±Z n# move; the search lives frontend-side because that is where the
+  // camera frames and the sharpness metric are. See features/xyzPlatform/autofocus.
   const handleFocusClick = useCallback(
-    (focus: 'coarse' | 'fine') => {
+    async (focus: 'coarse' | 'fine') => {
       // #LK# enables Z motion — never dispatch unless the drive is locked.
       if (!zLockedRef.current) {
         // eslint-disable-next-line no-console
         console.warn(`[FOCUS] blocked reason=z-unlocked focus=${focus}`);
         return;
       }
+      if (focusing) return;
       // eslint-disable-next-line no-console
-      console.log(`[xyz-ui-action] action=focus-${focus}`);
-      void hardwareRef.current.moveZ('down', zSpeedRef.current, focus);
+      console.log(`[xyz-ui-action] action=autofocus-${focus}`);
+      setFocusing(true);
+      setFocusNotice(null);
+      try {
+        const result = await runAutofocus(
+          (direction, kind) => hardwareRef.current.moveZ(direction, zSpeedRef.current, kind),
+          focus
+        );
+        if (!result.ok || !result.peakFound) {
+          setFocusNotice(result.message ?? 'Autofocus could not find a sharp position.');
+        }
+      } finally {
+        setFocusing(false);
+      }
     },
-    []
+    [focusing]
   );
 
   // Both buttons move to the FIXED physical center (settings physicalCenter pulses,
@@ -814,7 +832,8 @@ function XYZPlatformTabImpl() {
   // Z is a SEPARATE connection: gate on zConnected (NOT the X/Y `connected`). Per
   // the Z controller, #LK# (Lock) ENABLES motion — so arrows are live only when the
   // Z drive is connected AND locked.
-  const zMoveDisabled = isBusy || !live.zConnected || !live.zLocked;
+  // Autofocus drives Z itself; lock out all manual Z motion while it scans.
+  const zMoveDisabled = isBusy || !live.zConnected || !live.zLocked || focusing;
   const zLockDisabled = isBusy || !live.zConnected;
 
   // Connect/Disconnect drive BOTH axes (each on its own port). Connect is enabled
@@ -1061,7 +1080,7 @@ function XYZPlatformTabImpl() {
               Unlock
             </Button>
 
-            {/* Row 2: Cfocus | ↑ — Cfocus = ONE coarse Z step down per click */}
+            {/* Row 2: Cfocus | ↑ — Cfocus = coarse-step autofocus search */}
             <Button
               sx={Z_BTN_SX}
               disabled={zMoveDisabled}
@@ -1073,7 +1092,7 @@ function XYZPlatformTabImpl() {
               <ArrowUpwardIcon />
             </Button>
 
-            {/* Row 3: Ffocus | ↓ — Ffocus = ONE fine Z step down per click */}
+            {/* Row 3: Ffocus | ↓ — Ffocus = fine-step autofocus search */}
             <Button
               sx={Z_BTN_SX}
               disabled={zMoveDisabled}
@@ -1086,15 +1105,21 @@ function XYZPlatformTabImpl() {
             </Button>
           </Box>
 
-          {/* Live status — Motion only. Focus is now a single-click action (Cfocus/
-              Ffocus), not a persistent mode, so there's no focus-mode readout. No Z
+          {/* Live status — Motion only. Cfocus/Ffocus run an autofocus search (no
+              persistent focus mode), so there's no focus-mode readout. No Z
               position: the Z controller reports no absolute position, so showing one
               would be fabricated. */}
           <Box sx={{ mt: 1 }}>
             <Typography sx={SECTION_LABEL_SX}>
-              Motion: {live.zMoving ? 'Moving' : 'Idle'}
+              Motion: {focusing ? 'Autofocus — searching…' : live.zMoving ? 'Moving' : 'Idle'}
             </Typography>
           </Box>
+
+          {focusNotice ? (
+            <Alert severity="warning" sx={ALERT_SX} onClose={() => setFocusNotice(null)}>
+              {focusNotice}
+            </Alert>
+          ) : null}
         </Box>
       </Box>
 

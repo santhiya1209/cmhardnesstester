@@ -196,6 +196,7 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
 
     let firstScreen: { x: number; y: number } | null = null;
     let horizontalGuideDrawn = false;
+    let verticalGuideDrawn = false;
     if (dispPxPerMm !== null) {
       const selected = new Set(selectedIds);
       const completed = new Set(completedIds);
@@ -310,6 +311,32 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         horizontalGuideDrawn = true;
       }
 
+      // Vertical Mode guide line — a full-height vertical rule through the
+      // reference point's screen X. The generator holds X constant (every point
+      // shares refX), so the P1…Pn dots all land exactly on this line; drawing it
+      // is the visual proof of that invariant. Clipped to the image rect, so it
+      // spans the full visible camera height.
+      if (
+        mode === 'Vertical Mode' &&
+        referencePicked &&
+        refX != null &&
+        refY != null &&
+        Number.isFinite(refX) &&
+        Number.isFinite(refY)
+      ) {
+        const guideX = centerX + STAGE_X_TO_SCREEN * (refX - positionMm.x) * dispPxPerMm;
+        ctx.save();
+        ctx.strokeStyle = tokens.overlay.cameraPoint;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(guideX, placement.offsetY);
+        ctx.lineTo(guideX, placement.offsetY + placement.height);
+        ctx.stroke();
+        ctx.restore();
+        verticalGuideDrawn = true;
+      }
+
       // Camera-picked REFERENCE point (Horizontal/Vertical "Add Point") — the
       // origin every generated point is offset from. Drawn only once a reference
       // has actually been picked this session (referencePicked), so the un-picked
@@ -365,6 +392,16 @@ function PatternOverlayImpl({ imageSize, umPerPixel = null, active = true }: Pro
         // eslint-disable-next-line no-console
         console.log(
           `[HORIZONTAL] Camera Overlay Updated points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)})`
+        );
+      }
+      if (mode === 'Vertical Mode' && referencePicked) {
+        if (verticalGuideDrawn) {
+          // eslint-disable-next-line no-console
+          console.log(`[VERTICAL] Vertical Guide Created refX=${refX} refY=${refY}`);
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[VERTICAL] Camera Overlay Updated points=${points.length} posMm=(${positionMm.x.toFixed(3)},${positionMm.y.toFixed(3)})`
         );
       }
     }
