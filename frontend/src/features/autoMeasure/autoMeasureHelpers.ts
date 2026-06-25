@@ -12,6 +12,7 @@ import type {
   VickersAutoMeasureSuccess,
 } from '@/types/autoMeasure';
 import type { MachineState } from '@/types/machine';
+import { cornersToDiagonalsPx } from '@/utils/manualMeasure';
 
 const POINT_TOL_PX = 0.5;
 function pointAlmostEqual(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
@@ -398,12 +399,9 @@ export function validateAutoMeasureGeometry(
     finitePoint(corners.right) &&
     finitePoint(corners.bottom) &&
     finitePoint(corners.left);
-  const d1Px = finite
-    ? Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y)
-    : Number.NaN;
-  const d2Px = finite
-    ? Math.hypot(corners.bottom.x - corners.top.x, corners.bottom.y - corners.top.y)
-    : Number.NaN;
+  const { d1Px, d2Px } = finite
+    ? cornersToDiagonalsPx(corners)
+    : { d1Px: Number.NaN, d2Px: Number.NaN };
   const midD1 = finite
     ? { x: (corners.left.x + corners.right.x) / 2, y: (corners.left.y + corners.right.y) / 2 }
     : { x: Number.NaN, y: Number.NaN };
@@ -479,8 +477,7 @@ function buildRoughAutoMeasureResult(
   corners: AutoMeasureCorners,
   reason: string
 ): VickersAutoMeasureSuccess {
-  const d1Pixels = Math.hypot(corners.right.x - corners.left.x, corners.right.y - corners.left.y);
-  const d2Pixels = Math.hypot(corners.bottom.x - corners.top.x, corners.bottom.y - corners.top.y);
+  const { d1Px: d1Pixels, d2Px: d2Pixels } = cornersToDiagonalsPx(corners);
   const debug = raw.debug ?? {};
   const confidence = Number((debug as { confidence?: unknown }).confidence);
   return {

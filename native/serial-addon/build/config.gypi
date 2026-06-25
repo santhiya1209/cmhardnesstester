@@ -434,7 +434,7 @@
     "prefix": "C:\\Users\\SANTHIYA\\AppData\\Roaming\\npm",
     "npm_version": "10.8.2",
     "node_gyp": "C:\\Program Files\\nodejs\\node_modules\\npm\\node_modules\\node-gyp\\bin\\node-gyp.js",
-    "local_prefix": "C:\\Users\\SANTHIYA\\Desktop\\ChennaiMetcoProjects\\hardness-tester",
+    "local_prefix": "C:\\Users\\SANTHIYA\\Desktop\\cm\\ChennaiMetcoProjects\\hardness-tester",
     "init_module": "C:\\Users\\SANTHIYA\\.npm-init.js",
     "global_prefix": "C:\\Users\\SANTHIYA\\AppData\\Roaming\\npm",
     "globalconfig": "C:\\Users\\SANTHIYA\\AppData\\Roaming\\npm\\etc\\npmrc",

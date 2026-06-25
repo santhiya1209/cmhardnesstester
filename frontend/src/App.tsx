@@ -48,8 +48,11 @@ import { useMeasurements } from '@/hooks/queries/useMeasurements';
 import { useToolbarActionPersistence } from '@/features/shell/useToolbarActionPersistence';
 import { useActiveTool } from '@/hooks/useActiveTool';
 import {
+  getLastCameraFrameAt,
+  getLastCameraFramePaintAt,
   getLastPaintEpoch,
   getLastPaintedFrameId,
+  resetCameraSession,
 } from '@/hooks/cameraStreamManager';
 import { useImageOverlay } from '@/hooks/useImageOverlay';
 import { useLineThickness } from '@/hooks/useLineThickness';
@@ -118,6 +121,7 @@ import { useManualMeasureLifecycle } from '@/features/manualMeasure/useManualMea
 import { useCalibrationManualMeasure } from '@/features/manualMeasure/useCalibrationManualMeasure';
 import type { MachineState } from '@/types/machine';
 import { calculateVickersFromPixels, hasCalibrationForForce } from '@/utils/manualMeasure';
+import { logMeasureCalc, mlog } from '@/utils/measureDebug';
 import { subscribeXyzStageState } from '@/api/xyzPlatform';
 
 const ROOT_SX: SxProps<Theme> = {
@@ -268,6 +272,13 @@ function App() {
   const lineThickness = useLineThickness();
   useRenderCount('App');
   const cameraRef = useRef<CameraWindowHandle | null>(null);
+  // Measurement self-heal watchdog: when a measurement run gets wedged or the
+  // render pipeline starves while frames keep arriving, reset the camera-session
+  // latches (the same state a camera reopen clears) WITHOUT stopping/reopening
+  // the camera or restarting the app.
+  const autoMeasureStartedAtRef = useRef(0);
+  const measureRecoveringRef = useRef(false);
+  const lastMeasureRecoverAtRef = useRef(0);
   // True only during the window between committing the auto-measure overlay
   // lines and confirming they painted on the canvas. While true, no clear may
   // wipe the latest overlay — that is the stale path that left "Detection
@@ -736,6 +747,51 @@ function App() {
         objective: objectiveForCalibration,
         targetObjective: objectiveForCalibration,
       });
+      if (conversion.ok) {
+        const v = conversion.value;
+        logMeasureCalc('auto', {
+          leftX: c.left.x,
+          rightX: c.right.x,
+          topY: c.top.y,
+          bottomY: c.bottom.y,
+          d1Px: v.d1Px,
+          d2Px: v.d2Px,
+          umPerPixel: v.umPerPixel,
+          objective: v.normalizedObjective,
+          d1Um: v.d1Um,
+          d2Um: v.d2Um,
+          avgDUm: v.avgDUm,
+        });
+        mlog('measure-calibration', {
+          at: 'result-commit',
+          objective: v.objective,
+          calibrationId: v.calibrationId || 'none',
+          micronsPerPixel: v.umPerPixel,
+          pixelsPerMicron: v.umPerPixel > 0 ? 1 / v.umPerPixel : -1,
+        });
+        mlog('measure-distance', {
+          for: 'D1',
+          rawPixelDistance: stableD1Px,
+          convertedMicrons: v.d1Um,
+          objective: v.objective,
+          imageWidth: snapshot.imageSize?.width ?? -1,
+          imageHeight: snapshot.imageSize?.height ?? -1,
+        });
+        mlog('measure-distance', {
+          for: 'D2',
+          rawPixelDistance: stableD2Px,
+          convertedMicrons: v.d2Um,
+          objective: v.objective,
+          imageWidth: snapshot.imageSize?.width ?? -1,
+          imageHeight: snapshot.imageSize?.height ?? -1,
+        });
+        mlog('objective-sync', {
+          activeObjective: activeObjectiveRef.current ?? 'null',
+          measurementObjective: objectiveForCalibration ?? 'null',
+          loadedCalibration: v.calibrationName ?? 'null',
+          calibrationId: v.calibrationId || 'none',
+        });
+      }
       const candidateHv = conversion.ok ? finiteOrNull(conversion.value.hv) : fingerprint.hv;
 
       const shouldCheckDuplicate = source === 'auto-click' || source === 'after-impress';
@@ -953,6 +1009,22 @@ function App() {
       const hardnessValid =
         typeof values.hv === 'number' && Number.isFinite(values.hv) && values.hv > 0;
 
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-overlay] lineCount=${cornerPoints.length} overlayVisible=${overlayVisible} overlayPainted=${overlayPainted} canvasWidth=${snapshot.imageSize?.width ?? 0} canvasHeight=${snapshot.imageSize?.height ?? 0} lineCoordinates=${JSON.stringify(
+          cornerPoints.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }))
+        )}`
+      );
+
+      // Genuine overlay failure = the 4 measurement lines are missing, or the
+      // committed overlay never passed React's display gate (overlayVisible). The
+      // low-level canvas paint-key confirmation (overlayPainted) is a SOFT signal
+      // only: under load confirmOverlayPainted() can time out (600ms) even though
+      // the overlay is on screen with 4 valid lines. Blocking the save + showing
+      // "Measurement lines are not visible" on that timeout alone is the false
+      // warning — the lines ARE visible. captureFinalizedThumbnail() below waits
+      // for the paint key again and the vector geometry (diamondNorm) is saved
+      // regardless, so proceeding when overlayVisible && fourLinesPresent is safe.
       const saveBlockedReason =
         !d1Valid || !d2Valid || !davgValid
           ? 'diagonal-invalid'
@@ -962,18 +1034,14 @@ function App() {
               ? 'overlay-lines-missing'
               : !overlayVisible
                 ? 'overlay-not-visible'
-                : !overlayPainted
-                  ? 'overlay-not-painted'
-                  : null;
+                : null;
       if (saveBlockedReason) {
         // eslint-disable-next-line no-console
         console.log(`[measurement-save-blocked] reason=${saveBlockedReason}`);
-        if (!overlayPainted) {
-          // Keep the frozen frame + the committed overlay; do NOT resume live
-          // and do NOT clear before the lines are confirmed painted.
-          // eslint-disable-next-line no-console
-          console.log('[auto-measure-live-resume-blocked] reason=overlay-not-painted');
-        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-lines-warning] measurementId=${saveRowId ?? 'new'} D1=${values.d1Um} D2=${values.d2Um} hardness=${values.hv ?? 'null'} objective=${objectiveForCalibration ?? 'unknown'} reason=${saveBlockedReason} warningShown=true measurementCommitted=false`
+        );
         if (source === 'after-impress') {
           logAfterImpressDetectionFailed(saveBlockedReason);
         }
@@ -983,6 +1051,15 @@ function App() {
           'System Status: Measurement lines are not visible. Please run Auto Measure again.'
         );
         return false;
+      }
+      if (!overlayPainted) {
+        // Overlay is visible with 4 valid lines but the canvas paint-key did not
+        // confirm within the timeout. Previously this blocked the save and showed
+        // the false "Measurement lines are not visible" warning. Log and proceed.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[measurement-lines-warning] measurementId=${saveRowId ?? 'new'} D1=${values.d1Um} D2=${values.d2Um} hardness=${values.hv ?? 'null'} objective=${objectiveForCalibration ?? 'unknown'} reason=overlay-not-painted warningShown=false suppressed=true`
+        );
       }
       // eslint-disable-next-line no-console
       console.log(
@@ -1111,6 +1188,10 @@ function App() {
       }
 
       const savedAutoMethod = saved.method ?? autoRowPayload.method;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[measurement-overlay-summary] measurementId=${saved.id} measurementCommitted=true measurementLinesGenerated=${fourLinesPresent} overlayRendered=${overlayVisible} overlayPainted=${overlayPainted} warningShown=false`
+      );
       if (source === 'settings-save') {
         // eslint-disable-next-line no-console
         console.warn(
@@ -1329,12 +1410,24 @@ function App() {
   const runAutoMeasure = useCallback((settingsInput: AutoMeasureSettingsPayload, preview = false, source?: AutoMeasureCallSource): Promise<boolean> => {
     const callSource = source ?? (preview ? 'settings-preview' : 'auto-click');
     logUnexpectedAutoMeasureCall(callSource);
+    mlog('measure-state', {
+      phase: 'gate',
+      callSource,
+      preview,
+      autoMeasureRunning: autoMeasureInFlightRef.current,
+      impressInProgress: impressInProgressRef.current,
+      objectiveChange: objectiveChangeInProgressRef.current,
+      turretMoving: turretMovingRef.current,
+      pendingMeasurement: !!autoMeasurePendingPreviewRef.current,
+    });
 
     if (impressInProgressRef.current) {
+      mlog('measure-state', { phase: 'blocked', reason: 'impress-in-progress', callSource });
       return Promise.resolve(false);
     }
 
     if (objectiveChangeInProgressRef.current || turretMovingRef.current) {
+      mlog('measure-state', { phase: 'blocked', reason: 'objective-switch', callSource });
       if (!preview) {
         setStatusMessage('System Status: Auto Measure blocked: objective switch in progress');
       }
@@ -1342,6 +1435,7 @@ function App() {
     }
 
     if (autoMeasureInFlightRef.current) {
+      mlog('measure-state', { phase: 'blocked', reason: 'already-in-flight', callSource });
       if (preview) {
         autoMeasurePendingPreviewRef.current = settingsInput;
       }
@@ -1350,6 +1444,14 @@ function App() {
 
     return (async (): Promise<boolean> => {
       let settings = normalizeAutoMeasureSettings(settingsInput);
+      if (!preview) {
+        // A measurement run must start from a clean annotation layer: drop any
+        // Measure Length / Measure Angle shapes (lines + µm/° labels) left over
+        // from a prior session so they never persist into this run. Applies to
+        // every non-preview entry (Auto Measure click, after-impress, multipoint,
+        // settings-save). Saved results and the camera feed are untouched.
+        overlay.clearMeasurementShapes();
+      }
       if (!preview && callSource !== 'after-impress') {
         setCommittedAutoMeasureOverlay(() => null);
         setPreviewAutoMeasureOverlay(null);
@@ -1358,12 +1460,26 @@ function App() {
       }
 
       autoMeasureInFlightRef.current = true;
+      const runStartAt = Date.now();
+      autoMeasureStartedAtRef.current = runStartAt;
+      mlog('measure-start', { callSource, preview });
+      const stageAt = (stage: string) =>
+        mlog('measure-stage', { stage, callSource, tMs: Date.now() - runStartAt });
       const sessionIdForRun = autoMeasureSessionIdRef.current + 1;
       autoMeasureSessionIdRef.current = sessionIdForRun;
       setAutoMeasureSessionId(sessionIdForRun);
       setAutoMeasureSessionActive(true);
       const isFreshCapture =
         callSource === 'auto-click' || callSource === 'after-impress' || callSource === 'multipoint';
+      // Outcome of this run, used by the finally to guarantee the camera is
+      // unfrozen on every NON-success exit. Success deliberately stays frozen so
+      // the result overlay remains pinned to the captured frame.
+      let measureOutcome:
+        | 'success'
+        | 'failure'
+        | 'exception'
+        | 'timeout'
+        | 'cancelled' = 'failure';
       if (isFreshCapture) {
         setAutoMeasureStatus('detecting');
         setCameraStatus('frozen');
@@ -1497,18 +1613,25 @@ function App() {
           isFreshCapture &&
           displayedFrame &&
           !displayedFrame.ok &&
-          displayedFrame.error === 'awaiting-fresh-frame'
+          (displayedFrame.error === 'awaiting-fresh-frame' ||
+            displayedFrame.error === 'native-full-frame-not-available')
         ) {
+          mlog('measure-stage', { stage: 'capture-retry', callSource, error: displayedFrame.error });
           if (!preview) {
             setStatusMessage('System Status: Waiting for camera frame after objective change');
           }
+          // Unstick the renderer camera-session latches before waiting, so a
+          // stale-frame / epoch latch can't make the retry capture fail again.
+          resetCameraSession();
           const fresh = await (cameraRef.current?.waitForFreshFrame(2000) ?? Promise.resolve(false));
           if (fresh) {
             displayedFrame = cameraRef.current?.captureDisplayedFrame({ freeze: true });
           }
         }
 
+        stageAt('frame-captured');
         if (!displayedFrame?.ok) {
+          mlog('measure-failed', { callSource, reason: displayedFrame?.error ?? 'no-frame', stage: 'capture' });
           if (preview) {
             return false;
           }
@@ -1560,6 +1683,17 @@ function App() {
         console.log(
           `[auto-measure-coords] imageWidth=${displayedFrame.width} imageHeight=${displayedFrame.height} objective=${objectiveForCalibration ?? 'unknown'} source=${displayedFrame.source}`
         );
+        // Detection-frame resolution: the space result.d1Px/d2Px live in. Compare
+        // this against the overlay's [measure-coordinates] imageWidth/height — if
+        // they differ, the Measure Length overlay and the stored Vickers value use
+        // different pixel spaces (the overlay-vs-stored scaling mismatch).
+        mlog('measure-coordinates', {
+          for: 'detection-frame',
+          imageWidth: displayedFrame.width,
+          imageHeight: displayedFrame.height,
+          source: displayedFrame.source,
+          objective: objectiveForCalibration ?? 'unknown',
+        });
 
         if (isFreshCapture) {
           committedAutoMeasureFrameRef.current = cloneCapturedFrame(displayedFrame);
@@ -1576,6 +1710,7 @@ function App() {
             forceKgf,
             minConfidence,
           });
+        stageAt('detection-done');
 
         const { nativeObjective, resolvedDetection } = validateDetectionResult({
           nativeResult,
@@ -1727,6 +1862,7 @@ function App() {
           );
         }
         if (sessionIdForRun !== autoMeasureSessionIdRef.current) {
+          measureOutcome = 'cancelled';
           if (callSource === 'after-impress') {
             logAfterImpressDetectionFailed('session-mismatch');
           }
@@ -1740,6 +1876,7 @@ function App() {
             String(liveConfirmed).toUpperCase() !==
               String(objectiveForCalibration).toUpperCase()
           ) {
+            measureOutcome = 'cancelled';
             if (callSource === 'after-impress') {
               logAfterImpressDetectionFailed('objective-mismatch');
             }
@@ -1827,6 +1964,8 @@ function App() {
                 ? 'multipoint'
                 : 'auto-click'
         );
+        stageAt('commit-done');
+        measureOutcome = committed ? 'success' : 'failure';
         if (callSource === 'after-impress') {
           if (committed) {
             // eslint-disable-next-line no-console
@@ -1836,6 +1975,13 @@ function App() {
         return committed;
 
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        measureOutcome = /timeout|timed out/i.test(errMsg) ? 'timeout' : 'exception';
+        mlog('measure-failed', {
+          callSource,
+          reason: errMsg,
+          stage: measureOutcome,
+        });
         // eslint-disable-next-line no-console
         console.warn('[auto-measure] failed:', err);
         if (preview) {
@@ -1854,6 +2000,28 @@ function App() {
         return false;
       } finally {
         autoMeasureInFlightRef.current = false;
+        autoMeasureStartedAtRef.current = 0;
+        mlog('measure-end', {
+          callSource,
+          totalMs: Date.now() - runStartAt,
+          autoMeasureRunningAfter: autoMeasureInFlightRef.current,
+        });
+        // Guaranteed unfreeze: a fresh-capture run froze the view at start, so any
+        // NON-success exit (failure / exception / timeout / cancelled — including
+        // capture-stage rejections like awaiting-fresh-frame and
+        // native-full-frame-not-available, which fall through as 'failure') must
+        // restore the live view. unfreezeCamera() also re-syncs imageSize so the
+        // next Manual Measure uses live coordinates. Success stays frozen so the
+        // result overlay remains pinned to the captured frame.
+        if (isFreshCapture) {
+          mlog('measure-unfreeze', { reason: measureOutcome, callSource });
+          if (measureOutcome !== 'success') {
+            cameraRef.current?.unfreezeCamera(`measure-${measureOutcome}`);
+            // Restore the App-level status chip to the live state so it does not
+            // stay stuck on "Frozen" after a failed run.
+            setCameraStatus('streaming');
+          }
+        }
         const pending = autoMeasurePendingPreviewRef.current;
         if (pending) {
           autoMeasurePendingPreviewRef.current = null;
@@ -1868,11 +2036,78 @@ function App() {
     clearAutoMeasureOverlay,
     commitAutoMeasureSnapshot,
     getMachineStateSnapshot,
+    overlay.clearMeasurementShapes,
   ]);
 
   useEffect(() => {
     runAutoMeasureRef.current = runAutoMeasure;
   }, [runAutoMeasure]);
+
+  // Bounded measurement recovery. Reuses the same primitives a camera reopen
+  // relies on (resetCameraSession + unfreeze + wait-for-fresh-frame) so a wedged
+  // measurement session self-heals while the camera stays live — no stop, no
+  // reopen, no app restart.
+  const recoverMeasurement = useCallback(
+    async (reason: string): Promise<void> => {
+      if (measureRecoveringRef.current) return;
+      measureRecoveringRef.current = true;
+      lastMeasureRecoverAtRef.current = Date.now();
+      mlog('measure-reset', {
+        reason,
+        autoMeasureRunningBefore: autoMeasureInFlightRef.current,
+        lastPaintMs: Date.now() - getLastCameraFramePaintAt(),
+      });
+      try {
+        // clear stale measurement state + renderer-side measurement flags
+        autoMeasureInFlightRef.current = false;
+        autoMeasureStartedAtRef.current = 0;
+        autoMeasurePendingPreviewRef.current = null;
+        // clear pending frame references + renderer camera-session latches
+        resetCameraSession();
+        // unfreeze so the display goes live again and imageSize re-syncs (this is
+        // what fixes a stale manual-measure coordinate transform)
+        cameraRef.current?.unfreezeCamera('measure-recover');
+        // request the next fresh frame (also clears the awaiting-fresh-frame latch)
+        const fresh = await (cameraRef.current?.waitForFreshFrame(2000) ?? Promise.resolve(false));
+        mlog('measure-reset', { reason, done: true, fresh });
+      } finally {
+        measureRecoveringRef.current = false;
+      }
+    },
+    [autoMeasureInFlightRef, autoMeasurePendingPreviewRef]
+  );
+
+  useEffect(() => {
+    const WATCHDOG_INTERVAL_MS = 1000;
+    const MEASURE_BUSY_MAX_MS = 10000; // a run that never settles is wedged
+    const PAINT_STARVE_MAX_MS = 3000; // frames arriving but canvas not painting
+    const RECOVER_COOLDOWN_MS = 5000;
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      if (measureRecoveringRef.current) return;
+      if (now - lastMeasureRecoverAtRef.current < RECOVER_COOLDOWN_MS) return;
+
+      const startedAt = autoMeasureStartedAtRef.current;
+      if (
+        autoMeasureInFlightRef.current &&
+        startedAt > 0 &&
+        now - startedAt > MEASURE_BUSY_MAX_MS
+      ) {
+        void recoverMeasurement('busy-too-long');
+        return;
+      }
+
+      const lastFrameAt = getLastCameraFrameAt();
+      const streaming = lastFrameAt > 0 && now - lastFrameAt < 2000;
+      if (streaming) {
+        const lastPaintAt = getLastCameraFramePaintAt();
+        if (lastPaintAt > 0 && now - lastPaintAt > PAINT_STARVE_MAX_MS) {
+          void recoverMeasurement('paint-starvation');
+        }
+      }
+    }, WATCHDOG_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [recoverMeasurement, autoMeasureInFlightRef]);
 
   // Real per-point Vickers measurement for the Multipoint engine. Reuses the
   // EXACT single-indent detector/save path (runAutoMeasure → commitAutoMeasure
@@ -2312,6 +2547,11 @@ function App() {
 
       if (action === 'tools:autoMeasure') {
         setSelectedMeasureMode('auto');
+        // Auto Measure is its own interaction mode — it must not run while
+        // Measure Length is still the active tool (otherwise a click would draw
+        // a length line over the auto overlay). Drop back to the pointer so the
+        // tool-change effect below clears any Measure Length state.
+        setActiveTool('pointer');
       } else if (action === 'tools:manualMeasure') {
         setSelectedMeasureMode('manual');
       } else if (mappedTool) {
@@ -2334,6 +2574,19 @@ function App() {
       setActiveTool,
     ]
   );
+
+  // Single source of truth for Measure Length overlay visibility: the length
+  // annotation shapes may exist only while Measure Length is the active tool.
+  // The moment the tool changes — via toolbar, menu bar, or a programmatic reset
+  // (objective sync, after-impress, calibration) — drop them so no stale length
+  // line survives onto the live camera. The in-progress draft is cleared
+  // separately in ImageOverlay's own activeTool effect. clearByKind is a no-op
+  // when there is nothing to clear, so this is cheap on every other tool switch.
+  useEffect(() => {
+    if (activeTool !== 'measureLength') {
+      overlay.clearByKind('length');
+    }
+  }, [activeTool, overlay.clearByKind]);
 
   useEffect(() => {
     if (selectedMeasureMode === 'manual' && activeTool !== 'manualMeasure') {

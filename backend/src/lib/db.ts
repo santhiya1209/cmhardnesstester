@@ -61,6 +61,7 @@ function saveDatabase(database: DatabaseState): void {
     depthImageSettings: state.depthImageSettings,
     albumItems: state.albumItems,
     toolbarStates: state.toolbarStates,
+    multipointResults: state.multipointResults,
   };
   writeAllCollections(rows, state.meta.updatedAt);
 }

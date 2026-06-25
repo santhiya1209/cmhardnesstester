@@ -25,19 +25,22 @@
     <Filter Include="C:\Users\SANTHIYA\Desktop">
       <UniqueIdentifier>{68E47669-79A8-F716-44A9-E89748D1EB03}</UniqueIdentifier>
     </Filter>
-    <Filter Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects">
+    <Filter Include="C:\Users\SANTHIYA\Desktop\cm">
+      <UniqueIdentifier>{72F66C20-8B66-9D84-CFDF-12D7E0F0A3A9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects">
       <UniqueIdentifier>{30774CD4-8889-EE57-C2BD-B2BE112A9C5C}</UniqueIdentifier>
     </Filter>
-    <Filter Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester">
+    <Filter Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester">
       <UniqueIdentifier>{703AB1F1-106E-DF54-63F4-C7D6920F22F4}</UniqueIdentifier>
     </Filter>
-    <Filter Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\node_modules">
+    <Filter Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\node_modules">
       <UniqueIdentifier>{126A39EA-1D28-5689-C126-0DA0AB5837A0}</UniqueIdentifier>
     </Filter>
-    <Filter Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp">
+    <Filter Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp">
       <UniqueIdentifier>{49558BB4-6D34-CA91-A65D-85A65792DC11}</UniqueIdentifier>
     </Filter>
-    <Filter Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src">
+    <Filter Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src">
       <UniqueIdentifier>{F1003AD6-4B6D-45DF-3F56-5CAC869BF55E}</UniqueIdentifier>
     </Filter>
     <Filter Include="..">
@@ -51,8 +54,8 @@
     <ClCompile Include="..\src\serial.cpp">
       <Filter>..\src</Filter>
     </ClCompile>
-    <ClCompile Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src\win_delay_load_hook.cc">
-      <Filter>C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src</Filter>
+    <ClCompile Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src\win_delay_load_hook.cc">
+      <Filter>C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src</Filter>
     </ClCompile>
     <None Include="..\binding.gyp">
       <Filter>..</Filter>

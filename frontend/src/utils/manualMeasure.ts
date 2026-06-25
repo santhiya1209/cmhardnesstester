@@ -145,6 +145,30 @@ export function distancePx(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/**
+ * Canonical corner→diagonal conversion shared by Manual and Auto Measure.
+ *
+ * Manual Measure's guide lines are always axis-aligned (two vertical, two
+ * horizontal), so its diagonals reduce to the horizontal/vertical spans between
+ * the lines: d1 = |rightX - leftX|, d2 = |bottomY - topY| (its perpendicular
+ * component is always zero). Auto Measure MUST use the exact same definition by
+ * projecting the detected corners onto those axis-aligned spans — otherwise the
+ * full corner-to-corner Euclidean distance would add a perpendicular offset
+ * that Manual never has, making the two modes disagree on any tilted indent
+ * even when the endpoints sit on the same image pixels.
+ */
+export function cornersToDiagonalsPx(corners: {
+  top: Point;
+  right: Point;
+  bottom: Point;
+  left: Point;
+}): { d1Px: number; d2Px: number } {
+  return {
+    d1Px: Math.abs(corners.right.x - corners.left.x),
+    d2Px: Math.abs(corners.bottom.y - corners.top.y),
+  };
+}
+
 export function getImagePlacement(
   containerWidth: number,
   containerHeight: number,

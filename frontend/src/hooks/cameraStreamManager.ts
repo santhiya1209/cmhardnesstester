@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import CameraStreamWorker from '@/workers/cameraStream.worker.ts?worker';
 import { ackCameraFrame } from '@/api/camera';
 import { flushCameraStream } from '@/api/camera';
+import { mlog } from '@/utils/measureDebug';
 import type { CameraFrameMeta, CameraPixelFormat } from '@/types/camera';
 
 const PREVIEW_SCALE = 2;
@@ -214,16 +215,19 @@ function schedulePaintRaf() {
     if (!p) return;
     if (staleFramesBeforeTs > 0 && p.grabTs > 0 && p.grabTs < staleFramesBeforeTs) {
       perfStaleDrops += 1;
+      mlog('camera-render-health', { event: 'paint-skipped', reason: 'stale-before-reset', frameId: p.frameId });
       return;
     }
     if (p.grabTs > 0) {
       const ageAtPaint = Date.now() - p.grabTs;
       if (ageAtPaint > STALE_AGE_MS) {
         perfStaleDrops += 1;
+        mlog('camera-render-health', { event: 'paint-skipped', reason: 'age', frameId: p.frameId, ageMs: ageAtPaint });
         return;
       }
     }
     if (!attached || !attached.fallbackCtx) {
+      mlog('camera-render-health', { event: 'paint-skipped', reason: 'no-canvas', frameId: p.frameId });
       return;
     }
     const { el, fallbackCtx } = attached;
@@ -236,6 +240,12 @@ function schedulePaintRaf() {
     lastPaintAt = Date.now();
     lastPaintEpoch = p.epoch;
     lastPaintedFrameId = p.frameId;
+    mlog('camera-render-health', {
+      event: 'paint-finished',
+      frameId: p.frameId,
+      ageMs: p.grabTs > 0 ? Math.max(0, lastPaintAt - p.grabTs) : -1,
+      dropped1s: perfStaleDrops + perfSupersededDrops,
+    });
     perfAccumulate({
       sdkMs: p.sdkMs,
       mainAgeMs: p.mainAgeMs,
@@ -262,8 +272,21 @@ function subscribeIpcOnce() {
     if (metaId > 0) frameIdCounter = Math.max(frameIdCounter, metaId);
     const grabTs = meta.grabTs ?? meta.capturedAt ?? 0;
     const frameTs = grabTs || meta.capturedAt || 0;
+    mlog('camera-frame-age', {
+      frameId,
+      ageMs: grabTs > 0 ? receivedAt - grabTs : -1,
+      timestamp: receivedAt,
+      dropped: perfSupersededDrops,
+      skipped: perfStaleDrops,
+    });
     if (staleFramesBeforeTs > 0 && frameTs > 0 && frameTs < staleFramesBeforeTs) {
       perfStaleDrops += 1;
+      mlog('camera-stale-frame-drop', {
+        frameId,
+        ageMs: grabTs > 0 ? receivedAt - grabTs : -1,
+        reason: 'before-session-reset',
+        staleBeforeTs: staleFramesBeforeTs,
+      });
       ackCameraFrame(frameId);
       return;
     }
@@ -281,6 +304,12 @@ function subscribeIpcOnce() {
       const ageMs = receivedAt - grabTs;
       if (ageMs > STALE_AGE_MS) {
         perfStaleDrops += 1;
+        mlog('camera-stale-frame-drop', {
+          frameId,
+          ageMs,
+          reason: 'age-exceeds-threshold',
+          thresholdMs: STALE_AGE_MS,
+        });
         ackCameraFrame(frameId);
         return;
       }

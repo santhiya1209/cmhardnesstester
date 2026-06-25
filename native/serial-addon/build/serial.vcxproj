@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{0597CCF8-FC87-CAE6-636E-91CA1E04CA05}</ProjectGuid>
+    <ProjectGuid>{75493764-77AF-1882-7A88-2D6677F5AACD}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>serial</RootNamespace>
     <IgnoreWarnCompileDuplicatedFilename>true</IgnoreWarnCompileDuplicatedFilename>
@@ -48,7 +48,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:__cplusplus -std:c++17 /std:c++17 /EHsc %(AdditionalOptions)</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <BufferSecurityCheck>true</BufferSecurityCheck>
@@ -84,13 +84,13 @@
       <TargetMachine>MachineX64</TargetMachine>
     </Link>
     <ResourceCompile>
-      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=serial;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;NAPI_DISABLE_CPP_EXCEPTIONS;NAPI_VERSION=8;_HAS_EXCEPTIONS=1;WIN32_LEAN_AND_MEAN;NOMINMAX;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;DEBUG;_DEBUG;%(PreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:__cplusplus -std:c++17 /std:c++17 /EHsc %(AdditionalOptions)</AdditionalOptions>
       <BufferSecurityCheck>true</BufferSecurityCheck>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
@@ -129,7 +129,7 @@
       <TargetMachine>MachineX64</TargetMachine>
     </Link>
     <ResourceCompile>
-      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\include\node;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\src;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\config;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\openssl\openssl\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\uv\include;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\zlib;C:\Users\SANTHIYA\AppData\Local\node-gyp\Cache\20.18.0\deps\v8\include;C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\native\serial-addon\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=serial;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;NAPI_DISABLE_CPP_EXCEPTIONS;NAPI_VERSION=8;_HAS_EXCEPTIONS=1;WIN32_LEAN_AND_MEAN;NOMINMAX;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;%(PreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
@@ -143,11 +143,11 @@
     <ClCompile Include="..\src\serial.cpp">
       <ObjectFileName>$(IntDir)\src\serial.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="C:\Users\SANTHIYA\Desktop\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src\win_delay_load_hook.cc"/>
+    <ClCompile Include="C:\Users\SANTHIYA\Desktop\cm\ChennaiMetcoProjects\hardness-tester\node_modules\node-gyp\src\win_delay_load_hook.cc"/>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="node_modules\node-addon-api\nothing.vcxproj">
-      <Project>{B351F4DF-A5DF-52CC-F8C1-37529B4C64A4}</Project>
+      <Project>{FDB83CB1-5E9F-87C3-AD14-47E0D2B5AAED}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>

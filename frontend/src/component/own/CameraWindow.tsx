@@ -27,6 +27,7 @@ import type { CrosshairConfig } from '@/types/crosshair';
 import type { ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
 import { displayToImage, getImagePlacement } from '@/utils/manualMeasure';
+import { mlog } from '@/utils/measureDebug';
 
 const ROOT_SX: SxProps<Theme> = {
   flex: 1,
@@ -163,6 +164,9 @@ export type CameraWindowHandle = {
   clearLiveImage: (reason?: string) => void;
   waitForFreshFrame: (timeoutMs?: number) => Promise<boolean>;
   unfreezeCamera: (reason?: string) => void;
+  /** Sync the measurement scale (imageSize) from the live frame at camera open
+   *  so Measure Length is calibrated from its first use. Performs no measure. */
+  initializeMeasurementScale: (reason?: string) => boolean;
 };
 
 const ZOOM_MIN = 0.5;
@@ -290,6 +294,14 @@ function CameraWindowImpl(
       (getLastPaintEpoch() < getCurrentFrameEpoch() ||
         getLastCameraFramePaintAt() <= liveCanvasClearedAtRef.current)
     ) {
+      mlog('camera-measure-frame', {
+        ok: false,
+        error: 'awaiting-fresh-frame',
+        lastPaintEpoch: getLastPaintEpoch(),
+        currentFrameEpoch: getCurrentFrameEpoch(),
+        lastPaintAt: getLastCameraFramePaintAt(),
+        clearedAt: liveCanvasClearedAtRef.current,
+      });
       return { ok: false, error: 'awaiting-fresh-frame' };
     }
 
@@ -297,6 +309,15 @@ function CameraWindowImpl(
       const full = getLatestFullFrame();
       if (full && full.body) {
         const buffer = toOwnedArrayBuffer(full.body);
+        mlog('camera-measure-frame', {
+          ok: true,
+          frameId: full.frameId ?? -1,
+          ageMs: full.capturedAt > 0 ? Date.now() - full.capturedAt : -1,
+          source: 'live-camera',
+          width: full.width,
+          height: full.height,
+          frozen,
+        });
         if (options?.freeze) {
           if (snap && live && live.width > 0 && live.height > 0) {
             snap.width = live.width;
@@ -319,6 +340,7 @@ function CameraWindowImpl(
           source: 'live-camera',
         };
       }
+      mlog('camera-measure-frame', { ok: false, error: 'native-full-frame-not-available' });
       return { ok: false, error: 'native-full-frame-not-available' };
     }
 
@@ -602,6 +624,43 @@ function CameraWindowImpl(
     return fresh;
   }, []);
 
+  // Initialize the measurement coordinate scale (imageSize) from the actual
+  // streamed frame — the SAME authoritative source the Auto/Manual measure path
+  // uses (getLatestFullFrame). Camera open otherwise only seeds imageSize from
+  // camera status, which can differ from / lag the real frame resolution, so
+  // Measure Length read the wrong placement scale until a measurement reset it.
+  // This performs NO measurement; it only syncs the scale.
+  const initializeMeasurementScale = useCallback(
+    (reason: string = 'camera-open'): boolean => {
+      const full = getLatestFullFrame();
+      const live = canvasRef.current;
+      const measurementSize =
+        full && full.width > 0 && full.height > 0
+          ? { width: full.width, height: full.height }
+          : live && live.width > 0 && live.height > 0
+            ? { width: live.width, height: live.height }
+            : null;
+      if (!measurementSize) {
+        mlog('measure-init', { reason, ok: false, note: 'no-frame-yet' });
+        return false;
+      }
+      imageSourceRef.current = 'live-camera';
+      setImageSize((current) => keepImageSizeIfSame(current, measurementSize));
+      mlog('measure-init', {
+        reason,
+        ok: true,
+        frameWidth: measurementSize.width,
+        frameHeight: measurementSize.height,
+        statusWidth: status.width,
+        statusHeight: status.height,
+        umPerPixel: umPerPixel ?? -1,
+        objective: manualMeasureObjective ?? 'null',
+      });
+      return true;
+    },
+    [status.width, status.height, umPerPixel, manualMeasureObjective]
+  );
+
   const lastSeenObjectiveRefreshKeyRef = useRef<number | undefined>(objectiveRefreshKey);
   useEffect(() => {
     if (objectiveRefreshKey === undefined) return;
@@ -636,6 +695,7 @@ function CameraWindowImpl(
       clearLiveImage,
       waitForFreshFrame,
       unfreezeCamera,
+      initializeMeasurementScale,
     }),
     [
       toggleFreeze,
@@ -652,6 +712,7 @@ function CameraWindowImpl(
       clearLiveImage,
       waitForFreshFrame,
       unfreezeCamera,
+      initializeMeasurementScale,
     ]
   );
 

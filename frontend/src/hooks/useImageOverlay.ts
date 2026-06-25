@@ -13,6 +13,15 @@ export type ImageOverlayApi = {
   updateShape: (id: string, next: OverlayShapeInput) => void;
   clearAll: () => void;
   clearByKind: (kind: OverlayShape['kind']) => void;
+  /**
+   * Drop every user-drawn measurement annotation (Measure Length lines + µm
+   * labels, Measure Angle arms + ° labels) in a single state update. Use this
+   * to guarantee a clean annotation layer when a new measurement run starts.
+   * Leaves the reticle and any non-annotation shape kinds untouched, and is a
+   * no-op (no re-render) when there is nothing to clear. Does NOT touch the
+   * camera feed or saved results — annotation shapes are pure visuals.
+   */
+  clearMeasurementShapes: () => void;
   trimLast: () => void;
   toggleCrossLine: () => void;
   setCrosshairConfig: (next: Partial<CrosshairConfig>) => void;
@@ -51,6 +60,14 @@ export function useImageOverlay(): ImageOverlayApi {
     setShapes((prev) => (prev.some((s) => s.kind === kind) ? prev.filter((s) => s.kind !== kind) : prev));
   }, []);
 
+  const clearMeasurementShapes = useCallback(() => {
+    setShapes((prev) =>
+      prev.some((s) => s.kind === 'length' || s.kind === 'angle')
+        ? prev.filter((s) => s.kind !== 'length' && s.kind !== 'angle')
+        : prev
+    );
+  }, []);
+
   const trimLast = useCallback(() => {
     setShapes((prev) => (prev.length === 0 ? prev : prev.slice(0, -1)));
   }, []);
@@ -70,7 +87,7 @@ export function useImageOverlay(): ImageOverlayApi {
   }, []);
 
   return useMemo(
-    () => ({ shapes, crossLineVisible, crosshairConfig, addShape, updateShape, clearAll, clearByKind, trimLast, toggleCrossLine, setCrosshairConfig, lockCrossLine }),
-    [shapes, crossLineVisible, crosshairConfig, addShape, updateShape, clearAll, clearByKind, trimLast, toggleCrossLine, setCrosshairConfig, lockCrossLine]
+    () => ({ shapes, crossLineVisible, crosshairConfig, addShape, updateShape, clearAll, clearByKind, clearMeasurementShapes, trimLast, toggleCrossLine, setCrosshairConfig, lockCrossLine }),
+    [shapes, crossLineVisible, crosshairConfig, addShape, updateShape, clearAll, clearByKind, clearMeasurementShapes, trimLast, toggleCrossLine, setCrosshairConfig, lockCrossLine]
   );
 }

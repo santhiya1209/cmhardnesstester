@@ -5,7 +5,7 @@ module.exports = {
     name: 'VickersMeasurementSoftware',
     executableName: 'VickersMeasurementSoftware',
     appBundleId: 'com.chennaimetco.vickersmeasurementsoftware',
-    icon: path.resolve(__dirname, "frontend/public/icon.ico"),
+    icon: path.join(__dirname, "frontend/public/icon.ico"),
     asar: true,
     extraResource: [
       'drivers/opencv',
@@ -73,6 +73,9 @@ module.exports = {
         allowToChangeInstallationDirectory: true,
         perMachine: false,
         shortcutName: 'Vickers Measurement Software',
+        // 'maximum' (7za -mx=9) runs 7-Zip out of memory on this payload; 'normal'
+        // builds reliably. See makers/nsis-maker.js for detail.
+        compression: 'normal',
         // App icon used for desktop + Start menu shortcuts.
         win: { icon: path.resolve(__dirname, "frontend/public/icon.ico") },
         // Installer/uninstaller + setup header icons.

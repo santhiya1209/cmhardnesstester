@@ -24,8 +24,10 @@ import {
 import { autoMeasureCornersKey } from '@/utils/autoMeasureOverlayKey';
 import {
   calculateVickersFromPixels,
+  cornersToDiagonalsPx,
   parseForceKgf,
 } from '@/utils/manualMeasure';
+import { logMeasureCalc } from '@/utils/measureDebug';
 import {
   deriveQualifiedForRow,
   waitForOverlayPaint,
@@ -122,21 +124,13 @@ export function useAutoMeasure({
         }
 
         if (calibrationManualModeRef.current) {
-          const d1Px = Math.hypot(
-            corners.right.x - corners.left.x,
-            corners.right.y - corners.left.y
-          );
-          const d2Px = Math.hypot(
-            corners.bottom.x - corners.top.x,
-            corners.bottom.y - corners.top.y
-          );
+          const { d1Px, d2Px } = cornersToDiagonalsPx(corners);
           setLatestManualPixels({ d1Px, d2Px });
           return;
         }
 
         if (calibrationMeasureModeRef.current === 'auto') {
-          const d1Px = Math.abs(corners.right.x - corners.left.x);
-          const d2Px = Math.abs(corners.bottom.y - corners.top.y);
+          const { d1Px, d2Px } = cornersToDiagonalsPx(corners);
           setLatestManualPixels({ d1Px, d2Px });
           // eslint-disable-next-line no-console
           console.log(
@@ -158,14 +152,7 @@ export function useAutoMeasure({
               : null;
             const forceKgf = parseForceKgf(machineState?.force);
 
-            const d1Px = Math.hypot(
-              corners.right.x - corners.left.x,
-              corners.right.y - corners.left.y
-            );
-            const d2Px = Math.hypot(
-              corners.bottom.x - corners.top.x,
-              corners.bottom.y - corners.top.y
-            );
+            const { d1Px, d2Px } = cornersToDiagonalsPx(corners);
 
             const targetId =
               autoMeasurementIdRef.current ?? getActiveMeasurementId() ?? undefined;
@@ -191,6 +178,19 @@ export function useAutoMeasure({
               return;
             }
             const values = conversion.value;
+            logMeasureCalc('auto-adjusted', {
+              leftX: corners.left.x,
+              rightX: corners.right.x,
+              topY: corners.top.y,
+              bottomY: corners.bottom.y,
+              d1Px: values.d1Px,
+              d2Px: values.d2Px,
+              umPerPixel: values.umPerPixel,
+              objective: values.normalizedObjective,
+              d1Um: values.d1Um,
+              d2Um: values.d2Um,
+              avgDUm: values.avgDUm,
+            });
 
             await waitForOverlayPaint();
             const adjustedCornersKey = autoMeasureCornersKey(corners);

@@ -170,6 +170,18 @@ export function useCameraLifecycle({
         cameraMeasurementSessionIdRef.current += 1;
         clearActiveMeasurement('camera-session-start');
 
+        // Initialize the measurement scale from the first real frame so Measure
+        // Length is calibrated from its first use — without requiring an Auto or
+        // Manual measure first. Mirrors the imageSize source the measure path
+        // uses (the live full frame), but runs NO measurement. Fire-and-forget:
+        // the camera is already usable; the scale syncs once a frame lands.
+        void (cameraRef.current?.waitForFreshFrame?.(3000) ?? Promise.resolve(false)).then(
+          (fresh) =>
+            cameraRef.current?.initializeMeasurementScale?.(
+              fresh ? 'camera-open' : 'camera-open-no-frame'
+            )
+        );
+
         await restoreCameraSettings();
 
         if (reply.micrometer) {

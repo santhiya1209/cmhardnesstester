@@ -16,6 +16,7 @@ import {
   pointerToImagePoint,
   type ManualMeasureImageSize,
 } from '@/utils/manualMeasureOverlayCanvas';
+import { mlog } from '@/utils/measureDebug';
 
 type Args = {
   active: boolean;
@@ -162,8 +163,15 @@ export function useManualMeasureOverlay({
     const points = guideLinesToPoints(current);
     const d1Px = distancePx(points[1], points[3]);
     const d2Px = distancePx(points[0], points[2]);
+    mlog('manual-measure', {
+      d1Px,
+      d2Px,
+      imageW: imageSize?.width ?? -1,
+      imageH: imageSize?.height ?? -1,
+      guides: `L${Math.round(current.leftX)} R${Math.round(current.rightX)} T${Math.round(current.topY)} B${Math.round(current.bottomY)}`,
+    });
     onMeasurementUpdated({ points, d1Px, d2Px });
-  }, [onMeasurementUpdated]);
+  }, [imageSize, onMeasurementUpdated]);
 
   const hitTest = useCallback(
     (event: React.PointerEvent): ManualGuideLineKey | null => {

@@ -31,6 +31,11 @@ class MakerNSIS extends MakerBase {
         appId: cfg.appId || `com.${(packageJSON.name || 'app').toLowerCase()}.app`,
         productName: cfg.productName || appName,
         directories: { output: outDir },
+        // electron-builder defaults to 'maximum' (7za -mx=9), which exhausts
+        // 7-Zip's memory on this large payload (OpenCV + DVP2 driver DLLs) and
+        // fails with "Can't allocate required memory!". 'normal' builds reliably
+        // for only a slightly larger installer.
+        compression: cfg.compression || 'normal',
         win: cfg.win,
         nsis: {
           oneClick: cfg.oneClick ?? false,

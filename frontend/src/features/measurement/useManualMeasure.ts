@@ -14,6 +14,7 @@ import {
   calculateVickersFromPixels,
   parseForceKgf,
 } from '@/utils/manualMeasure';
+import { logMeasureCalc, mlog } from '@/utils/measureDebug';
 import {
   buildNewRowDepthPayload,
   deriveQualifiedForRow,
@@ -173,6 +174,46 @@ export function useManualMeasure({
           }
 
           const values = conversion.value;
+          logMeasureCalc('manual', {
+            leftX: result.points[3].x,
+            rightX: result.points[1].x,
+            topY: result.points[0].y,
+            bottomY: result.points[2].y,
+            d1Px: values.d1Px,
+            d2Px: values.d2Px,
+            umPerPixel: values.umPerPixel,
+            objective: values.normalizedObjective,
+            d1Um: values.d1Um,
+            d2Um: values.d2Um,
+            avgDUm: values.avgDUm,
+          });
+          mlog('measure-calibration', {
+            at: 'manual-measurement',
+            objective: values.objective,
+            calibrationId: values.calibrationId || 'none',
+            micronsPerPixel: values.umPerPixel,
+            pixelsPerMicron: values.umPerPixel > 0 ? 1 / values.umPerPixel : -1,
+          });
+          mlog('measure-distance', {
+            for: 'D1',
+            rawPixelDistance: result.d1Px,
+            convertedMicrons: values.d1Um,
+            objective: values.objective,
+            space: 'image',
+          });
+          mlog('measure-distance', {
+            for: 'D2',
+            rawPixelDistance: result.d2Px,
+            convertedMicrons: values.d2Um,
+            objective: values.objective,
+            space: 'image',
+          });
+          mlog('objective-sync', {
+            activeObjective: activeObjectiveRef.current ?? 'null',
+            measurementObjective: targetObjective ?? 'null',
+            loadedCalibration: values.calibrationName ?? 'null',
+            calibrationId: values.calibrationId || 'none',
+          });
 
           await waitForOverlayPaint();
           const imageDataUrl = cameraRef.current?.captureThumbnailDataUrl() ?? undefined;

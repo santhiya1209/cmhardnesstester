@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -128,6 +128,13 @@ function MeasurementsWorkspaceImpl({
   onChdTargetInputChange,
 }: Props) {
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
+  // Keep a ref to the latest measurements so handleManualDepthChange can stay
+  // referentially stable — otherwise every measurements update would change the
+  // callback identity and re-render every memoized row in the table.
+  const measurementsRef = useRef(measurements);
+  useEffect(() => {
+    measurementsRef.current = measurements;
+  }, [measurements]);
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
   const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
   // Follow an externally-requested selection (Multipoint "Go" review) so the HV
@@ -278,7 +285,7 @@ function MeasurementsWorkspaceImpl({
 
   const handleManualDepthChange = useCallback(
     async (measurementId: string, depthMm: number | null) => {
-      const target = measurements.find((m) => m.id === measurementId);
+      const target = measurementsRef.current.find((m) => m.id === measurementId);
       if (!target) return;
       const convertValue =
         typeof target.convertValue === 'number' ? target.convertValue : null;
@@ -311,7 +318,7 @@ function MeasurementsWorkspaceImpl({
         console.error('[manual-depth-save-error]', err);
       }
     },
-    [measurements, refetch]
+    [refetch]
   );
 
   const handleDelete = useCallback(async () => {

@@ -20,6 +20,9 @@ import {
 } from '@/utils/manualMeasure';
 import type { ManualMeasureImageSize } from '@/utils/manualMeasureOverlayCanvas';
 import { DEFAULT_CROSSHAIR_CONFIG, type CrosshairConfig } from '@/types/crosshair';
+import { mlog } from '@/utils/measureDebug';
+
+let lastCoordLogKey = '';
 
 const ROOT_SX: SxProps<Theme> = {
   position: 'absolute',
@@ -271,6 +274,19 @@ function drawLengthShape(
   const logKey = `${source}|${imagePx.toFixed(2)}|${opts.umPerPixel ?? 'null'}|${label}`;
   if (lengthDisplayLogKeys.get(source) !== logKey) {
     lengthDisplayLogKeys.set(source, logKey);
+    const upp = opts.umPerPixel ?? 0;
+    mlog('measure-distance', {
+      for: 'overlay-display',
+      rawPixelDistance: imagePx,
+      convertedMicrons: upp > 0 ? imagePx * upp : -1,
+      displayPx: len,
+      placementScale: opts.imageScale ?? -1,
+    });
+    mlog('measure-calibration', {
+      at: 'overlay',
+      micronsPerPixel: upp,
+      pixelsPerMicron: upp > 0 ? 1 / upp : -1,
+    });
   }
   const midX = (a.x + b.x) / 2;
   const midY = (a.y + b.y) / 2;
@@ -629,6 +645,23 @@ function ImageOverlayImpl({
         ? getImagePlacement(wCss, hCss, imageSize)
         : null;
     const imageRect = placement ? imageRectFromPlacement(placement) : null;
+
+    {
+      const coordKey = `${imageSize?.width ?? -1}x${imageSize?.height ?? -1}|${Math.round(wCss)}x${Math.round(hCss)}|${canvas.width}x${canvas.height}|${placement?.scale?.toFixed(4) ?? 'n/a'}`;
+      if (coordKey !== lastCoordLogKey) {
+        lastCoordLogKey = coordKey;
+        mlog('measure-coordinates', {
+          imageWidth: imageSize?.width ?? -1,
+          imageHeight: imageSize?.height ?? -1,
+          displayWidth: Math.round(wCss),
+          displayHeight: Math.round(hCss),
+          canvasWidth: canvas.width,
+          canvasHeight: canvas.height,
+          placementScale: placement?.scale ?? -1,
+          dpr,
+        });
+      }
+    }
 
     if (crossLineVisible && imageRect) {
       drawCross(ctx, imageRect, crosshairConfig);

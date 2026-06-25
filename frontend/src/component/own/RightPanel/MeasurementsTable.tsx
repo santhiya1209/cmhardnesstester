@@ -259,6 +259,121 @@ function objectiveDotColor(objective: string | null | undefined): string | null 
   return null;
 }
 
+type MeasurementRowProps = {
+  measurement: Measurement;
+  rowNumber: number;
+  isSelected: boolean;
+  onSelect: (measurementId: string) => void;
+  micrometerEnabled: boolean;
+  onManualDepthChange?: (measurementId: string, depthMm: number | null) => void;
+  registerInputRef: (measurementId: string, el: HTMLInputElement | null) => void;
+  onFocusSibling: (currentId: string, direction: 'next' | 'prev') => void;
+  targetMinHv: number | null;
+  targetMaxHv: number | null;
+};
+
+const MeasurementRow = memo(function MeasurementRow({
+  measurement,
+  rowNumber,
+  isSelected,
+  onSelect,
+  micrometerEnabled,
+  onManualDepthChange,
+  registerInputRef,
+  onFocusSibling,
+  targetMinHv,
+  targetMaxHv,
+}: MeasurementRowProps) {
+  const d1Um = measurement.d1Um ?? (measurement.unit === 'um' ? measurement.d1 : null);
+  const d2Um = measurement.d2Um ?? (measurement.unit === 'um' ? measurement.d2 : null);
+  const davgUm =
+    measurement.averageUm ??
+    (measurement.unit === 'um' ? measurement.average : null) ??
+    (d1Um !== null && d2Um !== null ? (d1Um + d2Um) / 2 : null);
+
+  const hardnessType = formatBlank(measurement.hardnessType) || 'HV';
+  const qualified = formatQualified(measurement.qualified);
+  const convertType = formatBlank(measurement.convertType) || hardnessType || 'NONE';
+  let convertValueNum: number | null = null;
+  if (typeof measurement.convertValue === 'number' && Number.isFinite(measurement.convertValue)) {
+    convertValueNum = measurement.convertValue;
+  } else if (typeof measurement.convertValue === 'string' && measurement.convertValue.trim() !== '') {
+    const parsed = Number(measurement.convertValue);
+    if (Number.isFinite(parsed)) convertValueNum = parsed;
+  }
+  const convertTypeIsHv = convertType === 'HV' || convertType === 'NONE';
+  if (
+    convertValueNum === null &&
+    convertTypeIsHv &&
+    typeof measurement.hv === 'number' &&
+    Number.isFinite(measurement.hv)
+  ) {
+    convertValueNum = measurement.hv;
+  }
+  const convertValue =
+    convertValueNum !== null
+      ? `${formatHardness(convertValueNum)} ${convertType}`
+      : convertTypeIsHv
+        ? '--'
+        : `N/A ${convertType}`;
+
+  const hardnessTargetColor = getHardnessColor(measurement.hv, targetMinHv, targetMaxHv).color;
+  const hardnessColor =
+    hardnessTargetColor !== 'inherit'
+      ? hardnessTargetColor
+      : isSelected
+        ? tokens.accentSecondary.base
+        : 'inherit';
+  const dotColor = objectiveDotColor(measurement.objective);
+
+  return (
+    <TableRow
+      hover
+      selected={isSelected}
+      sx={BODY_ROW_SX}
+      onClick={() => onSelect(measurement.id)}
+    >
+      <TableCell sx={BODY_CELL_SX}>{rowNumber}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>{format3(d1Um)}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>{format3(d2Um)}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>{format3(davgUm)}</TableCell>
+      <TableCell
+        sx={{
+          ...(BODY_CELL_SX as object),
+          color: hardnessColor,
+          fontWeight: 600,
+        }}
+      >
+        {formatHardness(measurement.hv)}
+      </TableCell>
+      <TableCell sx={BODY_CELL_SX}>
+        <Box component="span" sx={OBJECTIVE_CELL_SX}>
+          {dotColor ? <Box component="span" sx={objectiveDot(dotColor)} /> : null}
+          <span>{measurement.objective ?? '-'}</span>
+        </Box>
+      </TableCell>
+      <TableCell sx={BODY_CELL_SX}>{formatBlank(measurement.calibrationName) || '-'}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
+      <TableCell sx={BODY_CELL_SX}>
+        <Box component="span" sx={qualified === 'YES' ? QUALIFIED_YES_SX : QUALIFIED_NO_SX}>
+          {qualified}
+        </Box>
+      </TableCell>
+      <TableCell sx={BODY_CELL_SX}>
+        <DepthCell
+          measurement={measurement}
+          micrometerEnabled={micrometerEnabled}
+          onManualDepthChange={onManualDepthChange}
+          registerInputRef={registerInputRef}
+          onFocusSibling={onFocusSibling}
+        />
+      </TableCell>
+    </TableRow>
+  );
+});
+
 function MeasurementsTableImpl({
   measurements,
   loading,
@@ -341,103 +456,21 @@ function MeasurementsTableImpl({
               </TableCell>
             </TableRow>
           ) : (
-            measurements.map((measurement, index) => {
-              const d1Um = measurement.d1Um ?? (measurement.unit === 'um' ? measurement.d1 : null);
-              const d2Um = measurement.d2Um ?? (measurement.unit === 'um' ? measurement.d2 : null);
-              const davgUm =
-                measurement.averageUm ??
-                (measurement.unit === 'um' ? measurement.average : null) ??
-                (d1Um !== null && d2Um !== null ? (d1Um + d2Um) / 2 : null);
-
-              const hardnessType = formatBlank(measurement.hardnessType) || 'HV';
-              const qualified = formatQualified(measurement.qualified);
-              const convertType =
-                formatBlank(measurement.convertType) || hardnessType || 'NONE';
-              let convertValueNum: number | null = null;
-              if (typeof measurement.convertValue === 'number' && Number.isFinite(measurement.convertValue)) {
-                convertValueNum = measurement.convertValue;
-              } else if (typeof measurement.convertValue === 'string' && measurement.convertValue.trim() !== '') {
-                const parsed = Number(measurement.convertValue);
-                if (Number.isFinite(parsed)) convertValueNum = parsed;
-              }
-              const convertTypeIsHv = convertType === 'HV' || convertType === 'NONE';
-              if (
-                convertValueNum === null &&
-                convertTypeIsHv &&
-                typeof measurement.hv === 'number' &&
-                Number.isFinite(measurement.hv)
-              ) {
-                convertValueNum = measurement.hv;
-              }
-              const convertValue =
-                convertValueNum !== null
-                  ? `${formatHardness(convertValueNum)} ${convertType}`
-                  : convertTypeIsHv
-                    ? '--'
-                    : `N/A ${convertType}`;
-
-              const isSelected = measurement.id === selectedMeasurementId;
-              const hardnessTargetColor = getHardnessColor(
-                measurement.hv,
-                targetMinHv,
-                targetMaxHv
-              ).color;
-              const hardnessColor =
-                hardnessTargetColor !== 'inherit'
-                  ? hardnessTargetColor
-                  : isSelected
-                    ? tokens.accentSecondary.base
-                    : 'inherit';
-              const dotColor = objectiveDotColor(measurement.objective);
-
-              return (
-                <TableRow
-                  key={measurement.id}
-                  hover
-                  selected={isSelected}
-                  sx={BODY_ROW_SX}
-                  onClick={() => onSelect(measurement.id)}
-                >
-                  <TableCell sx={BODY_CELL_SX}>{index + 1}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{format3(d1Um)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{format3(d2Um)}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{format3(davgUm)}</TableCell>
-                  <TableCell
-                    sx={{
-                      ...(BODY_CELL_SX as object),
-                      color: hardnessColor,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {formatHardness(measurement.hv)}
-                  </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>
-                    <Box component="span" sx={OBJECTIVE_CELL_SX}>
-                      {dotColor ? <Box component="span" sx={objectiveDot(dotColor)} /> : null}
-                      <span>{measurement.objective ?? '-'}</span>
-                    </Box>
-                  </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{formatBlank(measurement.calibrationName) || '-'}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{hardnessType}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{convertType}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>{convertValue}</TableCell>
-                  <TableCell sx={BODY_CELL_SX}>
-                    <Box component="span" sx={qualified === 'YES' ? QUALIFIED_YES_SX : QUALIFIED_NO_SX}>
-                      {qualified}
-                    </Box>
-                  </TableCell>
-                  <TableCell sx={BODY_CELL_SX}>
-                    <DepthCell
-                      measurement={measurement}
-                      micrometerEnabled={micrometerEnabled}
-                      onManualDepthChange={onManualDepthChange}
-                      registerInputRef={registerDepthInput}
-                      onFocusSibling={focusDepthSibling}
-                    />
-                  </TableCell>
-                </TableRow>
-              );
-            })
+            measurements.map((measurement, index) => (
+              <MeasurementRow
+                key={measurement.id}
+                measurement={measurement}
+                rowNumber={index + 1}
+                isSelected={measurement.id === selectedMeasurementId}
+                onSelect={onSelect}
+                micrometerEnabled={micrometerEnabled}
+                onManualDepthChange={onManualDepthChange}
+                registerInputRef={registerDepthInput}
+                onFocusSibling={focusDepthSibling}
+                targetMinHv={targetMinHv}
+                targetMaxHv={targetMaxHv}
+              />
+            ))
           )}
         </TableBody>
       </Table>
