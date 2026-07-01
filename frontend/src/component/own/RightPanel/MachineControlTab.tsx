@@ -410,6 +410,11 @@ function normalizeObjectiveOption(value: string | null | undefined): string | nu
   return OBJECTIVE_OPTIONS.includes(key) ? key : null;
 }
 
+// Client-side ceiling for how long the modal 'running' popup may stay up before
+// it is force-released with a visible error. Must exceed any realistic indent
+// dwell (load time) so it only trips on a genuine no-response condition.
+const IMPRESS_RUNNING_TIMEOUT_MS = 60_000;
+
 function indentLabel(status: IndentStatus): string {
   switch (status) {
     case 'idle':
@@ -766,6 +771,7 @@ function MachineControlTabImpl({
     message: string;
   }>({ open: false, status: 'running', message: '' });
   const impressAutoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const impressRunningWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastIndentStatusRef = useRef<IndentStatus>(machineIndentStatus);
 
   const closeImpressPopup = useCallback(() => {
@@ -781,33 +787,77 @@ function MachineControlTabImpl({
       if (impressAutoCloseTimerRef.current !== null) {
         clearTimeout(impressAutoCloseTimerRef.current);
       }
+      if (impressRunningWatchdogRef.current !== null) {
+        clearTimeout(impressRunningWatchdogRef.current);
+      }
     };
   }, []);
 
   const handleIndentClick = useCallback(() => {
-    console.log('[IMPRESS] button clicked / handler fired'); // [IMPRESS-DIAG] temporary
+    // eslint-disable-next-line no-console
+    console.log('[IMPRESS-CLICK] Impress button clicked');
+    // eslint-disable-next-line no-console
+    console.log('[IMPRESS-UI] handler entered');
     // Calibration is intentionally NOT checked here. Impress + indent are always
     // allowed; the calibration gate runs later, before a measurement row is
     // saved (see runAutoMeasure in App.tsx).
+    // eslint-disable-next-line no-console
+    console.log(
+      `[IMPRESS-VALIDATION] connected=${machineConnected} indentStatus=${machineIndentStatus} busy=${setBusy || indentBusy || turretBusy} popupOpen=${impressPopup.open}`
+    );
     if (impressAutoCloseTimerRef.current !== null) {
       clearTimeout(impressAutoCloseTimerRef.current);
       impressAutoCloseTimerRef.current = null;
     }
     setImpressPopup({ open: true, status: 'running', message: 'Impress process is running...' });
-    void startIndent().catch((err) => {
-      const reason = err instanceof Error ? err.message : String(err);
-      console.error(`[impress] failed: ${reason}`);
-      setImpressPopup({
-        open: true,
-        status: 'error',
-        message: `Impress failed: ${reason}`,
+    // Client-side safety net: never let the modal 'running' state trap the UI.
+    // The backend has its own FINISH watchdog, but if no state update reaches us
+    // at all (IPC stall), surface a visible error and release the modal so the
+    // Impress button can never be permanently blocked by an undismissable dialog.
+    impressRunningWatchdogRef.current = setTimeout(() => {
+      impressRunningWatchdogRef.current = null;
+      // eslint-disable-next-line no-console
+      console.error('[IMPRESS-ERROR] no completion within safety timeout — releasing UI');
+      setImpressPopup((current) =>
+        current.status === 'running'
+          ? { open: true, status: 'error', message: 'Impress timed out — no response from machine.' }
+          : current
+      );
+    }, IMPRESS_RUNNING_TIMEOUT_MS);
+    // eslint-disable-next-line no-console
+    console.log('[IMPRESS-IPC-SEND] invoking machine:start-indent');
+    void startIndent()
+      .then(() => {
+        // eslint-disable-next-line no-console
+        console.log('[IMPRESS-SUCCESS] IPC accepted; awaiting machine completion');
+      })
+      .catch((err) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.error(`[IMPRESS-ERROR] start-indent failed: ${reason}`);
+        if (impressRunningWatchdogRef.current !== null) {
+          clearTimeout(impressRunningWatchdogRef.current);
+          impressRunningWatchdogRef.current = null;
+        }
+        setImpressPopup({
+          open: true,
+          status: 'error',
+          message: `Impress failed: ${reason}`,
+        });
+        impressAutoCloseTimerRef.current = setTimeout(() => {
+          impressAutoCloseTimerRef.current = null;
+          setImpressPopup((current) => ({ ...current, open: false }));
+        }, 4000);
       });
-      impressAutoCloseTimerRef.current = setTimeout(() => {
-        impressAutoCloseTimerRef.current = null;
-        setImpressPopup((current) => ({ ...current, open: false }));
-      }, 4000);
-    });
-  }, [startIndent]);
+  }, [
+    machineConnected,
+    machineIndentStatus,
+    setBusy,
+    indentBusy,
+    turretBusy,
+    impressPopup.open,
+    startIndent,
+  ]);
 
   useEffect(() => {
     const prev = lastIndentStatusRef.current;
@@ -817,7 +867,14 @@ function MachineControlTabImpl({
     if (!impressPopup.open) return;
     if (impressPopup.status !== 'running') return;
 
+    if (impressRunningWatchdogRef.current !== null) {
+      clearTimeout(impressRunningWatchdogRef.current);
+      impressRunningWatchdogRef.current = null;
+    }
+
     if (next === 'completed') {
+      // eslint-disable-next-line no-console
+      console.log('[IMPRESS-SUCCESS] machine reported indent completed');
       setImpressPopup({ open: true, status: 'done', message: 'Impress is done' });
       if (impressAutoCloseTimerRef.current !== null) {
         clearTimeout(impressAutoCloseTimerRef.current);
@@ -830,7 +887,8 @@ function MachineControlTabImpl({
     }
     if (next === 'error') {
       const reason = machineLastError ?? 'machine reported error';
-      console.error(`[impress] error: ${reason}`);
+      // eslint-disable-next-line no-console
+      console.error(`[IMPRESS-ERROR] machine reported indent error: ${reason}`);
       setImpressPopup({
         open: true,
         status: 'error',
@@ -883,10 +941,13 @@ function MachineControlTabImpl({
   const isIndentInFlight = indentStatus === 'started' || indentStatus === 'running';
   const isBusy = setBusy || indentBusy || turretBusy;
 
-  // [IMPRESS-DIAG] temporary — remove after diagnosis
+  // Surfaces exactly why the Impress button is enabled/disabled. A disabled MUI
+  // Button swallows clicks, so when this logs disabled=true the onClick never
+  // fires — this line tells you which gate is responsible.
   useEffect(() => {
     const disabled = !connected || isIndentInFlight || isBusy || impressPopup.open;
-    console.log('[IMPRESS] gate', {
+    // eslint-disable-next-line no-console
+    console.log('[IMPRESS-VALIDATION] button gate', {
       disabled,
       connected,
       isIndentInFlight,

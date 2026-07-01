@@ -528,6 +528,8 @@ function registerIpc() {
   });
 
   ipcMain.handle('machine:start-indent', async (_e, turretAfterImpress) => {
+    // eslint-disable-next-line no-console
+    console.log(`[IMPRESS-IPC-RECEIVE] machine:start-indent turretAfterImpress=${String(turretAfterImpress)}`);
     startMachineEventBridge();
     // Multipoint Indenting mode passes false so the turret stays in the indenter
     // between points; absent/non-boolean → backend falls back to the saved setting.

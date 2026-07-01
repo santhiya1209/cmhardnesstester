@@ -185,6 +185,14 @@ class HardnessMachineSerialService extends EventEmitter {
   // Command id of the in-flight ack wait, for correlating ack-check / resolved
   // / timeout log lines with the originating TX.
   private pendingAckCommandId: number | null = null;
+  // Safety net for the "parked at running" case: when the indent TX is resolved
+  // by a bare/generic ACK (not the FINISH frame), indentStatus is left at
+  // 'running' and only a later indent-status FINISH frame moves it to
+  // 'completed'. If that FINISH frame is never sent/received, indentStatus would
+  // otherwise stay 'running' forever — which permanently disables the Impress
+  // button in the UI (isIndentInFlight gate). This watchdog forces a terminal
+  // state so the UI un-gates and shows a visible error instead of hanging.
+  private indentFinishWatchdog: ReturnType<typeof setTimeout> | null = null;
   private txQueue: Promise<void> = Promise.resolve();
   // Persisted-settings record bookkeeping. The latest row is loaded once at
   // service construction; subsequent saves update that same row instead of
@@ -692,6 +700,7 @@ class HardnessMachineSerialService extends EventEmitter {
     });
     portInstance.on('close', () => {
       this.port = null;
+      this.clearIndentFinishWatchdog();
       if (this.parser) {
         this.parser.removeAllListeners('data');
         this.parser = null;
@@ -726,6 +735,7 @@ class HardnessMachineSerialService extends EventEmitter {
   }
 
   async disconnectMachine(): Promise<MachineState> {
+    this.clearIndentFinishWatchdog();
     if (this.port) {
       await new Promise<void>((resolve) => {
         this.port?.close(() => resolve());
@@ -1046,6 +1056,10 @@ class HardnessMachineSerialService extends EventEmitter {
         if (this.state.indentStatus !== frame.status) {
           // eslint-disable-next-line no-console
           console.log(`[machine-sync][machine-change] field=indent value=${frame.status}`);
+        }
+        // A machine-driven terminal status supersedes the parked-running watchdog.
+        if (frame.status === 'completed' || frame.status === 'error') {
+          this.clearIndentFinishWatchdog();
         }
         this.setState(
           {
@@ -1608,21 +1622,64 @@ class HardnessMachineSerialService extends EventEmitter {
     return this.getState();
   }
 
+  private clearIndentFinishWatchdog(): void {
+    if (this.indentFinishWatchdog !== null) {
+      clearTimeout(this.indentFinishWatchdog);
+      this.indentFinishWatchdog = null;
+    }
+  }
+
+  private armIndentFinishWatchdog(timeoutMs: number): void {
+    this.clearIndentFinishWatchdog();
+    this.indentFinishWatchdog = setTimeout(() => {
+      this.indentFinishWatchdog = null;
+      // Only fire if the indent is still parked at 'running' — a real FINISH,
+      // error, disconnect, or a fresh indent would have cleared this timer.
+      if (this.state.indentStatus !== 'running') return;
+      const message = 'machine did not report indent completion (FINISH frame not received)';
+      // eslint-disable-next-line no-console
+      console.error(`[IMPRESS-ERROR] indent finish watchdog fired: ${message}`);
+      this.setState(
+        {
+          indentStatus: 'error',
+          indenting: false,
+          machineStatus: 'indent-error',
+          lastError: message,
+          syncStatus: 'failed',
+          syncMessage: message,
+        },
+        'system'
+      );
+    }, timeoutMs);
+  }
+
   async startIndent(turretAfterImpressOverride?: boolean): Promise<MachineState> {
+    // Any prior parked-indent watchdog is stale once a new indent begins.
+    this.clearIndentFinishWatchdog();
     if (!this.state.connected) {
       const message = 'machine not connected';
+      // eslint-disable-next-line no-console
+      console.error(`[IMPRESS-ERROR] precondition failed: ${message}`);
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
     if (this.state.indentStatus === 'started' || this.state.indentStatus === 'running') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[IMPRESS-VALIDATION] indent already in flight (status=${this.state.indentStatus}) — ignoring duplicate request`
+      );
       return this.getState();
     }
     if (!isCommandVerified('indent')) {
       const message = this.unverifiedMessage('indent');
+      // eslint-disable-next-line no-console
+      console.error(`[IMPRESS-ERROR] indent command not verified: ${message}`);
       this.logProtocolBlocked('indent');
       this.setState({ lastError: message, syncStatus: 'failed', syncMessage: message }, 'system');
       throw new Error(message);
     }
+    // eslint-disable-next-line no-console
+    console.log('[IMPRESS-EXECUTE] preconditions passed — building indent command');
     // An explicit per-call override wins (Multipoint Indenting mode fires indent-only
     // with turretAfterImpress=false, so the objective never rotates in between points).
     // Otherwise fall back to the configured auto-measure setting (unchanged default).
@@ -1664,6 +1721,10 @@ class HardnessMachineSerialService extends EventEmitter {
       // the completion acknowledgement, so keep the UI pending until RX proves it.
       // eslint-disable-next-line no-console
       console.log(`[machine-sync][pc-change] field=indent value=start`);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[IMPRESS-EXECUTE] transmitting indent force=${this.state.force} loadTime=${this.state.loadTime} timeoutMs=${indentTimeoutMs}`
+      );
       this.updateTelemetry({
         lastTxAt: new Date().toISOString(),
         lastTxCommand: `indent force=${this.state.force} loadTime=${this.state.loadTime}`,
@@ -1687,10 +1748,22 @@ class HardnessMachineSerialService extends EventEmitter {
         },
         completedByMachine ? 'machine' : 'pc'
       );
+      if (completedByMachine) {
+        // eslint-disable-next-line no-console
+        console.log('[IMPRESS-SUCCESS] indent completed (FINISH received during TX)');
+        this.clearIndentFinishWatchdog();
+      } else {
+        // Parked at 'running' by a bare/generic ACK — wait for the FINISH frame,
+        // but guard against it never arriving so the UI can never hang forever.
+        // eslint-disable-next-line no-console
+        console.log('[IMPRESS-SUCCESS] indent TX acked; awaiting FINISH (watchdog armed)');
+        this.armIndentFinishWatchdog(indentTimeoutMs);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
-      console.error(`[machine-service] indent failed: ${message}`);
+      console.error(`[IMPRESS-ERROR] indent failed: ${message}`);
+      this.clearIndentFinishWatchdog();
       this.setState(
         {
           indentStatus: 'error',
