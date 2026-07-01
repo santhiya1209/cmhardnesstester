@@ -14,8 +14,6 @@ import { IsoDateTimeSchema } from './common';
 import { MachineSettingsModel } from './machine-settings';
 import { MeasurementModel } from './measurement';
 import { MicrometerConfigModel } from './micrometer-config';
-import { MultipointResultModel } from './multipoint-result';
-import { PatternProgramModel } from './pattern-program';
 import { TestRecordModel } from './test-record';
 import { ToolbarStateModel } from './toolbar-state';
 import { XYZPlatformStateModel } from './xyz-platform-state';
@@ -47,11 +45,9 @@ export const DatabaseSchema = z.object({
   xyzCenterCalibration: z.array(XYZCenterCalibrationModel).default([]),
   xyzPlatformSettings: z.array(XYZPlatformSettingsModel).default([]),
   zAxisSettings: z.array(ZAxisSettingsModel).default([]),
-  patternPrograms: z.array(PatternProgramModel).default([]),
   depthImageSettings: z.array(DepthImageSettingModel).default([]),
   albumItems: z.array(AlbumItemModel).default([]),
   toolbarStates: z.array(ToolbarStateModel).default([]),
-  multipointResults: z.array(MultipointResultModel).default([]),
 });
 
 export type DatabaseState = z.infer<typeof DatabaseSchema>;
@@ -74,11 +70,9 @@ export const COLLECTION_NAMES = [
   'xyzCenterCalibration',
   'xyzPlatformSettings',
   'zAxisSettings',
-  'patternPrograms',
   'depthImageSettings',
   'albumItems',
   'toolbarStates',
-  'multipointResults',
 ] as const;
 
 export type CollectionName = (typeof COLLECTION_NAMES)[number];
@@ -106,10 +100,8 @@ export function createEmptyDatabase(now = new Date().toISOString()): DatabaseSta
     xyzCenterCalibration: [],
     xyzPlatformSettings: [],
     zAxisSettings: [],
-    patternPrograms: [],
     depthImageSettings: [],
     albumItems: [],
     toolbarStates: [],
-    multipointResults: [],
   };
 }

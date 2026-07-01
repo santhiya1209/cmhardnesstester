@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from 'react-redux';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
-import type { RootState } from '@/store';
-import { selectExecPhase } from '@/store/slices/multipointExecution.selectors';
-import { useGetMultipointResultsQuery } from '@/store/api/multipointResultApi';
-import { isRunning } from '@/types/multipointExecution';
-import type { CaptureReviewFn, MeasurePointFn, MeasurePointOutcome } from '@/types/multipointExecution';
-import type { DiamondGeometry } from '@/types/measurement';
 import { useCalibrationDialogSlot } from '@/features/calibration/useCalibrationDialogSlot';
 import AppDialogs from '@/features/shell/AppDialogs';
 import { useLineColorSetting } from '@/hooks/queries/useLineColorSetting';
@@ -37,7 +30,6 @@ import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
 import MenuBar from '@/component/own/MenuBar';
 import Toolbar from '@/component/own/Toolbar';
 import LeftPanel from '@/component/own/LeftPanel';
-import ReticleModeLock from '@/features/multipoint/ReticleModeLock';
 import type { CameraWindowHandle } from '@/component/own/CameraWindow';
 import RightPanel from '@/component/own/RightPanel';
 import StatusBar, {
@@ -97,7 +89,6 @@ import {
 } from '@/features/autoMeasure/autoMeasureHelpers';
 import { useCommittedFingerprints } from '@/features/autoMeasure/useCommittedFingerprints';
 import { resolveAutoMeasureCalibration } from '@/features/autoMeasure/resolveAutoMeasureCalibration';
-import { useCameraPointSelect } from '@/features/multipoint/useCameraPointSelect';
 import { runNativeDetection } from '@/features/autoMeasure/runNativeDetection';
 import { validateDetectionResult } from '@/features/autoMeasure/validateDetectionResult';
 import { useOverlayLifecycle } from '@/features/autoMeasure/useOverlayLifecycle';
@@ -318,18 +309,6 @@ function App() {
     clearActiveMeasurement,
   } = useActiveMeasurement();
   const committedFingerprintsRef = useCommittedFingerprints(measurements);
-  // The metrology committed by the most recent successful Auto Measure save,
-  // written by commitAutoMeasureSnapshot and read by the Multipoint engine's
-  // injected measurePoint primitive (the run loop has no other way to read back
-  // an HV from the event-driven save path). Reset to null before each point.
-  const lastMultipointMeasureRef = useRef<MeasurePointOutcome | null>(null);
-  // Saved per-point run records — map a generated point to the measurement it
-  // produced so the Multipoint "Go" button can re-display that point's overlay
-  // image + HV. Already persisted by the engine's per-point save.
-  const { data: multipointResults = [] } = useGetMultipointResultsQuery();
-  // Drives MeasurementsWorkspace selection from outside (Multipoint "Go" review)
-  // so the main HV readout follows the reviewed point.
-  const [reviewSelectMeasurementId, setReviewSelectMeasurementId] = useState<string | null>(null);
   const [activeObjective, setActiveObjective] = useState<string | null>(null);
   const activeObjectiveRef = useRef<string | null>(null);
   useEffect(() => {
@@ -347,20 +326,6 @@ function App() {
     }),
     []
   );
-
-  // Mirror the Multipoint engine's run state into a ref via an imperative store
-  // subscription — the after-impress flow reads it without re-rendering this
-  // (large) component on every per-point phase change.
-  const reduxStore = useStore<RootState>();
-  const multipointRunActiveRef = useRef(false);
-  useEffect(() => {
-    const read = () => {
-      multipointRunActiveRef.current = isRunning(selectExecPhase(reduxStore.getState()));
-    };
-    read();
-    return reduxStore.subscribe(read);
-  }, [reduxStore]);
-  const getMultipointRunActive = useCallback(() => multipointRunActiveRef.current, []);
 
   const [cameraStatus, setCameraStatusState] = useState<CameraStatusState>('closed');
   const setCameraStatus = useCallback((next: CameraStatusState) => {
@@ -432,7 +397,6 @@ function App() {
     machineLastObjectiveRx,
     cameraRef,
     getAfterImpressReadiness,
-    getMultipointRunActive,
     activeObjectiveRef,
     autoMeasureInFlightRef,
     runAutoMeasureRef,
@@ -569,14 +533,6 @@ function App() {
     machineHardnessLevel,
   });
   calibrationReadyRef.current = umPerPixelForActiveObjective != null;
-
-  // Multipoint camera-click point selection: a click on the live camera moves the
-  // stage (RX-gated, via the backend relocation engine) so the clicked feature is
-  // brought to the objective, then captures the ACTUAL landed position as a point.
-  const cameraPointSelect = useCameraPointSelect({
-    umPerPixel: umPerPixelForActiveObjective,
-    setStatusMessage,
-  });
 
   const handleUpdateShape = overlay.updateShape;
 
@@ -887,7 +843,7 @@ function App() {
       }
 
       const forceOverlayRefresh =
-        source === 'auto-click' || source === 'after-impress' || source === 'multipoint';
+        source === 'auto-click' || source === 'after-impress';
       // eslint-disable-next-line no-console
       console.log(
         `[auto-measure-final-corners] session=${graphics.sessionId ?? 'n/a'} objective=${graphics.objective ?? 'n/a'} key=${autoMeasureCornersKey(graphics.corners)}`
@@ -1081,28 +1037,6 @@ function App() {
         console.warn('[album] missing image for measurementId=', autoMeasurementIdRef.current ?? 'new');
       }
       const overlayImageReady = !!imageDataUrl;
-      if (source === 'multipoint') {
-        // Diamond offset from the target: with the stage parked ON the generated
-        // point, the optical axis (image centre / crosshair) IS the target, so the
-        // detected diamond centre's distance from the image centre = how far the
-        // actual impression sits from the generated point. ~0 ⇒ on target.
-        const fw = snapshot.imageSize?.width ?? 0;
-        const fh = snapshot.imageSize?.height ?? 0;
-        const upp = values.umPerPixel ?? null;
-        const offXmm = fw > 0 && upp ? ((center.x - fw / 2) * upp) / 1000 : null;
-        const offYmm = fh > 0 && upp ? ((center.y - fh / 2) * upp) / 1000 : null;
-        /* eslint-disable no-console */
-        console.log(`[RESULT] Image Saved hasImage=${overlayImageReady} key=${finalCornersKey}`);
-        console.log(
-          `[RESULT] Overlay Saved (vector geometry) d1Um=${values.d1Um} d2Um=${values.d2Um} hasCorners=${!!graphics.corners} hasNorm=${!!graphics.corners && !!(snapshot.imageSize?.width)} session=${graphics.sessionId ?? 'n/a'}`
-        );
-        console.log(`[EXEC] Diamond Center X ${center.x}`);
-        console.log(`[EXEC] Diamond Center Y ${center.y}`);
-        console.log(
-          `[EXEC] Diamond Offset From Target ${offXmm != null && offYmm != null ? `(${offXmm.toFixed(4)}, ${offYmm.toFixed(4)}) mm` : `(${(center.x - fw / 2).toFixed(1)}, ${(center.y - fh / 2).toFixed(1)}) px (uncalibrated)`}`
-        );
-        /* eslint-enable no-console */
-      }
       // eslint-disable-next-line no-console
       console.log(`[auto-measure-overlay-visible] visible=true imageReady=${overlayImageReady}`);
       if (!overlayImageReady) {
@@ -1247,18 +1181,6 @@ function App() {
           ? `System Status: Auto measurement added: HV ${saved.hv}`
           : `System Status: Auto measurement added: ${values.d1Um} µm / ${values.d2Um} µm`
       );
-      // Hand the committed metrology back to the Multipoint engine's measurePoint
-      // primitive (the only consumer). Populated on every successful save; the
-      // primitive resets it to null before each point so a stale value is never
-      // misread as the current point's result.
-      lastMultipointMeasureRef.current = {
-        ok: true,
-        hv: finiteOrNull(saved.hv) ?? values.hv,
-        d1Um: finiteOrNull(saved.d1Um) ?? values.d1Um,
-        d2Um: finiteOrNull(saved.d2Um) ?? values.d2Um,
-        confidence: finiteOrNull(result.confidence),
-        measurementId: saved.id,
-      };
       return true;
     },
     [
@@ -1271,139 +1193,6 @@ function App() {
       setActiveMeasurement,
       preserveAfterImpressOverlay,
       setAutoMeasureStatus,
-    ]
-  );
-
-  // Start-time prerequisite for a Multipoint run: the (active objective, selected
-  // force) pair must be calibrated BEFORE the first point moves/indents — the
-  // measurement-save gate alone would let the stage move + indent first. Reuses
-  // the same lookup (`hasCalibrationForForce`) and the same "Calibration Required"
-  // dialog the Auto Measure / Impress gates use. Returns false (and shows the
-  // dialog) to abort Start; true to proceed. Wired to the Multipoint Start button.
-  const validateMultipointCalibration = useCallback(async (): Promise<boolean> => {
-    const machineState = await getMachineStateSnapshot();
-    const activeObjectiveSnapshot = activeObjectiveRef.current?.trim().toUpperCase() || null;
-    const objectiveForCalibration = objectiveForMeasureFromObjective(activeObjectiveSnapshot);
-    const calibrated =
-      !!objectiveForCalibration &&
-      hasCalibrationForForce(calibrations, objectiveForCalibration, machineState?.force);
-    if (!calibrated) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[multipoint-start-blocked] reason=calibration-required objective=${objectiveForCalibration ?? 'null'} force=${machineState?.force ?? 'null'}`
-      );
-      setCalibrationRequiredMsg(
-        'The selected objective and/or force has not been calibrated.\nPlease complete calibration before running a Multipoint program.'
-      );
-      return false;
-    }
-    return true;
-  }, [getMachineStateSnapshot, calibrations]);
-
-  // Multipoint per-row "Go" review: after the stage has moved to the point, re-
-  // display that point's recorded indentation overlay + HV. The overlay is
-  // already baked into the saved measurement's imageDataUrl (captureFinalized
-  // Thumbnail), so it is shown by loading that still onto the camera — no need to
-  // re-run the live overlay engine. Selecting the measurement drives the main HV
-  // readout through the existing MeasurementsWorkspace selection chain.
-  const reviewMultipointPoint = useCallback(
-    async (pointId: string): Promise<void> => {
-      // Latest run record for this point, regardless of whether it links a
-      // measurement: One/Two-Pass points carry a measurementId (image+geometry on
-      // the measurement row); Indenting points carry the review snapshot on the
-      // result row itself (no metrology, no measurement). Both are revisitable.
-      const result = multipointResults
-        .filter((r) => r.pointId === pointId)
-        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
-      const measurementId = result?.measurementId ?? null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[GO] Loading Saved Result pointId=${pointId} found=${!!result} measurementId=${measurementId ?? 'none'} candidates=${
-          multipointResults.filter((r) => r.pointId === pointId).length
-        }`
-      );
-      if (!result) {
-        // eslint-disable-next-line no-console
-        console.warn(`[GO] No saved record for pointId=${pointId} — nothing to restore.`);
-        setStatusMessage('System Status: No result recorded for this point yet.');
-        return;
-      }
-      const measurement = measurementId ? measurements.find((m) => m.id === measurementId) ?? null : null;
-      if (measurementId) setReviewSelectMeasurementId(measurementId);
-      // Resolve the review assets: measurement row first (One/Two-Pass), else the
-      // result row's own snapshot (Indenting). diamond is normalised in both.
-      const imageDataUrl = measurement?.imageDataUrl ?? result.imageDataUrl ?? undefined;
-      const diamondNorm = measurement?.diamond ?? result.diamond ?? null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[GO] Loading Saved Image measurementId=${measurementId ?? 'none'} source=${measurement ? 'measurement' : 'result-row'} hasImage=${!!imageDataUrl} hasGeometry=${!!diamondNorm} hv=${measurement?.hv ?? 'n/a'}`
-      );
-      if (imageDataUrl) {
-        try {
-          const buffer = await (await fetch(imageDataUrl)).arrayBuffer();
-          const loaded = await cameraRef.current?.loadImageFromBuffer(buffer);
-          // eslint-disable-next-line no-console
-          console.log(
-            `[GO] Loading Saved Image loaded=${loaded?.ok ?? false} bytes=${buffer.byteLength} dims=${loaded?.width ?? '?'}x${loaded?.height ?? '?'}${loaded?.error ? ` error=${loaded.error}` : ''}`
-          );
-          if (loaded?.ok) {
-            // eslint-disable-next-line no-console
-            console.log('[GO] Image Restored');
-            // Repaint the SHARP vector diamond from the stored normalised geometry,
-            // denormalised against the just-loaded still's dimensions (the overlay
-            // maps corners in that same imageSize). objective/frameId are nulled so
-            // the live render gate's objective/frame guards never drop a review
-            // overlay; autoMeasureSessionActive=true lets it paint.
-            const norm = diamondNorm;
-            const w = loaded.width ?? 0;
-            const h = loaded.height ?? 0;
-            // eslint-disable-next-line no-console
-            console.log(`[GO] Loading Saved Overlay hasGeometry=${!!norm} dims=${w}x${h}`);
-            if (norm && w > 0 && h > 0) {
-              const px = (p: { x: number; y: number }) => ({ x: p.x * w, y: p.y * h });
-              const corners = { top: px(norm.top), right: px(norm.right), bottom: px(norm.bottom), left: px(norm.left) };
-              setAutoMeasureCapturedFrameId(null);
-              setCommittedAutoMeasureOverlay({
-                corners,
-                lines: [],
-                lineLayout: 'four-guides',
-                objective: null,
-                frameId: null,
-                sessionId: null,
-              });
-              setAutoMeasureSessionActive(true);
-              // eslint-disable-next-line no-console
-              console.log(
-                `[GO] Diamond Restored corners=L(${corners.left.x.toFixed(0)},${corners.left.y.toFixed(0)}) R(${corners.right.x.toFixed(0)},${corners.right.y.toFixed(0)}) T(${corners.top.x.toFixed(0)},${corners.top.y.toFixed(0)}) B(${corners.bottom.x.toFixed(0)},${corners.bottom.y.toFixed(0)})`
-              );
-            } else {
-              // Legacy row with no stored geometry: the diamond baked into the still
-              // is still visible — only the sharp vector repaint is skipped.
-              // eslint-disable-next-line no-console
-              console.warn('[GO] Diamond Restored skipped — no stored geometry (using baked-in overlay).');
-            }
-          }
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn('[GO] image-load-failed', err);
-        }
-      } else {
-        // eslint-disable-next-line no-console
-        console.warn(`[GO] measurement ${measurementId} has no imageDataUrl — diamond overlay cannot be restored.`);
-      }
-      setStatusMessage(
-        measurement?.hv != null
-          ? `System Status: Point review — HV ${measurement.hv}`
-          : 'System Status: Point review'
-      );
-    },
-    [
-      multipointResults,
-      measurements,
-      setStatusMessage,
-      setCommittedAutoMeasureOverlay,
-      setAutoMeasureSessionActive,
-      setAutoMeasureCapturedFrameId,
     ]
   );
 
@@ -1448,7 +1237,7 @@ function App() {
         // A measurement run must start from a clean annotation layer: drop any
         // Measure Length / Measure Angle shapes (lines + µm/° labels) left over
         // from a prior session so they never persist into this run. Applies to
-        // every non-preview entry (Auto Measure click, after-impress, multipoint,
+        // every non-preview entry (Auto Measure click, after-impress,
         // settings-save). Saved results and the camera feed are untouched.
         overlay.clearMeasurementShapes();
       }
@@ -1470,7 +1259,7 @@ function App() {
       setAutoMeasureSessionId(sessionIdForRun);
       setAutoMeasureSessionActive(true);
       const isFreshCapture =
-        callSource === 'auto-click' || callSource === 'after-impress' || callSource === 'multipoint';
+        callSource === 'auto-click' || callSource === 'after-impress';
       // Outcome of this run, used by the finally to guarantee the camera is
       // unfrozen on every NON-success exit. Success deliberately stays frozen so
       // the result overlay remains pinned to the captured frame.
@@ -1566,8 +1355,7 @@ function App() {
           );
           if (
             callSource === 'auto-click' ||
-            callSource === 'after-impress' ||
-            callSource === 'multipoint'
+            callSource === 'after-impress'
           ) {
             setAutoMeasurePreviewSettings((prev) =>
               autoMeasureSettingsEqual(prev, profiledSettings) ? prev : profiledSettings
@@ -1960,9 +1748,7 @@ function App() {
             ? 'settings-save'
             : callSource === 'after-impress'
               ? 'after-impress'
-              : callSource === 'multipoint'
-                ? 'multipoint'
-                : 'auto-click'
+              : 'auto-click'
         );
         stageAt('commit-done');
         measureOutcome = committed ? 'success' : 'failure';
@@ -2108,152 +1894,6 @@ function App() {
     }, WATCHDOG_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [recoverMeasurement, autoMeasureInFlightRef]);
-
-  // Real per-point Vickers measurement for the Multipoint engine. Reuses the
-  // EXACT single-indent detector/save path (runAutoMeasure → commitAutoMeasure
-  // Snapshot) via the dedicated 'multipoint' call-source, then hands back the
-  // committed metrology the engine records against the point. A fresh row is
-  // forced per point (autoMeasurementIdRef = null) and the result ref is cleared
-  // first so a stale value can never be misread as this point's outcome.
-  const measurePoint = useCallback<MeasurePointFn>(async () => {
-    // Post-indent readiness gate (the gap that made every multipoint point's
-    // Measure fail): the indent rotates the INDENTER over the sample and the
-    // objective returns afterwards (firmware turret suffix). Detecting on the
-    // frame the instant the indent completes hits a stale / mid-turret-return
-    // view, so the detector rejects. Mirror the after-impress flow — unfreeze,
-    // settle for the objective, and wait for a fresh frame before detecting —
-    // with up to 3 attempts (each re-armed with a fresh frame), the same budget
-    // the after-impress detection uses.
-    const camera = cameraRef.current;
-    const objective = (activeObjectiveRef.current ?? '').trim().toUpperCase();
-    const settleForObjectiveMs = objective === '40X' ? 600 : 350;
-
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      if (camera) {
-        camera.unfreezeCamera(`multipoint-measure-attempt-${attempt}`);
-        if (attempt === 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, settleForObjectiveMs));
-        }
-        const fresh = await camera.waitForFreshFrame(1500);
-        if (!fresh) {
-          // eslint-disable-next-line no-console
-          console.warn(`[multipoint-measure] fresh-frame timeout attempt=${attempt}`);
-        }
-      }
-      // Force a fresh row + clear the result ref so a stale value from a prior
-      // attempt/point can never be misread as this attempt's outcome.
-      lastMultipointMeasureRef.current = null;
-      autoMeasurementIdRef.current = null;
-      // eslint-disable-next-line no-console
-      console.log(`[multipoint-measure] detect attempt=${attempt} objective=${objective || 'null'}`);
-      const ok = await runAutoMeasure(
-        latestAutoMeasurePreviewSettingsRef.current,
-        false,
-        'multipoint'
-      );
-      const result = lastMultipointMeasureRef.current;
-      if (ok && result) return result;
-    }
-
-    return {
-      ok: false,
-      rejected: true,
-      hv: null,
-      d1Um: null,
-      d2Um: null,
-      confidence: null,
-      measurementId: null,
-      message: 'Auto Measure could not detect the indentation after 3 attempts',
-    };
-  }, [runAutoMeasure]);
-
-  // Indenting-mode review capture. Indenting mode does NOT measure (no HV), but a
-  // professional tester still lets the operator revisit every indent — so after
-  // each indent we grab a still and a BEST-EFFORT diamond (geometry only; no
-  // calibration needed, minConfidence 0, never rejects). The engine persists the
-  // result on the multipoint_results row (no measurement row, since there is no
-  // metrology). A single fast attempt: review must not slow the no-measure mode.
-  const captureReviewPoint = useCallback<CaptureReviewFn>(async () => {
-    const camera = cameraRef.current;
-    if (!camera) return {};
-    const objective = (activeObjectiveRef.current ?? '').trim().toUpperCase();
-    const settleForObjectiveMs = objective === '40X' ? 600 : 350;
-    // Mirror the measure readiness gate (unfreeze → settle → fresh frame) so the
-    // capture is not a stale / mid-turret-return view, but a single attempt.
-    camera.unfreezeCamera('multipoint-indent-review');
-    await new Promise((resolve) => window.setTimeout(resolve, settleForObjectiveMs));
-    await camera.waitForFreshFrame(1500);
-    const frame = camera.captureDisplayedFrame({ freeze: true });
-    let diamond: DiamondGeometry | null = null;
-    let centerNorm: { x: number; y: number } | null = null;
-    if (frame?.ok) {
-      try {
-        const { nativeResult } = await runNativeDetection({
-          preview: false,
-          callSource: 'multipoint',
-          settings: latestAutoMeasurePreviewSettingsRef.current,
-          objectiveForCalibration: objective,
-          displayedFrame: frame,
-          capturedFrameIdForRun: null,
-          calibration: null,
-          forceKgf: null,
-          minConfidence: 0,
-        });
-        const fw = frame.width || 0;
-        const fh = frame.height || 0;
-        if (nativeResult.ok && fw > 0 && fh > 0) {
-          const c = nativeResult.corners;
-          diamond = {
-            top: { x: c.top.x / fw, y: c.top.y / fh },
-            right: { x: c.right.x / fw, y: c.right.y / fh },
-            bottom: { x: c.bottom.x / fw, y: c.bottom.y / fh },
-            left: { x: c.left.x / fw, y: c.left.y / fh },
-          };
-          centerNorm = {
-            x: (c.top.x + c.right.x + c.bottom.x + c.left.x) / 4 / fw,
-            y: (c.top.y + c.right.y + c.bottom.y + c.left.y) / 4 / fh,
-          };
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('[REVIEW] geometry-detect-failed', err);
-      }
-    }
-    // No diamond detected → the indent sits under the fixed optical axis = frame
-    // centre, so record that as the indentation centre (requirement: always save
-    // a centre, diamond only when available).
-    if (!centerNorm) centerNorm = { x: 0.5, y: 0.5 };
-    const imageDataUrl = (await camera.captureThumbnailDataUrl()) ?? null;
-    // Diamond offset from target: distance of the detected centre from the image
-    // centre (= crosshair = target, the stage being parked on the point). In
-    // normalised units (×100 ≈ % of frame); px when frame dims are known.
-    const offNX = centerNorm.x - 0.5;
-    const offNY = centerNorm.y - 0.5;
-    /* eslint-disable no-console */
-    console.log(`[EXEC] Diamond Center X ${centerNorm.x}`);
-    console.log(`[EXEC] Diamond Center Y ${centerNorm.y}`);
-    console.log(`[EXEC] Diamond Offset From Target (${(offNX * 100).toFixed(2)}%, ${(offNY * 100).toFixed(2)}%) of frame${diamond ? '' : ' (no diamond — frame-centre fallback)'}`);
-    console.log(
-      `[RESULT] Overlay Saved (vector geometry) hasDiamond=${!!diamond} hasImage=${!!imageDataUrl} (indenting-review)`
-    );
-    /* eslint-enable no-console */
-    return { imageDataUrl, diamond, centerNorm };
-  }, []);
-
-  // Return the live camera display to streaming during a Multipoint run. The
-  // 'multipoint' measure path freezes the display at each point (to capture +
-  // paint the overlay on the held frame) but, unlike the after-impress flow, has
-  // no resume of its own — so without this the operator's view sticks on the
-  // first measured frame for the whole run. The engine calls this at every point
-  // boundary (and run start/end); unfreezeCamera is a no-op when not frozen, so
-  // the calls are cheap and safe. waitForFreshFrame is fire-and-forget (mirrors
-  // the after-impress resume) so it never delays the next move.
-  const resumeLiveCamera = useCallback(() => {
-    const camera = cameraRef.current;
-    if (!camera) return;
-    camera.unfreezeCamera('multipoint-resume-live');
-    void camera.waitForFreshFrame(1500);
-  }, []);
 
   const autoMeasurePreviewSettingsRef = useRef<AutoMeasureSettingsPayload>(autoMeasurePreviewSettings);
   useEffect(() => {
@@ -2641,7 +2281,6 @@ function App() {
 
   return (
     <Box sx={ROOT_SX}>
-      <ReticleModeLock onLockChange={overlay.lockCrossLine} />
       <MenuBar onSelect={handleMenuSelect} />
       <Toolbar
         onSelect={handleToolbarSelect}
@@ -2676,9 +2315,6 @@ function App() {
           cameraOpen={cameraOpen}
           umPerPixel={umPerPixelForActiveObjective}
           onUpdateShape={handleUpdateShape}
-          pointSelectActive={cameraPointSelect.selecting}
-          pointSelectHint={cameraPointSelect.hint}
-          onPointSelectPick={cameraPointSelect.handlePick}
         />
         <RightPanel
           micrometerEnabled={micrometerEnabled}
@@ -2696,12 +2332,6 @@ function App() {
           onTurretIntent={handleTurretIntentClick}
           onObjectiveChangeIntent={handleObjectiveChangeIntent}
           onToolbarAction={handleToolbarSelect}
-          onValidateMultipointStart={validateMultipointCalibration}
-          measurePoint={measurePoint}
-          captureReviewPoint={captureReviewPoint}
-          onResumeMultipointCamera={resumeLiveCamera}
-          onReviewMultipointPoint={reviewMultipointPoint}
-          reviewSelectMeasurementId={reviewSelectMeasurementId}
           selectedMeasureMode={selectedMeasureMode}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={handleCloseTrimMeasure}

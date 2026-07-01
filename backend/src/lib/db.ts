@@ -57,11 +57,9 @@ function saveDatabase(database: DatabaseState): void {
     xyzCenterCalibration: state.xyzCenterCalibration,
     xyzPlatformSettings: state.xyzPlatformSettings,
     zAxisSettings: state.zAxisSettings,
-    patternPrograms: state.patternPrograms,
     depthImageSettings: state.depthImageSettings,
     albumItems: state.albumItems,
     toolbarStates: state.toolbarStates,
-    multipointResults: state.multipointResults,
   };
   writeAllCollections(rows, state.meta.updatedAt);
 }

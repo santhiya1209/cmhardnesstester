@@ -4,20 +4,14 @@ import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useAlbumItems } from '@/hooks/queries/useAlbumItems';
-import { usePatternPrograms } from '@/hooks/queries/usePatternPrograms';
 import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
-import type { PatternProgram } from '@/types/patternProgram';
 import type { ToolId, ToolbarActionId, MeasureSelection } from '@/types/tool';
-import type { CaptureReviewFn, MeasurePointFn } from '@/types/multipointExecution';
 import { tokens } from '@/theme/theme';
 import { useRenderCount } from '@/utils/renderStats';
 
 import MeasurementsWorkspace, { type MeasurementDisplayValues } from './MeasurementsWorkspace';
 import MachineControlTab from './MachineControlTab';
-import XYZPlatformTab from './XYZPlatformTab';
-import MultipointTab from './MultipointTab';
-import PatternListTab from './PatternListTab';
 import StatisticsInfoTab from './StatisticsInfoTab';
 import AlbumTab from './AlbumTab';
 import DepthImageTab from './DepthImageTab';
@@ -27,9 +21,6 @@ type ObjectiveCommitSource = 'ack';
 
 const TAB_ITEMS = [
   'Machine Control',
-  'XYZ Platform Control',
-  'Multipoint',
-  'Pattern List',
   'Statistics Info',
   'Album',
   'Depth Image',
@@ -85,10 +76,6 @@ const TABS_SX: SxProps<Theme> = {
 
 type TabContentProps = {
   measurements: Measurement[];
-  patternPrograms: PatternProgram[];
-  patternProgramsError: string | null;
-  patternProgramsLoading: boolean;
-  refetchPatternPrograms: () => Promise<void>;
   albumItems: AlbumItem[];
   refetchAlbumItems: () => Promise<void>;
   measurementDisplay: MeasurementDisplayValues;
@@ -101,17 +88,6 @@ type TabContentProps = {
   activeTool?: ToolId;
   selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
-  /** Start-time calibration gate for Multipoint; returns false to abort Start. */
-  onValidateMultipointStart?: () => boolean | Promise<boolean>;
-  /** Real per-point Vickers measurement + save for the Multipoint engine. */
-  measurePoint?: MeasurePointFn;
-  /** Indenting-mode review capture (still + best-effort diamond) for the engine. */
-  captureReviewPoint?: CaptureReviewFn;
-  /** Resume the live camera display between Multipoint points (the measure
-   *  path freezes it to paint the overlay and never resumes on its own). */
-  onResumeMultipointCamera?: () => void;
-  /** Multipoint "Go" review: re-display a point's overlay image + HV. */
-  onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
   micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
@@ -123,10 +99,6 @@ function renderTab(
   tab: number,
   {
     measurements,
-    patternPrograms,
-    patternProgramsError,
-    patternProgramsLoading,
-    refetchPatternPrograms,
     albumItems,
     refetchAlbumItems,
     measurementDisplay,
@@ -136,11 +108,6 @@ function renderTab(
     onTurretIntent,
     onObjectiveChangeIntent,
     onToolbarAction,
-    onValidateMultipointStart,
-    measurePoint,
-    captureReviewPoint,
-    onResumeMultipointCamera,
-    onReviewMultipointPoint,
     selectedMeasureMode,
     micrometerEnabled,
     targetMinHv,
@@ -172,27 +139,7 @@ function renderTab(
           micrometerEnabled={micrometerEnabled}
         />
       );
-    case 1: return <XYZPlatformTab />;
-    case 2:
-      return (
-        <MultipointTab
-          onValidateStart={onValidateMultipointStart}
-          measurePoint={measurePoint}
-          captureReviewPoint={captureReviewPoint}
-          onResumeLive={onResumeMultipointCamera}
-          onReviewPoint={onReviewMultipointPoint}
-        />
-      );
-    case 3:
-      return (
-        <PatternListTab
-          patternPrograms={patternPrograms}
-          patternProgramsError={patternProgramsError}
-          patternProgramsLoading={patternProgramsLoading}
-          refetchPatternPrograms={refetchPatternPrograms}
-        />
-      );
-    case 4:
+    case 1:
       return (
         <StatisticsInfoTab
           measurements={measurements}
@@ -200,9 +147,9 @@ function renderTab(
           targetMaxHv={targetMaxHv}
         />
       );
-    case 5:
+    case 2:
       return <AlbumTab measurements={measurements} />;
-    case 6:
+    case 3:
       return (
         <DepthImageTab
           albumItemCount={albumItems.length}
@@ -232,13 +179,6 @@ type Props = {
   activeTool?: ToolId;
   selectedMeasureMode?: MeasureSelection;
   cameraReady?: boolean;
-  onValidateMultipointStart?: () => boolean | Promise<boolean>;
-  measurePoint?: MeasurePointFn;
-  captureReviewPoint?: CaptureReviewFn;
-  onResumeMultipointCamera?: () => void;
-  onReviewMultipointPoint?: (pointId: string) => void | Promise<void>;
-  /** Externally-driven measurement selection (Multipoint "Go" review). */
-  reviewSelectMeasurementId?: string | null;
   trimMeasureOpen: boolean;
   onCloseTrimMeasure: () => void;
   onTrimAdjust: (corner: TrimCorner, dx: number, dy: number) => void;
@@ -269,12 +209,6 @@ function RightPanelImpl({
   onTurretIntent,
   onObjectiveChangeIntent,
   onToolbarAction,
-  onValidateMultipointStart,
-  measurePoint,
-  captureReviewPoint,
-  onResumeMultipointCamera,
-  onReviewMultipointPoint,
-  reviewSelectMeasurementId,
   activeTool,
   selectedMeasureMode,
   cameraReady,
@@ -290,12 +224,6 @@ function RightPanelImpl({
   useRenderCount('RightPanel');
   const [tab, setTab] = useState(0);
   const [chdTargetInput, setChdTargetInput] = useState('550');
-  const {
-    data: patternPrograms,
-    error: patternProgramsError,
-    loading: patternProgramsLoading,
-    refetch: refetchPatternPrograms,
-  } = usePatternPrograms();
   const {
     data: albumItems,
     refetch: refetchAlbumItems,
@@ -336,11 +264,10 @@ function RightPanelImpl({
             loading={measurementsLoading}
             error={measurementsError}
             refetch={refetchMeasurements}
-            onOpenStatisticsTab={() => setTab(4)}
+            onOpenStatisticsTab={() => setTab(1)}
             onOpenTestRecords={onOpenTestRecords}
             onMeasurementsCleared={onMeasurementsCleared}
             onDisplayValuesChange={handleMeasurementDisplayValuesChange}
-            reviewSelectMeasurementId={reviewSelectMeasurementId}
             micrometerEnabled={micrometerEnabled}
             targetMinHv={targetMinHv}
             targetMaxHv={targetMaxHv}
@@ -362,10 +289,6 @@ function RightPanelImpl({
 
           {renderTab(tab, {
             measurements,
-            patternPrograms,
-            patternProgramsError,
-            patternProgramsLoading,
-            refetchPatternPrograms,
             albumItems,
             refetchAlbumItems,
             measurementDisplay,
@@ -375,11 +298,6 @@ function RightPanelImpl({
             onTurretIntent,
             onObjectiveChangeIntent,
             onToolbarAction,
-            onValidateMultipointStart,
-            measurePoint,
-            captureReviewPoint,
-            onResumeMultipointCamera,
-            onReviewMultipointPoint,
             activeTool,
             selectedMeasureMode,
             cameraReady,

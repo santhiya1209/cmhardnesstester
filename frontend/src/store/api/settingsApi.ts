@@ -202,7 +202,6 @@ export const settingsApi = baseApi.injectEndpoints({
         'GenericSetting',
         'OtherSetting',
         'ReportHeaderSetting',
-        'PatternProgram',
         'TestRecord',
         'AlbumItem',
         'ToolbarState',

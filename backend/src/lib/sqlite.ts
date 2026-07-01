@@ -35,11 +35,9 @@ export const COLLECTION_TO_TABLE: Record<CollectionName, string> = {
   xyzCenterCalibration: 'xyz_center_calibration',
   xyzPlatformSettings: 'xyz_platform_settings',
   zAxisSettings: 'z_axis_settings',
-  patternPrograms: 'pattern_programs',
   depthImageSettings: 'depth_image_settings',
   albumItems: 'album_items',
   toolbarStates: 'toolbar_states',
-  multipointResults: 'multipoint_results',
 };
 
 export const TABLE_TO_COLLECTION: Record<string, CollectionName> = Object.fromEntries(

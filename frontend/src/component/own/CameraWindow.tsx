@@ -20,7 +20,6 @@ import ImageOverlay from '@/component/own/ImageOverlay';
 import AutoMeasureOverlay from '@/component/own/AutoMeasureOverlay';
 import MagnifierLens from '@/component/own/MagnifierLens';
 import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
-import PatternOverlay from '@/component/own/PatternOverlay';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { CameraPixelFormat } from '@/types/camera';
 import type { CrosshairConfig } from '@/types/crosshair';
@@ -116,12 +115,6 @@ type Props = {
   cameraOpen?: boolean;
   umPerPixel?: number | null;
   onUpdateShape?: (id: string, next: OverlayShapeInput) => void;
-  /** When true the camera is in Multipoint point-selection mode: crosshair cursor + the next in-bounds click is reported via onPointSelectPick. */
-  pointSelectActive?: boolean;
-  /** Centered hint shown during point selection / stage move; null when not picking. */
-  pointSelectHint?: string | null;
-  /** Receives the clicked location as native image pixels + the image size (only while pointSelectActive). */
-  onPointSelectPick?: (imagePoint: Point, imageSize: ImageSize) => void;
 };
 
 export type CameraWindowHandle = {
@@ -208,9 +201,6 @@ function CameraWindowImpl(
     cameraOpen = true,
     umPerPixel = null,
     onUpdateShape,
-    pointSelectActive = false,
-    pointSelectHint = null,
-    onPointSelectPick,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -793,43 +783,6 @@ function CameraWindowImpl(
     setCursorDisplay(null);
   }, []);
 
-  // Multipoint point selection: convert an in-bounds click to native image pixels
-  // (same letterbox math as the cursor read-out) and report it. Capture-phase so it
-  // fires before any overlay; gated on pointSelectActive so it never hijacks normal
-  // tool clicks. The mm conversion + stage move live in the orchestration hook.
-  const handlePointSelectDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!pointSelectActive || !onPointSelectPick) return;
-      const viewport = viewportRef.current;
-      if (!viewport || !imageSize) return;
-      const rect = viewport.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const displayPoint: Point = {
-        x: ((event.clientX - rect.left) / rect.width) * viewport.clientWidth,
-        y: ((event.clientY - rect.top) / rect.height) * viewport.clientHeight,
-      };
-      const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
-      if (
-        !placement ||
-        displayPoint.x < placement.offsetX ||
-        displayPoint.x > placement.offsetX + placement.width ||
-        displayPoint.y < placement.offsetY ||
-        displayPoint.y > placement.offsetY + placement.height
-      ) {
-        return;
-      }
-      const imagePoint = displayToImage(displayPoint, placement, imageSize);
-      onPointSelectPick(
-        {
-          x: Math.max(0, Math.min(imageSize.width - 1, imagePoint.x)),
-          y: Math.max(0, Math.min(imageSize.height - 1, imagePoint.y)),
-        },
-        imageSize
-      );
-    },
-    [pointSelectActive, onPointSelectPick, imageSize]
-  );
-
   const tag = statusLabel(status);
 
   return (
@@ -857,20 +810,6 @@ function CameraWindowImpl(
             </Typography>
           ) : null}
         </Box>
-        {pointSelectHint ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              top: 8,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 3,
-              pointerEvents: 'none',
-            }}
-          >
-            <Chip size="small" color="info" variant="filled" label={pointSelectHint} />
-          </Box>
-        ) : null}
         <Box
           ref={viewportRef}
           sx={{
@@ -879,7 +818,6 @@ function CameraWindowImpl(
             transform: `scale(${zoom})`,
             transformOrigin: 'center center',
             transition: 'transform 120ms ease-out',
-            cursor: pointSelectActive ? 'crosshair' : undefined,
             // A press-drag over the live image must NOT trigger the browser's
             // native selection/image drag (which looks like the camera panning).
             // Same guard the other draggable surfaces use; pointer handlers and
@@ -889,7 +827,6 @@ function CameraWindowImpl(
           }}
           onPointerMoveCapture={updateCursorFromPointer}
           onPointerLeave={clearCursor}
-          onPointerDownCapture={handlePointSelectDown}
         >
         <canvas ref={canvasRef} style={CANVAS_STYLE} />
         <canvas
@@ -936,42 +873,6 @@ function CameraWindowImpl(
           onMeasurementUpdated={onManualMeasurementUpdated}
           strokeWidth={lineStrokeWidth}
         />
-        <PatternOverlay
-          imageSize={imageSize}
-          umPerPixel={umPerPixel}
-          active={activeTool !== 'manualMeasure'}
-        />
-        {/* Full crosshair reticle while arming a Multipoint "Add Point" click —
-            spans the viewport at the cursor so the operator can sight the exact
-            feature before clicking. Cursor tracking already feeds cursorDisplay. */}
-        {pointSelectActive && cursorDisplay ? (
-          <>
-            <Box
-              sx={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                top: cursorDisplay.y,
-                height: '1px',
-                bgcolor: tokens.overlay.cameraPoint,
-                pointerEvents: 'none',
-                zIndex: 4,
-              }}
-            />
-            <Box
-              sx={{
-                position: 'absolute',
-                top: 0,
-                bottom: 0,
-                left: cursorDisplay.x,
-                width: '1px',
-                bgcolor: tokens.overlay.cameraPoint,
-                pointerEvents: 'none',
-                zIndex: 4,
-              }}
-            />
-          </>
-        ) : null}
         {magnifierEnabled ? (
           <MagnifierLens
             source={frozen ? freezeCanvasRef.current : canvasRef.current}

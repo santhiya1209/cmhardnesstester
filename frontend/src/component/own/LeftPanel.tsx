@@ -45,12 +45,6 @@ type Props = {
   cameraOpen?: boolean;
   umPerPixel?: number | null;
   onUpdateShape?: (id: string, next: OverlayShapeInput) => void;
-  pointSelectActive?: boolean;
-  pointSelectHint?: string | null;
-  onPointSelectPick?: (
-    imagePoint: { x: number; y: number },
-    imageSize: { width: number; height: number }
-  ) => void;
 };
 
 function LeftPanelImpl(
@@ -79,9 +73,6 @@ function LeftPanelImpl(
     cameraOpen,
     umPerPixel,
     onUpdateShape,
-    pointSelectActive,
-    pointSelectHint,
-    onPointSelectPick,
   }: Props,
   ref: React.Ref<CameraWindowHandle>
 ) {
@@ -114,9 +105,6 @@ function LeftPanelImpl(
         cameraOpen={cameraOpen}
         umPerPixel={umPerPixel}
         onUpdateShape={onUpdateShape}
-        pointSelectActive={pointSelectActive}
-        pointSelectHint={pointSelectHint}
-        onPointSelectPick={onPointSelectPick}
       />
     </Box>
   );
