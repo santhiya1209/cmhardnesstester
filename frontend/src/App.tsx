@@ -24,6 +24,7 @@ import { useCameraSettingsRestore } from '@/features/camera/useCameraSettingsRes
 import {
   DEFAULT_AUTO_MEASURE_SETTINGS,
   normalizeAutoMeasureSettings,
+  type AutoMeasureSettings,
   type AutoMeasureSettingsPayload,
 } from '@/types/autoMeasureSettings';
 import { DEFAULT_LINE_COLOR, LINE_COLOR_HEX } from '@/types/lineColorSetting';
@@ -65,7 +66,7 @@ import {
   AUTO_MEASURE_CORNER_TOLERANCE_PX,
   AUTO_MEASURE_DIAGONAL_TOLERANCE_PX,
   AUTO_MEASURE_HARDNESS_TOLERANCE_HV,
-  applyAutoMeasureObjectiveProfile,
+  resolveAutoMeasureSettingsForObjective,
   autoMeasureSettingsEqual,
   buildAutoMeasureFingerprintKey,
   cloneAutoMeasureGraphics,
@@ -170,7 +171,11 @@ function App() {
     refetch: refetchCalibrationSettings,
   } = useCalibrationSettings();
   const { data: calibrations, refetch: refetchCalibrations } = useCalibrations();
-  const { data: autoMeasureSettings, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
+  const { all: autoMeasureSettingsList, refetch: refetchAutoMeasureSettings } = useAutoMeasureSettings();
+  const autoMeasureSettingsListRef = useRef<AutoMeasureSettings[]>(autoMeasureSettingsList);
+  useEffect(() => {
+    autoMeasureSettingsListRef.current = autoMeasureSettingsList;
+  }, [autoMeasureSettingsList]);
   const { data: micrometerConfig, refetch: refetchMicrometerConfig } = useMicrometerConfig();
   const micrometerEnabled = micrometerConfig?.enabled ?? true;
   const { data: testRecordsList, refetch: refetchTestRecords } = useTestRecords();
@@ -415,6 +420,7 @@ function App() {
 
   useObjectiveSyncGate({
     activeObjective,
+    autoMeasureSettingsListRef,
     shouldPreserveAfterImpressOverlay,
     setAutoMeasurePreviewSettings,
     latestAutoMeasurePreviewSettingsRef,
@@ -489,7 +495,7 @@ function App() {
         );
         return null;
       }
-      const settings = normalizeAutoMeasureSettings(autoMeasureSettings);
+      const settings = resolveAutoMeasureSettingsForObjective(autoMeasureSettingsList, objective);
       const minConfidence =
         settings.imageType === 'HV-1' ? 0.52 : settings.imageType === 'HV-3' ? 0.38 : 0.45;
       committedAutoMeasureFrameRef.current = cloneCapturedFrame(frame);
@@ -520,7 +526,7 @@ function App() {
       console.log(`[calibration-auto-success] pixelX=${result.d1Pixels.toFixed(2)} pixelY=${result.d2Pixels.toFixed(2)}`);
       return { d1Px: result.d1Pixels, d2Px: result.d2Pixels };
     },
-    [autoMeasureSettings, setActiveTool, setCalibrationMeasureMode]
+    [autoMeasureSettingsList, setActiveTool, setCalibrationMeasureMode]
   );
 
   const umPerPixelForActiveObjective = useUmPerPixelForObjective({
@@ -605,19 +611,16 @@ function App() {
   });
 
   useEffect(() => {
-    const normalized = normalizeAutoMeasureSettings(autoMeasureSettings);
-    const resolved = applyAutoMeasureObjectiveProfile(normalized, activeObjectiveRef.current);
+    const resolved = resolveAutoMeasureSettingsForObjective(
+      autoMeasureSettingsList,
+      activeObjectiveRef.current
+    );
     latestAutoMeasurePreviewSettingsRef.current = resolved;
     setAutoMeasurePreviewSettings(resolved);
-  }, [autoMeasureSettings]);
+  }, [autoMeasureSettingsList]);
 
   const handleAutoMeasureSettingsPreviewChange = useCallback((settings: AutoMeasureSettingsPayload) => {
-    const base = normalizeAutoMeasureSettings(settings);
-    const active = objectiveForMeasureFromObjective(activeObjectiveRef.current);
-    const normalized =
-      active && base.objectiveForMeasure !== active
-        ? applyAutoMeasureObjectiveProfile(base, active)
-        : base;
+    const normalized = normalizeAutoMeasureSettings(settings);
     latestAutoMeasurePreviewSettingsRef.current = normalized;
     setAutoMeasurePreviewSettings(normalized);
   }, []);
@@ -1346,7 +1349,10 @@ function App() {
         }
         const resolvedObjectiveForMeasure = objectiveForCalibration;
         if (settings.objectiveForMeasure !== resolvedObjectiveForMeasure) {
-          const profiledSettings = applyAutoMeasureObjectiveProfile(settings, objectiveForCalibration);
+          const profiledSettings = resolveAutoMeasureSettingsForObjective(
+            autoMeasureSettingsListRef.current,
+            objectiveForCalibration
+          );
           settings = profiledSettings;
           latestAutoMeasurePreviewSettingsRef.current = profiledSettings;
           // eslint-disable-next-line no-console
@@ -1944,12 +1950,7 @@ function App() {
 
   const handleAutoMeasureSettingsSaved = useCallback(
     (settings: AutoMeasureSettingsPayload) => {
-      const base = normalizeAutoMeasureSettings(settings);
-      const active = objectiveForMeasureFromObjective(activeObjectiveRef.current);
-      const normalized =
-        active && base.objectiveForMeasure !== active
-          ? applyAutoMeasureObjectiveProfile(base, active)
-          : base;
+      const normalized = normalizeAutoMeasureSettings(settings);
       latestAutoMeasurePreviewSettingsRef.current = normalized;
       setAutoMeasurePreviewSettings(normalized);
       void refetchAutoMeasureSettings();

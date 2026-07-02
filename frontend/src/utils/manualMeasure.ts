@@ -326,6 +326,43 @@ export function hasCalibrationForForce(
   );
 }
 
+/**
+ * Selects the single legacy `calibrations` row that measurement uses for a
+ * given objective: newest-first, but preferring the row saved for the active
+ * force (and hardness level) when the machine state is known. Shared by
+ * `resolveManualCalibration` (the measurement scale) and
+ * `resolveActiveCalibration` (the status display) so the two can never pick a
+ * different row and therefore never disagree.
+ */
+export function selectLegacyCalibrationRecord(
+  calibrations: Calibration[],
+  objective: string | null | undefined,
+  machineState?: MachineState | null
+): Calibration | null {
+  const target = normalizeObjectiveName(objective);
+  const legacyForObjective = calibrations
+    .filter(
+      (item) =>
+        normalizeObjectiveName(item.zoomTime) === target &&
+        (item.pixelLengthX > 0 ||
+          item.pixelLengthY > 0 ||
+          (typeof item.realDistanceX === 'number' && item.realDistanceX > 0) ||
+          (typeof item.realDistanceY === 'number' && item.realDistanceY > 0))
+    )
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+  const wantForce = parseForceKgf(machineState?.force);
+  const wantLevel = machineState?.hardnessLevel ?? null;
+  return (
+    (wantForce !== null
+      ? legacyForObjective.find(
+          (item) =>
+            parseForceKgf(item.force) === wantForce &&
+            (wantLevel === null || item.hardnessLevel === wantLevel)
+        ) ?? legacyForObjective.find((item) => parseForceKgf(item.force) === wantForce)
+      : undefined) ?? legacyForObjective[0] ?? null
+  );
+}
+
 export function resolveMicronsPerPixel({
   calibrationSettings,
   calibrations,
@@ -357,31 +394,7 @@ export function resolveManualCalibration({
         objective: match.normalizedObjective ?? normalizeObjectiveName(match.objective),
       };
     }
-    const legacyForObjective = calibrations
-      .filter(
-        (item) =>
-          normalizeObjectiveName(item.zoomTime) === target &&
-          (item.pixelLengthX > 0 ||
-            item.pixelLengthY > 0 ||
-            (typeof item.realDistanceX === 'number' && item.realDistanceX > 0) ||
-            (typeof item.realDistanceY === 'number' && item.realDistanceY > 0))
-      )
-      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
-    // Per-force restoration: when the active force is known, prefer the
-    // calibration saved for THAT force (and hardness level) instead of the
-    // most-recent row for the objective. Falls back to most-recent so an
-    // uncalibrated force still resolves something. `legacyForObjective` is
-    // sorted newest-first, so .find returns the newest matching row.
-    const wantForce = parseForceKgf(machineState?.force);
-    const wantLevel = machineState?.hardnessLevel ?? null;
-    const legacy =
-      (wantForce !== null
-        ? legacyForObjective.find(
-            (item) =>
-              parseForceKgf(item.force) === wantForce &&
-              (wantLevel === null || item.hardnessLevel === wantLevel)
-          ) ?? legacyForObjective.find((item) => parseForceKgf(item.force) === wantForce)
-        : undefined) ?? legacyForObjective[0];
+    const legacy = selectLegacyCalibrationRecord(calibrations, target, machineState);
     if (!legacy) {
       return null;
     }
@@ -473,6 +486,84 @@ export function resolveManualCalibration({
     micronPerPixel,
     calibrationName: `${selected.zoomTime} ${selected.force} ${selected.hardnessLevel}`,
     objective: selected.zoomTime,
+  };
+}
+
+export type ActiveCalibrationResolution =
+  | {
+      status: 'calibrated';
+      calibration: {
+        calibrationId: string | null;
+        objective: string;
+        force: string | null;
+        certifiedHardnessHv: number | null;
+        calibrationName: string | null;
+        calibratedAt: string | null;
+        micronPerPixel: number;
+      };
+    }
+  | { status: 'not-calibrated' };
+
+/**
+ * The active calibration for an objective, resolved through the SAME path
+ * (`resolveManualCalibration` + `selectLegacyCalibrationRecord`) that Manual and
+ * Auto Measure use to pick the micron scale. Certified hardness / force / date
+ * are read from that same source row, so the status display can never disagree
+ * with the calibration a measurement will actually apply. Certified hardness is
+ * surfaced for display only — it defines the scale and is never substituted for
+ * a measured result.
+ */
+export function resolveActiveCalibration({
+  calibrations,
+  calibrationSettings,
+  calibrationSettingsList,
+  machineState,
+  objective,
+}: {
+  calibrations: Calibration[];
+  calibrationSettings?: CalibrationSettings | null;
+  calibrationSettingsList?: CalibrationSettings[];
+  machineState?: MachineState | null;
+  objective: string | null;
+}): ActiveCalibrationResolution {
+  const target = normalizeObjectiveName(objective);
+  if (!isValidObjectiveName(target)) {
+    return { status: 'not-calibrated' };
+  }
+
+  // Same inputs and precedence the measurement pipeline uses: objective-based
+  // calibration-settings win over the legacy per-force `calibrations` table.
+  const info = resolveManualCalibration({
+    calibrationSettings: calibrationSettings ?? null,
+    calibrationSettingsList,
+    calibrations,
+    machineState,
+    targetObjective: target,
+  });
+  if (!info || !(info.micronPerPixel > 0)) {
+    return { status: 'not-calibrated' };
+  }
+
+  const settingsList =
+    calibrationSettingsList ?? (calibrationSettings ? [calibrationSettings] : []);
+  const settingsMatch = findCalibrationForObjective(settingsList, target);
+  // Certified hardness / force / date live only on the legacy `calibrations`
+  // row; calibration-settings carry no certified value.
+  const record = selectLegacyCalibrationRecord(calibrations, target, machineState);
+  return {
+    status: 'calibrated',
+    calibration: {
+      calibrationId: settingsMatch?.id ?? record?.id ?? null,
+      objective: info.objective ?? target,
+      force: record?.force ?? (machineState?.force != null ? String(machineState.force) : null),
+      certifiedHardnessHv:
+        record && typeof record.hardness === 'number' && Number.isFinite(record.hardness)
+          ? record.hardness
+          : null,
+      calibrationName: info.calibrationName,
+      calibratedAt: record?.createdAt ?? settingsMatch?.calibrationDate ?? null,
+      micronPerPixel: info.micronPerPixel,
+    },
   };
 }
 

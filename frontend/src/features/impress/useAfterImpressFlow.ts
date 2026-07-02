@@ -280,6 +280,10 @@ export function useAfterImpressFlow({
       impressInProgressRef.current = true;
       clearActiveMeasurement('impress-start');
       clearAutoMeasureOverlay('impress-start');
+      // A new indent invalidates any frame frozen by the previous measurement.
+      // Release it so the after-impress Auto Measure captures a fresh frame of
+      // the NEW indent instead of re-measuring the pinned previous frame.
+      cameraRef.current?.unfreezeCamera('impress-start');
       setManualMeasureResetKey((current) => current + 1);
       setAutoMeasureClearNonce((n) => n + 1);
       return;

@@ -221,6 +221,18 @@ function CameraWindowImpl(
   const [imageSize, setImageSize] = useState<ImageSize | null>(null);
   const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
   const liveCanvasClearedAtRef = useRef<number>(0);
+  // Raw frame pinned at the moment the camera is frozen. While frozen, Auto
+  // Measure MUST re-measure THIS exact buffer instead of grabbing a new live
+  // frame — otherwise repeated measurements of the same frozen indent each
+  // process a different (sensor-noise) frame and D1/D2/HV drift. Cleared on
+  // every unfreeze so a new indent always captures a fresh frame.
+  const frozenFullFrameRef = useRef<{
+    buffer: ArrayBuffer;
+    width: number;
+    height: number;
+    pixelFormat: CameraPixelFormat;
+    bits: 8 | 16;
+  } | null>(null);
 
   const toggleFreeze = useCallback(() => {
     const live = canvasRef.current;
@@ -237,6 +249,7 @@ function CameraWindowImpl(
       const ctx = snap.getContext('2d');
       if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
       imageSourceRef.current = 'live-camera';
+      frozenFullFrameRef.current = null;
       setFrozen(false);
       setImageSize((current) => keepImageSizeIfSame(current, measurementSize));
       return false;
@@ -248,6 +261,18 @@ function CameraWindowImpl(
     if (!ctx) return false;
     ctx.drawImage(live, 0, 0);
     imageSourceRef.current = 'live-camera';
+    // Pin the raw frame behind this manual freeze so a following Auto Measure
+    // measures exactly the frozen frame the operator is looking at.
+    frozenFullFrameRef.current =
+      full && full.body
+        ? {
+            buffer: toOwnedArrayBuffer(full.body),
+            width: full.width,
+            height: full.height,
+            pixelFormat: full.pixelFormat,
+            bits: full.bits,
+          }
+        : null;
     setImageSize((current) => keepImageSizeIfSame(current, measurementSize));
     setFrozen(true);
     return true;
@@ -296,6 +321,32 @@ function CameraWindowImpl(
     }
 
     if (imageSourceRef.current === 'live-camera') {
+      // Frozen re-measure: return the exact frame pinned when the camera was
+      // frozen, so repeated Auto Measure on the same indent is deterministic
+      // and the measured pixels match the displayed frozen frame.
+      const pinnedFrame = frozenFullFrameRef.current;
+      if (frozen && pinnedFrame) {
+        mlog('camera-measure-frame', {
+          ok: true,
+          frameId: -1,
+          ageMs: -1,
+          source: 'live-camera',
+          width: pinnedFrame.width,
+          height: pinnedFrame.height,
+          frozen,
+          pinned: true,
+        });
+        return {
+          ok: true,
+          buffer: pinnedFrame.buffer.slice(0),
+          width: pinnedFrame.width,
+          height: pinnedFrame.height,
+          pixelFormat: pinnedFrame.pixelFormat,
+          bits: pinnedFrame.bits,
+          source: 'live-camera',
+        };
+      }
+
       const full = getLatestFullFrame();
       if (full && full.body) {
         const buffer = toOwnedArrayBuffer(full.body);
@@ -317,6 +368,15 @@ function CameraWindowImpl(
               snapCtx.drawImage(live, 0, 0);
               imageSourceRef.current = 'live-camera';
               setFrozen(true);
+              // Pin the exact raw frame just captured; subsequent re-measures
+              // while frozen reuse it bit-for-bit.
+              frozenFullFrameRef.current = {
+                buffer: buffer.slice(0),
+                width: full.width,
+                height: full.height,
+                pixelFormat: full.pixelFormat,
+                bits: full.bits,
+              };
             }
           }
         }
@@ -403,6 +463,7 @@ function CameraWindowImpl(
         ctx.drawImage(bitmap, 0, 0);
         bitmap.close();
         imageSourceRef.current = 'uploaded-image';
+        frozenFullFrameRef.current = null;
         setFrozen(true);
         return { ok: true, width, height };
       } catch (err) {
@@ -578,6 +639,7 @@ function CameraWindowImpl(
     const snapCtx = snap?.getContext('2d');
     if (snap && snapCtx) snapCtx.clearRect(0, 0, snap.width, snap.height);
     imageSourceRef.current = 'live-camera';
+    frozenFullFrameRef.current = null;
     setFrozen(false);
     setImageSize(null);
     clearLiveCanvas(reason);
@@ -592,6 +654,7 @@ function CameraWindowImpl(
       if (ctx) ctx.clearRect(0, 0, snap.width, snap.height);
     }
     imageSourceRef.current = 'live-camera';
+    frozenFullFrameRef.current = null;
     const full = getLatestFullFrame();
     const measurementSize =
       full && full.width > 0 && full.height > 0
@@ -662,6 +725,7 @@ function CameraWindowImpl(
       const ctx = snap?.getContext('2d');
       if (snap && ctx) ctx.clearRect(0, 0, snap.width, snap.height);
       imageSourceRef.current = 'live-camera';
+      frozenFullFrameRef.current = null;
       setFrozen(false);
     }
     // eslint-disable-next-line no-console

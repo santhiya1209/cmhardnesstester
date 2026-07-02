@@ -1,18 +1,19 @@
 import { useEffect } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
-  applyAutoMeasureObjectiveProfile,
   autoMeasureDefaultsForObjective,
   autoMeasureSettingsEqual,
+  resolveAutoMeasureSettingsForObjective,
   type AutoMeasureDetectionSnapshot,
   type CapturedAutoMeasureFrame,
 } from '@/features/autoMeasure/autoMeasureHelpers';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
-import type { AutoMeasureSettingsPayload } from '@/types/autoMeasureSettings';
+import type { AutoMeasureSettings, AutoMeasureSettingsPayload } from '@/types/autoMeasureSettings';
 import type { AutoMeasureStatusState } from '@/component/own/StatusBar';
 
 export type UseObjectiveSyncGateArgs = {
   activeObjective: string | null;
+  autoMeasureSettingsListRef: MutableRefObject<AutoMeasureSettings[]>;
   shouldPreserveAfterImpressOverlay: () => boolean;
   setAutoMeasurePreviewSettings: Dispatch<SetStateAction<AutoMeasureSettingsPayload>>;
   latestAutoMeasurePreviewSettingsRef: MutableRefObject<AutoMeasureSettingsPayload>;
@@ -43,6 +44,7 @@ export type UseObjectiveSyncGateArgs = {
  */
 export function useObjectiveSyncGate({
   activeObjective,
+  autoMeasureSettingsListRef,
   shouldPreserveAfterImpressOverlay,
   setAutoMeasurePreviewSettings,
   latestAutoMeasurePreviewSettingsRef,
@@ -60,25 +62,27 @@ export function useObjectiveSyncGate({
   setAutoMeasureClearNonce,
 }: UseObjectiveSyncGateArgs): void {
   useEffect(() => {
-    const defaults = autoMeasureDefaultsForObjective(activeObjective);
-    if (!defaults) return;
+    if (!autoMeasureDefaultsForObjective(activeObjective)) return;
     const objectiveUpper = String(activeObjective).trim().toUpperCase();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[auto-measure-settings-sync] objective=${objectiveUpper} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+    const resolved = resolveAutoMeasureSettingsForObjective(
+      autoMeasureSettingsListRef.current,
+      activeObjective
     );
     // eslint-disable-next-line no-console
     console.log(
-      `[auto-measure-profile] objective=${objectiveUpper} smoothing=${defaults.smoothing} threshold=${defaults.threshold}`
+      `[auto-measure-settings-sync] objective=${objectiveUpper} smoothing=${resolved.smoothing} threshold=${resolved.threshold}`
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[auto-measure-profile] objective=${objectiveUpper} smoothing=${resolved.smoothing} threshold=${resolved.threshold}`
     );
     setAutoMeasurePreviewSettings((prev) => {
-      const next = applyAutoMeasureObjectiveProfile(prev, activeObjective);
-      if (autoMeasureSettingsEqual(next, prev)) {
+      if (autoMeasureSettingsEqual(resolved, prev)) {
         latestAutoMeasurePreviewSettingsRef.current = prev;
         return prev;
       }
-      latestAutoMeasurePreviewSettingsRef.current = next;
-      return next;
+      latestAutoMeasurePreviewSettingsRef.current = resolved;
+      return resolved;
     });
     if (shouldPreserveAfterImpressOverlay()) {
       return;

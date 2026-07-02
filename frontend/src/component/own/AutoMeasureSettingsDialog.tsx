@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -18,6 +18,10 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import { useAutoMeasureSettings } from '@/hooks/queries/useAutoMeasureSettings';
 import { useSaveAutoMeasureSettings } from '@/hooks/mutations/useSaveAutoMeasureSettings';
 import {
+  resolveAutoMeasureSettingsForObjective,
+  selectSavedAutoMeasureRow,
+} from '@/features/autoMeasure/autoMeasureHelpers';
+import {
   AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE,
   DEFAULT_AUTO_MEASURE_SETTINGS,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
@@ -26,7 +30,6 @@ import {
   THRESHOLD_MAX,
   THRESHOLD_MIN,
   normalizeAutoMeasureSettings,
-  type AutoMeasureSettings,
   type AutoMeasureSettingsPayload,
   type ObjectiveForMeasure,
 } from '@/types/autoMeasureSettings';
@@ -48,10 +51,6 @@ function normalizeObjectiveKey(value: string | null | undefined): ObjectiveForMe
     : null;
 }
 
-function toFormState(settings: AutoMeasureSettings | null): AutoMeasureSettingsPayload {
-  return normalizeAutoMeasureSettings(settings);
-}
-
 const PANEL_WIDTH = 560;
 const DRAG_LOG_THROTTLE_MS = 100;
 const PREVIEW_DEBOUNCE_MS = 80;
@@ -66,8 +65,11 @@ function AutoMeasureSettingsDialogImpl({
   onStatusChange,
   activeObjective,
 }: Props) {
-  const { data, error: loadError, loading, refetch } = useAutoMeasureSettings();
+  const { all, error: loadError, loading, refetch } = useAutoMeasureSettings();
   const { error: saveError, saveAutoMeasureSettings, saving } = useSaveAutoMeasureSettings();
+  // The persisted row for the active objective — the id we UPDATE on save so
+  // each objective keeps its own record (create only the first time).
+  const savedRow = useMemo(() => selectSavedAutoMeasureRow(all, activeObjective), [all, activeObjective]);
   const [form, setForm] = useState<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const formRef = useRef<AutoMeasureSettingsPayload>(DEFAULT_AUTO_MEASURE_SETTINGS);
   const previewSeqRef = useRef(0);
@@ -107,47 +109,17 @@ function AutoMeasureSettingsDialogImpl({
     }
   }, [open, refetch]);
 
+  // Load the persisted settings for the active objective (or the factory seed
+  // when that objective has never been saved). The database is the single
+  // source of truth — no preset ever overrides a saved value.
   useEffect(() => {
     if (open && !loading) {
-      const next = toFormState(data);
-      const synced = normalizeObjectiveKey(activeObjective);
-      if (synced) {
-        const defaults = AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE[synced];
-        next.objectiveForMeasure = synced;
-        next.smoothing = defaults.smoothing;
-        next.threshold = defaults.threshold;
-        logSettingsObjective(synced, defaults.smoothing, defaults.threshold);
-      }
+      const next = resolveAutoMeasureSettingsForObjective(all, activeObjective);
       formRef.current = next;
       setForm(next);
       setSavedBaseline(next);
     }
-  }, [data, loading, open, activeObjective, logSettingsObjective]);
-
-  useEffect(() => {
-    if (!open) return;
-    if (sliderDraggingRef.current) return;
-    const synced = normalizeObjectiveKey(activeObjective);
-    if (!synced) return;
-    const defaults = AUTO_MEASURE_DEFAULTS_BY_OBJECTIVE[synced];
-    const current = formRef.current;
-    if (
-      current.objectiveForMeasure === synced &&
-      current.smoothing === defaults.smoothing &&
-      current.threshold === defaults.threshold
-    ) {
-      return;
-    }
-    const next = normalizeAutoMeasureSettings({
-      ...current,
-      objectiveForMeasure: synced,
-      smoothing: defaults.smoothing,
-      threshold: defaults.threshold,
-    });
-    logSettingsObjective(synced, defaults.smoothing, defaults.threshold);
-    formRef.current = next;
-    setForm(next);
-  }, [open, activeObjective, logSettingsObjective]);
+  }, [all, loading, open, activeObjective]);
 
   const writeLocal = useCallback((patch: Partial<AutoMeasureSettingsPayload>) => {
     const next = normalizeAutoMeasureSettings({ ...formRef.current, ...patch });
@@ -259,14 +231,14 @@ function AutoMeasureSettingsDialogImpl({
     clearPreviewDebounce('save');
     try {
       const finalValues = normalizeAutoMeasureSettings(form);
-      await saveAutoMeasureSettings({ id: data?.id, values: finalValues });
+      await saveAutoMeasureSettings({ id: savedRow?.id, values: finalValues });
       setSavedBaseline(finalValues);
       onSaved?.(finalValues);
       onStatusChange?.('Auto measure settings saved.');
       onClose();
     } catch {
     }
-  }, [clearPreviewDebounce, data?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
+  }, [clearPreviewDebounce, savedRow?.id, form, onClose, onSaved, onStatusChange, saveAutoMeasureSettings]);
 
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;

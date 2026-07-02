@@ -1,7 +1,9 @@
 import type { CameraWindowHandle } from '@/component/own/CameraWindow';
 import {
+  DEFAULT_AUTO_MEASURE_SETTINGS,
   normalizeAutoMeasureSettings,
   OBJECTIVE_FOR_MEASURE_OPTIONS,
+  type AutoMeasureSettings,
   type AutoMeasureSettingsPayload,
   type ObjectiveForMeasure,
 } from '@/types/autoMeasureSettings';
@@ -215,21 +217,41 @@ export function objectiveForMeasureFromObjective(
     : null;
 }
 
-export function applyAutoMeasureObjectiveProfile(
-  settings: AutoMeasureSettingsPayload,
+/** The persisted settings row for an objective, or null if it was never saved. */
+export function selectSavedAutoMeasureRow(
+  saved: readonly AutoMeasureSettings[] | null | undefined,
+  objective: string | null | undefined
+): AutoMeasureSettings | null {
+  const key = objectiveForMeasureFromObjective(objective);
+  if (!key) return null;
+  const matches = (saved ?? []).filter(
+    (row) => objectiveForMeasureFromObjective(row.objectiveForMeasure) === key
+  );
+  if (matches.length === 0) return null;
+  return [...matches].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+}
+
+/**
+ * The Auto Measure settings the engine and dialog use for a given objective.
+ * Returns the persisted row for that objective when one exists — the database
+ * is the single source of truth. Only when the objective has never been saved
+ * does it fall back to the factory preset as a first-time seed; the preset
+ * never overrides a value the user has saved.
+ */
+export function resolveAutoMeasureSettingsForObjective(
+  saved: readonly AutoMeasureSettings[] | null | undefined,
   objective: string | null | undefined
 ): AutoMeasureSettingsPayload {
-  const objectiveForMeasure = objectiveForMeasureFromObjective(objective);
-  const defaults = autoMeasureDefaultsForObjective(objectiveForMeasure);
-  if (!objectiveForMeasure || !defaults) {
-    return normalizeAutoMeasureSettings(settings);
-  }
+  const key =
+    objectiveForMeasureFromObjective(objective) ??
+    DEFAULT_AUTO_MEASURE_SETTINGS.objectiveForMeasure;
+  const row = selectSavedAutoMeasureRow(saved, key);
+  if (row) return normalizeAutoMeasureSettings(row);
+  const seed = autoMeasureDefaultsForObjective(key);
   return normalizeAutoMeasureSettings({
-    ...settings,
-    objectiveForMeasure,
-    smoothing: defaults.smoothing,
-    threshold: defaults.threshold,
-    manualThreshold: defaults.threshold,
+    ...DEFAULT_AUTO_MEASURE_SETTINGS,
+    objectiveForMeasure: key,
+    ...(seed ? { smoothing: seed.smoothing, threshold: seed.threshold } : {}),
   });
 }
 
