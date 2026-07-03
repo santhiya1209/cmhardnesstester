@@ -17,6 +17,8 @@ type Props = {
   seedGuides?: ManualGuideLines | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  /** Live guide lines mirrored up for the magnifier lens (thin re-render). */
+  onGuidesChange?: (guides: ManualGuideLines | null) => void;
   strokeWidth?: number;
 };
 
@@ -41,6 +43,7 @@ function ManualMeasureOverlayImpl({
   seedGuides,
   onCursor,
   onMeasurementUpdated,
+  onGuidesChange,
   strokeWidth,
 }: Props) {
   useRenderCount('ManualMeasureOverlay');
@@ -60,6 +63,7 @@ function ManualMeasureOverlayImpl({
     seedGuides,
     onCursor,
     onMeasurementUpdated,
+    onGuidesChange,
     strokeWidth,
   });
 

@@ -32,26 +32,61 @@ type DrawArgs = {
   active: boolean;
   imageSize: ManualMeasureImageSize | null;
   guides: ManualGuideLines | null;
+  /**
+   * @deprecated Ignored — reference guides no longer change width or color on
+   * hover/drag (the cursor conveys that). Still accepted so callers compile.
+   */
   hoverGuide: ManualGuideLineKey | null;
+  /** @deprecated Ignored — see `hoverGuide`. Drag is shown by the cursor. */
   dragGuide: ManualGuideLineKey | null;
   /**
-   * Keyboard-selected guide line. Renders in white (vs. yellow) and thicker
-   * than hover/drag so the operator can see which line the arrow keys control.
+   * Keyboard-selected guide line. Rendered in white (vs. yellow) — by COLOR
+   * only, never extra width — so the operator sees which line the arrow keys
+   * control without the line thickening over the indent edge.
    */
   selectedGuide?: ManualGuideLineKey | null;
   /**
-   * Base stroke width in CSS px for the yellow guide lines. Hover/drag lines
-   * render at strokeWidth + 0.5 to preserve the existing affordance. Defaults
-   * to 2 (legacy "normal").
+   * @deprecated Ignored for reference guides — they always render at the shared
+   * `MEASUREMENT_LINE_WIDTH` hairline, independent of the thin/normal/thick
+   * toggle. Still accepted so existing callers compile.
    */
   strokeWidth?: number;
   /** Optional layout override; defaults to 'four-guides' for back-compat. */
   lineLayout?: OverlayLineLayout;
+  /**
+   * Manual Measure mode: draw thin hairline guides plus a small circular handle
+   * at each of the four diagonal tips (hollow when idle, filled yellow with a
+   * white outline when selected), and DON'T thicken the selected line — the
+   * handle marks the selection so the line never covers the indent edge. Off by
+   * default so the Auto Measure overlay (which shares this draw fn and renders
+   * its own corner handles) is unaffected.
+   */
+  endpointHandles?: boolean;
+  /**
+   * Snap each guide's stroke to the device-pixel grid so a 1px hairline lands on
+   * exactly one column/row of device pixels (crisp) instead of straddling two
+   * (soft ~1.5px). This is a RENDER-only alignment — the underlying guide image
+   * coordinates and the measured d1/d2 are never changed, so it is NOT a
+   * measurement correction offset. Pass `true` only when idle: snapping quantizes
+   * the drawn line in ≤1 device-px steps, so drag smoothness is preserved by
+   * passing `false` while a drag is in progress. Off (sub-pixel) by default,
+   * keeping Auto's rendering unchanged.
+   */
+  snapToDevicePixels?: boolean;
 };
 
 const HIT_DISTANCE = 10;
 const YELLOW = '#FFFF00';
 const DEFAULT_LINE_WIDTH = 2;
+
+/**
+ * The single shared stroke width (CSS px) for every measurement REFERENCE guide
+ * — Manual, Auto, and keyboard-adjustment alike. A crisp 1px hairline so the
+ * line never covers the indent edge (professional-tester convention). Fixed on
+ * purpose: reference-line precision must not depend on the thin/normal/thick
+ * annotation toggle, and it must never thicken on hover / drag / selection.
+ */
+export const MEASUREMENT_LINE_WIDTH = 1;
 
 export type TwoLinesHandle = 'left' | 'right' | 'top' | 'bottom' | 'd1-body' | 'd2-body';
 
@@ -267,14 +302,13 @@ const YELLOW_SELECTED = '#FFFFFF';
 export function drawManualMeasureOverlay({
   active,
   canvas,
-  dragGuide,
   guides,
-  hoverGuide,
   selectedGuide,
   imageSize,
   wrap,
-  strokeWidth,
   lineLayout,
+  endpointHandles,
+  snapToDevicePixels,
 }: DrawArgs) {
   const ctx = canvas.getContext('2d');
   if (!ctx) {
@@ -304,18 +338,19 @@ export function drawManualMeasureOverlay({
     return;
   }
 
-  ctx.lineCap = 'butt';
+  // Round caps/joins for crisp, professional reference lines.
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.setLineDash([]);
 
-  const baseWidth = typeof strokeWidth === 'number' && strokeWidth > 0 ? strokeWidth : DEFAULT_LINE_WIDTH;
-  const activeWidth = baseWidth + 0.5;
-  const selectedWidth = baseWidth + 2;
+  // One shared measurement-line style for Manual + Auto guides: a crisp 1px
+  // hairline (MEASUREMENT_LINE_WIDTH) that NEVER thickens on hover / drag /
+  // keyboard-selection. The selected line is marked by COLOR (white) and, in
+  // Manual, the endpoint handle — not by extra width, so it never covers the
+  // indent edge. Fixed width independent of the thin/normal/thick toggle.
+  const baseWidth = MEASUREMENT_LINE_WIDTH;
 
-  const lineWidth = (key: ManualGuideLineKey) => {
-    if (key === selectedGuide) return selectedWidth;
-    if (key === hoverGuide || key === dragGuide) return activeWidth;
-    return baseWidth;
-  };
+  const lineWidth = (_key: ManualGuideLineKey) => baseWidth;
   const lineColor = (key: ManualGuideLineKey) =>
     key === selectedGuide ? YELLOW_SELECTED : YELLOW;
 
@@ -341,31 +376,77 @@ export function drawManualMeasureOverlay({
     return;
   }
 
+  // Device-pixel snap for crisp hairlines (render-only; see snapToDevicePixels
+  // doc). Aligns the stroke so its edge sits on a device-pixel boundary: for a
+  // 1px line at dpr=1 this yields a half-integer center; at dpr=2, an integer.
+  // Non-integer dpr (125%/150% scaling) is aligned best-effort. When off, the
+  // raw sub-pixel float is used so a live drag stays perfectly smooth.
+  const snap = (v: number): number => {
+    if (!snapToDevicePixels) return v;
+    const half = (baseWidth * dpr) / 2;
+    return (Math.round(v * dpr - half) + half) / dpr;
+  };
+  const leftX = snap(displayGuides.leftX);
+  const rightX = snap(displayGuides.rightX);
+  const topY = snap(displayGuides.topY);
+  const bottomY = snap(displayGuides.bottomY);
+
   ctx.strokeStyle = lineColor('left');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('left');
-  ctx.moveTo(displayGuides.leftX, 0);
-  ctx.lineTo(displayGuides.leftX, height);
+  ctx.moveTo(leftX, 0);
+  ctx.lineTo(leftX, height);
   ctx.stroke();
 
   ctx.strokeStyle = lineColor('right');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('right');
-  ctx.moveTo(displayGuides.rightX, 0);
-  ctx.lineTo(displayGuides.rightX, height);
+  ctx.moveTo(rightX, 0);
+  ctx.lineTo(rightX, height);
   ctx.stroke();
 
   ctx.strokeStyle = lineColor('top');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('top');
-  ctx.moveTo(0, displayGuides.topY);
-  ctx.lineTo(width, displayGuides.topY);
+  ctx.moveTo(0, topY);
+  ctx.lineTo(width, topY);
   ctx.stroke();
 
   ctx.strokeStyle = lineColor('bottom');
   ctx.beginPath();
   ctx.lineWidth = lineWidth('bottom');
-  ctx.moveTo(0, displayGuides.bottomY);
-  ctx.lineTo(width, displayGuides.bottomY);
+  ctx.moveTo(0, bottomY);
+  ctx.lineTo(width, bottomY);
   ctx.stroke();
+
+  if (endpointHandles) {
+    // Small circular handle at each diagonal tip: hollow yellow when idle, a
+    // filled yellow disc with a white outline when selected, so the operator
+    // always sees which endpoint the arrow keys will move. Anchored on the same
+    // (snapped) line coordinates so a handle always sits exactly on its line.
+    const midX = (leftX + rightX) * 0.5;
+    const midY = (topY + bottomY) * 0.5;
+    const tips: Array<{ key: ManualGuideLineKey; x: number; y: number }> = [
+      { key: 'left', x: leftX, y: midY },
+      { key: 'right', x: rightX, y: midY },
+      { key: 'top', x: midX, y: topY },
+      { key: 'bottom', x: midX, y: bottomY },
+    ];
+    for (const tip of tips) {
+      const selected = tip.key === selectedGuide;
+      ctx.beginPath();
+      ctx.arc(tip.x, tip.y, selected ? 5 : 4, 0, Math.PI * 2);
+      if (selected) {
+        ctx.fillStyle = YELLOW;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = YELLOW_SELECTED;
+        ctx.stroke();
+      } else {
+        ctx.lineWidth = 1.25;
+        ctx.strokeStyle = YELLOW;
+        ctx.stroke();
+      }
+    }
+  }
 }

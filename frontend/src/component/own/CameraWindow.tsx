@@ -27,7 +27,7 @@ import type { CameraPixelFormat } from '@/types/camera';
 import type { CrosshairConfig } from '@/types/crosshair';
 import type { ManualGuideLines, ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
-import { displayToImage, getImagePlacement } from '@/utils/manualMeasure';
+import { displayToImage, getImagePlacement, imageToDisplay } from '@/utils/manualMeasure';
 import { mlog } from '@/utils/measureDebug';
 
 const ROOT_SX: SxProps<Theme> = {
@@ -258,6 +258,9 @@ function CameraWindowImpl(
   const [magnifierZoom, setMagnifierZoom] = useState(2);
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [imageSize, setImageSize] = useState<ImageSize | null>(null);
+  // Live Manual Measure guide lines, mirrored up from the overlay so the
+  // magnifier lens can re-render them thin. Null unless Manual Measure is active.
+  const [manualGuides, setManualGuides] = useState<ManualGuideLines | null>(null);
   const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
   const liveCanvasClearedAtRef = useRef<number>(0);
   // Raw frame pinned at the moment the camera is frozen. While frozen, Auto
@@ -911,6 +914,30 @@ function CameraWindowImpl(
     setCursorDisplay(null);
   }, []);
 
+  // Manual Measure reports the endpoint being moved (image space). Convert to
+  // display space so the magnifier follows the point — including keyboard nudges,
+  // where there is no pointer movement to drive updateCursorFromPointer.
+  const handleManualCursor = useCallback(
+    (imagePoint: Point | null) => {
+      const viewport = viewportRef.current;
+      if (!imagePoint || !viewport || !imageSize) {
+        setCursorDisplay(null);
+        return;
+      }
+      const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
+      if (!placement) {
+        setCursorDisplay(null);
+        return;
+      }
+      setCursorDisplay(imageToDisplay(imagePoint, placement));
+      setCursorCoordinate({
+        x: Math.max(0, Math.min(imageSize.width - 1, imagePoint.x)),
+        y: Math.max(0, Math.min(imageSize.height - 1, imagePoint.y)),
+      });
+    },
+    [imageSize]
+  );
+
   const tag = statusLabel(status);
 
   return (
@@ -1000,6 +1027,8 @@ function CameraWindowImpl(
           objective={manualMeasureObjective}
           seedGuides={manualSeedGuides}
           onMeasurementUpdated={onManualMeasurementUpdated}
+          onCursor={handleManualCursor}
+          onGuidesChange={setManualGuides}
           strokeWidth={lineStrokeWidth}
         />
         {magnifierEnabled ? (
@@ -1014,6 +1043,11 @@ function CameraWindowImpl(
             imageSize={imageSize}
             zoom={magnifierZoom}
             animate={!frozen && cameraOpen}
+            crossLineVisible={crossLineVisible}
+            crosshairConfig={crosshairConfig}
+            shapes={overlayShapes}
+            auto={autoMeasureGraphics}
+            manualGuides={manualGuides}
           />
         ) : null}
         </Box>

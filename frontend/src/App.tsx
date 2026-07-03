@@ -2222,9 +2222,13 @@ function App() {
         // a length line over the auto overlay). Drop back to the pointer so the
         // tool-change effect below clears any Measure Length state.
         setActiveTool('pointer');
-      } else if (action === 'tools:manualMeasure') {
-        setSelectedMeasureMode('manual');
       } else if (mappedTool) {
+        // Any persistent tool (Manual Measure, Measure Length, Measure Angle,
+        // Pointer) clears the transient Auto highlight. Manual Measure keeps NO
+        // stored flag of its own: its highlight is DERIVED from
+        // activeTool === 'manualMeasure' (see `measureMode` below), the single
+        // source of truth — so one click on either entry point flips the tool
+        // and both button highlights together, exactly like Auto Measure.
         setSelectedMeasureMode(null);
       }
 
@@ -2258,11 +2262,16 @@ function App() {
     }
   }, [activeTool, overlay.clearByKind]);
 
+  // Single source of truth for the Manual Measure highlight: it IS the active
+  // tool, derived — never stored. Both the toolbar and the Machine Control card
+  // read this one value, so a single click on either flips activeTool AND both
+  // highlights in the same render, with no duplicate flag and no reconciliation
+  // effect that could lag or desync them. `selectedMeasureMode` now only carries
+  // the transient 'auto' highlight (Auto has no persistent tool of its own).
+  const measureMode: MeasureSelection =
+    activeTool === 'manualMeasure' ? 'manual' : selectedMeasureMode;
+
   useEffect(() => {
-    if (selectedMeasureMode === 'manual' && activeTool !== 'manualMeasure') {
-      setSelectedMeasureMode(null);
-    }
-  }, [activeTool, selectedMeasureMode]);  useEffect(() => {
     const hex = LINE_COLOR_HEX[lineColorSetting?.lineColor ?? DEFAULT_LINE_COLOR];
     document.documentElement.style.setProperty('--line-color', hex);
   }, [lineColorSetting?.lineColor]);
@@ -2339,7 +2348,7 @@ function App() {
       <Toolbar
         onSelect={handleToolbarSelect}
         cameraOpen={cameraOpen}
-        selectedMeasureMode={selectedMeasureMode}
+        selectedMeasureMode={measureMode}
       />
 
       <Box sx={WORKSPACE_SX}>
@@ -2386,7 +2395,7 @@ function App() {
           onTurretIntent={handleTurretIntentClick}
           onObjectiveChangeIntent={handleObjectiveChangeIntent}
           onToolbarAction={handleToolbarSelect}
-          selectedMeasureMode={selectedMeasureMode}
+          selectedMeasureMode={measureMode}
           trimMeasureOpen={trimMeasureOpen}
           onCloseTrimMeasure={handleCloseTrimMeasure}
           onTrimAdjust={handleTrimAdjust}

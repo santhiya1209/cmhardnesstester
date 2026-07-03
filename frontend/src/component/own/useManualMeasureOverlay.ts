@@ -31,6 +31,9 @@ type Args = {
   seedGuides?: ManualGuideLines | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  /** Latest guide lines (image space) — mirrored up so the magnifier lens can
+   *  re-render them thin. Null while inactive / unseeded. */
+  onGuidesChange?: (guides: ManualGuideLines | null) => void;
   strokeWidth?: number;
 };
 
@@ -75,6 +78,7 @@ export function useManualMeasureOverlay({
   seedGuides,
   onCursor,
   onMeasurementUpdated,
+  onGuidesChange,
   strokeWidth,
 }: Args) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -86,10 +90,43 @@ export function useManualMeasureOverlay({
   const [guides, setGuides] = useState<ManualGuideLines | null>(null);
   const [hoverGuide, setHoverGuide] = useState<ManualGuideLineKey | null>(null);
   const [dragGuide, setDragGuide] = useState<ManualGuideLineKey | null>(null);
+  // Keyboard-adjustment selection: which endpoint the arrow keys move. A single
+  // click selects one (see handlePointerDown); the document-level keydown
+  // listener reads selectedGuideRef. Ref-only (not state) — the selection is no
+  // longer drawn (plain 4 yellow lines, like Auto), so it needs no re-render.
+  const selectedGuideRef = useRef<ManualGuideLineKey | null>(null);
+  const activeRef = useRef(active);
+  const imageSizeRef = useRef(imageSize);
+  const emitTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     guidesRef.current = guides;
   }, [guides]);
+
+  // Mirror the live guide lines to the magnifier (thin re-render). Emit null
+  // whenever the tool is inactive so a stale diamond never lingers in the lens.
+  useEffect(() => {
+    onGuidesChange?.(active ? guides : null);
+  }, [active, guides, onGuidesChange]);
+
+  useEffect(() => {
+    activeRef.current = active;
+    imageSizeRef.current = imageSize;
+  }, [active, imageSize]);
+
+  const selectGuide = useCallback((key: ManualGuideLineKey | null) => {
+    selectedGuideRef.current = key;
+  }, []);
+
+  // Manual Measure is a document-level, ref-gated listener (like Auto Measure) —
+  // no element focus needed, so arrow keys work the instant a point is selected.
+  // Deselecting when the tool deactivates keeps re-entry clean and stops arrows
+  // from leaking into other tools.
+  useEffect(() => {
+    if (!active) {
+      selectGuide(null);
+    }
+  }, [active, selectGuide]);
 
   useEffect(() => {
     setGuides(null);
@@ -98,6 +135,7 @@ export function useManualMeasureOverlay({
     setDragGuide(null);
     dragGuideRef.current = null;
     dragMovedRef.current = false;
+    selectedGuideRef.current = null;
     // First-click diagnostics: a resetKey bump nulls the guides. If this fires
     // AFTER activation (async objective-sync / turret gate), it opens a window
     // where the overlay is interactive but hitTest has no guides → the first
@@ -152,9 +190,18 @@ export function useManualMeasureOverlay({
         dragGuide,
         guides: guidesRef.current,
         hoverGuide,
+        // Plain 4 yellow lines: no endpoint handles, and no white "selected"
+        // tint — every guide renders the same yellow (selectedGuide omitted).
+        // Keyboard selection still works internally; it just isn't drawn.
+        selectedGuide: null,
         imageSize,
         wrap,
         strokeWidth,
+        endpointHandles: false,
+        // Crisp device-pixel-aligned hairlines when idle; render the raw
+        // sub-pixel position DURING a drag so movement stays perfectly smooth.
+        // Measurement is unaffected either way (it uses image coordinates).
+        snapToDevicePixels: dragGuide === null,
       });
     });
   }, [active, dragGuide, hoverGuide, imageSize, strokeWidth]);
@@ -201,6 +248,139 @@ export function useManualMeasureOverlay({
     onMeasurementUpdated({ points, d1Px, d2Px });
   }, [imageSize, onMeasurementUpdated]);
 
+  // Keyboard nudges recompute HV through the SAME emit path a drag uses, but a
+  // held/rapid arrow burst shouldn't fire one async DB save per keystroke — the
+  // overlay/diagonal render instantly (setGuides below), while the table save is
+  // debounced to the last position on settle. Mirrors Auto's handleAutoMeasureAdjusted.
+  const scheduleEmit = useCallback(() => {
+    if (emitTimerRef.current !== null) {
+      window.clearTimeout(emitTimerRef.current);
+    }
+    emitTimerRef.current = window.setTimeout(() => {
+      emitTimerRef.current = null;
+      emitMeasurement();
+    }, 120);
+  }, [emitMeasurement]);
+
+  useEffect(
+    () => () => {
+      if (emitTimerRef.current !== null) {
+        window.clearTimeout(emitTimerRef.current);
+        emitTimerRef.current = null;
+      }
+    },
+    []
+  );
+
+  // Move the selected endpoint by a sub-pixel-capable delta. Left/right tips
+  // live on the horizontal diagonal (X only); top/bottom on the vertical (Y
+  // only) — so orthogonal arrows are no-ops for that tip. Floating-point coords
+  // preserve sub-pixel (Ctrl 0.25px / Alt 0.5px) fine adjustment.
+  const nudgeSelected = useCallback(
+    (key: ManualGuideLineKey, dx: number, dy: number) => {
+      const size = imageSizeRef.current;
+      const current = guidesRef.current;
+      if (!size || !current) {
+        return;
+      }
+
+      let imagePoint: Point;
+      if (key === 'left') {
+        if (dx === 0) return;
+        imagePoint = { x: current.leftX + dx, y: 0 };
+      } else if (key === 'right') {
+        if (dx === 0) return;
+        imagePoint = { x: current.rightX + dx, y: 0 };
+      } else if (key === 'top') {
+        if (dy === 0) return;
+        imagePoint = { x: 0, y: current.topY + dy };
+      } else {
+        if (dy === 0) return;
+        imagePoint = { x: 0, y: current.bottomY + dy };
+      }
+
+      const next = updateGuide(current, key, imagePoint, size);
+      guidesRef.current = next;
+      setGuides(next);
+
+      // Center the magnifier (if enabled) on the endpoint being moved.
+      const centerX = (next.leftX + next.rightX) / 2;
+      const centerY = (next.topY + next.bottomY) / 2;
+      const tip: Point =
+        key === 'left'
+          ? { x: next.leftX, y: centerY }
+          : key === 'right'
+            ? { x: next.rightX, y: centerY }
+            : key === 'top'
+              ? { x: centerX, y: next.topY }
+              : { x: centerX, y: next.bottomY };
+      onCursor?.(tip);
+
+      scheduleEmit();
+    },
+    [onCursor, scheduleEmit]
+  );
+
+  useEffect(() => {
+    const ARROWS = new Set([
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'ArrowDown',
+    ]);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Constraint: only act while Manual Measure is active AND an endpoint is
+      // selected — otherwise arrows must fall through to whatever else is focused
+      // (live view, other tools) untouched.
+      if (!activeRef.current) return;
+      const selected = selectedGuideRef.current;
+      if (selected === null) return;
+
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        selectGuide(null);
+        event.preventDefault();
+        return;
+      }
+
+      if (!ARROWS.has(event.key)) return;
+
+      // Block the page/scroll default for arrows while adjusting.
+      event.preventDefault();
+
+      const step = event.shiftKey
+        ? 10
+        : event.ctrlKey || event.metaKey
+          ? 0.25
+          : event.altKey
+            ? 0.5
+            : 1;
+
+      let dx = 0;
+      let dy = 0;
+      if (event.key === 'ArrowLeft') dx = -step;
+      else if (event.key === 'ArrowRight') dx = step;
+      else if (event.key === 'ArrowUp') dy = -step;
+      else if (event.key === 'ArrowDown') dy = step;
+
+      nudgeSelected(selected, dx, dy);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [nudgeSelected, selectGuide]);
+
   const hitTest = useCallback(
     (event: React.PointerEvent): ManualGuideLineKey | null => {
       const wrap = wrapRef.current;
@@ -241,13 +421,17 @@ export function useManualMeasureOverlay({
 
       mlog('manual-pointerdown', { result: 'drag-start', guide: nextDragGuide });
 
+      // A single click selects this endpoint for keyboard adjustment; a drag
+      // (down→move→up) also moves it. Either way the clicked endpoint is now the
+      // one the arrow keys control.
+      selectGuide(nextDragGuide);
       event.currentTarget.setPointerCapture(event.pointerId);
       dragGuideRef.current = nextDragGuide;
       dragMovedRef.current = false;
       setDragGuide(nextDragGuide);
       event.preventDefault();
     },
-    [active, hitTest, imageSize]
+    [active, hitTest, imageSize, selectGuide]
   );
 
   const handlePointerMove = useCallback(
