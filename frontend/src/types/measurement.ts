@@ -77,6 +77,9 @@ export type MeasurementSavePayload = {
 export type Measurement = MeasurementPayload & {
   id: string;
   average: number;
+  // Permanent per-inspection sequence number assigned server-side at creation.
+  // Used as the displayed row number so existing rows never renumber on add/delete.
+  seq: number;
   createdAt: string;
   updatedAt: string;
 };

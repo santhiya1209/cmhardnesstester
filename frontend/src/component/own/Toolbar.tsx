@@ -19,7 +19,7 @@ import TouchAppIcon from '@mui/icons-material/TouchApp';
 import NearMeIcon from '@mui/icons-material/NearMe';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import ChangeHistoryIcon from '@mui/icons-material/ChangeHistory';
-import BackspaceIcon from '@mui/icons-material/Backspace';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -59,7 +59,7 @@ const TOOLBAR_ITEMS: ToolbarItemDef[] = [
   { action: 'tools:pointer', label: 'Pointer', icon: NearMeIcon },
   { action: 'tools:measureLength', label: 'Measure Length', icon: StraightenIcon },
   { action: 'tools:measureAngle', label: 'Measure Angle', icon: ChangeHistoryIcon },
-  { action: 'tools:clearGraphics', label: 'Clear Graphics', icon: BackspaceIcon },
+  { action: 'tools:clearGraphics', label: 'Clear Graphics', icon: DeleteOutlineIcon },
   { action: 'tools:magnifier', label: 'Magnifier', icon: SearchIcon, groupEnd: true },
 
   { action: 'tools:resumeImage', label: 'Resume Image', icon: RestartAltIcon },

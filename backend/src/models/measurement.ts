@@ -78,6 +78,11 @@ export const MeasurementPayloadSchema = z.object({
 export const MeasurementModel = MeasurementPayloadSchema.extend({
   id: EntityIdSchema,
   average: PositiveNumberSchema,
+  // Permanent per-inspection sequence number, assigned server-side at creation as
+  // max(existing seq) + 1. Never derived from array position, so it does not change
+  // when other rows are added or removed. Resets to 1 after a session clear (the
+  // collection is empty). Row numbering in the UI reads this field directly.
+  seq: z.number().int().positive(),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
 });

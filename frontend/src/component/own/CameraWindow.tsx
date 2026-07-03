@@ -1,6 +1,8 @@
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
@@ -23,7 +25,7 @@ import ManualMeasureOverlay from '@/component/own/ManualMeasureOverlay';
 import type { AutoMeasureGraphics } from '@/types/autoMeasure';
 import type { CameraPixelFormat } from '@/types/camera';
 import type { CrosshairConfig } from '@/types/crosshair';
-import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { ManualGuideLines, ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, Point, ToolId } from '@/types/tool';
 import { displayToImage, getImagePlacement } from '@/utils/manualMeasure';
 import { mlog } from '@/utils/measureDebug';
@@ -72,6 +74,32 @@ const CANVAS_STYLE: React.CSSProperties = {
   display: 'block',
   objectFit: 'contain',
   imageRendering: 'auto',
+};
+
+const MAGNIFIER_LEVELS = [2, 4, 8, 16] as const;
+const MAGNIFIER_GROUP_SX: SxProps<Theme> = {
+  position: 'absolute',
+  bottom: 8,
+  right: 8,
+  bgcolor: 'rgba(0,0,0,0.55)',
+  borderRadius: 1,
+  '& .MuiToggleButton-root': {
+    color: 'rgba(255,255,255,0.85)',
+    border: 'none',
+    px: 1,
+    py: 0.25,
+    fontSize: 11,
+    fontWeight: 600,
+    lineHeight: 1.2,
+    minWidth: 34,
+  },
+  '& .MuiToggleButton-root.Mui-selected': {
+    color: '#fff',
+    bgcolor: tokens.accentSecondary.base,
+  },
+  '& .MuiToggleButton-root.Mui-selected:hover': {
+    bgcolor: tokens.accentSecondary.base,
+  },
 };
 
 type ImageSize = { width: number; height: number };
@@ -217,6 +245,9 @@ function CameraWindowImpl(
   const [cursorDisplay, setCursorDisplay] = useState<Point | null>(null);
   const [frozen, setFrozen] = useState(false);
   const [zoom, setZoom] = useState(1);
+  // Magnifier loupe magnification (2 / 4 / 8 / 16). Pure view state, local to
+  // the viewport — it never touches the image pixels or measurements.
+  const [magnifierZoom, setMagnifierZoom] = useState(2);
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [imageSize, setImageSize] = useState<ImageSize | null>(null);
   const imageSourceRef = useRef<'live-camera' | 'uploaded-image'>('live-camera');
@@ -524,7 +555,19 @@ function CameraWindowImpl(
       if (viewport && imageSize && imageSize.width > 0 && imageSize.height > 0) {
         const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
         const overlayCanvases = Array.from(viewport.querySelectorAll('canvas')).filter(
-          (c) => c !== live && c !== snap && c.width > 0 && c.height > 0
+          (c) =>
+            c !== live &&
+            c !== snap &&
+            c.width > 0 &&
+            c.height > 0 &&
+            // Only composite overlay layers that CSS-fill the viewport and are drawn
+            // in the same image-placement space the crop below assumes. This excludes
+            // foreign canvases such as the magnifier loupe (a fixed ~140px lens): its
+            // backing store is unrelated to viewport.clientWidth, so the shared
+            // dprX/dprY crop would sample a wrong sliver and blit it stretched over
+            // the whole thumbnail, hiding the image and the yellow crosshair.
+            Math.abs(c.clientWidth - viewport.clientWidth) <= 1 &&
+            Math.abs(c.clientHeight - viewport.clientHeight) <= 1
         );
         if (placement) {
           for (const overlay of overlayCanvases) {
@@ -847,6 +890,21 @@ function CameraWindowImpl(
     setCursorDisplay(null);
   }, []);
 
+  // Auto→Manual handoff source: the corners of the Auto Measure result currently
+  // on screen, expressed as guide lines. Manual Measure initializes from these so
+  // it starts on the exact same four points as Auto (same d1Px/d2Px → same HV).
+  // Null when no Auto result is displayed → Manual uses its default diamond.
+  const manualSeedGuides = useMemo<ManualGuideLines | null>(() => {
+    const corners = autoMeasureGraphics?.corners;
+    if (!corners) return null;
+    return {
+      leftX: corners.left.x,
+      rightX: corners.right.x,
+      topY: corners.top.y,
+      bottomY: corners.bottom.y,
+    };
+  }, [autoMeasureGraphics]);
+
   const tag = statusLabel(status);
 
   return (
@@ -934,6 +992,7 @@ function CameraWindowImpl(
           imageSize={imageSize}
           resetKey={manualMeasureResetKey}
           objective={manualMeasureObjective}
+          seedGuides={manualSeedGuides}
           onMeasurementUpdated={onManualMeasurementUpdated}
           strokeWidth={lineStrokeWidth}
         />
@@ -944,6 +1003,8 @@ function CameraWindowImpl(
             containerWidth={viewportSize.w}
             containerHeight={viewportSize.h}
             imageSize={imageSize}
+            zoom={magnifierZoom}
+            animate={!frozen && cameraOpen}
           />
         ) : null}
         </Box>
@@ -1006,6 +1067,23 @@ function CameraWindowImpl(
           >
             {`${Math.round(zoom * 100)}%`}
           </Box>
+        ) : null}
+        {magnifierEnabled ? (
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={magnifierZoom}
+            onChange={(_, next) => {
+              if (next !== null) setMagnifierZoom(next);
+            }}
+            sx={MAGNIFIER_GROUP_SX}
+          >
+            {MAGNIFIER_LEVELS.map((level) => (
+              <ToggleButton key={level} value={level}>
+                {level}×
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
         ) : null}
       </Box>
 

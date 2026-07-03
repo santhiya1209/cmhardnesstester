@@ -1,6 +1,7 @@
 import { ConflictError, InvalidReferenceError } from '../errors';
 import type { MeasurementPayload } from '../../models/measurement';
 import { MeasurementModel, type Measurement } from '../../models/measurement';
+import type { DatabaseState } from '../../models/database';
 import { createCrudService } from './create-crud.service';
 
 export type CreateMeasurementInput = Omit<MeasurementPayload, 'timestamp'> & {
@@ -17,6 +18,16 @@ function computeAverageMm(averageUm: number | null): number | null {
   return averageUm === null ? null : Number((averageUm / 1000).toFixed(6));
 }
 
+// Next permanent sequence number for a new measurement: one past the highest seq
+// currently stored. Falls back to treating rows without a seq (legacy) as 0, so a
+// fresh/cleared collection starts at 1.
+function nextMeasurementSeq(database: DatabaseState): number {
+  const rows = database.measurements as Array<{ seq?: number }>;
+  return (
+    rows.reduce((max, row) => (typeof row.seq === 'number' && row.seq > max ? row.seq : max), 0) + 1
+  );
+}
+
 export const measurementsService = createCrudService<
   Measurement,
   CreateMeasurementInput,
@@ -25,7 +36,7 @@ export const measurementsService = createCrudService<
   collection: 'measurements',
   resourceName: 'Measurement',
   schema: MeasurementModel,
-  createEntity: (input, { id, now }) => {
+  createEntity: (input, { id, now, database }) => {
     // [calibration-pixel-isolation] Measurements may ONLY originate from a real
     // detection source. `method` is the source discriminator; its zod enum has
     // no 'Calibration' value, so calibration-derived pixels cannot be shaped
@@ -52,6 +63,7 @@ export const measurementsService = createCrudService<
 
     return {
       id,
+      seq: nextMeasurementSeq(database),
       d1: input.d1,
       d2: input.d2,
       average,
@@ -85,7 +97,7 @@ export const measurementsService = createCrudService<
       updatedAt: now,
     };
   },
-  updateEntity: (current, input, { now }) => {
+  updateEntity: (current, input, { now, database }) => {
     const d1 = input.d1 ?? current.d1;
     const d2 = input.d2 ?? current.d2;
     const hv = input.hv === undefined ? current.hv : input.hv;
@@ -114,6 +126,9 @@ export const measurementsService = createCrudService<
     return {
       ...current,
       ...input,
+      // Preserve the permanent seq; backfill it for any legacy row saved before
+      // this field existed so the row keeps a stable number from now on.
+      seq: current.seq ?? nextMeasurementSeq(database),
       d1,
       d2,
       average: averageUm ?? computeAverage(d1, d2),

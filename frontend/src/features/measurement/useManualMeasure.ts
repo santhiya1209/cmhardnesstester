@@ -46,7 +46,6 @@ export type UseManualMeasureArgs = {
   getActiveMeasurementId: () => string | undefined;
   setActiveMeasurement: (id: string, frameId: number | null, reason: string) => void;
   saveManualMeasurement: (input: SaveMeasurementInput) => Promise<Measurement>;
-  refetchMeasurements: () => Promise<unknown> | unknown;
 };
 
 export function useManualMeasure({
@@ -68,7 +67,6 @@ export function useManualMeasure({
   getActiveMeasurementId,
   setActiveMeasurement,
   saveManualMeasurement,
-  refetchMeasurements,
 }: UseManualMeasureArgs) {
   const handleManualMeasurementUpdated = useCallback(
     (result: ManualMeasureDragResult) => {
@@ -275,7 +273,6 @@ export function useManualMeasure({
           manualMeasurementIdRef.current = saved.id;
           // eslint-disable-next-line no-console
           console.warn(`[measurement-add] objective=${saved.objective ?? values.normalizedObjective ?? 'null'}`);
-          await refetchMeasurements();
           setStatusMessage(
             `System Status: Manual measurement updated: HV ${values.hv ?? 'n/a (force missing)'}`
           );
@@ -309,7 +306,6 @@ export function useManualMeasure({
       manualMeasurementIdRef,
       measurements,
       micrometerEnabledRef,
-      refetchMeasurements,
       saveManualMeasurement,
       setActiveMeasurement,
       setLatestManualPixels,

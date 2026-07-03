@@ -4,6 +4,7 @@ import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useAlbumItems } from '@/hooks/queries/useAlbumItems';
+import { useDeleteAlbumItem } from '@/hooks/mutations/useDeleteAlbumItem';
 import type { AlbumItem } from '@/types/albumItem';
 import type { Measurement } from '@/types/measurement';
 import type { ToolId, ToolbarActionId, MeasureSelection } from '@/types/tool';
@@ -167,7 +168,6 @@ type Props = {
   measurements: Measurement[];
   measurementsError: string | null;
   measurementsLoading: boolean;
-  refetchMeasurements: () => Promise<void>;
   onOpenTestRecords: (measurementIds: string[]) => void;
   onMeasurementsCleared?: () => void;
   activeObjective?: string | null;
@@ -202,7 +202,6 @@ function RightPanelImpl({
   measurementsLoading,
   onOpenTestRecords,
   onMeasurementsCleared,
-  refetchMeasurements,
   activeObjective,
   onObjectiveChange,
   onCenterCommit,
@@ -228,6 +227,19 @@ function RightPanelImpl({
     data: albumItems,
     refetch: refetchAlbumItems,
   } = useAlbumItems();
+  const { removeAlbumItem } = useDeleteAlbumItem();
+  // A full "Clear current inspection" also removes this session's album images,
+  // then hands off to the app-level ephemeral reset.
+  const handleInspectionCleared = useCallback(async () => {
+    for (const item of albumItems) {
+      try {
+        await removeAlbumItem(item.id);
+      } catch {
+        // Errors surface via the hook's error state; keep clearing the rest.
+      }
+    }
+    onMeasurementsCleared?.();
+  }, [albumItems, removeAlbumItem, onMeasurementsCleared]);
   const [measurementDisplay, setMeasurementDisplay] = useState<MeasurementDisplayValues>({
     hvDisplay: '',
     hvType: 'HV',
@@ -263,10 +275,9 @@ function RightPanelImpl({
             measurements={measurements}
             loading={measurementsLoading}
             error={measurementsError}
-            refetch={refetchMeasurements}
             onOpenStatisticsTab={() => setTab(1)}
             onOpenTestRecords={onOpenTestRecords}
-            onMeasurementsCleared={onMeasurementsCleared}
+            onMeasurementsCleared={handleInspectionCleared}
             onDisplayValuesChange={handleMeasurementDisplayValuesChange}
             micrometerEnabled={micrometerEnabled}
             targetMinHv={targetMinHv}

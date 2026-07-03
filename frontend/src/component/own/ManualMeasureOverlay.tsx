@@ -3,7 +3,7 @@ import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useManualMeasureOverlay } from './useManualMeasureOverlay';
 import { useRenderCount } from '@/utils/renderStats';
-import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { ManualGuideLines, ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { Point } from '@/types/tool';
 import type { ManualMeasureImageSize } from '@/utils/manualMeasureOverlayCanvas';
 
@@ -12,6 +12,9 @@ type Props = {
   imageSize: ManualMeasureImageSize | null;
   resetKey: number;
   objective?: string | null;
+  /** Auto-detected corners (as guide lines) to initialize from — see
+   *  useManualMeasureOverlay. Null → default diamond. */
+  seedGuides?: ManualGuideLines | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   strokeWidth?: number;
@@ -35,6 +38,7 @@ function ManualMeasureOverlayImpl({
   imageSize,
   resetKey,
   objective,
+  seedGuides,
   onCursor,
   onMeasurementUpdated,
   strokeWidth,
@@ -53,6 +57,7 @@ function ManualMeasureOverlayImpl({
     imageSize,
     resetKey,
     objective,
+    seedGuides,
     onCursor,
     onMeasurementUpdated,
     strokeWidth,

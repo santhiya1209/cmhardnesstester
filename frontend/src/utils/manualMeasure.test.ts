@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   calculateVickersFromPixels,
+  cornersToDiagonalsPx,
+  distancePx,
+  guideLinesToPoints,
   resolveActiveCalibration,
   resolveManualCalibration,
 } from './manualMeasure';
@@ -139,5 +142,100 @@ describe('resolveActiveCalibration (status display)', () => {
     if (display.status !== 'calibrated' || !measured.ok) return;
     // The display can never disagree with the scale a measurement applies.
     expect(display.calibration.micronPerPixel).toBeCloseTo(measured.value.umPerPixel, 6);
+  });
+});
+
+// The industrial invariant: for the SAME four indentation corners, Manual and
+// Auto Measure must produce the SAME D1/D2/HV. Manual derives its diagonals from
+// axis-aligned guide lines (guideLinesToPoints → distancePx); Auto derives them
+// from detected corners (cornersToDiagonalsPx). Both then feed the SINGLE shared
+// engine calculateVickersFromPixels. This test freezes that guarantee so no
+// future change can reintroduce a mode-specific diagonal or HV path.
+describe('Manual and Auto share one measurement engine for identical corners', () => {
+  const cal = calibration({
+    id: 'cal-40x-1kgf',
+    force: '1kgf',
+    realDistanceX: 40,
+    realDistanceY: 40, // 40/100 = 0.4 µm/px
+  });
+
+  // One indentation, expressed as the four axis-aligned corners both modes agree on.
+  const corners = {
+    top: { x: 250, y: 120 },
+    right: { x: 400, y: 250 },
+    bottom: { x: 250, y: 380 },
+    left: { x: 100, y: 250 },
+  };
+  const guides = { leftX: 100, rightX: 400, topY: 120, bottomY: 380 };
+
+  it('derives identical D1/D2 pixels from both corner representations', () => {
+    const manualPoints = guideLinesToPoints(guides);
+    const manualD1 = distancePx(manualPoints[1], manualPoints[3]);
+    const manualD2 = distancePx(manualPoints[0], manualPoints[2]);
+    const auto = cornersToDiagonalsPx(corners);
+
+    expect(manualD1).toBe(auto.d1Px);
+    expect(manualD2).toBe(auto.d2Px);
+    expect(manualD1).toBe(300);
+    expect(manualD2).toBe(260);
+  });
+
+  it('produces the same HV for the same corners through the shared engine', () => {
+    const manualPoints = guideLinesToPoints(guides);
+    const args = {
+      calibrationSettings: null,
+      calibrations: [cal],
+      machineState: machine('1kgf'),
+      forceKgf: 1,
+      objective: '40X',
+      targetObjective: '40X',
+    };
+
+    const manual = calculateVickersFromPixels({
+      ...args,
+      d1Px: distancePx(manualPoints[1], manualPoints[3]),
+      d2Px: distancePx(manualPoints[0], manualPoints[2]),
+    });
+    const auto = calculateVickersFromPixels({
+      ...args,
+      ...cornersToDiagonalsPx(corners),
+    });
+
+    expect(manual.ok).toBe(true);
+    expect(auto.ok).toBe(true);
+    if (!manual.ok || !auto.ok) return;
+    expect(manual.value.d1Um).toBe(auto.value.d1Um);
+    expect(manual.value.d2Um).toBe(auto.value.d2Um);
+    expect(manual.value.avgDMm).toBe(auto.value.avgDMm);
+    expect(manual.value.hv).toBe(auto.value.hv);
+    expect(manual.value.calibrationId).toBe(auto.value.calibrationId);
+  });
+
+  // Auto→Manual handoff: CameraWindow seeds Manual's guide lines from the Auto
+  // corners as { leftX: left.x, rightX: right.x, topY: top.y, bottomY: bottom.y }.
+  // This must reproduce Auto's exact d1Px/d2Px even for a slightly tilted detected
+  // diamond, so opening Manual right after Auto — without moving a point — yields
+  // the identical measurement. Uses off-axis corners to prove the seed keeps the
+  // real corner coordinates, not a re-centered box.
+  it('seed guides built from Auto corners reproduce Auto D1/D2 exactly', () => {
+    const detected = {
+      top: { x: 252, y: 118 },
+      right: { x: 401, y: 249 },
+      bottom: { x: 248, y: 383 },
+      left: { x: 99, y: 251 },
+    };
+    const seedGuides = {
+      leftX: detected.left.x,
+      rightX: detected.right.x,
+      topY: detected.top.y,
+      bottomY: detected.bottom.y,
+    };
+    const seededPoints = guideLinesToPoints(seedGuides);
+    const seededD1 = distancePx(seededPoints[1], seededPoints[3]);
+    const seededD2 = distancePx(seededPoints[0], seededPoints[2]);
+    const auto = cornersToDiagonalsPx(detected);
+
+    expect(seededD1).toBe(auto.d1Px);
+    expect(seededD2).toBe(auto.d2Px);
   });
 });

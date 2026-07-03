@@ -607,7 +607,6 @@ function App() {
     getActiveMeasurementId,
     setActiveMeasurement,
     saveManualMeasurement,
-    refetchMeasurements,
   });
 
   useEffect(() => {
@@ -926,9 +925,23 @@ function App() {
         if (source === 'after-impress') {
           logAfterImpressDetectionFailed('overlay-not-ready');
         }
+        // Surface the specific reason the overlay-visibility gate failed instead of
+        // collapsing all four into one generic message. Behaviour is unchanged — the
+        // measurement is still rejected — but the operator (and logs) now get the
+        // actual cause. NOTE: 'cleared'/'frame-mismatch' are paint-timing races on a
+        // valid detection; 'objective-mismatch' is a genuine correctness reject.
+        const overlayFailMessage: Record<string, string> = {
+          'no-geometry': 'Auto Measure failed: no diamond geometry was detected.',
+          cleared: 'Auto Measure failed: overlay cleared before it painted. Please retry.',
+          'objective-mismatch':
+            'Auto Measure rejected: objective changed during measurement. Please retry.',
+          'frame-mismatch': 'Auto Measure failed: overlay did not paint in time. Please retry.',
+        };
         setAutoMeasureStatus('failed');
-        setStatusMessage('System Status: Auto Measure rejected: overlay not visible after render');
-        setUnavailableMsg('Auto Measure overlay failed to render. Please retry.');
+        setStatusMessage(`System Status: Auto Measure rejected: overlay not visible (${reason})`);
+        setUnavailableMsg(
+          overlayFailMessage[reason] ?? 'Auto Measure overlay failed to render. Please retry.'
+        );
         clearAutoMeasureOverlay(
           source === 'after-impress' ? 'after-impress-detection-failed' : 'auto-measure-overlay-not-visible'
         );
@@ -1177,8 +1190,6 @@ function App() {
       if (source === 'auto-click' || source === 'after-impress') {
         setAutoMeasureStatus('success');
       }
-      await refetchMeasurements();
-
       setStatusMessage(
         saved.hv
           ? `System Status: Auto measurement added: HV ${saved.hv}`
@@ -1190,7 +1201,6 @@ function App() {
       calibrationSettings,
       calibrationSettingsList,
       calibrations,
-      refetchMeasurements,
       saveManualMeasurement,
       getActiveMeasurementId,
       setActiveMeasurement,
@@ -2033,7 +2043,6 @@ function App() {
     getActiveMeasurementId,
     setActiveMeasurement,
     saveManualMeasurement,
-    refetchMeasurements,
   });
 
   const handleTrimAdjust = useCallback(
@@ -2243,12 +2252,36 @@ function App() {
     setStatusMessage('System Status: Test Records opened');
   }, []);
 
+  // Full "Clear current inspection" — reset every piece of ephemeral session
+  // state so the app behaves like a fresh inspection without a restart. The
+  // persisted measurement rows and album images are deleted by the caller
+  // (measurement table + album) before this runs; permanent data (calibration,
+  // settings, saved test records, machine/camera/objective config) is untouched.
   const handleMeasurementsCleared = useCallback(() => {
+    // User-drawn length/angle shapes + center crossline.
+    overlay.clearAll();
+    // An explicit user clear supersedes any in-flight overlay paint, so drop the
+    // guard latch before clearing the auto-measure overlay (which respects it).
+    // clearAutoMeasureOverlay owns the auto refs (committed/preview frame,
+    // snapshot, measurement id) and session id — do not duplicate that here.
+    overlayPaintPendingRef.current = false;
+    clearAutoMeasureOverlay('clear-inspection');
+    setAutoMeasureClearNonce((n) => n + 1);
+    // Manual measure guide lines + current manual row id.
+    resetManualMeasure();
+    // Auto-measure dedupe fingerprints and live camera frame latches.
     committedFingerprintsRef.current = [];
-    autoMeasurementIdRef.current = null;
-    manualMeasurementIdRef.current = null;
-    clearActiveMeasurement('clear-table');
-  }, [clearActiveMeasurement]);
+    resetCameraSession();
+    // Active measurement session (method/id) — orphans any in-flight detection.
+    clearActiveMeasurement('clear-inspection');
+  }, [
+    overlay,
+    clearAutoMeasureOverlay,
+    setAutoMeasureClearNonce,
+    resetManualMeasure,
+    committedFingerprintsRef,
+    clearActiveMeasurement,
+  ]);
 
   const handleTurretIntentClick = useCallback(
     () => markTurretIntent('turret-click'),
@@ -2324,7 +2357,6 @@ function App() {
           measurements={measurements}
           measurementsError={measurementsError}
           measurementsLoading={measurementsLoading}
-          refetchMeasurements={refetchMeasurements}
           onOpenTestRecords={handleOpenTestRecords}
           onMeasurementsCleared={handleMeasurementsCleared}
           activeObjective={activeObjective}

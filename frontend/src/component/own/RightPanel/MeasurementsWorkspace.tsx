@@ -3,6 +3,11 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogActions from '@mui/material/DialogActions';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
@@ -12,7 +17,8 @@ import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { tokens } from '@/theme/theme';
 import { useDeleteMeasurement } from '@/hooks/mutations/useDeleteMeasurement';
-import { updateMeasurement } from '@/api/measurement';
+import { useClearMeasurements } from '@/hooks/mutations/useClearMeasurements';
+import { useSaveMeasurement } from '@/hooks/mutations/useSaveMeasurement';
 import type { Measurement } from '@/types/measurement';
 import MeasurementsTable from './MeasurementsTable';
 import ExportReportDialog from '@/component/own/ExportReportDialog';
@@ -80,7 +86,6 @@ type Props = {
   onOpenTestRecords: (measurementIds: string[]) => void;
   onMeasurementsCleared?: () => void;
   onDisplayValuesChange?: (values: MeasurementDisplayValues) => void;
-  refetch: () => Promise<void>;
   micrometerEnabled: boolean;
   targetMinHv: number | null;
   targetMaxHv: number | null;
@@ -116,7 +121,6 @@ function MeasurementsWorkspaceImpl({
   onOpenTestRecords,
   onMeasurementsCleared,
   onDisplayValuesChange,
-  refetch,
   micrometerEnabled,
   targetMinHv,
   targetMaxHv,
@@ -124,6 +128,8 @@ function MeasurementsWorkspaceImpl({
   onChdTargetInputChange,
 }: Props) {
   const { error: deleteError, deleting, removeMeasurement } = useDeleteMeasurement();
+  const { error: clearError, clearing, clearMeasurements } = useClearMeasurements();
+  const { saveMeasurement } = useSaveMeasurement();
   // Keep a ref to the latest measurements so handleManualDepthChange can stay
   // referentially stable — otherwise every measurements update would change the
   // callback identity and re-render every memoized row in the table.
@@ -134,6 +140,7 @@ function MeasurementsWorkspaceImpl({
   const [convertType, setConvertType] = useState<(typeof CONVERT_TYPE_OPTIONS)[number]>('HV');
   const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [convertSyncError, setConvertSyncError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -147,8 +154,8 @@ function MeasurementsWorkspaceImpl({
   const displayedMeasurement = selectedMeasurement ?? latestMeasurement;
   const displayedHvText = formatNumber(displayedMeasurement?.hv);
   const displayedHvType = CONVERT_TYPE_OPTIONS.includes(convertType) ? convertType : 'HV';
-  const mutationError = error ?? deleteError ?? convertSyncError;
-  const busy = loading || deleting;
+  const mutationError = error ?? deleteError ?? clearError ?? convertSyncError;
+  const busy = loading || deleting || clearing;
 
   const hvTargetColor = useMemo(
     () =>
@@ -203,26 +210,28 @@ function MeasurementsWorkspaceImpl({
       const originalHv = typeof target.hv === 'number' && Number.isFinite(target.hv) ? target.hv : null;
       const convertValue = convertVickers(originalHv, next as ConvertTargetType);
       try {
-        await updateMeasurement(target.id, {
-          d1: target.d1,
-          d2: target.d2,
-          hv: target.hv ?? null,
-          d1Px: target.d1Px ?? null,
-          d2Px: target.d2Px ?? null,
-          d1Um: target.d1Um ?? null,
-          d2Um: target.d2Um ?? null,
-          averageUm: target.averageUm ?? null,
-          averageMm: target.averageMm ?? null,
-          micronPerPixel: target.micronPerPixel ?? null,
-          calibrationName: target.calibrationName ?? null,
-          objective: target.objective ?? null,
-          testForceKgf: target.testForceKgf ?? null,
-          depthMm: target.depthMm ?? null,
-          convertType: next,
-          convertValue,
+        await saveMeasurement({
+          id: target.id,
+          values: {
+            d1: target.d1,
+            d2: target.d2,
+            hv: target.hv ?? null,
+            d1Px: target.d1Px ?? null,
+            d2Px: target.d2Px ?? null,
+            d1Um: target.d1Um ?? null,
+            d2Um: target.d2Um ?? null,
+            averageUm: target.averageUm ?? null,
+            averageMm: target.averageMm ?? null,
+            micronPerPixel: target.micronPerPixel ?? null,
+            calibrationName: target.calibrationName ?? null,
+            objective: target.objective ?? null,
+            testForceKgf: target.testForceKgf ?? null,
+            depthMm: target.depthMm ?? null,
+            convertType: next,
+            convertValue,
+          },
         });
         setConvertSyncError(null);
-        await refetch();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // eslint-disable-next-line no-console
@@ -230,7 +239,7 @@ function MeasurementsWorkspaceImpl({
         setConvertSyncError(`Failed to update convert type: ${message}`);
       }
     },
-    [displayedMeasurement, refetch]
+    [displayedMeasurement, saveMeasurement]
   );
 
   const handleConvertTypeChangeValue = useCallback(
@@ -281,35 +290,37 @@ function MeasurementsWorkspaceImpl({
       const convertValue =
         typeof target.convertValue === 'number' ? target.convertValue : null;
       try {
-        await updateMeasurement(measurementId, {
-          d1: target.d1,
-          d2: target.d2,
-          hv: target.hv ?? null,
-          d1Px: target.d1Px ?? null,
-          d2Px: target.d2Px ?? null,
-          d1Um: target.d1Um ?? null,
-          d2Um: target.d2Um ?? null,
-          averageUm: target.averageUm ?? null,
-          averageMm: target.averageMm ?? null,
-          micronPerPixel: target.micronPerPixel ?? null,
-          calibrationName: target.calibrationName ?? null,
-          objective: target.objective ?? null,
-          testForceKgf: target.testForceKgf ?? null,
-          hardnessType: target.hardnessType ?? null,
-          convertType: target.convertType ?? null,
-          convertValue,
-          depthMm,
-          depthSource: 'manual',
-          deviceDepthMm: target.deviceDepthMm ?? null,
-          manualDepthMm: depthMm,
+        await saveMeasurement({
+          id: measurementId,
+          values: {
+            d1: target.d1,
+            d2: target.d2,
+            hv: target.hv ?? null,
+            d1Px: target.d1Px ?? null,
+            d2Px: target.d2Px ?? null,
+            d1Um: target.d1Um ?? null,
+            d2Um: target.d2Um ?? null,
+            averageUm: target.averageUm ?? null,
+            averageMm: target.averageMm ?? null,
+            micronPerPixel: target.micronPerPixel ?? null,
+            calibrationName: target.calibrationName ?? null,
+            objective: target.objective ?? null,
+            testForceKgf: target.testForceKgf ?? null,
+            hardnessType: target.hardnessType ?? null,
+            convertType: target.convertType ?? null,
+            convertValue,
+            depthMm,
+            depthSource: 'manual',
+            deviceDepthMm: target.deviceDepthMm ?? null,
+            manualDepthMm: depthMm,
+          },
         });
-        await refetch();
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[manual-depth-save-error]', err);
       }
     },
-    [refetch]
+    [saveMeasurement]
   );
 
   const handleDelete = useCallback(async () => {
@@ -319,8 +330,7 @@ function MeasurementsWorkspaceImpl({
 
     await removeMeasurement(selectedMeasurement.id);
     setSelectedMeasurementId(null);
-    await refetch();
-  }, [refetch, removeMeasurement, selectedMeasurement]);
+  }, [removeMeasurement, selectedMeasurement]);
 
   const handleClear = useCallback(async () => {
     if (measurements.length === 0) {
@@ -328,13 +338,12 @@ function MeasurementsWorkspaceImpl({
       return;
     }
 
-    for (const measurement of measurements) {
-      await removeMeasurement(measurement.id);
-    }
+    // One bulk DELETE + one LIST invalidation → the table refetches to empty in a
+    // single render, instead of one delete/refetch per row.
+    await clearMeasurements();
     setSelectedMeasurementId(null);
-    await refetch();
     onMeasurementsCleared?.();
-  }, [measurements, onMeasurementsCleared, refetch, removeMeasurement]);
+  }, [clearMeasurements, measurements.length, onMeasurementsCleared]);
 
   const statusMessage = useMemo(() => {
     if (deleting) {
@@ -386,9 +395,7 @@ function MeasurementsWorkspaceImpl({
           startIcon={<ClearAllIcon fontSize="small" />}
           sx={ACTION_BTN_SX}
           disabled={busy || measurements.length === 0}
-          onClick={() => {
-            void handleClear();
-          }}
+          onClick={() => setConfirmClearOpen(true)}
         >
           Clear
         </Button>
@@ -416,6 +423,35 @@ function MeasurementsWorkspaceImpl({
           Report
         </Button>
       </Box>
+      <Dialog open={confirmClearOpen} onClose={() => setConfirmClearOpen(false)} maxWidth="xs">
+        <DialogTitle>Clear current inspection?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This removes all {measurements.length} measurement
+            {measurements.length === 1 ? '' : 's'}, session images, overlays and
+            live values, returning the app to a ready state for a new inspection.
+            Calibration, settings and saved reports are not affected.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmClearOpen(false)} sx={{ textTransform: 'none' }}>
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disableElevation
+            sx={{ textTransform: 'none' }}
+            onClick={() => {
+              setConfirmClearOpen(false);
+              void handleClear();
+            }}
+          >
+            Clear
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <ExportReportDialog
         open={reportOpen}
         onClose={() => setReportOpen(false)}

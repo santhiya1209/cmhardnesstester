@@ -456,11 +456,11 @@ function MeasurementsTableImpl({
               </TableCell>
             </TableRow>
           ) : (
-            measurements.map((measurement, index) => (
+            measurements.map((measurement) => (
               <MeasurementRow
                 key={measurement.id}
                 measurement={measurement}
-                rowNumber={index + 1}
+                rowNumber={measurement.seq}
                 isSelected={measurement.id === selectedMeasurementId}
                 onSelect={onSelect}
                 micrometerEnabled={micrometerEnabled}

@@ -67,7 +67,6 @@ export type UseAutoMeasureArgs = {
   getActiveMeasurementId: () => string | undefined;
   setActiveMeasurement: (id: string, frameId: number | null, reason: string) => void;
   saveManualMeasurement: (input: SaveMeasurementInput) => Promise<Measurement>;
-  refetchMeasurements: () => Promise<unknown> | unknown;
 };
 
 export function useAutoMeasure({
@@ -95,7 +94,6 @@ export function useAutoMeasure({
   getActiveMeasurementId,
   setActiveMeasurement,
   saveManualMeasurement,
-  refetchMeasurements,
 }: UseAutoMeasureArgs) {
   const adjustSaveTimerRef = useRef<number | null>(null);
   const lastAdjustedCornersRef = useRef<AutoMeasureCorners | null>(null);
@@ -309,7 +307,6 @@ export function useAutoMeasure({
                 }
               );
             }
-            await refetchMeasurements();
             setStatusMessage(
               saved.hv
                 ? `System Status: Auto (Adjusted) updated: HV ${saved.hv}`
@@ -340,7 +337,6 @@ export function useAutoMeasure({
       manualMeasurementIdRef,
       measurements,
       previewAutoMeasureOverlay,
-      refetchMeasurements,
       saveManualMeasurement,
       setActiveMeasurement,
       setCommittedAutoMeasureOverlay,

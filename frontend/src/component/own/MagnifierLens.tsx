@@ -4,7 +4,6 @@ import { getImagePlacement } from '@/utils/manualMeasure';
 import { useRenderCount } from '@/utils/renderStats';
 
 const LENS_SIZE = 140;
-const LENS_ZOOM = 2.5;
 
 type Props = {
   source: HTMLCanvasElement | null;
@@ -12,9 +11,25 @@ type Props = {
   containerWidth: number;
   containerHeight: number;
   imageSize: { width: number; height: number } | null;
+  /** Magnification factor (2 / 4 / 8 / 16). */
+  zoom: number;
+  /**
+   * When true the lens re-samples its source every animation frame so a live
+   * camera feed stays real-time even while the cursor is still. When false
+   * (frozen / still image) it draws once per change — no wasted frames.
+   */
+  animate: boolean;
 };
 
-function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, imageSize }: Props) {
+function MagnifierLensImpl({
+  source,
+  cursor,
+  containerWidth,
+  containerHeight,
+  imageSize,
+  zoom,
+  animate,
+}: Props) {
   useRenderCount('MagnifierLens');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -56,7 +71,7 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, im
       const imgY = (cursor.y - placement.offsetY) / placement.scale;
       const sx = (imgX / imageSize.width) * source.width;
       const sy = (imgY / imageSize.height) * source.height;
-      const halfSrc = (LENS_SIZE / (2 * LENS_ZOOM)) * (source.width / placement.width);
+      const halfSrc = (LENS_SIZE / (2 * zoom)) * (source.width / placement.width);
 
       const sxClamped = Math.max(halfSrc, Math.min(source.width - halfSrc, sx));
       const syClamped = Math.max(halfSrc, Math.min(source.height - halfSrc, sy));
@@ -84,11 +99,17 @@ function MagnifierLensImpl({ source, cursor, containerWidth, containerHeight, im
       ctx.stroke();
     };
 
-    rafRef.current = requestAnimationFrame(draw);
+    const loop = () => {
+      draw();
+      // Live feed: keep the loupe in sync with incoming frames under a still
+      // cursor. Static source (frozen / image): one draw is enough.
+      if (animate) rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [source, cursor, containerWidth, containerHeight, imageSize]);
+  }, [source, cursor, containerWidth, containerHeight, imageSize, zoom, animate]);
 
   if (!cursor) return null;
 

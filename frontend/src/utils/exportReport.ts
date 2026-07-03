@@ -333,6 +333,10 @@ const C = {
 } as const;
 
 const DEPTH_SIZE = { w: 900, h: 380 };
+// Print resolution the embedded chart is rasterised to at its on-page size.
+// The raster scale is derived from this + the fit size, so quality holds on
+// any page size (300 DPI = print quality).
+const REPORT_DPI = 300;
 const DEPTH_PAD = { top: 66, right: 96, bottom: 62, left: 92 };
 const DEPTH_X_TICK_COUNT = 5;
 const DEPTH_Y_TICK_COUNT = 8;
@@ -348,14 +352,21 @@ const DEPTH_COLORS = {
   reference: '#C62828',
 };
 
-function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null): string {
+function buildDepthSvg(
+  measurements: Measurement[],
+  chdTargetHv: number | null,
+  pixelScale = 1
+): string {
   const { w, h } = DEPTH_SIZE;
-  const pad = DEPTH_PAD;
+  // The SVG keeps a logical viewBox but renders at pixelScale× resolution, so
+  // the rasterised PNG embedded in the Word report stays crisp when printed.
+  const svgW = w * pixelScale;
+  const svgH = h * pixelScale;
   const points = buildDepthHvGraphPoints(measurements);
 
   if (points.length === 0) {
     return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${w} ${h}">
   <rect x="0" y="0" width="${w}" height="${h}" fill="${DEPTH_COLORS.paper}"/>
   <text x="${w / 2}" y="${h / 2 - 8}" font-size="21" font-weight="700" fill="${DEPTH_COLORS.label}" text-anchor="middle">Case Hardness Profile</text>
   <text x="${w / 2}" y="${h / 2 + 14}" font-size="12" fill="${DEPTH_COLORS.muted}" text-anchor="middle">No measurement data available</text>
@@ -368,6 +379,17 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
       ? [...points.map((p) => p.hv), chdTargetHv]
       : points.map((p) => p.hv);
   const yAxis = buildAxis(yValues, DEPTH_Y_TICK_COUNT, false);
+  // Dynamic padding — grow (never shrink below the base) the left margin to fit
+  // the widest Y label and the right margin to fit half the widest X label, so
+  // long values never clip. ~8px per glyph at the 13px bold axis font.
+  const yLabelChars = Math.max(0, ...yAxis.ticks.map((t) => formatHv(t).length));
+  const xLabelChars = Math.max(0, ...xAxis.ticks.map((t) => String(Math.round(t)).length));
+  const pad = {
+    top: DEPTH_PAD.top,
+    right: Math.max(DEPTH_PAD.right, Math.ceil((xLabelChars * 8) / 2) + 24),
+    bottom: DEPTH_PAD.bottom,
+    left: Math.max(DEPTH_PAD.left, 50 + yLabelChars * 8),
+  };
   const innerW = w - pad.left - pad.right;
   const innerH = h - pad.top - pad.bottom;
   const sx = (v: number) => pad.left + ((v - xAxis.min) / (xAxis.max - xAxis.min || 1)) * innerW;
@@ -448,7 +470,7 @@ function buildDepthSvg(measurements: Measurement[], chdTargetHv: number | null):
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${w} ${h}">
   <rect x="0" y="0" width="${w}" height="${h}" fill="${DEPTH_COLORS.paper}"/>
   ${titleEl}${subtitleEl}${minorY}${minorX}${majorY}${majorX}${frame}${xTitle}${yTitle}${curvePath}${chdOverlay}${dots}
 </svg>`;
@@ -545,7 +567,42 @@ const CARD_BORDERS = {
   right: LINE_BORDER,
 };
 
-const PAGE_WIDTH_DXA = 15400;
+// Single source of truth for the report page geometry (A4 landscape, twips).
+// Every width in the document — header band, tables, cards and the embedded
+// Case Hardness Profile chart — is derived from this, so nothing can drift out
+// of the printable area.
+const PAGE = {
+  size: { orientation: PageOrientation.LANDSCAPE, width: 16838, height: 11906 },
+  margin: { top: 1700, right: 720, bottom: 900, left: 720 },
+};
+// Printable content area = page minus margins (the top margin already reserves
+// space for the header band).
+const USABLE_WIDTH_DXA = PAGE.size.width - PAGE.margin.left - PAGE.margin.right;
+const USABLE_HEIGHT_DXA = PAGE.size.height - PAGE.margin.top - PAGE.margin.bottom;
+// docx sizes images in pixels (9525 EMU/px); 1 twip = 635 EMU ⇒ 1 px = 15 twips.
+const TWIPS_PER_PX = 15;
+// Content width in twips — used for every table/header/card width.
+const PAGE_WIDTH_DXA = USABLE_WIDTH_DXA;
+
+// Largest image (in px) that fits the printable content area while preserving
+// the given aspect ratio. Clamped on both axes, so the chart can never be
+// clipped or overflow the page regardless of dataset or margins — no fixed
+// dimensions, no magic numbers.
+function fitImageToPage(
+  aspectW: number,
+  aspectH: number
+): { width: number; height: number } {
+  const usableWidthPx = Math.floor(USABLE_WIDTH_DXA / TWIPS_PER_PX);
+  const usableHeightPx = Math.floor(USABLE_HEIGHT_DXA / TWIPS_PER_PX);
+  const aspect = aspectH / aspectW;
+  let width = usableWidthPx;
+  let height = Math.round(width * aspect);
+  if (height > usableHeightPx) {
+    height = usableHeightPx;
+    width = Math.round(height / aspect);
+  }
+  return { width, height };
+}
 
 function makeCell(
   text: string,
@@ -1251,11 +1308,21 @@ async function exportWord(
     children.push(pageBreak());
     children.push(sectionTitle('Case Hardness Profile'));
     try {
-      const svg = buildDepthSvg(measurements, chdTargetHv);
-      const png = await svgStringToPngBuffer(svg, DEPTH_SIZE.w, DEPTH_SIZE.h);
-      const usablePx = Math.floor((PAGE_WIDTH_DXA / 1440) * 96);
-      const imgW = Math.min(DEPTH_SIZE.w, Math.floor(usablePx * 0.85));
-      const imgH = Math.round(imgW * (DEPTH_SIZE.h / DEPTH_SIZE.w));
+      // 1. Size the embed from the printable content area (computed from the
+      //    page + margins), preserving the chart's aspect ratio. Centred and
+      //    clamped on both axes, so it always fits — no clipping, no manual
+      //    resizing — and adapts automatically to any page size / orientation.
+      const { width: imgW, height: imgH } = fitImageToPage(DEPTH_SIZE.w, DEPTH_SIZE.h);
+      // 2. Rasterise the vector chart at enough pixels to be REPORT_DPI at that
+      //    on-page size, then let Word scale it down. Derived from the fit size
+      //    (not a fixed multiplier) so print quality is guaranteed on every page.
+      const rasterScale = (imgW * REPORT_DPI) / (96 * DEPTH_SIZE.w);
+      const svg = buildDepthSvg(measurements, chdTargetHv, rasterScale);
+      const png = await svgStringToPngBuffer(
+        svg,
+        Math.round(DEPTH_SIZE.w * rasterScale),
+        Math.round(DEPTH_SIZE.h * rasterScale)
+      );
       children.push(
         new Paragraph({
           alignment: AlignmentType.CENTER,
@@ -1295,12 +1362,8 @@ async function exportWord(
       {
         properties: {
           page: {
-            size: {
-              orientation: PageOrientation.LANDSCAPE,
-              width: 16838,
-              height: 11906,
-            },
-            margin: { top: 1700, right: 720, bottom: 900, left: 720 },
+            size: PAGE.size,
+            margin: PAGE.margin,
           },
         },
         headers: { default: buildHeaderBand(reportId, dateStr, timeStr) },

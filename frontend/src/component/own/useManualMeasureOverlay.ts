@@ -25,6 +25,10 @@ type Args = {
   /** Live machine objective (e.g. "10X" / "40X") so the initial diamond
    *  defaults to roughly indent-sized at the current magnification. */
   objective?: string | null;
+  /** Auto→Manual handoff: the current Auto-detected corners (as guide lines) to
+   *  initialize from, so Manual Measure starts on the exact same four points as
+   *  Auto. Null when no Auto result is displayed → a default diamond is used. */
+  seedGuides?: ManualGuideLines | null;
   onCursor?: (point: Point | null) => void;
   onMeasurementUpdated: (result: ManualMeasureDragResult) => void;
   strokeWidth?: number;
@@ -68,6 +72,7 @@ export function useManualMeasureOverlay({
   imageSize,
   resetKey,
   objective,
+  seedGuides,
   onCursor,
   onMeasurementUpdated,
   strokeWidth,
@@ -100,10 +105,17 @@ export function useManualMeasureOverlay({
       return;
     }
 
-    const initialGuides = createDefaultManualGuideLines(imageSize, objective);
+    // Auto→Manual handoff: adopt the exact Auto-detected corners when present so
+    // Manual Measure starts on the same four points — unmoved, it feeds the same
+    // d1Px/d2Px into the shared pipeline and yields the identical HV. Only when
+    // no Auto result exists does Manual fall back to a centered default diamond.
+    const initialGuides =
+      seedGuides != null
+        ? normalizeGuides(seedGuides, imageSize)
+        : createDefaultManualGuideLines(imageSize, objective);
     guidesRef.current = initialGuides;
     setGuides(initialGuides);
-  }, [active, imageSize, objective]);
+  }, [active, imageSize, objective, seedGuides]);
 
   const scheduleDraw = useCallback(() => {
     if (frameRef.current !== null) {
