@@ -1004,7 +1004,10 @@ function CameraWindowImpl(
         />
         {magnifierEnabled ? (
           <MagnifierLens
-            source={frozen ? freezeCanvasRef.current : canvasRef.current}
+            liveCanvas={canvasRef.current}
+            freezeCanvas={freezeCanvasRef.current}
+            frozen={frozen}
+            overlayHost={viewportRef.current}
             cursor={cursorDisplay}
             containerWidth={viewportSize.w}
             containerHeight={viewportSize.h}
