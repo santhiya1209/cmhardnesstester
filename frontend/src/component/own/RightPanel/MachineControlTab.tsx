@@ -28,7 +28,6 @@ import {
   Objective40xIcon,
 } from '@/component/ui/ObjectiveIcons';
 import MicrometerDisplay from '@/component/own/MicrometerDisplay';
-import CalibrationStatusPanel from '@/component/own/CalibrationStatusPanel';
 import { useMachineSelector, useMachineError } from '@/contexts/MachineStateContext';
 import { useSetMachineControl } from '@/hooks/mutations/useSetMachineControl';
 import { useStartIndent } from '@/hooks/mutations/useStartIndent';
@@ -308,10 +307,6 @@ const SETTING_LABEL_SX: SxProps<Theme> = {
   fontSize: 12,
   fontWeight: 500,
   color: 'text.secondary',
-};
-const CALIBRATION_STATUS_WRAP_SX: SxProps<Theme> = {
-  mx: 1.5,
-  mb: 1,
 };
 const HV_BOTTOM_SECTION_SX: SxProps<Theme> = {
   width: '100%',
@@ -1131,10 +1126,6 @@ function MachineControlTabImpl({
         </FormControl>
         <Typography sx={SETTING_LABEL_SX}>Micrometer</Typography>
         <MicrometerDisplay enabled={micrometerEnabled} />
-      </Box>
-
-      <Box sx={CALIBRATION_STATUS_WRAP_SX}>
-        <CalibrationStatusPanel activeObjective={activeObjective} />
       </Box>
 
       <Box sx={HV_BOTTOM_SECTION_SX}>
