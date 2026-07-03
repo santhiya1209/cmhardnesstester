@@ -12,6 +12,7 @@ import { getLastPaintedFrameId } from '@/hooks/cameraStreamManager';
 import {
   calculateManualDiagonalsFromPixels,
   calculateVickersFromPixels,
+  hasCalibrationForForce,
   parseForceKgf,
 } from '@/utils/manualMeasure';
 import { logMeasureCalc, mlog } from '@/utils/measureDebug';
@@ -143,6 +144,28 @@ export function useManualMeasure({
             setUnavailableMsg(
               'No active objective. Please click 10X or 40X in Machine Control before measuring.'
             );
+            return;
+          }
+          // Same strict per-(objective, force) gate Auto Measure applies before
+          // it saves (App.tsx hasCalibrationForForce). Without it, Manual Measure
+          // would silently ride the resolver's fallback to another force's
+          // calibration for an uncalibrated force — producing a wrong HV. Block
+          // instead, so Manual and Auto resolve the exact same calibration or
+          // neither measures. Calibration-manual-mode already returned above, so
+          // creating the first calibration is unaffected.
+          if (!hasCalibrationForForce(calibrations, targetObjective, machineState?.force)) {
+            const forceRaw = machineState?.force;
+            const forceLabel =
+              forceRaw != null && String(forceRaw).trim() !== '' ? String(forceRaw).trim() : null;
+            const forceText = forceLabel ?? 'The selected force';
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[measurement-commit-blocked] method=Manual reason=force-not-calibrated objective=${targetObjective} force=${forceLabel ?? 'null'}`
+            );
+            setUnavailableMsg(
+              `${forceText} has not been calibrated.\nPlease complete calibration for ${forceText} before performing Manual Measure.`
+            );
+            setStatusMessage(`System Status: Manual Measure blocked: ${forceText} not calibrated`);
             return;
           }
           const machineStateForManual = machineState

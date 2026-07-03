@@ -554,6 +554,19 @@ function CameraWindowImpl(
       const viewport = viewportRef.current;
       if (viewport && imageSize && imageSize.width > 0 && imageSize.height > 0) {
         const placement = getImagePlacement(viewport.clientWidth, viewport.clientHeight, imageSize);
+        // The overlays are aligned to `imageSize` while the composited image is drawn
+        // from `source`. They must share an aspect ratio or the cropped overlay region
+        // shears against the image (partial crosshair). This never fires while the live
+        // preview and full frame share the camera aspect; if it ever does, this names
+        // the exact mismatch instead of leaving a silently clipped thumbnail.
+        const sourceAspect = source.width / source.height;
+        const imageAspect = imageSize.width / imageSize.height;
+        if (Math.abs(sourceAspect - imageAspect) > 0.01) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[thumbnail-compose] aspect mismatch source=${source.width}x${source.height} imageSize=${imageSize.width}x${imageSize.height} — overlay crop may misalign`
+          );
+        }
         const overlayCanvases = Array.from(viewport.querySelectorAll('canvas')).filter(
           (c) =>
             c !== live &&

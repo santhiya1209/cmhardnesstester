@@ -4,6 +4,7 @@ import {
   cornersToDiagonalsPx,
   distancePx,
   guideLinesToPoints,
+  hasCalibrationForForce,
   resolveActiveCalibration,
   resolveManualCalibration,
 } from './manualMeasure';
@@ -237,5 +238,35 @@ describe('Manual and Auto share one measurement engine for identical corners', (
 
     expect(seededD1).toBe(auto.d1Px);
     expect(seededD2).toBe(auto.d2Px);
+  });
+});
+
+// The strict per-(objective, force) calibration gate that BOTH Auto Measure
+// (App.tsx) and Manual Measure (useManualMeasure) now apply before saving. An
+// uncalibrated force must be blocked, never silently resolved to another force's
+// calibration. This freezes the shared gate so neither mode can regress into a
+// force-blind fallback.
+describe('hasCalibrationForForce — shared strict per-force gate', () => {
+  const cal10x1kgf = calibration({ id: '10x-1kgf', zoomTime: '10X', force: '1kgf' });
+  const cal40x03kgf = calibration({ id: '40x-0.3kgf', zoomTime: '40X', force: '0.3kgf' });
+  const calibrations = [cal10x1kgf, cal40x03kgf];
+
+  it('allows a measurement only for the exact calibrated objective+force', () => {
+    expect(hasCalibrationForForce(calibrations, '10X', '1kgf')).toBe(true);
+    expect(hasCalibrationForForce(calibrations, '40X', '0.3kgf')).toBe(true);
+  });
+
+  it('blocks an uncalibrated force instead of falling back to another force', () => {
+    // 10X is calibrated for 1kgf only — 0.5kgf must NOT borrow the 1kgf scale.
+    expect(hasCalibrationForForce(calibrations, '10X', '0.5kgf')).toBe(false);
+    // 40X is calibrated for 0.3kgf only — 1kgf must be blocked.
+    expect(hasCalibrationForForce(calibrations, '40X', '1kgf')).toBe(false);
+  });
+
+  it('does not share calibration across objectives', () => {
+    // 1kgf exists for 10X but not 40X; the objective must be respected.
+    expect(hasCalibrationForForce(calibrations, '40X', '1kgf')).toBe(false);
+    // 0.3kgf exists for 40X but not 10X.
+    expect(hasCalibrationForForce(calibrations, '10X', '0.3kgf')).toBe(false);
   });
 });
