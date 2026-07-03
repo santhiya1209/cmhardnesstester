@@ -578,31 +578,8 @@ const PAGE = {
 // Printable content area = page minus margins (the top margin already reserves
 // space for the header band).
 const USABLE_WIDTH_DXA = PAGE.size.width - PAGE.margin.left - PAGE.margin.right;
-const USABLE_HEIGHT_DXA = PAGE.size.height - PAGE.margin.top - PAGE.margin.bottom;
-// docx sizes images in pixels (9525 EMU/px); 1 twip = 635 EMU ⇒ 1 px = 15 twips.
-const TWIPS_PER_PX = 15;
 // Content width in twips — used for every table/header/card width.
 const PAGE_WIDTH_DXA = USABLE_WIDTH_DXA;
-
-// Largest image (in px) that fits the printable content area while preserving
-// the given aspect ratio. Clamped on both axes, so the chart can never be
-// clipped or overflow the page regardless of dataset or margins — no fixed
-// dimensions, no magic numbers.
-function fitImageToPage(
-  aspectW: number,
-  aspectH: number
-): { width: number; height: number } {
-  const usableWidthPx = Math.floor(USABLE_WIDTH_DXA / TWIPS_PER_PX);
-  const usableHeightPx = Math.floor(USABLE_HEIGHT_DXA / TWIPS_PER_PX);
-  const aspect = aspectH / aspectW;
-  let width = usableWidthPx;
-  let height = Math.round(width * aspect);
-  if (height > usableHeightPx) {
-    height = usableHeightPx;
-    width = Math.round(height / aspect);
-  }
-  return { width, height };
-}
 
 function makeCell(
   text: string,
@@ -1308,11 +1285,11 @@ async function exportWord(
     children.push(pageBreak());
     children.push(sectionTitle('Case Hardness Profile'));
     try {
-      // 1. Size the embed from the printable content area (computed from the
-      //    page + margins), preserving the chart's aspect ratio. Centred and
-      //    clamped on both axes, so it always fits — no clipping, no manual
-      //    resizing — and adapts automatically to any page size / orientation.
-      const { width: imgW, height: imgH } = fitImageToPage(DEPTH_SIZE.w, DEPTH_SIZE.h);
+      // 1. Fixed on-page size: 18.1 cm wide × 7.64 cm tall. docx transformation
+      //    dimensions are pixels at 96 DPI, so convert cm → px (1 cm = 96/2.54 px).
+      const CM_TO_PX = 96 / 2.54;
+      const imgW = Math.round(18.1 * CM_TO_PX);
+      const imgH = Math.round(7.64 * CM_TO_PX);
       // 2. Rasterise the vector chart at enough pixels to be REPORT_DPI at that
       //    on-page size, then let Word scale it down. Derived from the fit size
       //    (not a fixed multiplier) so print quality is guaranteed on every page.

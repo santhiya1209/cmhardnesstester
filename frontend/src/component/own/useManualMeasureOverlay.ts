@@ -98,6 +98,11 @@ export function useManualMeasureOverlay({
     setDragGuide(null);
     dragGuideRef.current = null;
     dragMovedRef.current = false;
+    // First-click diagnostics: a resetKey bump nulls the guides. If this fires
+    // AFTER activation (async objective-sync / turret gate), it opens a window
+    // where the overlay is interactive but hitTest has no guides → the first
+    // pointerdown is dropped. See useObjectiveSync/useTurretMotionGate.
+    mlog('manual-guides', { event: 'reset', resetKey });
   }, [resetKey]);
 
   useEffect(() => {
@@ -115,7 +120,18 @@ export function useManualMeasureOverlay({
         : createDefaultManualGuideLines(imageSize, objective);
     guidesRef.current = initialGuides;
     setGuides(initialGuides);
-  }, [active, imageSize, objective, seedGuides]);
+    mlog('manual-guides', {
+      event: 'seed',
+      source: seedGuides != null ? 'auto-handoff' : 'default',
+    });
+    // resetKey MUST be a dependency: a reset nulls the guides (effect above), and
+    // without re-running here the diamond stays gone until an unrelated dep
+    // (objective/seedGuides) happens to change — leaving a window where the
+    // overlay is interactive but hitTest has no guides, so the first pointerdown
+    // is silently dropped ("click twice to drag"). Re-seeding on resetKey closes
+    // that window immediately. Guarded by !active so intentional clear-and-blank
+    // resets (which drop to the pointer tool) do not re-seed.
+  }, [active, imageSize, objective, seedGuides, resetKey]);
 
   const scheduleDraw = useCallback(() => {
     if (frameRef.current !== null) {
@@ -201,13 +217,29 @@ export function useManualMeasureOverlay({
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (!active || !imageSize || event.button !== 0) {
+        mlog('manual-pointerdown', {
+          result: 'guard-fail',
+          active,
+          imageSize: imageSize ? 'set' : 'null',
+          button: event.button,
+        });
         return;
       }
 
       const nextDragGuide = hitTest(event);
       if (nextDragGuide === null) {
+        // Either the click was >10px from every guide line, OR the guides were
+        // momentarily null (post-activation resetKey churn) so there was nothing
+        // to hit. `guides` distinguishes the two — the crux of the "first click
+        // ignored" report.
+        mlog('manual-pointerdown', {
+          result: 'no-hit',
+          guides: guidesRef.current ? 'present' : 'null',
+        });
         return;
       }
+
+      mlog('manual-pointerdown', { result: 'drag-start', guide: nextDragGuide });
 
       event.currentTarget.setPointerCapture(event.pointerId);
       dragGuideRef.current = nextDragGuide;

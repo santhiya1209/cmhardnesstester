@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import ToggleButton from '@mui/material/ToggleButton';
@@ -131,6 +131,13 @@ type Props = {
   manualMeasureObjective?: string | null;
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  /**
+   * Auto→Manual seed corners captured at the moment Manual Measure is entered
+   * (before the auto overlay is cleared). Manual initializes on these exact four
+   * points so "Auto then Manual, unmoved" yields the identical d1Px/d2Px → HV.
+   * Null when Manual is entered without a live Auto result.
+   */
+  manualSeedGuides?: ManualGuideLines | null;
   onAutoMeasureAdjusted?: (corners: import('@/types/autoMeasure').AutoMeasureCorners) => void;
   onAutoMeasureLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left' | null) => void;
   autoMeasureSelectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
@@ -217,6 +224,7 @@ function CameraWindowImpl(
     manualMeasureObjective,
     objectiveRefreshKey,
     onManualMeasurementUpdated,
+    manualSeedGuides = null,
     onAutoMeasureAdjusted,
     onAutoMeasureLineSelected,
     autoMeasureSelectedLine,
@@ -902,21 +910,6 @@ function CameraWindowImpl(
   const clearCursor = useCallback(() => {
     setCursorDisplay(null);
   }, []);
-
-  // Auto→Manual handoff source: the corners of the Auto Measure result currently
-  // on screen, expressed as guide lines. Manual Measure initializes from these so
-  // it starts on the exact same four points as Auto (same d1Px/d2Px → same HV).
-  // Null when no Auto result is displayed → Manual uses its default diamond.
-  const manualSeedGuides = useMemo<ManualGuideLines | null>(() => {
-    const corners = autoMeasureGraphics?.corners;
-    if (!corners) return null;
-    return {
-      leftX: corners.left.x,
-      rightX: corners.right.x,
-      topY: corners.top.y,
-      bottomY: corners.bottom.y,
-    };
-  }, [autoMeasureGraphics]);
 
   const tag = statusLabel(status);
 

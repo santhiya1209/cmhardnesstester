@@ -60,6 +60,7 @@ import type {
   AutoMeasureCorners,
   AutoMeasureGraphics,
 } from '@/types/autoMeasure';
+import type { ManualGuideLines } from '@/types/manualMeasure';
 import { autoMeasureCornersKey } from '@/utils/autoMeasureOverlayKey';
 import {
   AUTO_MEASURE_CENTER_TOLERANCE_PX,
@@ -297,6 +298,9 @@ function App() {
   const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null);
   const [calibrationRequiredMsg, setCalibrationRequiredMsg] = useState<string | null>(null);
   const [magnifierEnabled, setMagnifierEnabled] = useState(false);
+  // Auto→Manual seed corners, snapshotted when Manual Measure is entered (before
+  // the auto overlay is cleared) so Manual starts on Auto's exact four corners.
+  const [manualSeedGuides, setManualSeedGuides] = useState<ManualGuideLines | null>(null);
   const [selectedMeasureMode, setSelectedMeasureMode] = useState<MeasureSelection>(null);
   const [cameraOpen, setCameraOpen] = useState(false);  const [turretMoving, setTurretMoving] = useState(false);
   const turretMovingRef = useRef(false);
@@ -2174,6 +2178,22 @@ function App() {
       const mappedTool = TOOL_ACTION_TO_TOOL[action];
 
       if (action === 'tools:manualMeasure') {
+        // Auto→Manual handoff: snapshot the currently displayed Auto corners
+        // BEFORE clearing the auto overlay, so Manual can initialize on the exact
+        // same four points (identical d1Px/d2Px → identical HV). Null when no Auto
+        // result is live → Manual falls back to its default diamond.
+        const autoNow = displayedAutoMeasureGraphicsRef.current;
+        const corners = autoNow?.corners ?? null;
+        setManualSeedGuides(
+          corners
+            ? {
+                leftX: corners.left.x,
+                rightX: corners.right.x,
+                topY: corners.top.y,
+                bottomY: corners.bottom.y,
+              }
+            : null
+        );
         // Manual Measure must always start from a clean, isolated overlay state.
         // Dispose every other overlay's geometry so nothing stale survives into
         // the fresh session: auto-measure overlay + detection state, the length/
@@ -2337,6 +2357,7 @@ function App() {
           manualMeasureObjective={activeObjective}
           objectiveRefreshKey={objectiveRefreshKey}
           onManualMeasurementUpdated={handleManualMeasurementUpdated}
+          manualSeedGuides={manualSeedGuides}
           onAutoMeasureAdjusted={handleAutoMeasureAdjusted}
           onAutoMeasureLineSelected={handleAutoMeasureLineSelected}
           autoMeasureSelectedLine={autoMeasureSelectedLine}

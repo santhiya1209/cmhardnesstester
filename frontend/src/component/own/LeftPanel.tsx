@@ -4,7 +4,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import CameraWindow, { type CameraWindowHandle } from '@/component/own/CameraWindow';
 import { useRenderCount } from '@/utils/renderStats';
 import type { AutoMeasureCorners, AutoMeasureGraphics } from '@/types/autoMeasure';
-import type { ManualMeasureDragResult } from '@/types/manualMeasure';
+import type { ManualGuideLines, ManualMeasureDragResult } from '@/types/manualMeasure';
 import type { OverlayShape, OverlayShapeInput, ToolId } from '@/types/tool';
 import type { CrosshairConfig } from '@/types/crosshair';
 
@@ -33,6 +33,7 @@ type Props = {
   manualMeasureObjective?: string | null;
   objectiveRefreshKey?: number;
   onManualMeasurementUpdated: (result: ManualMeasureDragResult) => void;
+  manualSeedGuides?: ManualGuideLines | null;
   onAutoMeasureAdjusted?: (corners: AutoMeasureCorners) => void;
   onAutoMeasureLineSelected?: (line: 'top' | 'right' | 'bottom' | 'left' | null) => void;
   autoMeasureSelectedLine?: 'top' | 'right' | 'bottom' | 'left' | null;
@@ -61,6 +62,7 @@ function LeftPanelImpl(
     manualMeasureObjective,
     objectiveRefreshKey,
     onManualMeasurementUpdated,
+    manualSeedGuides,
     onAutoMeasureAdjusted,
     onAutoMeasureLineSelected,
     autoMeasureSelectedLine,
@@ -93,6 +95,7 @@ function LeftPanelImpl(
         manualMeasureObjective={manualMeasureObjective}
         objectiveRefreshKey={objectiveRefreshKey}
         onManualMeasurementUpdated={onManualMeasurementUpdated}
+        manualSeedGuides={manualSeedGuides}
         onAutoMeasureAdjusted={onAutoMeasureAdjusted}
         onAutoMeasureLineSelected={onAutoMeasureLineSelected}
         autoMeasureSelectedLine={autoMeasureSelectedLine}
